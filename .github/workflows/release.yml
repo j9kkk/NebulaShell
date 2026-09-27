@@ -1,0 +1,95 @@
+name: Release
+
+# 打 tag(如 v1.0.1)时自动在三个平台并行构建，并把产物发布到对应 Release。
+# 也可在 Actions 页面手动触发(workflow_dispatch)做一次不带 tag 的构建验证。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # tauri-action 需要写 Release
+
+jobs:
+  publish:
+    name: 构建并发布 (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Apple Silicon
+          - os: macos-latest
+            label: macOS-arm64
+            args: '--target aarch64-apple-darwin'
+          # macOS Intel
+          - os: macos-latest
+            label: macOS-x64
+            args: '--target x86_64-apple-darwin'
+          # Linux
+          - os: ubuntu-22.04
+            label: linux-x64
+            args: ''
+          # Windows
+          - os: windows-latest
+            label: windows-x64
+            args: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Linux 系统依赖
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS 同时构建双架构需要两个 target
+          targets: ${{ startsWith(matrix.os, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.label }}
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建前端
+        run: npm run build:web
+
+      # tauri-action 负责:构建 -> 打包 -> 上传到 Release
+      # tag 触发时发布到对应 Release;手动触发时仅构建(不发布)
+      # 项目结构为 <root>/src-tauri，Tauri CLI 会从仓库根自动发现(已本地验证)，故不需 projectPath。
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CI 无签名证书:不设 APPLE_SIGNING_IDENTITY(设空串会触发 codesign 而失败)
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('NebulaShell {0}', github.ref_name) || '' }}
+          releaseBody: |
+            下载对应平台的安装包：
+
+            | 平台 | 文件 |
+            | --- | --- |
+            | macOS (Apple Silicon) | `*_aarch64.dmg` |
+            | macOS (Intel) | `*_x64.dmg` |
+            | Windows (64 位) | `*_x64-setup.exe` |
+            | Linux (64 位) | `*_amd64.AppImage` / `*.deb` |
+
+            首次运行提示：未签名的应用可能被系统拦截 ——
+            macOS 需右键「打开」，Windows 需在 SmartScreen 提示中选「仍要运行」。
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

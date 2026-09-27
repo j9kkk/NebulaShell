@@ -132,6 +132,6 @@ jobs:
       - run: npm run build:web
 
       # CI 无签名证书:不设 APPLE_SIGNING_IDENTITY(设空串会触发 codesign 并因找不到身份而失败)。
-      # Linux 只做编译验证(打包需额外系统依赖);macOS/Windows 走完整 bundle。
+      # bundle.targets = "all" 时,各平台会自动选择产物格式(dmg/nsis/appimage),故无需平台特例。
       - name: 构建
-        run: npx tauri build ${{ matrix.args }}${{ matrix.os == 'ubuntu-22.04' && ' --no-bundle' || '' }}
+        run: npx tauri build ${{ matrix.args }}
