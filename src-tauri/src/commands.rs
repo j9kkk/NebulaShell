@@ -451,7 +451,9 @@ pub async fn nebula_invoke(
                     }
                 }
             }
-            state.store.save().ok();
+            // 每敲一条命令都全量重写配置文件的代价过高(含加密凭据的整份 JSON),
+            // 改为标记脏位,由后台去抖任务合并落盘。
+            state.store.mark_dirty();
             ok(json!(null))
         }
         "history:list" => {
@@ -744,13 +746,21 @@ async fn sftp_op<F, Fut>(
     f: F,
 ) -> Result<Value, String>
 where
-    F: FnOnce(russh_sftp::client::SftpSession, tauri::AppHandle, String, Value) -> Fut,
+    F: FnOnce(Arc<russh_sftp::client::SftpSession>, tauri::AppHandle, String, Value) -> Fut,
     Fut: std::future::Future<Output = Result<Value, String>>,
 {
     let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
     let payload = payload.clone();
-    let sftp = state.ssh.open_sftp(&sid).await?;
-    f(sftp, app, sid, payload).await
+    // 统一信封:前端 api() 要求 {ok:true,data:...},失败时要求 {ok:false,error}。
+    // 此前这里直接返回裸数据,导致文件面板所有操作都被判为失败(报"调用失败")。
+    let sftp = match state.ssh.open_sftp(&sid).await {
+        Ok(s) => s,
+        Err(e) => return err_msg(e),
+    };
+    match f(sftp, app, sid, payload).await {
+        Ok(data) => ok(data),
+        Err(e) => err_msg(e),
+    }
 }
 
 pub fn regex_lite(url: &str) -> bool {

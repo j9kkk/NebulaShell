@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 
+use futures::FutureExt; // Channel::wait().now_or_never():收干已就绪数据做合帧
+
 pub type RemoteTargets = Arc<std::sync::Mutex<HashMap<String, (String, u32, String)>>>;
 
 pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
@@ -143,16 +145,87 @@ impl client::Handler for SshHandler {
 
 fn void_rule(_: &str) {}
 
+/// 从跨消息缓冲中取出可完整解码的 UTF-8 前缀,把结尾不完整的多字节序列留在缓冲里。
+///
+/// 直接对每条 ChannelMsg 调 `from_utf8_lossy` 会在 SSH 分包切开多字节字符时
+/// 产生 U+FFFD(中文/emoji 场景实测可见)。这里按"完整前缀"解码,残留尾部留待下一批。
+fn take_utf8(pending: &mut Vec<u8>) -> String {
+    if pending.is_empty() {
+        return String::new();
+    }
+    // 从尾部最多回看 4 字节,定位最后一个"字符起始"位置:
+    // ASCII 自身完整;多字节起始字节则需判断后继字节是否到齐。
+    // 未到齐 -> 该字符整体留给下一批(而不是用 U+FFFD 顶替)。
+    let mut split = pending.len();
+    for back in 1..=pending.len().min(4) {
+        let idx = pending.len() - back;
+        let b = pending[idx];
+        if b < 0x80 {
+            break; // ASCII:边界在其后
+        }
+        if b >= 0xC0 {
+            let need = if b >= 0xF0 {
+                4
+            } else if b >= 0xE0 {
+                3
+            } else {
+                2
+            };
+            split = if back >= need { pending.len() } else { idx };
+            break;
+        }
+        // 0x80..=0xBF:后继字节,继续往前找起始字节
+    }
+    let tail = pending.split_off(split);
+    let head = std::mem::replace(pending, tail);
+    String::from_utf8(head).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).to_string())
+}
+
+/// 判断 token 是否仍是该 sessionId 的当前连接(用于旧泵退出时避免误动新会话)。
+async fn is_owner(svc: &SshService, session_id: &str, token: &Arc<()>) -> bool {
+    let sessions = svc.sessions.lock().await;
+    sessions
+        .get(session_id)
+        .map(|s| Arc::ptr_eq(&s.token, token))
+        .unwrap_or(false)
+}
+
+/// 彻底关闭一个会话:断开跳板链与主连接。
+///
+/// 必须显式调用:russh 的 `Handle::drop` 只打一条 debug 日志,**不会**关闭连接。
+/// 被替换或被遗弃的会话若只靠 drop,会一直占着 TCP 连接与通道接收窗口。
+async fn shut_down_session(session: Session) {
+    for j in &session.jump_handles {
+        let _ = j
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await;
+    }
+    let _ = session
+        .handle
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
+}
+
 pub struct Session {
     pub handle: Handle<SshHandler>,
     pub writer: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     pub resize_tx: tokio::sync::mpsc::UnboundedSender<(u32, u32)>,
     pub host: Value,
     pub jump_handles: Vec<Handle<SshHandler>>,
+    /// 连接代际标识。同一 sessionId 重连时旧会话会被新会话替换,旧数据泵退出后
+    /// 只能回收"自己那一代",否则会误删正在使用的新会话。
+    pub token: Arc<()>,
 }
 
 pub struct SshService {
     pub sessions: AsyncMutex<std::collections::HashMap<String, Session>>,
+    /// 按 sessionId 缓存的 SFTP 会话。
+    ///
+    /// 每次 SFTP 操作都新开一条通道要付"channel_open_session + sftp 子系统协商"
+    /// 的往返成本;文件面板的每次列目录/上传/下载都会用到它。
+    /// 连接被替换/回收/断开时必须清理,否则残留通道挂在已废弃的 SSH 连接上。
+    pub sftp_sessions:
+        AsyncMutex<std::collections::HashMap<String, Arc<russh_sftp::client::SftpSession>>>,
     pub store: Arc<crate::config::Store>,
     pub remote_targets: RemoteTargets,
 }
@@ -161,6 +234,7 @@ impl SshService {
     pub fn new(store: Arc<crate::config::Store>, remote_targets: RemoteTargets) -> Self {
         SshService {
             sessions: AsyncMutex::new(std::collections::HashMap::new()),
+            sftp_sessions: AsyncMutex::new(std::collections::HashMap::new()),
             store,
             remote_targets,
         }
@@ -169,15 +243,26 @@ impl SshService {
     pub fn clone_shared(&self) -> Arc<Self> {
         Arc::new(SshService {
             sessions: AsyncMutex::new(std::collections::HashMap::new()),
+            sftp_sessions: AsyncMutex::new(std::collections::HashMap::new()),
             store: self.store.clone(),
             remote_targets: self.remote_targets.clone(),
         })
+    }
+
+    /// 丢弃指定会话的 SFTP 缓存(连接被替换/回收/断开时调用)
+    pub async fn forget_sftp(&self, session_id: &str) {
+        self.sftp_sessions.lock().await.remove(session_id);
     }
 
     fn make_config() -> Arc<client::Config> {
         let mut config = client::Config::default();
         config.keepalive_interval = Some(std::time::Duration::from_secs(8));
         config.keepalive_max = 6;
+        // 通道接收窗口:默认 2MB/通道。终端与 SFTP 的稳态吞吐远低于此,
+        // 而窗口大小按"连接数 × 通道数"占用内存(分屏/批量/转发/SFTP 叠加)。
+        // 512KB 足以维持高吞吐(受 maximum_packet_size=32KB 限制,吞吐主要取决于往返),
+        // 同时把每条通道的接收缓冲从 2MB 降到 512KB。
+        config.window_size = 512 * 1024;
         Arc::new(config)
     }
 
@@ -356,69 +441,18 @@ impl SshService {
             .request_shell(true)
             .await
             .map_err(|e| e.to_string())?;
-        let channel_id = channel.id();
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let (resize_tx, mut resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, u32)>();
 
-        // 数据泵:channel → ssh:data / ssh:status 事件
-        let pump_app = app.clone();
-        let pump_sid = session_id.clone();
-        let pump_host = format!("{}@{}", user, host_addr);
-        tokio::spawn(async move {
-            loop {
-                let msg = tokio::select! {
-                    m = channel.wait() => m,
-                    r = resize_rx.recv() => {
-                        if let Some((cols, rows)) = r {
-                            let _ = channel.window_change(cols, rows, 0, 0).await;
-                        }
-                        continue;
-                    }
-                    d = writer_rx.recv() => {
-                        if let Some(bytes) = d {
-                            let _ = channel.data(&bytes[..]).await;
-                        }
-                        continue;
-                    }
-                };
-                match msg {
-                    Some(russh::ChannelMsg::Data { ref data }) => {
-                        crate::ai::emit_evt(
-                            &pump_app,
-                            "ssh:data",
-                            json!({ "sessionId": pump_sid, "data": String::from_utf8_lossy(data) }),
-                        );
-                    }
-                    Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
-                        crate::ai::emit_evt(
-                            &pump_app,
-                            "ssh:data",
-                            json!({ "sessionId": pump_sid, "data": String::from_utf8_lossy(data) }),
-                        );
-                    }
-                    Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
-                        crate::ai::emit_evt(
-                            &pump_app,
-                            "ssh:status",
-                            json!({ "sessionId": pump_sid, "state": "exited", "code": exit_status }),
-                        );
-                        break;
-                    }
-                    Some(russh::ChannelMsg::Close) | None => {
-                        crate::ai::emit_evt(
-                            &pump_app,
-                            "ssh:status",
-                            json!({ "sessionId": pump_sid, "state": "exited" }),
-                        );
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            let _ = pump_host;
-        });
-
-        {
+        // 先登记会话再启动数据泵:数据泵会用 token 判断自己是否仍是该会话的主人,
+        // 若此时会话尚未登记,首批终端输出会被判定为"非主人"而丢弃。
+        //
+        // 原子替换:若该 sessionId 已有旧会话(自动重连走的就是这条路径),
+        // 必须先显式断开,否则旧 TCP 连接与 shell 通道会永久泄漏
+        // (russh 的 Handle::drop 不做任何关闭动作)。
+        let token: Arc<()> = Arc::new(());
+        let pump_token = token.clone();
+        let replaced = {
             let mut sessions = self.sessions.lock().await;
             sessions.insert(
                 session_id.clone(),
@@ -428,9 +462,126 @@ impl SshService {
                     resize_tx,
                     host: host_full,
                     jump_handles,
+                    token,
                 },
-            );
+            )
+        };
+        if let Some(old) = replaced {
+            self.forget_sftp(&session_id).await; // 旧连接的 SFTP 缓存必须作废
+            shut_down_session(old).await;
         }
+
+        // 数据泵:channel → ssh:data / ssh:status 事件。
+        // token 用于标识"这一代"连接:同一 sessionId 重连时旧泵可能还在退出途中,
+        // 靠它区分自己是否仍是该会话的主人(否则会误删/误报新会话)。
+        let pump_app = app.clone();
+        let pump_sid = session_id.clone();
+        let pump_svc = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut pending: Vec<u8> = Vec::new(); // 跨消息未拼完的多字节序列
+            let mut batch: Vec<u8> = Vec::new(); // 本轮累积的数据(合帧)
+            let mut exit: Option<Value> = None;
+            'pump: loop {
+                batch.clear();
+                // 1) 先收干"已就绪"的数据消息,合成单个事件(降低 IPC 次数与 GC 压力)。
+                //    设上限 64 条,避免持续洪泛把写入/尺寸变化饿死。
+                for _ in 0..64 {
+                    match channel.wait().now_or_never() {
+                        Some(Some(russh::ChannelMsg::Data { ref data }))
+                        | Some(Some(russh::ChannelMsg::ExtendedData { ref data, .. })) => {
+                            batch.extend_from_slice(data);
+                        }
+                        Some(Some(russh::ChannelMsg::ExitStatus { exit_status })) => {
+                            exit = Some(json!({
+                                "sessionId": pump_sid,
+                                "state": "exited",
+                                "code": exit_status
+                            }));
+                            break;
+                        }
+                        Some(Some(russh::ChannelMsg::Close)) | Some(None) => {
+                            exit = Some(json!({ "sessionId": pump_sid, "state": "exited" }));
+                            break;
+                        }
+                        Some(Some(_)) => {}
+                        None => break, // 没有更多就绪数据
+                    }
+                }
+
+                // 2) 空闲时阻塞等待数据 / 输入 / 尺寸变化
+                if batch.is_empty() && exit.is_none() {
+                    let msg = tokio::select! {
+                        m = channel.wait() => m,
+                        r = resize_rx.recv() => {
+                            if let Some((cols, rows)) = r {
+                                let _ = channel.window_change(cols, rows, 0, 0).await;
+                            }
+                            continue;
+                        }
+                        d = writer_rx.recv() => {
+                            if let Some(bytes) = d {
+                                let _ = channel.data(&bytes[..]).await;
+                            }
+                            continue;
+                        }
+                    };
+                    match msg {
+                        Some(russh::ChannelMsg::Data { ref data })
+                        | Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
+                            batch.extend_from_slice(data);
+                        }
+                        Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
+                            exit = Some(json!({
+                                "sessionId": pump_sid,
+                                "state": "exited",
+                                "code": exit_status
+                            }));
+                        }
+                        Some(russh::ChannelMsg::Close) | None => {
+                            exit = Some(json!({ "sessionId": pump_sid, "state": "exited" }));
+                        }
+                        Some(_) => continue,
+                    }
+                }
+
+                // 3) 发射数据(仅当仍是该会话的主人,避免旧泵污染新会话)
+                if !batch.is_empty() {
+                    pending.extend_from_slice(&batch);
+                    let text = take_utf8(&mut pending);
+                    if !text.is_empty() && is_owner(&pump_svc, &pump_sid, &pump_token).await {
+                        crate::ai::emit_evt(
+                            &pump_app,
+                            "ssh:data",
+                            json!({ "sessionId": pump_sid, "data": text }),
+                        );
+                    }
+                }
+
+                // 4) 通道结束:发退出状态后退出泵
+                if let Some(st) = exit {
+                    if is_owner(&pump_svc, &pump_sid, &pump_token).await {
+                        crate::ai::emit_evt(&pump_app, "ssh:status", st);
+                    }
+                    break 'pump;
+                }
+            }
+
+            // 5) 自回收:远端主动断开时,会话必须从 sessions 移除,
+            //    否则连接(含跳板链)与通道会一直留在 map 里。
+            //    token 不匹配说明本会话已被重连替换,不能动新会话。
+            let mut sessions = pump_svc.sessions.lock().await;
+            let is_current = sessions
+                .get(&pump_sid)
+                .map(|s| Arc::ptr_eq(&s.token, &pump_token))
+                .unwrap_or(false);
+            if is_current {
+                if let Some(s) = sessions.remove(&pump_sid) {
+                    drop(sessions);
+                    pump_svc.forget_sftp(&pump_sid).await;
+                    shut_down_session(s).await;
+                }
+            }
+        });
         crate::ai::emit_evt(
             &app,
             "ssh:status",
@@ -468,42 +619,65 @@ impl SshService {
             .await
             .map_err(|e| e.to_string())?;
         let mut output = String::new();
+        let mut pending: Vec<u8> = Vec::new();
         let mut code: i64 = 0;
         loop {
             match channel.wait().await {
-                Some(russh::ChannelMsg::Data { ref data }) => {
-                    output.push_str(&String::from_utf8_lossy(data));
-                }
-                Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
-                    output.push_str(&String::from_utf8_lossy(data));
+                Some(russh::ChannelMsg::Data { ref data })
+                | Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
+                    // 逐块拼接后再按完整 UTF-8 前缀解码,避免多字节字符被包边界切断
+                    pending.extend_from_slice(data);
+                    output.push_str(&take_utf8(&mut pending));
                 }
                 Some(russh::ChannelMsg::ExitStatus { exit_status }) => code = exit_status as i64,
                 Some(russh::ChannelMsg::Close) | None => break,
                 _ => {}
             }
         }
+        output.push_str(&take_utf8(&mut pending)); // 收尾:残留的完整前缀
+        output.push_str(&String::from_utf8_lossy(&pending)); // 异常截断的尾部(尽力而为)
         Ok((code, output))
     }
 
+    /// 取该会话的 SFTP 通道(优先复用缓存)。
+    ///
+    /// 旧实现每次调用都新开通道 + 子系统协商;文件面板的每次列目录/上传/下载
+    /// 都走这里,按 sessionId 复用可省掉反复协商的往返与通道开销。
+    /// 连接失效时缓存由 forget_sftp 清理。
     pub async fn open_sftp(
         &self,
         session_id: &str,
-    ) -> Result<russh_sftp::client::SftpSession, String> {
-        let mut sessions = self.sessions.lock().await;
-        let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-        let mut channel = s
-            .handle
-            .channel_open_session()
+    ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
+        {
+            let cache = self.sftp_sessions.lock().await;
+            if let Some(s) = cache.get(session_id) {
+                return Ok(s.clone());
+            }
+        }
+        let sftp = {
+            let mut sessions = self.sessions.lock().await;
+            let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
+            let mut channel = s
+                .handle
+                .channel_open_session()
+                .await
+                .map_err(|e| e.to_string())?;
+            channel
+                .request_subsystem(true, "sftp")
+                .await
+                .map_err(|e| format!("请求 sftp 子系统失败: {}", e))?;
+            let stream: BoxStream = Box::new(channel.into_stream());
+            Arc::new(
+                russh_sftp::client::SftpSession::new(stream)
+                    .await
+                    .map_err(|e| format!("打开 SFTP 通道失败: {}", e))?,
+            )
+        };
+        self.sftp_sessions
+            .lock()
             .await
-            .map_err(|e| e.to_string())?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| format!("请求 sftp 子系统失败: {}", e))?;
-        let stream: BoxStream = Box::new(channel.into_stream());
-        russh_sftp::client::SftpSession::new(stream)
-            .await
-            .map_err(|e| format!("打开 SFTP 通道失败: {}", e))
+            .insert(session_id.to_string(), sftp.clone());
+        Ok(sftp)
     }
 
     pub async fn direct_tcpip(
@@ -547,16 +721,10 @@ impl SshService {
 
     pub async fn disconnect(&self, session_id: &str) {
         let mut sessions = self.sessions.lock().await;
-        if let Some(mut s) = sessions.remove(session_id) {
-            for mut j in s.jump_handles.drain(..) {
-                let _ = j
-                    .disconnect(russh::Disconnect::ByApplication, "", "en")
-                    .await;
-            }
-            let _ = s
-                .handle
-                .disconnect(russh::Disconnect::ByApplication, "", "en")
-                .await;
+        if let Some(s) = sessions.remove(session_id) {
+            drop(sessions);
+            self.forget_sftp(session_id).await;
+            shut_down_session(s).await;
         }
     }
 
@@ -573,5 +741,70 @@ impl SshService {
             .iter()
             .find(|(_, s)| s.host["id"].as_str() == Some(host_id))
             .map(|(k, _)| k.clone())
+    }
+}
+
+#[cfg(test)]
+mod utf8_test {
+    use super::take_utf8;
+
+    /// 完整的 ASCII 应立即全部取出
+    #[test]
+    fn ascii_passes_through() {
+        let mut p = b"hello".to_vec();
+        assert_eq!(take_utf8(&mut p), "hello");
+        assert!(p.is_empty());
+    }
+
+    /// 多字节字符被切成两半时,前一半必须留在缓冲里等下一批,
+    /// 不能产出 U+FFFD(这正是"中文跨包变乱码"的根因)。
+    #[test]
+    fn split_multibyte_is_buffered_not_replaced() {
+        let full = "中".as_bytes().to_vec(); // 3 字节
+        let mut p = vec![full[0]];
+        assert_eq!(take_utf8(&mut p), "", "不完整字符不应产出任何文本");
+        assert_eq!(p, vec![full[0]], "不完整字节应留在缓冲");
+
+        // 第二批补齐剩余字节 -> 拼出完整汉字
+        p.extend_from_slice(&full[1..]);
+        assert_eq!(take_utf8(&mut p), "中");
+        assert!(p.is_empty());
+    }
+
+    /// 前缀完整 + 尾部残缺:只吐出完整部分,残缺留待下批
+    #[test]
+    fn partial_tail_is_retained() {
+        let mut p = b"abc".to_vec();
+        p.extend_from_slice(&"中".as_bytes()[..2]); // 只有 2/3 字节
+        assert_eq!(take_utf8(&mut p), "abc");
+        assert_eq!(p.len(), 2, "残缺的 2 字节应留存");
+
+        p.push("中".as_bytes()[2]);
+        assert_eq!(take_utf8(&mut p), "中");
+    }
+
+    /// 4 字节字符(emoji)同样不能被切断
+    #[test]
+    fn four_byte_sequence_is_buffered() {
+        let e = "😀".as_bytes().to_vec(); // 4 字节
+        let mut p = e[..3].to_vec();
+        assert_eq!(take_utf8(&mut p), "", "3/4 字节时不应产出文本");
+        p.push(e[3]);
+        assert_eq!(take_utf8(&mut p), "😀");
+    }
+
+    /// 逐字节喂入完整字符串,最终结果必须与原文逐字一致
+    #[test]
+    fn byte_by_byte_reassembly_matches_original() {
+        let text = "中文测试 emoji😀 混排 abc";
+        let bytes = text.as_bytes();
+        let mut p = Vec::new();
+        let mut out = String::new();
+        for b in bytes {
+            p.push(*b);
+            out.push_str(&take_utf8(&mut p));
+        }
+        assert_eq!(out, text, "逐字节重组结果应与原文一致");
+        assert!(!out.contains('\u{FFFD}'), "不应出现替换字符");
     }
 }
