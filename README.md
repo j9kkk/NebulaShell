@@ -63,12 +63,21 @@
 
 前往 [Releases](https://github.com/j9kkk/NebulaShell/releases) 下载对应平台安装包：
 
-| 平台 | 文件 |
-| --- | --- |
-| macOS (Apple Silicon) | `NebulaShell_1.0.0_aarch64.dmg` |
-| macOS (Intel) | `NebulaShell_1.0.0_x64.dmg` |
-| Windows | `NebulaShell_1.0.0_x64-setup.exe` |
-| Linux | `NebulaShell_1.0.0_amd64.AppImage` |
+| 平台 | 文件 | 大小 |
+| --- | --- | --- |
+| macOS (Apple Silicon) | `NebulaShell_1.0.0_aarch64.dmg` | 5.4 MB |
+| macOS (Intel) | `NebulaShell_1.0.0_x64.dmg` | 5.7 MB |
+| Windows (64 位) | `NebulaShell_1.0.0_x64-setup.exe` | 3.6 MB |
+| Windows (MSI) | `NebulaShell_1.0.0_x64_en-US.msi` | 5.1 MB |
+| Linux (AppImage) | `NebulaShell_1.0.0_amd64.AppImage` | 79.7 MB |
+| Linux (deb / rpm) | `NebulaShell_1.0.0_amd64.deb` / `-1.x86_64.rpm` | 5.3 MB |
+
+> 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
+> [.github/workflows/release.yml](.github/workflows/release.yml)。
+>
+> **首次运行提示**：应用未做代码签名，系统可能拦截 ——
+> macOS 需右键「打开」；Windows 在 SmartScreen 提示中选「仍要运行」；
+> Linux AppImage 需先 `chmod +x`。
 
 ### 从源码构建
 
@@ -174,6 +183,19 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 | UI e2e(12) | 应用启动、建主机、连接、分屏、删除确认、AI 对话、SFTP、云导入 |
 
 ---
+
+## 🔄 持续集成
+
+| 工作流 | 触发 | 内容 |
+| --- | --- | --- |
+| [ci.yml](.github/workflows/ci.yml) | push / PR | Rust 测试(三平台)、格式与 Clippy 检查、UI e2e(macOS)、构建验证 |
+| [release.yml](.github/workflows/release.yml) | 打 tag `v*` | 四平台并行构建并发布到 Release(macOS arm64/x64、Windows、Linux) |
+
+发布新版本：
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
 
 ## 🤝 贡献
 
