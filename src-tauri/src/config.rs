@@ -8,6 +8,8 @@ pub struct Store {
     pub dir: PathBuf,
     pub data: Mutex<Value>,
     pub use_keyring: bool,
+    /// 是否有未落盘的变更(由后台去抖任务消费)
+    dirty: std::sync::atomic::AtomicBool,
 }
 
 fn defaults() -> Value {
@@ -20,7 +22,7 @@ fn defaults() -> Value {
         "history": [],
         "settings": {
             "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "temperature": 0.3, "apiKey": "" },
-            "terminal": { "fontSize": 13, "theme": "nebula", "scrollback": 5000 },
+            "terminal": { "fontSize": 13, "theme": "nebula", "scrollback": 2000 },
             "clouds": {
                 "tencent": { "key": "", "secret": "", "endpoint": "" },
                 "aliyun": { "key": "", "secret": "", "endpoint": "" }
@@ -182,6 +184,7 @@ impl Store {
             dir,
             data: Mutex::new(data),
             use_keyring: true,
+            dirty: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -199,6 +202,34 @@ impl Store {
         let body = serde_json::to_string_pretty(&*data).map_err(|e| e.to_string())?;
         std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
+    }
+
+    /// 标记配置已变更,交由后台去抖任务延迟落盘。
+    ///
+    /// 用于高频小写入(典型是命令历史:每敲一条命令都要更新)。旧实现每写一条
+    /// 都 `to_string_pretty` 整份配置 + 临时文件 + rename,含加密凭据在内全量重写。
+    /// 真正的持久化由 `flush_if_dirty` 在去抖周期到达时执行。
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 若有未落盘的变更则立即写入;返回是否真的写了。
+    pub fn flush_if_dirty(&self) -> bool {
+        if !self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        if self.save().is_err() {
+            // 写失败则重新置脏,下个周期重试(避免静默丢数据)
+            self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    /// 无论是否标记为脏都落盘一次(退出时调用,确保不丢数据)。
+    pub fn flush_now(&self) {
+        self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.save().ok();
     }
 
     /// 运行时解密后的主机完整对象(含 password/privateKey/passphrase 明文)
@@ -505,7 +536,9 @@ impl Store {
                 term["fontSize"] = json!(n);
             }
             if let Some(v) = t.get("scrollback") {
-                let n = v.as_f64().unwrap_or(5000.0).clamp(1000.0, 50000.0);
+                // 上限 20000:回滚缓冲是终端侧内存的主要可调项(实测 5k→50k
+                // 让 WebContent footprint 增加约 105MB),上限收窄避免一键拉满。
+                let n = v.as_f64().unwrap_or(2000.0).clamp(1000.0, 20000.0);
                 term["scrollback"] = json!(n);
             }
             if let Some(v) = t.get("theme") {
