@@ -55,6 +55,8 @@ function req(method, p, body, timeoutMs = 15000) {
   });
 }
 
+const asObj = (v) => (typeof v === 'string' ? JSON.parse(v) : v);
+
 async function evalJs(js, timeout = 15000) {
   const id = `e${++seq}`;
   await req('POST', '/eval', JSON.stringify({ id, js }));
@@ -138,12 +140,12 @@ async function main() {
   console.log(`测试桥 :${bridge}`);
 
   // 等 webview 就绪
-  await waitEval(`document.readyState`, 'complete', 40000);
+  await waitEval(`return document.readyState`, 'complete', 40000);
   await evalJs(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); 0`);
   check('T1 应用启动 / webview 就绪', true);
 
-  await evalJs(`document.querySelector('#welcome') ? 1 : 0`);
-  await waitEval(`document.querySelector('#app-version').textContent`, 'v1.0.0');
+  await evalJs(`return document.querySelector('#welcome') ? 1 : 0`);
+  await waitEval(`return document.querySelector('#app-version').textContent`, 'v1.0.0');
   check('T2 欢迎页 + 版本号', true);
 
   // 新建主机(密码)
@@ -154,40 +156,40 @@ async function main() {
     document.querySelector('#host-port').value = '${sshd.port}';
     document.querySelector('#host-username').value = 'root';
     document.querySelector('#host-password').value = '${PASSWORD}';
-    document.querySelector('#btn-host-save').click(); 1`);
-  await waitEval(`document.querySelector('#host-list').textContent`, 'ui-a');
+    document.querySelector('#btn-host-save').click(); return 1`);
+  await waitEval(`return document.querySelector('#host-list').textContent`, 'ui-a');
   check('T3 新建主机', true);
 
   // 凭据持久化(回归:密码保存后 hasPassword 必须为真)
   const cred = await evalJs(`
-    (async () => {
+    return (async () => {
       const r = await window.nebula.invoke('hosts:list');
       const h = r.data.find((x) => x.host === '127.0.0.1');
       return JSON.stringify({ hasPassword: h.hasPassword, marked: !document.querySelector('.host-chip') });
     })()`);
-  const credObj = JSON.parse(cred);
+  const credObj = asObj(cred);
   check('T4 密码保存生效(hasPassword=true,界面无"待补全凭据")', credObj.hasPassword === true && credObj.marked === true, cred);
 
   // 连接
-  await evalJs(`document.querySelector('.host-item').click(); 1`);
-  await waitEval(`document.querySelector('#status-text').textContent`, '已连接', 30000);
-  await waitEval(`(document.querySelector('.term-pane.focused .xterm-rows')||{}).innerText||''`, 'Welcome to NebulaShell mock sshd', 25000);
+  await evalJs(`document.querySelector('.host-item').click(); return 1`);
+  await waitEval(`return document.querySelector('#status-text').textContent`, '已连接', 30000);
+  await waitEval(`return (document.querySelector('.term-pane.focused .xterm-rows')||{}).innerText||''`, 'Welcome to NebulaShell mock sshd', 25000);
   check('T5 SSH 连接 + 终端输出', true);
 
   // 分屏
-  await evalJs(`document.querySelector('#btn-split').click(); 1`);
-  await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); 1`);
-  await waitEval(`document.querySelectorAll('.tab-dot.connected').length`, '2', 30000);
+  await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
+  await waitEval(`return document.querySelectorAll('.tab-dot.connected').length`, '2', 30000);
   check('T6 分屏双会话', true);
 
   // 删除确认对话框(回归:confirm 在 WKWebView 失效 → 已换应用内实现)
   await evalJs(`
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
     it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    it.querySelector('.hi-clone').click(); 1`);
-  await waitEval(`document.querySelector('#host-list').textContent`, '副本', 10000);
+    it.querySelector('.hi-clone').click(); return 1`);
+  await waitEval(`return document.querySelector('#host-list').textContent`, '副本', 10000);
   const confirmShown = await evalJs(`
-    (() => {
+    return (() => {
       const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('副本'));
       it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       it.querySelector('.hi-del').click();
@@ -195,51 +197,51 @@ async function main() {
     })()`);
   check('T7 删除弹出应用内确认框(替代失效的 confirm)', confirmShown === true);
 
-  await evalJs(`document.querySelector('#btn-confirm-ok').click(); 1`);
+  await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
   await sleep(800);
   const afterDel = await evalJs(`
-    (async () => {
+    return (async () => {
       const r = await window.nebula.invoke('hosts:list');
       return JSON.stringify({ hosts: r.data.length, confirmClosed: document.querySelector('#modal-confirm').classList.contains('hidden') });
     })()`);
-  const delObj = JSON.parse(afterDel);
+  const delObj = asObj(afterDel);
   check('T8 确认后主机被删除 + 弹窗关闭', delObj.hosts === 1 && delObj.confirmClosed === true, afterDel);
 
   // AI:配置 + 拉取模型 + 对话
-  await evalJs(`document.querySelector('#btn-ai-toggle').click(); 1`);
-  await evalJs(`document.querySelector('#ai-settings-open').click(); 1`);
+  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`);
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
     document.querySelector('#ai-baseurl').value = '${ai.base}';
     document.querySelector('#ai-model').value = 'mock-model';
     document.querySelector('#ai-apikey').value = 'sk-mock';
-    document.querySelector('#btn-ai-fetch-models').click(); 1`);
-  await waitEval(`document.querySelector('#toasts').textContent`, '获取到 3 个模型', 15000);
-  await evalJs(`document.querySelector('#btn-ai-save').click(); 1`);
-  await evalJs(`document.querySelector('#ai-input').value = '你好'; document.querySelector('#ai-send').click(); 1`);
-  await waitEval(`document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY:', 20000);
+    document.querySelector('#btn-ai-fetch-models').click(); return 1`);
+  await waitEval(`return document.querySelector('#toasts').textContent`, '获取到 3 个模型', 15000);
+  await evalJs(`document.querySelector('#btn-ai-save').click(); return 1`);
+  await evalJs(`document.querySelector('#ai-input').value = '你好'; document.querySelector('#ai-send').click(); return 1`);
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY:', 20000);
   check('T9 AI 配置 / 模型发现 / 流式对话', true);
 
   // SFTP
-  await evalJs(`document.querySelector('#btn-more').click(); 1`);
-  await evalJs(`document.querySelector('#btn-files').click(); 1`);
-  await waitEval(`document.querySelector('#file-path').textContent`, '/home/user', 25000);
-  const filesOk = await evalJs(`document.querySelector('#file-list').textContent`);
+  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
+  await evalJs(`document.querySelector('#btn-files').click(); return 1`);
+  await waitEval(`return document.querySelector('#file-path').textContent`, '/home/user', 25000);
+  const filesOk = await evalJs(`return document.querySelector('#file-list').textContent`);
   check('T10 SFTP 列目录', String(filesOk).includes('README.md'));
 
   // 云导入(测试签名链路)
   const cloudRes = await evalJs(`
-    (async () => {
+    return (async () => {
       const r = await window.nebula.invoke('cloud:fetch', {
         provider: 'tencent', region: 'ap-guangzhou', key: 'AKID-ui', secret: 'sk-ui', endpoint: '${cloud.base}/tencent'
       });
       return JSON.stringify({ ok: r.ok, count: (r.data || []).length });
     })()`);
-  const cloudObj = JSON.parse(cloudRes);
+  const cloudObj = asObj(cloudRes);
   check('T11 腾讯云实例拉取(TC3 签名链路)', cloudObj.ok === true && cloudObj.count === 2, cloudRes);
 
   // 无未捕获异常
-  const errs = await evalJs(`JSON.stringify(window.__errs)`);
+  const errs = await evalJs(`return JSON.stringify(window.__errs)`);
   check('T12 渲染层无未捕获异常', errs === '[]', String(errs).slice(0, 150));
 
   clearTimeout(watchdog);
