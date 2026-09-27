@@ -145,7 +145,7 @@ async function main() {
   check('T1 应用启动 / webview 就绪', true);
 
   await evalJs(`return document.querySelector('#welcome') ? 1 : 0`);
-  await waitEval(`return document.querySelector('#app-version').textContent`, 'v1.0.0');
+  await waitEval(`return document.querySelector('#app-version').textContent`, 'v1.0.1');
   check('T2 欢迎页 + 版本号', true);
 
   // 新建主机(密码)
@@ -173,7 +173,10 @@ async function main() {
   // 连接
   await evalJs(`document.querySelector('.host-item').click(); return 1`);
   await waitEval(`return document.querySelector('#status-text').textContent`, '已连接', 30000);
-  await waitEval(`return (document.querySelector('.term-pane.focused .xterm-rows')||{}).innerText||''`, 'Welcome to NebulaShell mock sshd', 25000);
+  // 用 textContent 而非 innerText:后者依赖 CSS 布局与可见性计算,
+  // xterm 尚未完成首帧渲染时会返回空串,造成偶发超时(约 1/12);
+  // textContent 直接读 DOM 文本,更贴合"输出是否已到达终端"的语义。
+  await waitEval(`return (document.querySelector('.term-pane.focused .xterm-rows')||{}).textContent||''`, 'Welcome to NebulaShell mock sshd', 25000);
   check('T5 SSH 连接 + 终端输出', true);
 
   // 分屏
