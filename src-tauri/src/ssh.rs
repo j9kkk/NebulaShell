@@ -513,16 +513,24 @@ impl SshService {
                     let msg = tokio::select! {
                         m = channel.wait() => m,
                         r = resize_rx.recv() => {
-                            if let Some((cols, rows)) = r {
-                                let _ = channel.window_change(cols, rows, 0, 0).await;
+                            // None = Session 已从会话表移除(发送端随之 drop)。
+                            // 此时必须退出,否则 recv() 会持续立即返回 None 形成忙等。
+                            match r {
+                                Some((cols, rows)) => {
+                                    let _ = channel.window_change(cols, rows, 0, 0).await;
+                                    continue;
+                                }
+                                None => break 'pump,
                             }
-                            continue;
                         }
                         d = writer_rx.recv() => {
-                            if let Some(bytes) = d {
-                                let _ = channel.data(&bytes[..]).await;
+                            match d {
+                                Some(bytes) => {
+                                    let _ = channel.data(&bytes[..]).await;
+                                    continue;
+                                }
+                                None => break 'pump,
                             }
-                            continue;
                         }
                     };
                     match msg {
