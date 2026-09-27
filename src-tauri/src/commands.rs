@@ -62,7 +62,11 @@ pub async fn nebula_invoke(
         payload
     };
     match channel.as_str() {
-        "app:info" => ok(json!({ "version": "1.0.0", "platform": std::env::consts::OS })),
+        // 版本取自 Cargo.toml(编译期常量),避免与 manifest 手写值漂移
+        "app:info" => ok(json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS
+        })),
 
         "app:openExternal" => {
             let url = payload["url"].as_str().unwrap_or("");
