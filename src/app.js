@@ -627,7 +627,7 @@ function createSession(host, paneId) {
     fontSize: Number(ts.fontSize) || 13,
     fontFamily: ts.fontFamily || '"SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
     cursorBlink: true,
-    scrollback: Number(ts.scrollback) || 5000,
+    scrollback: Number(ts.scrollback) || 2000,
     theme: termTheme(),
   });
   const fit = new FitAddon();
@@ -1003,12 +1003,27 @@ async function cloudImportSelected() {
 
 /* ---------------- AI 助手 ---------------- */
 
+// 对话上下文窗口:只保留最近 N 轮往返。
+// 旧实现里 aiHistory 无上限,且每次请求都全量发给模型 —— 长会话会既吃内存
+// 又持续抬高请求体(直到超出模型上下文而报错)。
+const AI_HISTORY_LIMIT = 20;
+// 消息区 DOM 上限:超出的旧气泡直接移除,避免长会话下无界增长。
+const AI_DOM_LIMIT = 200;
+
+function trimAiHistory() {
+  if (state.aiHistory.length > AI_HISTORY_LIMIT) {
+    state.aiHistory = state.aiHistory.slice(-AI_HISTORY_LIMIT);
+  }
+}
+
 function renderAiMessage(role, text) {
   const el = document.createElement('div');
   el.className = 'ai-msg ' + role;
   el.textContent = text;
-  $('#ai-messages').appendChild(el);
-  $('#ai-messages').scrollTop = $('#ai-messages').scrollHeight;
+  const box = $('#ai-messages');
+  box.appendChild(el);
+  while (box.children.length > AI_DOM_LIMIT) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
   return el;
 }
 
@@ -1045,7 +1060,10 @@ function aiFinishHolder() {
   if (h.bubble) {
     if (!h.acc && !h.bubble.textContent) h.bubble.textContent = '（AI 未返回内容）';
   }
-  if (h.acc) state.aiHistory.push({ role: 'assistant', content: h.acc });
+  if (h.acc) {
+    state.aiHistory.push({ role: 'assistant', content: h.acc });
+    trimAiHistory();
+  }
   h.resolve({ ok: true, text: h.acc });
 }
 
@@ -1069,6 +1087,7 @@ async function aiSend(rawText, mode) {
   const userMsg = { role: 'user', content };
   const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...state.aiHistory, userMsg];
   state.aiHistory.push(userMsg);
+  trimAiHistory();
   renderAiMessage('user', text);
   const bubble = renderAiMessage('assistant', '');
 
@@ -1343,10 +1362,10 @@ function doTermSearch(backwards) {
 /* ---------------- 终端设置 ---------------- */
 
 function openTermSettings() {
-  const t = (state.settings && state.settings.terminal) || { fontSize: 13, theme: 'nebula', scrollback: 5000 };
+  const t = (state.settings && state.settings.terminal) || { fontSize: 13, theme: 'nebula', scrollback: 2000 };
   $('#term-fontsize').value = t.fontSize || 13;
   $('#term-theme').value = t.theme || 'nebula';
-  $('#term-scrollback').value = t.scrollback || 5000;
+  $('#term-scrollback').value = t.scrollback || 2000;
   openModal('#modal-term');
 }
 
@@ -1355,17 +1374,31 @@ async function saveTermSettings() {
     terminal: {
       fontSize: Number($('#term-fontsize').value) || 13,
       theme: $('#term-theme').value,
-      scrollback: Number($('#term-scrollback').value) || 5000,
+      scrollback: Number($('#term-scrollback').value) || 2000,
     },
   };
   state.settings = await api('settings:save', patch);
   closeModal('#modal-term');
-  // 主题即时应用到全部会话；字号/回滚对新建会话生效
+  // 全部即时应用:主题/字号直接改 options;回滚行数改 options 后 xterm 内部会
+  // 触发一次 resize 并按新上限裁剪缓冲区(旧行随之释放),无需重建终端。
   const theme = termTheme();
+  const ts = (state.settings && state.settings.terminal) || {};
+  const fontSize = Number(ts.fontSize) || 13;
+  const scrollback = Number(ts.scrollback) || 2000;
   for (const s of state.sessions.values()) {
-    try { s.term.options.theme = theme; } catch { /* ignore */ }
+    try {
+      s.term.options.theme = theme;
+      s.term.options.fontSize = fontSize;
+      s.term.options.scrollback = scrollback;
+    } catch { /* ignore */ }
   }
-  toast('终端设置已保存（字号/回滚对新会话生效）', 'success');
+  // 字号变化会改变字符网格,需重算几何并同步远端 PTY
+  for (const s of state.sessions.values()) {
+    try { s.fit.fit(); } catch { /* ignore */ }
+  }
+  scheduleResizeSync();
+  fitAllVisible();
+  toast('终端设置已应用', 'success');
 }
 
 /* ---------------- 广播输入(E5) ---------------- */
@@ -2214,5 +2247,16 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     },
     paneCount: () => state.panes.size,
     broadcastCount: () => (state.broadcast ? state.broadcast.size : 0),
+    // 终端缓冲状态:供 e2e 断言(回滚上限是否生效、内容是否送达)
+    termBuffer: () => {
+      const s = state.sessions.get(state.activeId);
+      if (!s) return null;
+      const b = s.term.buffer.active;
+      return {
+        scrollback: Number(s.term.options.scrollback),
+        length: b.length,
+        baseY: b.baseY,
+      };
+    },
   };
 }

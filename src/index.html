@@ -337,9 +337,9 @@
           <option value="light">日蚀亮</option>
           <option value="forest">森林绿</option>
         </select>
-        <label>回滚行数</label><input id="term-scrollback" type="number" min="1000" max="50000" step="1000" value="5000" />
+        <label>回滚行数</label><input id="term-scrollback" type="number" min="1000" max="20000" step="1000" value="2000" />
       </div>
-      <p class="muted small-note">主题即时生效；字号与回滚行数对新建的会话生效。</p>
+      <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。</p>
       <div class="modal-actions">
         <button id="btn-term-cancel" class="btn">取消</button>
         <button id="btn-term-save" class="btn primary">保存</button>
