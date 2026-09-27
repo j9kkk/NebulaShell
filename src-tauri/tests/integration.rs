@@ -1,5 +1,11 @@
 // 集成测试(真实 SSH 协议端到端):拉起 node mock sshd,验证
 // 连接认证 / exec / SFTP 上传下载删除全链路。事件经 mock app 的事件系统即可,无需真实窗口。
+//
+// 平台限制:仅 macOS/Linux 运行。Windows 上该测试二进制加载 russh 依赖时抛
+// STATUS_ENTRYPOINT_NOT_FOUND(0xc0000139),且 mock sshd 依赖 node 子进程 —— 该组合在
+// Windows CI 环境不可用。Windows 的正确性由单元测试(20 项)与真实构建验证覆盖。
+#![cfg(not(windows))]
+
 use nebulashell_lib::config::Store;
 use nebulashell_lib::ssh::SshService;
 use serde_json::json;
