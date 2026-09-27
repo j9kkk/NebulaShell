@@ -1,9 +1,9 @@
 mod ai;
 mod bridge;
 mod cloud;
-mod commands;
+pub mod commands;
 pub mod config;
-mod forward;
+pub mod forward;
 pub mod monitor;
 pub mod sftp;
 pub mod signing;
@@ -64,6 +64,15 @@ pub fn run() {
                     bridge::start_bridge(app_handle, port_file, results).await;
                 });
             }
+            // 配置去抖落盘:高频小写入(命令历史)只在脏位置位时按周期合并写盘,
+            // 避免每敲一条命令就重写整份配置(含加密凭据)。
+            let flush_store = store.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    flush_store.flush_if_dirty();
+                }
+            });
             void(&handle);
             Ok(())
         })
@@ -76,8 +85,16 @@ pub fn run() {
                 webview.eval("window.__NB_E2E__ = true; 0").ok();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 退出前把未落盘的配置写回,避免去抖窗口内的最后一次变更丢失
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.store.flush_now();
+                }
+            }
+        });
 }
 
 fn void<T>(_: T) {}
@@ -104,7 +121,14 @@ async fn nebula_invoke(
 
 // 监控任务管理(随连接启停,3s 采样)
 impl AppState {
-    pub fn start_monitor(&self, app: &tauri::AppHandle, session_id: &str) {
+    pub fn start_monitor<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>, session_id: &str)
+    where
+        R: 'static,
+    {
+        // 先回收同 sessionId 的旧任务:tokio 的 JoinHandle drop 只解绑、不取消,
+        // 直接覆盖会让自动重连路径上每次重连都多留一个探测循环(实测重连 3 次
+        // 后并发探测速率变成 4 倍)。
+        self.stop_monitor(session_id);
         let app = app.clone();
         let ssh = self.ssh.clone();
         let sid = session_id.to_string();
