@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>NebulaShell 产品原型线稿 · v1.0(对应需求 v2.6)</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font: 13px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #e6e9ee; color: #2b3240; }
+.app { display: flex; height: 100vh; }
+.nav { width: 224px; background: #171c26; color: #9aa6b8; overflow: auto; flex-shrink: 0; }
+.nav h1 { color: #fff; font-size: 14px; padding: 14px 16px 2px; }
+.nav .ver { font-size: 11px; padding: 0 16px 8px; color: #6b7686; border-bottom: 1px solid #232b38; }
+.nav h3 { color: #5d6a7d; font-size: 11px; letter-spacing: 1px; padding: 12px 16px 2px; }
+.nav a { display: block; padding: 5px 16px; color: #9aa6b8; text-decoration: none; font-size: 12px; cursor: pointer; border-left: 2px solid transparent; }
+.nav a:hover { color: #d7dee9; }
+.nav a.on { background: #232b38; color: #fff; border-left-color: #5b8cff; }
+.stage { flex: 1; overflow: auto; padding: 22px 26px 60px; }
+.screen { display: none; max-width: 1150px; }
+.screen.on { display: block; }
+.screen > h2 { font-size: 17px; margin-bottom: 4px; }
+.screen > .desc { color: #6b7484; font-size: 12px; margin-bottom: 14px; }
+.shot { background: #fff; border: 1px solid #c6ccd6; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(20,30,50,.07); margin-bottom: 14px; }
+.shot-title { background: #f0f2f6; border-bottom: 1px solid #d8dde5; padding: 6px 14px; font-size: 12px; color: #5a6474; display: flex; gap: 10px; align-items: center; }
+.dots span { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #c3cad4; margin-right: 4px; }
+.shot-body { padding: 14px; }
+/* —— 线稿原语 —— */
+.row { display: flex; gap: 8px; align-items: center; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.grow { flex: 1; }
+.wb { border: 1px solid #b9c0cb; background: #f5f7f9; border-radius: 6px; padding: 7px 10px; font-size: 12px; }
+.wd { border: 1px dashed #b0b8c4; background: #fafbfc; border-radius: 6px; padding: 7px 10px; font-size: 12px; color: #6b7484; }
+.btn { display: inline-block; border: 1px solid #9aa3b0; border-radius: 5px; padding: 2px 10px; font-size: 12px; background: #fff; color: #4a5464; white-space: nowrap; }
+.btn.pri { background: #3b6fe0; border-color: #3b6fe0; color: #fff; }
+.btn.sm { padding: 1px 7px; font-size: 11px; }
+.inp { border: 1px solid #9aa3b0; border-radius: 5px; padding: 3px 8px; font-size: 12px; background: #fff; color: #707a89; display: inline-block; }
+.tag { font-size: 10px; padding: 0 7px; border-radius: 9px; background: #e7ecf4; color: #4a5b7d; white-space: nowrap; }
+.tag.p1 { background: #fde3e3; color: #b03030; }
+.tag.p2 { background: #fdf0d4; color: #8a6d1a; }
+.tag.p3 { background: #e8e3f5; color: #5b4a8a; }
+.tag.ok { background: #ddf3e5; color: #17793a; }
+.tag.no { background: #eceff3; color: #8a93a1; text-decoration: line-through; }
+.i { font-style: normal; display: inline-flex; width: 16px; height: 16px; border-radius: 50%; background: #b03030; color: #fff; font-size: 10px; align-items: center; justify-content: center; margin: 0 3px; vertical-align: -3px; }
+.gline { height: 8px; border-radius: 4px; background: #e2e6ec; margin: 3px 0; }
+.term { background: #10151f; color: #9fb0c8; border-radius: 6px; padding: 10px 12px; font: 11px/1.7 "SF Mono", Menlo, monospace; }
+.term b { color: #e6edf3; } .term .g { color: #3ddc97; } .term .y { color: #ffc24b; } .term .r { color: #ff6b6b; } .term .c { color: #4dd0e1; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.notes { background: #fff8f2; border: 1px solid #f2d8c3; border-radius: 8px; padding: 10px 14px; font-size: 12px; }
+.notes li { margin: 3px 0 3px 18px; }
+.notes .t { font-weight: 700; color: #b03030; }
+table.mt { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.mt th, table.mt td { border: 1px solid #d4dae2; padding: 4px 8px; text-align: left; vertical-align: top; }
+table.mt th { background: #f0f2f6; }
+.flow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; margin: 6px 0; }
+.flow .st { border: 1px solid #b9c0cb; border-radius: 6px; background: #f5f7f9; padding: 3px 9px; }
+.flow .ar { color: #8a93a1; }
+.legend { font-size: 11px; color: #6b7484; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="nav">
+    <h1>NebulaShell 原型线稿</h1>
+    <div class="ver">v1.0 · 对应需求文档 v2.6 · 2026-09-25</div>
+    <h3>总览</h3>
+    <a data-t="s01">S01 全局布局总览</a>
+    <h3>会话管理</h3>
+    <a data-t="s02">S02 侧边栏 · 主机树</a>
+    <a data-t="s03">S03 命令面板与快速连接</a>
+    <a data-t="s04">S04 主机编辑(全协议)</a>
+    <a data-t="s05">S05 云主机导入</a>
+    <a data-t="s06">S06 凭据库</a>
+    <a data-t="s07">S07 导入导出与迁移</a>
+    <h3>终端与 AI</h3>
+    <a data-t="s08">S08 终端 · 多会话与分屏</a>
+    <a data-t="s09">S09 AI 助手面板</a>
+    <a data-t="s10">S10 AI 设置与白名单</a>
+    <a data-t="s11">S11 AI Agent 编排</a>
+    <h3>文件 · 监控 · 运维</h3>
+    <a data-t="s12">S12 SFTP 文件管理</a>
+    <a data-t="s13">S13 传输队列</a>
+    <a data-t="s14">S14 服务器监控</a>
+    <a data-t="s15">S15 多机总览与网络诊断</a>
+    <a data-t="s16">S16 批量执行</a>
+    <a data-t="s17">S17 端口转发管理</a>
+    <a data-t="s18">S18 会话日志与回放</a>
+    <h3>效率 · 配置</h3>
+    <a data-t="s19">S19 触发器管理</a>
+    <a data-t="s20">S20 片段/历史/宏/定时</a>
+    <a data-t="s21">S21 设置中心</a>
+    <a data-t="s22">S22 运行状态与系统集成</a>
+    <h3>验收</h3>
+    <a data-t="s23">S23 功能覆盖矩阵</a>
+  </div>
+  <div class="stage">
+
+  <!-- ============ S01 ============ -->
+  <div class="screen" id="s01">
+    <h2>S01 全局布局总览</h2>
+    <div class="desc">主窗口骨架与各功能分区入口。所有面板可折叠;键盘优先,右键聚合次要操作。</div>
+    <div class="shot">
+      <div class="shot-title"><span class="dots"><span></span><span></span><span></span></span> NebulaShell 主窗口 1280×820</div>
+      <div class="shot-body">
+        <div class="row" style="align-items: stretch; gap: 0;">
+          <div class="wb" style="width:230px; min-height:560px;">
+            <b>侧边栏</b> <span class="tag">S02</span>
+            <div class="gline" style="width:70%"></div><div class="gline" style="width:85%"></div>
+            <div style="margin-top:8px; color:#6b7484;">主机树 / 搜索<br/>最近连接<br/>导入导出</div>
+          </div>
+          <div class="col grow" style="gap:0;">
+            <div class="wb row" style="border-radius:0;">
+              <b>标签栏</b> <span class="tag">S08</span>
+              <span class="grow"></span>
+              <span class="btn sm">⚡片段</span><span class="btn sm">📊监控</span><span class="btn sm">📁文件</span><span class="btn sm">⚙终端</span><span class="btn sm">🤖Agent</span><span class="btn sm">✨AI</span>
+            </div>
+            <div class="wb" style="border-radius:0; min-height:330px;">
+              <b>监控条(可开合)</b> <span class="tag">S14</span>
+              <div class="term" style="margin-top:8px; min-height:250px;">终端区(支持分屏 / 广播 / 搜索)<br/><span class="c">▼</span> 右侧面板区:AI / 文件 / Agent(互斥堆叠)</div>
+            </div>
+            <div class="wb row" style="border-radius:0;">
+              <b>状态栏</b> <span class="tag">S08/S22</span><span class="grow"></span><span class="btn sm">↻重连</span><span class="btn sm">断开</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>右侧三面板(AI / 文件 / Agent)互斥堆叠:同一时间至多展开一个,按钮为切换开关,再点收起。</li>
+        <li><i>2</i>标签栏按钮组按使用频率排布;监控条独立于面板,可与其他面板共存。</li>
+        <li><i>3</i>全局入口:<b>⌘K 命令面板</b>(S03)可触达全部功能;托盘/Quake 呼出见 S22。</li>
+        <li><i>4</i>ssh:// URL scheme 与 CLI <code>nb ssh host</code>(A9/N4):唤起主窗口并新建连接,不新开进程。</li>
+        <li><i>5</i>状态指示统一三色:连接中(黄)/ 已连接(绿)/ 断开(红),贯穿标签、状态栏、主机树。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S02 ============ -->
+  <div class="screen" id="s02">
+    <h2>S02 侧边栏 · 主机树(A1/A3/A5/A6)</h2>
+    <div class="desc">主机档案管理中枢:分组嵌套、标签、搜索、批量操作、最近连接。</div>
+    <div class="shot">
+      <div class="shot-title">侧边栏(展开态)</div>
+      <div class="shot-body row" style="align-items:flex-start;">
+        <div class="col" style="width:270px;">
+          <div class="row"><span class="btn pri sm">＋ 新建</span><span class="btn sm">☁ 导入云主机</span><span class="btn sm">⋯</span></div>
+          <div class="inp" style="width:100%;">🔍 搜索名称 / IP / 标签 <i>1</i></div>
+          <div class="wb" style="background:#eef1f6;">
+            <b>▾ 生产环境 <span class="tag">3</span></b>
+            <div class="wd" style="margin:4px 0 4px 12px;">▾ Web 集群 <span class="tag">2</span> <i>2</i></div>
+            <div class="wb row" style="margin-left:24px;"><span>▸ prod-web-1</span><span class="tag">☁腾讯</span><span class="tag">广州</span></div>
+            <div class="wb row" style="margin-left:24px;"><span>▸ prod-web-2</span><span class="tag">凭据库:prod</span> <i>3</i></div>
+            <div class="wb row" style="margin-left:12px;"><span>▸ prod-db</span><span class="tag ok">●已连</span></div>
+            <b>▾ 我的本地 <span class="tag">2</span></b>
+            <div class="wb row"><span>▸ mac-mini</span><span class="tag">串口</span></div>
+            <div class="wd row"><span>＋ 快速连接</span> <i>4</i></div>
+          </div>
+          <div class="wb" style="background:#eef1f6;"><b>最近连接</b> <i>5</i><div class="gline" style="width:60%"></div><div class="gline" style="width:75%"></div></div>
+          <div class="row"><span class="btn sm">导入</span><span class="btn sm">导出</span><span class="grow"></span><span class="btn sm">🔒锁定</span></div>
+        </div>
+        <div class="col grow">
+          <div class="wb"><b>右键菜单(主机项)</b> <i>6</i>
+            <div class="col" style="margin-top:6px;">
+              <span>连接　　⌘↵　│　在新分屏打开</span>
+              <span>克隆　　│　编辑 ✎　│　凭据…</span>
+              <span>移动到分组 ▸　│　标签…</span>
+              <span>导出此项　│　🗑 删除</span>
+            </div>
+          </div>
+          <div class="wb"><b>批量模式(长按 ⌘ 多选 / 全选框出现)</b> <i>7</i>
+            <div class="row" style="margin-top:6px;"><span class="btn sm">连接选中(新标签)</span><span class="btn sm">批量执行命令 →S16</span><span class="btn sm">移动/打标签</span><span class="btn sm">删除</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>搜索实时过滤(名称/IP/标签),空结果显示空态引导;Esc 清空。</li>
+        <li><i>2</i>分组支持嵌套文件夹(P2),折叠状态持久化;分组名后计数。</li>
+        <li><i>3</i>凭据库引用的主机不显示"待补全凭据";无凭据主机显示黄色徽标,点击直达凭据设置。</li>
+        <li><i>4</i>快速连接输入 <code>user@host:port</code> 回车即连(A2,不入库);也可在 ⌘K 面板完成。</li>
+        <li><i>5</i>最近连接按时间倒序,置顶常用(P1);记录与「最近连接」双入口。</li>
+        <li><i>6</i>右键聚合低频操作;克隆 A3 复制凭据与标签。</li>
+        <li><i>7</i>批量操作 A5:勾选后出现操作条;危险操作(删除)二次确认。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S03 ============ -->
+  <div class="screen" id="s03">
+    <h2>S03 命令面板与快速连接(⌘K / F8+A2)</h2>
+    <div class="desc">全局速达入口:一切功能可通过面板触达;输入连接串直接快连。</div>
+    <div class="shot">
+      <div class="shot-title">覆盖层 · 居中 640px</div>
+      <div class="shot-body">
+        <div class="col" style="max-width:640px; margin:0 auto;">
+          <div class="inp" style="width:100%; padding:8px;">│ 输入命令,或 <b>user@host:port</b> 直接连接… <i>1</i></div>
+          <div class="wb"><b>主机</b>
+            <div class="row" style="justify-content:space-between;"><span>▸ prod-web-1 <span class="tag">↵ 连接</span></span><span class="tag">⌘1</span></div>
+            <div class="row" style="justify-content:space-between;"><span>▸ prod-db(分屏打开)</span><span class="tag">⌘2</span></div>
+          </div>
+          <div class="wb"><b>动作</b>
+            <div class="row"><span>新建主机</span><span>批量执行 →S16</span><span>端口转发 →S17</span><span>切换主题</span><span>AI:生成命令</span></div>
+          </div>
+          <div class="wd">片段:df -h 检查磁盘　│　触发器管理　│　设置:快捷键…</div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>输入解析:<code>user@host:port</code> 首选项变为「↵ 直连(临时)」;其余按模糊分值排序(主机 > 动作 > 片段 > 设置)。</li>
+        <li>↑↓ 选择,↵ 执行,⌘1..9 直达候选;Esc 关闭。触发词:<code>&gt;</code> 只搜命令,<code>#</code> 只搜主机,<code>@</code> 只搜片段。</li>
+        <li>面板项动态注册:插件/内部扩展可注入动作(呼应 L4 扩展点)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S04 ============ -->
+  <div class="screen" id="s04">
+    <h2>S04 主机编辑(全协议 A1/B/C/I3/I4/F9)</h2>
+    <div class="desc">协议做全(已拍板):表单随协议切换;认证/跳板/初始化/安全集中管理。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 主机编辑 720px</div>
+      <div class="shot-body row" style="align-items:flex-start;">
+        <div class="col" style="width:150px;">
+          <b>协议</b> <i>1</i>
+          <div class="wb pri" style="background:#e3ecff;">SSH(默认)</div>
+          <div class="wb">本地 Shell</div>
+          <div class="wb">Telnet <span class="tag p2">P2</span></div>
+          <div class="wb">Mosh <span class="tag p2">P2</span></div>
+          <div class="wb">Serial <span class="tag p3">P3</span></div>
+          <div class="wb">RDP/VNC <span class="tag p3">P3</span></div>
+          <div class="wb">Rlogin/RAW <span class="tag p3">P3</span></div>
+        </div>
+        <div class="col grow">
+          <div class="wb"><b>基本</b>　名称 [生产-web-1]　地址 [10.0.0.11]　端口 [22]　用户 [root]　分组 [生产环境/Web 集群 ▾] <i>2</i>　标签 [+云][+广州]</div>
+          <div class="wb"><b>认证</b> <i>3</i>　方式 ▾ [凭据库引用:prod ▾ │ 密码 │ 私钥(PEM/ppk) │ ssh-agent]
+            <div class="row" style="margin-top:6px;"><span>2FA(MFA 提示输入)☐</span><span>keyboard-interactive 自动应答 ☑</span></div>
+          </div>
+          <div class="wb"><b>代理与跳板</b> <i>4</i>　ProxyJump [bastion-1 ▾(可链多级)]　前置代理 ▾ [无│HTTP│SOCKS5]</div>
+          <div class="wb"><b>会话</b> <i>5</i>　初始化命令 [cd /srv && tail -n 50 app.log]　编码 ▾[UTF-8]　keepalive [8s/6次]　压缩 ☐</div>
+          <div class="wb"><b>安全</b> <i>6</i>　指纹 <code>SHA256:ab:12…</code>(TOFU 已信任)　[重置指纹]　ppk 转换提示(仅 P2 显示)</div>
+          <div class="row"><span class="grow"></span><span class="btn">取消</span><span class="btn pri">保存</span><span class="btn">保存并连接</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>协议切换:表单字段集联动(如 Serial 显示波特率,RDP 显示分辨率);协议标记持久化到主机档案。</li>
+        <li><i>2</i>分组支持输入新建;标签复用云导入的「厂商/地域」并允许自定义。</li>
+        <li><i>3</i>凭据库引用(A7)优先;改用密码/私钥时表单内联展开;ppk 需转换为 PEM(P2,内置转换提示)。</li>
+        <li><i>4</i>ProxyJump 支持多级链(拖拽排序);前置代理 P2。</li>
+        <li><i>5</i>初始化命令(F9)连接后自动执行;编码/keepalive 覆盖全局默认(S21)。</li>
+        <li><i>6</i>指纹变更被拒时弹安全告警(S22),此处可重置(TOFU)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S05 ============ -->
+  <div class="screen" id="s05">
+    <h2>S05 云主机导入(A8)</h2>
+    <div class="desc">云厂商实例拉取 → 勾选导入;密钥帮助随厂商切换;幂等导入。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 导入云主机</div>
+      <div class="shot-body col">
+        <div class="row"><span class="btn sm pri">腾讯云 CVM</span><span class="btn sm">腾讯云轻量</span><span class="btn sm">阿里云 ECS</span><span class="btn sm">AWS <span class="tag p2">P2</span></span><span class="btn sm">更多厂商 ▾</span></div>
+        <div class="wb"><b>密钥帮助</b>(随 Tab 切换,外链仅白名单控制台域名)　SecretId/SecretKey 获取:访问管理 CAM → <u>API 密钥管理</u> · 建议只读策略 <code>QcloudCVMReadOnlyAccess</code> · 密钥仅存本机</div>
+        <div class="row"><span class="inp grow">SecretId</span><span class="inp grow">SecretKey</span><span class="inp">地域 ▾</span><span class="inp">Endpoint(可覆盖)</span><span class="btn pri">获取列表</span></div>
+        <table class="mt">
+          <tr><th>✓</th><th>名称</th><th>IP</th><th>状态</th><th>系统</th><th>操作</th></tr>
+          <tr><td>☑</td><td>e2e-cvm-1</td><td>203.0.113.10</td><td><span class="tag ok">RUNNING</span></td><td>Ubuntu 22.04</td><td>连接</td></tr>
+          <tr><td>☐</td><td>e2e-cvm-2</td><td>10.0.0.11(内网)</td><td><span class="tag no">STOPPED</span></td><td>Windows</td><td>连接</td></tr>
+        </table>
+        <div class="row"><span>共 2 台,已选 1 台</span><span class="grow"></span><span class="btn pri">导入选中</span><span class="btn">关闭</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li>RUNNING 默认勾选;无公网 IP 实例默认不选并提示回退内网 IP。</li>
+        <li>导入幂等:按 provider+instanceId 去重,重复导入仅更新。</li>
+        <li>导入后主机带「厂商/地域」标签并进入对应分组;凭据留空提示补全(S02 徽标)。</li>
+        <li>「连接」= 导入 + 立即连接单台(临时凭据提示)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S06 ============ -->
+  <div class="screen" id="s06">
+    <h2>S06 凭据库(A7)</h2>
+    <div class="desc">凭据集中管理,多主机共享引用;主密码保护;删除需先解绑。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 凭据库</div>
+      <div class="shot-body row" style="align-items:flex-start;">
+        <div class="col" style="width:200px;">
+          <div class="row"><span class="btn pri sm">＋ 新建凭据</span></div>
+          <div class="wb row"><b>prod-ssh</b><span class="tag">私钥</span></div>
+          <div class="wb row"><b>aliyun-deploy</b><span class="tag">密码</span></div>
+          <div class="wb row"><b>bastion-key</b><span class="tag">私钥</span><span class="tag">跳板专用</span></div>
+        </div>
+        <div class="col grow">
+          <div class="wb"><b>编辑凭据</b>　名称 [prod-ssh]　类型 ▾[密码│私钥(PEM/ppk)│证书(P3)]
+            <div class="row" style="margin-top:6px;"><span>密码 [••••••••]　私钥 [选择文件…]　口令 [••••]</span></div>
+          </div>
+          <div class="wb"><b>引用主机(3)</b> <i>1</i>
+            <div class="row"><span class="tag">prod-web-1</span><span class="tag">prod-web-2</span><span class="tag">prod-db</span><span class="btn sm">+ 添加引用</span></div>
+          </div>
+          <div class="wb"><b>安全</b>　受主密码保护 ☑ <i>2</i>　最近使用 2026-09-25 10:22　[删除] <i>3</i></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>引用为单向关联:主机编辑页也可反向选择凭据;引用计数显示于列表。</li>
+        <li><i>2</i>主密码开启后,查看/使用凭据需解锁(S21 设置);锁屏见 S22。</li>
+        <li><i>3</i>删除被引用凭据需先解绑或选择「同时移除引用」;全程本地加密存储。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S07 ============ -->
+  <div class="screen" id="s07">
+    <h2>S07 导入导出与竞品迁移(A4/M2)</h2>
+    <div class="desc">JSON 全量迁移;兼容 PuTTY/Xshell/SecureCRT/ssh_config;冲突可预览。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 导入 / 导出</div>
+      <div class="shot-body two">
+        <div class="col">
+          <div class="wb"><b>导出</b>
+            <div class="col" style="margin-top:6px;">
+              <span>☐ 含凭据(明文导出,<span class="tag p1">敏感</span>)</span>
+              <span>☐ 仅选中分组</span>
+              <span>格式 ▾ [NebulaShell JSON]</span>
+              <span class="btn">导出到文件…</span>
+            </div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="wb"><b>导入</b>　来源 ▾ <i>1</i>
+            <div class="row" style="margin-top:6px;"><span class="btn sm pri">NebulaShell JSON</span><span class="btn sm">PuTTY(.reg)</span><span class="btn sm">Xshell(.xsh)</span><span class="btn sm">SecureCRT</span><span class="btn sm">~/.ssh/config</span></div>
+            <div class="wd" style="margin-top:6px;">预览:解析到 27 台 · 新增 22 · 重复 5 <i>2</i></div>
+            <div class="row" style="margin-top:6px;"><span>冲突策略 ▾ [跳过│覆盖│询问]</span><span class="btn pri sm">执行导入</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>各来源字段映射表内置于应用(P2);ssh_config 支持 Host/HostName/User/Port/IdentityFile/ProxyJump。</li>
+        <li><i>2</i>去重键 host+port+username;「询问」模式下逐条展示两侧差异供选择。</li>
+        <li>导出含凭据时红色警示并要求确认;导入凭据自动加密落盘。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S08 ============ -->
+  <div class="screen" id="s08">
+    <h2>S08 终端 · 多会话与分屏(⭐E3 / E1-E5 / D4-D9)</h2>
+    <div class="desc">P1 首位功能:分屏;多标签、广播输入、搜索、只读、链接、ghost 补全。</div>
+    <div class="shot">
+      <div class="shot-title">主区</div>
+      <div class="shot-body col">
+        <div class="wb row">
+          <span class="wb sm" style="padding:2px 8px; background:#e3ecff;"><span class="tag ok">●</span> prod-web-1 ✕</span>
+          <span class="wb sm" style="padding:2px 8px;"><span class="tag">●</span> prod-db ✕</span>
+          <span class="wb sm" style="padding:2px 8px;"><span class="tag p1">●</span> mac-serial ✕</span>
+          <span class="grow"></span>
+          <span class="btn sm">⚡</span><span class="btn sm">📊</span><span class="btn sm">📁</span><span class="btn sm">🤖</span><span class="btn sm">✨</span>
+        </div>
+        <div class="wd row" style="background:#fdeeee; border-color:#e3b3b3;"><b>📢 广播中 → 会话1、会话2</b> <i>1</i><span class="grow"></span><span class="btn sm">停止广播</span></div>
+        <div class="row" style="align-items:stretch;">
+          <div class="col grow">
+            <div class="term" style="min-height:190px; position:relative;">
+              root@prod-web-1:~# kubectl <span style="color:#5a6b85;">get pods</span> <span style="color:#8090a8;border-bottom:1px dashed #8090a8;">get pods -n prod</span> <i>2</i><br/>
+              root@prod-web-1:~# curl https://docs.nebula.sh/quick <span style="text-decoration:underline;">docs.nebula.sh</span> <i>3</i><br/>
+              <span class="r">ECONNREFUSED 10.0.0.99:6379</span> <span style="background:#3a2a2a;padding:0 4px;">(触发器命中→高亮)</span> <i>4</i>
+              <span class="wb" style="position:absolute; right:10px; bottom:8px; padding:2px 6px;">🔍 搜索 [cache] ↑↓ ✕ <span style="color:#8a93a1;">2/7</span></span>
+            </div>
+            <div class="row"><span class="btn sm">分屏:垂直 ⌘D</span><span class="btn sm">水平 ⌘⇧D</span><span class="btn sm">只读 🔒 <i>5</i></span><span class="btn sm">清屏</span><span class="grow"></span><span class="btn sm">↻ 自动重连中(3s 退避) <i>6</i></span></div>
+          </div>
+          <div class="col" style="width:46%;">
+            <div class="term" style="min-height:225px;">root@prod-db:~# <span class="g">▮</span><br/><span style="color:#5a6b85;">(分屏 2 · 独立会话)</span><br/><span style="color:#8090a8;">┈ 右键菜单:复制│粘贴│在浏览器打开链接│<br/>清屏/清滚动│日志开关→S18│重连│关闭分屏 ┈</span> <i>7</i></div>
+          </div>
+        </div>
+        <div class="wb row"><b>状态栏</b> 已连接 root@prod-web-1:22 · <span class="tag ok">●</span> · 延迟 38ms · 编码 UTF-8 <span class="grow"></span><span class="btn sm">断开</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>广播(E5):从标签右键或 ⌘K 开启,勾选参与会话;输入同步下发,输出各自独立;广播条红色常驻防误操作。</li>
+        <li><i>2</i>ghost 补全(K8/F3):基于历史+片段,Tab 接受,→ 仅接受词;可关。</li>
+        <li><i>3</i>链接检测悬停下划线,点击外呼浏览器(白名单确认非 http 提示)。</li>
+        <li><i>4</i>触发器(D13→S19)命中即高亮/通知;此例为错误关键字。</li>
+        <li><i>5</i>只读模式下键盘输入被拦截并提示,防误触生产会话。</li>
+        <li><i>6</i>断线自动重连(O2):指数退避(1s/3s/10s/30s 封顶),标签红色闪烁,可手动立即重连。</li>
+        <li><i>7</i>分屏(E3 ⭐):⌘D 垂直 / ⌘⇧D 水平,拖拽边框调比例,可拖交换位置;布局记忆;拖出为独立窗口为 P3(E4)。</li>
+        <li>切换:⌘1..9(E2);⌘W 关当前分屏/标签;Cmd+F 搜索支持正则。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S09 ============ -->
+  <div class="screen" id="s09">
+    <h2>S09 AI 助手面板(K1-K3/K6-K8)</h2>
+    <div class="desc">对话/解释/生成/上下文诊断;模型快速切换;结果可回插终端。</div>
+    <div class="shot">
+      <div class="shot-title">右侧面板 · AI 助手</div>
+      <div class="shot-body col">
+        <div class="wb row"><b>✨ AI 助手</b>　模型 ▾ [glm-4-flash ▾] <i>1</i><span class="grow"></span><span class="btn sm">⚙</span><span class="btn sm">✕</span></div>
+        <div class="row"><span class="btn sm">🔍 解释选中</span><span class="btn sm">⌨ 生成命令</span><span class="btn sm">🩺 诊断最近报错 <i>2</i></span></div>
+        <div class="col" style="gap:6px;">
+          <div class="wd" style="text-align:right;">为什么 6379 连不上?</div>
+          <div class="wb"><b>AI</b>:可能是 Redis 未监听外网…<br/>
+            <div class="wd" style="margin-top:4px;"><code>redis-cli -h 10.0.0.99 ping</code><br/><span class="row" style="margin-top:4px;"><span class="btn sm pri">插入终端</span> <i>3</i><span class="btn sm">复制</span><span class="btn sm">重新生成</span></span></div>
+          </div>
+        </div>
+        <div class="row"><span class="inp grow">向 AI 提问…(⇧↵ 换行)</span><span class="btn pri">发送</span></div>
+        <div class="wd">终端内补全:输入 <code>systemct</code> → ghost 建议 <code>systemctl status nginx</code>(Tab 接受,Alt+\ 唤起)<i>4</i></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>模型快速切换(K6):下拉列出已拉取模型(⭐/最近优先),切换即保存为默认。</li>
+        <li><i>2</i>上下文诊断(K7):自动抓取最近 N 行输出与报错一起发送;发送前可编辑摘录。</li>
+        <li><i>3</i>「插入终端」把命令写入活动会话但不回车,由用户确认执行(AI 永不自动执行命令)。</li>
+        <li><i>4</i>内联补全(K8,P2):终端内 ghost text;AI 面板与补全共用当前供应商配置。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S10 ============ -->
+  <div class="screen" id="s10">
+    <h2>S10 AI 设置与白名单(K4/K5/K9)</h2>
+    <div class="desc">多供应商快速配置 + /models 拉取;Agent 白名单免确认规则管理。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · AI 设置(两个 Tab)</div>
+      <div class="shot-body col">
+        <div class="row"><span class="btn sm pri">供应商</span><span class="btn sm">执行白名单</span></div>
+        <div class="two">
+          <div class="wb"><b>供应商</b>
+            <div class="col" style="margin-top:6px;">
+              <span>预设 ▾ [OpenAI│DeepSeek│智谱│Kimi│Claude│Ollama│自定义]</span>
+              <span>协议 ▾ [OpenAI 兼容│Anthropic]　Base URL [https://…/v1]</span>
+              <span>模型 [glm-4-flash]　<span class="btn sm">拉取模型 ⇄</span> <i>1</i></span>
+              <span>API Key [••••]　温度 [0.3]　[测试连接]</span>
+              <span>本地模型探测:Ollama 127.0.0.1:11434 <span class="btn sm">检测</span> <i>2</i></span>
+            </div>
+          </div>
+          <div class="wb"><b>执行白名单</b>(K9 门禁)<i>3</i>
+            <table class="mt">
+              <tr><th>规则</th><th>方式</th><th>命中</th></tr>
+              <tr><td>git status / git diff*</td><td><span class="tag">前缀</span></td><td>12</td></tr>
+              <tr><td>^kubectl get .*$</td><td><span class="tag">正则</span></td><td>4</td></tr>
+              <tr><td>df -h</td><td><span class="tag">精确</span></td><td>7</td></tr>
+            </table>
+            <div class="row" style="margin-top:6px;"><span class="inp">新规则…</span><span class="btn sm">▾ 方式</span><span class="btn pri sm">添加</span></div>
+            <div class="wd" style="margin-top:6px;"><span class="tag p1">内置拦截</span> rm -rf / mkfs dd of=/dev/* 等破坏性命令永不自动放行 <i>4</i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>拉取模型:GET {base}/models(双协议),结果进 datalist;未填 Key 回退已保存密钥;失败 toast 原因。</li>
+        <li><i>2</i>本地端点探测(K10):扫描常见端口,Ollama 命中即生成预设。</li>
+        <li><i>3</i>白名单免确认流:Agent 逐条匹配 → 命中自动执行并计数 → 未命中暂停(S11 审批条);确认时可勾「加入白名单」。</li>
+        <li><i>4</i>内置拦截清单不可移除,防 destructive 命令;白名单变更记录审计日志。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S11 ============ -->
+  <div class="screen" id="s11">
+    <h2>S11 AI Agent 编排(K9/K11/K12)</h2>
+    <div class="desc">多 Agent 并行任务;worktree 隔离;未命中白名单命令进入审批队列。</div>
+    <div class="shot">
+      <div class="shot-title">右侧面板 · Agent(切换自 AI 助手)</div>
+      <div class="shot-body col">
+        <div class="wb row"><b>🤖 Agent 编排</b><span class="grow"></span><span class="btn pri sm">＋ 新建任务</span><span class="btn sm">全部暂停</span><span class="btn sm">并行上限 [3] ▾</span></div>
+        <div class="two">
+          <div class="wb"><b>任务:升级 nginx</b> <span class="tag ok">运行中</span><br/>
+            <span class="tag">主机:prod-web-1 / prod-web-2</span><span class="tag">worktree:wt/nginx-up <i>1</i></span>
+            <div class="col" style="margin-top:6px;">
+              <span><span class="tag ok">✓</span> 备份配置(cp nginx.conf …)</span>
+              <span><span class="tag ok">▶</span> 拉取新版本(apt install …)<span class="tag">白名单命中,自动执行</span></span>
+              <span><span class="tag p1">⏸</span> 重启服务 <span class="tag p1">未命中白名单</span> <i>2</i></span>
+              <div class="wd" style="margin-top:4px;">等待确认:<code>systemctl restart nginx</code><br/>
+                <span class="row"><span class="btn sm pri">放行一次</span><span class="btn sm">加入白名单并放行</span><span class="btn sm">拒绝</span><span class="btn sm">✎ 修改命令</span></span>
+              </div>
+            </div>
+          </div>
+          <div class="wb"><b>任务:巡检 10 台机器</b> <span class="tag p2">排队(并行 3)</span><br/>
+            <span class="tag">批量执行模式 →S16 复用</span>
+            <div class="col" style="margin-top:6px;">
+              <span><span class="tag ok">✓</span> 生成巡检脚本(AI)</span>
+              <span><span class="tag">·</span> 分发执行…</span>
+            </div>
+            <div class="wd" style="margin-top:6px;">工作区视图(P3,K12):[终端] [编辑器] [浏览器] 分栏</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>多 Agent 并行(K11):每任务可选 git worktree 隔离(新目录+分支),避免互相覆盖;非代码任务可跳过隔离。</li>
+        <li><i>2</i>审批队列:暂停任务并置顶审批条;超时(可配)自动拒绝;所有放行/拒绝记录可追溯。</li>
+        <li>任务可引用批量执行(F6)与片段(F1);AI 生成的执行计划在启动前整体可编辑。</li>
+        <li>并行上限防打爆目标机;失败任务支持从断点步骤重跑。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S12 ============ -->
+  <div class="screen" id="s12">
+    <h2>S12 SFTP 文件管理(G1/G2/G4/G5/G6/G9)</h2>
+    <div class="desc">浏览/操作/拖拽/远程编辑/同步浏览/书签;传输进队列(S13)。</div>
+    <div class="shot">
+      <div class="shot-title">右侧面板 · 文件管理</div>
+      <div class="shot-body col">
+        <div class="wb row"><b>📁 文件</b><span class="grow"></span><span>同步浏览 ☑ <i>1</i></span><span class="btn sm">✕</span></div>
+        <div class="row"><span class="btn sm">↻</span><span class="btn sm">＋文件夹</span><span class="btn sm">⬆ 上传</span><span class="btn sm">⬇ 下载</span><span class="btn sm">✎ 重命名</span><span class="btn sm">权限</span><span class="btn sm">🗑</span><span class="grow"></span><span class="btn sm">★ 书签 <i>2</i></span></div>
+        <div class="wb">/home/user <span class="tag">书签:/var/log</span></div>
+        <div class="wb" style="min-height:150px;">
+          <div class="row"><span>📁 logs</span><span class="grow"></span><span class="tag">0755</span></div>
+          <div class="row" style="background:#eef3ff;"><span>📄 app.conf</span><span class="tag">已选中</span><span class="grow"></span><span class="tag">2.1 KB</span><span class="tag">右键:编辑(本地) <i>3</i></span></div>
+          <div class="row"><span>📄 data.db</span><span class="grow"></span><span class="tag">48 MB</span></div>
+          <div class="wd">⬇ 拖拽文件到此处上传;拖出即下载 <i>4</i></div>
+        </div>
+        <div class="wb row"><b>队列</b> 2 项传输中 <div class="gline" style="flex:2; margin:0;"></div> 45% · 1.2 MB/s <span class="btn sm">→S13</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>同步浏览(G6):终端 cd 与文件面板目录双向联动,可关。</li>
+        <li><i>2</i>书签(G9):常用远端目录收藏,面包屑旁快速跳转。</li>
+        <li><i>3</i>远程编辑(G5,P2):拉取到本地临时目录 → 调起系统编辑器 → 监听保存自动回传,状态条实时显示。</li>
+        <li><i>4</i>拖拽(G4):拖入即上传;从列表拖出到 Finder/资源管理器即下载;多选拖拽进队列。</li>
+        <li>双击进目录,面包屑/「..」返回;权限编辑(G2 P1)弹独立小窗(owner/group/模式勾选)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S13 ============ -->
+  <div class="screen" id="s13">
+    <h2>S13 传输队列(G2/G3/G7/G8)</h2>
+    <div class="desc">统一传输队列:进度/暂停/重试/续传;Zmodem 与高速通道。</div>
+    <div class="shot">
+      <div class="shot-title">底部抽屉 · 传输队列</div>
+      <div class="shot-body col">
+        <table class="mt">
+          <tr><th>文件</th><th>方向</th><th>主机</th><th>进度</th><th>速度</th><th>状态</th><th>操作</th></tr>
+          <tr><td>data.db</td><td><span class="tag">⬇ 下载</span></td><td>prod-web-1</td><td>██████░░░░ 62%</td><td>3.4 MB/s</td><td>传输中</td><td>暂停 ✕</td></tr>
+          <tr><td>logs.tar.gz</td><td><span class="tag">⬆ 上传</span></td><td>prod-db</td><td>██░░░░░░░░ 12%</td><td>810 KB/s</td><td>传输中</td><td>暂停 ✕</td></tr>
+          <tr><td>dump.sql</td><td><span class="tag">⬇</span></td><td>prod-db</td><td>██████████ 100%</td><td>—</td><td><span class="tag ok">已完成</span></td><td>打开目录</td></tr>
+          <tr><td>backup.zip</td><td><span class="tag">⬇</span></td><td>prod-web-2</td><td>█████░░░░░ 断点 51%</td><td>—</td><td><span class="tag p1">已暂停 <i>1</i></span></td><td>续传 ✕</td></tr>
+        </table>
+        <div class="row"><span>并发 [3] ▾</span><span>限速 ▾ [不限] <span class="tag p3">P3</span></span><span class="btn sm">高速通道(SCP 多线程) ☑ <i>2</i></span><span class="grow"></span><span class="btn sm">清空已完成</span></div>
+        <div class="wd">Zmodem(G7,P2):检测到服务器 <code>rz</code> → 自动弹出选择文件;<code>sz file</code> → 自动保存到下载目录,进度显示于此队列 <i>3</i></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>断点续传(G3 P2):SFTP offset 续传;同名校验(跳过/重命名/覆盖询问)。</li>
+        <li><i>2</i>高速通道(G8 P2):单文件多连接分块(仅 SFTP 服务器支持时启用,自动回退)。</li>
+        <li><i>3</i>Zmodem 仅在 shell 会话激活时嗅探;队列与文件面板共享进度事件。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S14 ============ -->
+  <div class="screen" id="s14">
+    <h2>S14 服务器监控(H1/H2/H3/H4)</h2>
+    <div class="desc">免插件 /proc 采样:CPU/内存/磁盘/网络 + 曲线 + 进程 + 告警。</div>
+    <div class="shot">
+      <div class="shot-title">监控条展开态(标签栏下方)</div>
+      <div class="shot-body col">
+        <div class="row">
+          <div class="wb grow"><b>CPU 38%</b> ▁▂▅▇▅▃▂▁ <i>1</i></div>
+          <div class="wb grow"><b>内存 71%</b> 5.6/8 GB ▅▅▆▇▇▆▅▅</div>
+          <div class="wb grow"><b>磁盘 IO</b> 读 12MB/s 写 3MB/s ▁▁▃▂▁▂▄▃</div>
+          <div class="wb grow"><b>网络</b> ↑ 210KB/s ↓ 2.1MB/s ▂▅▇▆▃▂▁▁</div>
+        </div>
+        <div class="row"><span>采样 [3s] ▾</span><span>历史 [10min ▾] 曲线放大</span><span class="btn sm">📈 独立窗口</span><span class="grow"></span><span class="btn sm">⚙ 告警规则</span></div>
+        <div class="two">
+          <div class="wb"><b>进程 Top</b>(按 CPU)<i>2</i>
+            <table class="mt">
+              <tr><th>PID</th><th>名称</th><th>CPU%</th><th>MEM%</th><th></th></tr>
+              <tr><td>1823</td><td>node</td><td>28.4</td><td>11.2</td><td><span class="btn sm">kill</span></td></tr>
+              <tr><td>907</td><td>nginx</td><td>4.1</td><td>1.8</td><td><span class="btn sm">kill</span></td></tr>
+            </table>
+          </div>
+          <div class="wb"><b>告警规则</b>(H4)<i>3</i>
+            <div class="col" style="margin-top:6px;">
+              <span>CPU &gt; 90% 持续 60s → <span class="tag">系统通知</span></span>
+              <span>内存 &gt; 85% → <span class="tag">通知 + 终端高亮</span></span>
+              <span class="btn sm">＋ 新规则</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>曲线(H2):环形缓冲 10 分钟;悬停显历史值;点击数值切大图。</li>
+        <li><i>2</i>进程管理(H3,P2):排序/过滤/kill(二次确认);仅 Linux。</li>
+        <li><i>3</i>告警(H4,P2):阈值+持续时间 → 通知中心(S22);支持对分组批量应用规则。</li>
+        <li>非 Linux 主机优雅降级「暂不支持」(已实现);采样随会话断开自动停止。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S15 ============ -->
+  <div class="screen" id="s15">
+    <h2>S15 多机总览与网络诊断(H5/H6)</h2>
+    <div class="desc">多机场景配套:全网主机健康一屏;常用网络诊断工具箱。</div>
+    <div class="shot">
+      <div class="shot-title">独立窗口 · 总览 + 工具箱</div>
+      <div class="shot-body two">
+        <div class="wb"><b>多机监控总览</b>(H5)<i>1</i>
+          <div class="row" style="flex-wrap:wrap; margin-top:6px;">
+            <div class="wb" style="width:31%;">prod-web-1<br/>CPU 38% ▂▅▇<br/>MEM 71% ▅▆▇</div>
+            <div class="wb" style="width:31%; border-color:#e3b3b3; background:#fdf1f1;">prod-web-2<br/><span class="tag p1">CPU 94% ▇▇▇</span><br/>MEM 55%</div>
+            <div class="wb" style="width:31%;">prod-db<br/>CPU 12% ▁▁▂<br/>MEM 40%</div>
+            <div class="wb" style="width:31%;">bastion-1<br/><span class="tag no">未连接</span></div>
+            <div class="wd" style="width:31%;">+ 添加分组视图</div>
+          </div>
+          <div class="row" style="margin-top:6px;"><span>视图 ▾ [生产环境]</span><span class="btn sm">按告警排序</span><span class="btn sm">批量执行 →S16</span></div>
+        </div>
+        <div class="wb"><b>网络诊断工具箱</b>(H6,P2)<i>2</i>
+          <div class="col" style="margin-top:6px;">
+            <span>工具 ▾ [Ping│端口扫描│Traceroute│嗅探]</span>
+            <span>目标 [10.0.0.11]　端口范围 [22,80,443,6379]</span>
+            <span class="btn pri sm">执行</span>
+            <div class="term" style="margin-top:6px; min-height:110px;">PING 10.0.0.11: 56 bytes…<br/>64 bytes: time=0.42 ms (×4)<br/>PORT 22 <span class="g">open</span> · 6379 <span class="r">filtered</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>总览卡片=分组视图;告警主机置顶红框;点击卡片直接连接或进入该机监控。</li>
+        <li><i>2</i>工具箱从本机发起(非远端);结果可复制/导出;与告警规则联动(如扫描结果生成监控对象)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S16 ============ -->
+  <div class="screen" id="s16">
+    <h2>S16 批量执行(F6 / E5 关系说明)</h2>
+    <div class="desc">多主机并行执行命令并汇总结果;与广播输入的边界在此明确。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 批量执行</div>
+      <div class="shot-body col">
+        <div class="two">
+          <div class="wb"><b>目标主机</b> <i>1</i>
+            <div class="col" style="margin-top:6px;">
+              <span>☑ 生产环境(3/3)</span>
+              <span style="margin-left:14px;">☑ prod-web-1　☑ prod-web-2　☑ prod-db</span>
+              <span>☐ 我的本地(0/2)</span>
+              <span class="btn sm">按标签筛选:[生产]</span>
+            </div>
+          </div>
+          <div class="wb"><b>命令</b>
+            <div class="col" style="margin-top:6px;">
+              <span>命令 [df -h && free -m]　<span class="btn sm">引用片段 ▾</span> <span class="btn sm">AI 生成</span></span>
+              <span>并行 [5] ▾　超时 [30s]　☐ 遇错停止该机后续命令</span>
+              <span>☐ sudo(统一提密)　☐ 保存为定时任务 →S20</span>
+            </div>
+          </div>
+        </div>
+        <div class="row"><span class="btn pri">▶ 执行(4 台)</span><span class="btn">停止全部</span><span class="grow"></span><span class="btn sm">导出结果 CSV</span></div>
+        <table class="mt">
+          <tr><th>主机</th><th>退出码</th><th>耗时</th><th>输出摘要</th><th></th></tr>
+          <tr><td>prod-web-1</td><td><span class="tag ok">0</span></td><td>0.4s</td><td>/dev/vda 41G,已用 22G…</td><td><span class="btn sm">查看全部</span></td></tr>
+          <tr><td>prod-db</td><td><span class="tag p1">1</span></td><td>0.3s</td><td>df: 无法访问 /backup <i>2</i></td><td><span class="btn sm">重试</span></td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>选择器复用主机树(分组/标签/搜索);凭据缺失主机标记并允许跳过。</li>
+        <li><i>2</i>失败行内重试(单机);输出全文抽屉查看;AI「解释汇总」入口(K7)。</li>
+        <li>与广播(E5)的区别:批量=一次性独立 exec + 汇总,广播=交互式输入同步;Agent 巡检任务(K11)复用本面板。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S17 ============ -->
+  <div class="screen" id="s17">
+    <h2>S17 端口转发管理(I1/I2)</h2>
+    <div class="desc">本地/远程/动态三类规则;随会话自动建立;状态可视。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 端口转发</div>
+      <div class="shot-body col">
+        <table class="mt">
+          <tr><th>名称</th><th>类型</th><th>绑定</th><th>目标</th><th>经由会话</th><th>状态</th><th></th></tr>
+          <tr><td>本地-数据库</td><td><span class="tag">L 本地</span></td><td>127.0.0.1:16379</td><td>10.0.0.11:6379</td><td>prod-db</td><td><span class="tag ok">● 活跃</span></td><td>停 ✎ 🗑</td></tr>
+          <tr><td>远程-暴露后台</td><td><span class="tag">R 远程</span></td><td>0.0.0.0:8080(远端)</td><td>localhost:80(本地)</td><td>prod-web-1</td><td><span class="tag no">■ 停用</span></td><td>启 ✎ 🗑</td></tr>
+          <tr><td>SOCKS 代理</td><td><span class="tag">D 动态</span></td><td>127.0.0.1:1080</td><td>—(经跳板全网可达)</td><td>bastion-1</td><td><span class="tag ok">● 活跃</span></td><td>停 ✎ 🗑</td></tr>
+        </table>
+        <div class="wb row"><b>新建</b>　类型 ▾[L│R│D] <i>1</i>　绑定 [127.0.0.1:____]　目标 [host:port]　经由 ▾[会话/主机]　☐ 随会话自动建立 <i>2</i>　<span class="btn pri sm">添加</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>类型切换字段联动(L=本地→远端,R=远端→本地,D=仅本地绑定端口);端口占用即时检测。</li>
+        <li><i>2</i>自动建立:连接主机时按规则自动开隧道;规则可作用于分组(如「生产环境全部」)。</li>
+        <li>活跃规则显示实时流量字节;跳板链来自主机档案的 ProxyJump(S04)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S18 ============ -->
+  <div class="screen" id="s18">
+    <h2>S18 会话日志与回放(J1/J2/J3)</h2>
+    <div class="desc">输出落盘 + 时间戳;按会话覆盖全局策略;日志回放器。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 会话日志</div>
+      <div class="shot-body two">
+        <div class="wb"><b>全局策略</b>
+          <div class="col" style="margin-top:6px;">
+            <span>☐ 全局自动记录(默认关,连接即录)</span>
+            <span>目录 [~/NebulaShell-logs]　命名 [{host}-{date}-{time}.log]</span>
+            <span>☑ 注入时间戳(J2)　☑ 记录输入(默认只记输出)</span>
+          </div>
+        </div>
+        <div class="wb"><b>本会话</b>
+          <div class="col" style="margin-top:6px;">
+            <span>状态 <span class="tag ok">● 记录中 00:12:38</span> <i>1</i></span>
+            <span class="row"><span class="btn sm">开始</span><span class="btn sm">暂停</span><span class="btn sm">停止并保存</span><span class="btn sm">打开文件</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="shot-body two">
+        <div class="wb"><b>日志列表</b>
+          <div class="col" style="margin-top:6px;">
+            <span>prod-web-1 · 09-25 · 2.3 MB　<span class="btn sm">▶ 回放</span></span>
+            <span>prod-db · 09-24 · 900 KB　<span class="btn sm">▶ 回放</span></span>
+          </div>
+        </div>
+        <div class="wb"><b>回放器</b>(J3,P3)<i>2</i>
+          <div class="term" style="margin-top:6px; min-height:90px;">root@prod-web-1:~# df -h<br/>(重演输出…)</div>
+          <div class="row" style="margin-top:6px;"><span class="btn sm">▶/⏸</span><span>━━━●━━━━ 04:12/22:40</span><span>倍速 ▾[1x│2x│4x]</span><span class="btn sm">🔍 搜索</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>记录中在标签与状态栏显示红点计时;日志写入失败自动降级提示。</li>
+        <li><i>2</i>回放按时间轴还原输出节奏;可跳转/搜索;P3 交付。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S19 ============ -->
+  <div class="screen" id="s19">
+    <h2>S19 触发器管理(D13)</h2>
+    <div class="desc">输出正则 → 动作(高亮/通知/响铃/发送命令/AI 诊断)。</div>
+    <div class="shot">
+      <div class="shot-title">模态 · 触发器</div>
+      <div class="shot-body col">
+        <table class="mt">
+          <tr><th>名称</th><th>匹配(正则)</th><th>作用</th><th>动作</th><th></th></tr>
+          <tr><td>错误高亮</td><td>^.*(error|ECONNREFUSED).*$</td><td>全部会话</td><td><span class="tag p1">红色高亮</span></td><td>✎ 🗑</td></tr>
+          <tr><td>编译完成</td><td>^BUILD SUCCESS</td><td>全部会话</td><td><span class="tag">系统通知</span></td><td>✎ 🗑</td></tr>
+          <tr><td>磁盘告警</td><td>Use%.*9[0-9]%</td><td>生产环境</td><td><span class="tag">通知</span>+<span class="tag">AI 诊断 <i>1</i></span></td><td>✎ 🗑</td></tr>
+        </table>
+        <div class="wb row"><b>新建</b>　名称 [__]　正则 [__] <i>2</i>　作用 ▾[全部│分组│当前会话]　动作 ☑高亮 ☑通知 ☐响铃 ☐发送命令[__] ☐AI 诊断　<span class="btn pri sm">添加</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>AI 诊断动作:命中后把匹配行+上下文发给当前模型(K7),结果进 AI 面板气泡。</li>
+        <li><i>2</i>正则实时试测:粘贴样例输出即时预览命中效果;规则持久化并可导入导出。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S20 ============ -->
+  <div class="screen" id="s20">
+    <h2>S20 片段 / 历史 / 宏 / 定时(F1/F2/F4/F7)</h2>
+    <div class="desc">效率工具四件套,统一「发送目标 = 活动会话」。</div>
+    <div class="shot">
+      <div class="shot-title">下拉与模态合集</div>
+      <div class="shot-body two">
+        <div class="wb"><b>片段库</b>(F1 ✅)<i>1</i>
+          <div class="col" style="margin-top:6px;">
+            <span>▸ df -h 磁盘　<span class="tag">⌥1</span></span>
+            <span>▸ nginx -t && reload　<span class="tag">⌥2</span></span>
+            <span class="wd">新增:名称 + 命令;支持参数占位 <code>{port}</code> → 发送时弹参 <i>2</i></span>
+          </div>
+        </div>
+        <div class="wb"><b>命令历史</b>(F2)<i>3</i>
+          <div class="col" style="margin-top:6px;">
+            <span>🔍 过滤(主机/时间/关键字)</span>
+            <span>systemctl status nginx · prod-web-1 · 10:22</span>
+            <span>tail -f app.log · prod-web-2 · 09:58</span>
+            <span class="btn sm">回填(不执行)</span><span class="btn sm">清空…</span>
+          </div>
+        </div>
+        <div class="wb"><b>宏</b>(F4,P2)<i>4</i>
+          <div class="col" style="margin-top:6px;">
+            <span><span class="btn sm pri">● 录制</span> 记录击键与等待 → 保存为「部署三连」</span>
+            <span>宏列表:部署三连(⌥R)　<span class="btn sm">▶ 回放</span><span class="btn sm">✎ 编辑</span></span>
+            <span class="wd">回放前展示将执行的命令清单,可勾选跳过</span>
+          </div>
+        </div>
+        <div class="wb"><b>定时任务</b>(F7,P3)<i>5</i>
+          <div class="col" style="margin-top:6px;">
+            <span>每晚 23:00 · 生产环境 · <code>df -h &gt;&gt; /var/log/disk.log</code> <span class="tag ok">启用</span></span>
+            <span class="wd">触发:间隔/cron;目标:分组/标签;结果进通知中心</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>片段点击即发送到活动会话并回车;⌥数字快捷触发;无连接会话时提示。</li>
+        <li><i>2</i>占位参数:发送前弹小表单逐项填写,支持默认值记忆。</li>
+        <li><i>3</i>历史按会话记录(本地加密),回填不执行防误触;可全局清空。</li>
+        <li><i>4</i>宏=时序录制(击键+延时),编辑可改命令清单;危险命令回放前强制确认。</li>
+        <li><i>5</i>定时任务到点需应用在线且对应主机可达,否则跳过并记录。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S21 ============ -->
+  <div class="screen" id="s21">
+    <h2>S21 设置中心(L1-L6 / D2-D3 / O1-O2)</h2>
+    <div class="desc">统一设置窗口:通用/终端/快捷键/插件/网络/关于。</div>
+    <div class="shot">
+      <div class="shot-title">窗口 · 设置(左侧 Tab)</div>
+      <div class="shot-body row" style="align-items:flex-start;">
+        <div class="col" style="width:130px;">
+          <div class="wb" style="background:#e3ecff;">通用</div>
+          <div class="wb">终端</div>
+          <div class="wb">快捷键</div>
+          <div class="wb">插件</div>
+          <div class="wb">网络</div>
+          <div class="wb">关于</div>
+        </div>
+        <div class="col grow">
+          <div class="wb"><b>通用</b>　启动 ▾[上次会话│空白│指定分组] <i>1</i>　语言 ▾[中文]　通知:命令完成 ☑ 断线 ☑ 传输完成 ☑</div>
+          <div class="wb"><b>终端</b> <i>2</i>　字体 [JetBrains Mono ▾]　字号 [13]　主题 ▾[星云暗│日蚀亮│森林绿│<u>导入主题…</u>]　回滚 [5000]　默认编码 [UTF-8]　渲染 ▾[GPU WebGL ☑│标准]　ghost 补全 ☑</div>
+          <div class="wb"><b>快捷键</b> <i>3</i>
+            <table class="mt">
+              <tr><th>动作</th><th>按键</th><th></th></tr>
+              <tr><td>命令面板</td><td><kbd>⌘K</kbd></td><td><span class="btn sm">改键</span></td></tr>
+              <tr><td>垂直分屏</td><td><kbd>⌘D</kbd></td><td><span class="btn sm">改键</span> <span class="tag p1">与系统冲突→提示</span></td></tr>
+            </table>
+          </div>
+          <div class="wb"><b>插件</b>(L4 三阶段)<i>4</i>
+            <div class="col" style="margin-top:6px;">
+              <span>扩展点:连接器│右侧面板│AI 提供方│命令面板动作│主题</span>
+              <span>内置插件:序列端口(P3) <span class="btn sm">禁用</span>│示例:Demo 面板 <span class="btn sm">禁用</span></span>
+              <span class="wd">三方插件:P3 开放(本地 .nbext 安装 + 签名校验)</span>
+            </div>
+          </div>
+          <div class="wb"><b>网络</b> <i>5</i>　keepalive [8s/6 次]　自动重连 ☑ 退避 [1s→30s]　前置代理 ▾[系统│无│HTTP│SOCKS]　压缩 ☐</div>
+          <div class="wb"><b>关于</b>　v1.0.0 · macOS　开源许可　诊断信息导出</div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li><i>1</i>启动恢复(E6):记录崩溃前的会话集,异常退出后下次启动询问恢复(O3)。</li>
+        <li><i>2</i>主题/字号即时生效(已实现);主题包为 JSON 配色,可导入导出。</li>
+        <li><i>3</i>改键录制成对按键;冲突时与系统/内置快捷键比对提示。</li>
+        <li><i>4</i>插件:内核预留扩展点(P1 架构约束)→ 内部插件加载(P2)→ 三方开放(P3);面板/命令面板项动态注入。</li>
+        <li><i>5</i>网络项为全局默认,主机档案可覆盖(S04)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S22 ============ -->
+  <div class="screen" id="s22">
+    <h2>S22 运行状态与系统集成(A9/B7/E6/N2/N3/O2/O3)</h2>
+    <div class="desc">安全态、异常态与系统层交互。</div>
+    <div class="shot">
+      <div class="shot-title">状态合集(四小图)</div>
+      <div class="shot-body row" style="flex-wrap:wrap;">
+        <div class="wb" style="width:47%;"><b>① 断线 → 自动重连</b>(O2)
+          <div class="term" style="margin-top:6px;"><span class="r">✕ 连接断开(网络超时)</span><br/>⟳ 3s 后第 2 次重连…<span class="btn sm" style="float:right;">立即重连</span></div>
+          <div class="wd">标签红色闪烁;连续失败转手动;重连成功恢复 cwd 环境提示(P3)。</div>
+        </div>
+        <div class="wb" style="width:47%;"><b>② 崩溃恢复</b>(O3/E6)
+          <div class="wd" style="margin-top:6px;">上次未正常退出 — 恢复 4 个会话?<br/><span class="btn sm pri">恢复</span><span class="btn sm">丢弃</span><span class="btn sm">查看列表</span></div>
+        </div>
+        <div class="wb" style="width:47%;"><b>③ 锁屏</b>(B7,P2)
+          <div class="wd" style="margin-top:6px; text-align:center; padding:18px;">🔒 已锁定<br/><span class="inp">主密码</span><br/><span class="btn sm pri">解锁</span></div>
+        </div>
+        <div class="wb" style="width:47%;"><b>④ 托盘 / Quake / 通知</b>(N2/N3)
+          <div class="col" style="margin-top:6px;">
+            <span>托盘菜单:显示主窗│Quake 呼出(⌥Space,顶部下滑)<br/>快速连接▸│传输队列│退出</span>
+            <span class="wd">通知样例:「prod-web-1 命令完成 ✓」「CPU &gt; 90% ⚠」「backup.zip 下载完成 ⬇」</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <span class="t">交互逻辑</span>
+      <ul>
+        <li>主机密钥变更:全屏安全告警(默认拒绝),仅可在 S04「安全」页重置指纹(TOFU)。</li>
+        <li>ssh:// URL 与 CLI(A9/N4):单实例唤起,参数直连;托盘常驻可关(退出确认)。</li>
+        <li>通知均进通知中心列表(可清空);勿扰模式随系统。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ S23 ============ -->
+  <div class="screen" id="s23">
+    <h2>S23 功能覆盖矩阵(需求 v2.6 ↔ 线稿)</h2>
+    <div class="desc">验收清单:每个功能点对应的线稿屏幕与标注号。❌/🧊 项不在原型范围。</div>
+    <div class="shot">
+      <div class="shot-body">
+        <table class="mt">
+          <tr><th>分区</th><th>功能点 → 线稿</th></tr>
+          <tr><td><b>A 会话管理</b></td><td>A1 主机档案→S02/S04 · A2 快连→S02⁴/S03 · A3 克隆→S02⁶ · A4 导入导出→S07 · A5 批量→S02⁷ · A6 最近→S02⁵ · A7 凭据库→S06 · A8 云发现→S05 · A9 URL scheme→S01⁴</td></tr>
+          <tr><td><b>B 认证安全</b></td><td>B1/B2→S04 · B2 ppk→S04³ · B3 agent→S04 · B4 交互认证→S04 · B5 2FA→S04 · B6 指纹 TOFU/管理→S04⁶ · B7 加密✅/锁屏→S22③ · B8 ❌不做</td></tr>
+          <tr><td><b>C 协议</b></td><td>C1 SSH✅+压缩→S04⁵ · C2 本地 Shell→S04¹ · C3 Telnet→S04¹ · C4 Mosh→S04¹ · C5 Serial→S04¹ · C6 RDP/VNC/XDMCP→S04¹ · C7 Rlogin/RAW→S04¹ · C8 内嵌工具→S04¹(随本地 Shell 分发)</td></tr>
+          <tr><td><b>D 终端</b></td><td>D1 模拟✅ · D2 字体→S21² · D3 主题/包→S21² · D4 回滚✅/清屏→S08⁷ · D5 搜索→S08 · D6 剪贴板→S08 · D7 链接→S08³ · D8 编码→S21² · D9 只读→S08⁵ · D10 WebGL→S21² · D11 图片(P3)→S21²主题包同轨 · D12 现代协议(P3)→随 D10 · D13 触发器→S19</td></tr>
+          <tr><td><b>E 多会话</b></td><td>E1 标签✅→S08 · E2 切换✅→S08 · E3 分屏⭐→S08⁷ · E4 拖出窗口(P3)→S08⁷ · E5 广播→S08¹ · E6 恢复→S21¹/S22②</td></tr>
+          <tr><td><b>F 效率</b></td><td>F1 片段✅→S20¹ · F2 历史→S20³ · F3 补全→S08² · F4 宏→S20⁴ · F5 脚本→S21⁴(插件 API) · F6 批量→S16 · F7 定时→S20⁵ · F8 命令面板→S03 · F9 初始化命令→S04⁵</td></tr>
+          <tr><td><b>G 文件</b></td><td>G1 浏览✅→S12 · G2 重命名/权限/队列→S12/S13 · G3 上传下载✅/续传→S13¹ · G4 拖拽→S12⁴ · G5 远程编辑→S12³ · G6 同步浏览→S12¹ · G7 Zmodem→S13³ · G8 高速→S13² · G9 书签→S12²</td></tr>
+          <tr><td><b>H 监控</b></td><td>H1 CPU/内存/网络✅+磁盘→S14 · H2 曲线→S14¹ · H3 进程→S14² · H4 告警→S14³ · H5 多机总览→S15¹ · H6 网络诊断→S15²</td></tr>
+          <tr><td><b>I 隧道</b></td><td>I1 三类转发→S17 · I2 规则管理→S17² · I3 跳板→S04⁴ · I4 代理前置→S04⁴/S21⁵ · I5 X11(P3)→S04¹ · I6 保活✅→S21⁵</td></tr>
+          <tr><td><b>J 日志</b></td><td>J1 记录→S18 · J2 时间戳→S18 · J3 回放→S18² · J4 ❌不做</td></tr>
+          <tr><td><b>K AI</b></td><td>K1 对话✅→S09 · K2 解释✅→S09 · K3 生成✅→S09 · K4 多供应商✅→S10 · K5 拉模型✅→S10¹ · K6 切换→S09¹ · K7 诊断→S09² · K8 补全→S09⁴ · K9 Agent+白名单→S10³/S11² · K10 本地模型→S10² · K11 编排→S11 · K12 工作区(P3)→S11</td></tr>
+          <tr><td><b>L 配置</b></td><td>L1 持久化✅→S21 · L2 快捷键✅/自定义→S21³ · L3 应用主题→S21 · L4 插件三阶段→S21⁴/S03 · L5 启动→S21¹ · L6 语言→S21¹</td></tr>
+          <tr><td><b>M 数据</b></td><td>M1 JSON✅→S07 · M2 迁移→S07¹ · M3/M4 🧊冻结(只做本地)</td></tr>
+          <tr><td><b>N 平台</b></td><td>N1 macOS/Windows✅ · N2 托盘/Quake→S22④ · N3 通知→S22④ · N4 CLI→S01⁴ · N5 便携版(P3)→打包策略</td></tr>
+          <tr><td><b>O 可靠</b></td><td>O1 保活✅→S21⁵ · O2 自动重连→S22① · O3 崩溃恢复→S22② · O4 性能✅(xterm 虚拟滚动)</td></tr>
+        </table>
+        <div class="legend">图例:✅ 已实现 · ⭐ P1 首位 · <span class="tag p1">P1</span> <span class="tag p2">P2</span> <span class="tag p3">P3</span> 优先级 · 上标数字=该屏标注号 · ❌ 不做 / 🧊 冻结项不出现于原型</div>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /stage -->
+</div><!-- /app -->
+<script>
+const links = document.querySelectorAll('.nav a');
+const screens = document.querySelectorAll('.screen');
+function show(id) {
+  links.forEach(a => a.classList.toggle('on', a.dataset.t === id));
+  screens.forEach(s => s.classList.toggle('on', s.id === id));
+  document.querySelector('.stage').scrollTop = 0;
+}
+links.forEach(a => a.addEventListener('click', () => show(a.dataset.t)));
+show('s01');
+document.addEventListener('keydown', (e) => {
+  if (!e.metaKey && !e.ctrlKey) return;
+  const m = e.key.match(/^[1-9]$/); if (!m) return;
+  const ids = [...document.querySelectorAll('.nav a')].map(a => a.dataset.t);
+  const t = ids[Number(m[1]) - 1]; if (t) { show(t); e.preventDefault(); }
+});
+</script>
+</body>
+</html>

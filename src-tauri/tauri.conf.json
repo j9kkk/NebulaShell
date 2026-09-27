@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NebulaShell",
+  "version": "1.0.0",
+  "identifier": "com.nebulashell.app",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "NebulaShell 星云终端",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 980,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "app"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "跨平台 SSH 客户端，内置 AI 助手与云主机自动发现",
+    "longDescription": "NebulaShell 星云终端是基于 Tauri 2 + Rust 构建的跨平台 SSH 客户端，支持 SSH/SFTP、端口转发、跳板链、服务器资源监控、多机批量执行，内置 AI 助手与腾讯云/阿里云实例自动导入。",
+    "copyright": "Copyright (c) 2026 NebulaShell Contributors"
+  }
+}

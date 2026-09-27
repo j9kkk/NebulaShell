@@ -1,0 +1,137 @@
+// 测试用 mock 服务器：腾讯云/阿里云 API（带基础签名校验）与 AI（OpenAI + Anthropic SSE）
+import http from 'node:http';
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => resolve(b));
+  });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export const TENCENT_MOCK_INSTANCES = [
+  {
+    InstanceId: 'ins-e2e-1', InstanceName: 'e2e-cvm-1', InstanceState: 'RUNNING',
+    PublicIpAddresses: ['203.0.113.10'], PrivateIpAddresses: ['10.0.0.10'], OsName: 'Ubuntu Server 22.04 LTS',
+  },
+  {
+    InstanceId: 'ins-e2e-2', InstanceName: 'e2e-cvm-2', InstanceState: 'STOPPED',
+    PrivateIpAddresses: ['10.0.0.11'], OsName: 'Windows Server 2019',
+  },
+];
+
+export const ALIYUN_MOCK_INSTANCES = [
+  {
+    InstanceId: 'i-e2e-1', InstanceName: 'e2e-ecs-1', Status: 'Running', OSName: 'Alibaba Cloud Linux',
+    PublicIpAddress: { IpAddress: ['198.51.100.20'] },
+    VpcAttributes: { PrivateIpAddress: { IpAddress: ['172.16.0.20'] } },
+  },
+  {
+    InstanceId: 'i-e2e-2', InstanceName: 'e2e-ecs-2', Status: 'Stopped', OSName: 'CentOS 7.9',
+    VpcAttributes: { PrivateIpAddress: { IpAddress: ['172.16.0.21'] } },
+  },
+];
+
+export async function startMockCloudServer() {
+  const calls = { tencent: 0, aliyun: 0, tencentAuthOk: 0, aliyunAuthOk: 0 };
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    res.setHeader('content-type', 'application/json');
+    if (url.pathname.startsWith('/tencent')) {
+      if (req.method !== 'POST') { res.writeHead(405).end(); return; }
+      const auth = req.headers['authorization'] || '';
+      const action = req.headers['x-tc-action'];
+      if (!auth.startsWith('TC3-HMAC-SHA256 Credential=')) {
+        res.writeHead(401).end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SignatureFailure', Message: '缺少 TC3 签名' }, RequestId: 'mock' } }));
+        return;
+      }
+      calls.tencent++; calls.tencentAuthOk++;
+      if (action === 'DescribeInstances') {
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', TotalCount: TENCENT_MOCK_INSTANCES.length, InstanceSet: TENCENT_MOCK_INSTANCES } }));
+        return;
+      }
+      res.end(JSON.stringify({ Response: { Error: { Code: 'InvalidAction', Message: 'unknown action ' + action }, RequestId: 'mock' } }));
+      return;
+    }
+    if (url.pathname.startsWith('/aliyun')) {
+      const q = url.searchParams;
+      if (!q.get('Signature') || !q.get('SignatureMethod')) {
+        res.writeHead(401).end(JSON.stringify({ Code: 'MissingSignature', Message: '缺少签名参数' }));
+        return;
+      }
+      calls.aliyun++; calls.aliyunAuthOk++;
+      if (q.get('Action') === 'DescribeInstances') {
+        res.end(JSON.stringify({ RequestId: 'mock-aliyun', TotalCount: ALIYUN_MOCK_INSTANCES.length, Instances: { Instance: ALIYUN_MOCK_INSTANCES } }));
+        return;
+      }
+      res.end(JSON.stringify({ Code: 'InvalidAction', Message: 'unknown action' }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  return { port, calls, base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
+}
+
+export async function startMockAiServer() {
+  const calls = { openai: 0, anthropic: 0, models: 0 };
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    // 模型列表端点（dsh 式快速配置）：OpenAI 兼容用 Bearer，Anthropic 用 x-api-key
+    if (req.method === 'GET' && url.pathname.endsWith('/models')) {
+      const hasKey = !!(req.headers['authorization'] || req.headers['x-api-key']);
+      if (!hasKey) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'missing api key' } }));
+        return;
+      }
+      calls.models++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data: [
+        { id: 'mock-model-1' }, { id: 'mock-model-2' }, { id: 'mock-model-3' },
+      ] }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && !url.pathname.startsWith('/err')) {
+      calls.openai++;
+      const body = JSON.parse(await readBody(req));
+      const lastUser = [...(body.messages || [])].reverse().find((m) => m.role === 'user');
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const parts = ['MOCK-REPLY:', '收到「', String(lastUser ? lastUser.content : '').slice(0, 60), '」', '（openai-mock）'];
+      for (const p of parts) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+        await sleep(20);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.endsWith('/messages')) {
+      calls.anthropic++;
+      const body = JSON.parse(await readBody(req));
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const first = (body.messages && body.messages[0] && body.messages[0].content) || '';
+      const events = [
+        ['message_start', { type: 'message_start' }],
+        ['content_block_delta', { type: 'content_block_delta', delta: { type: 'text_delta', text: 'ANTHROPIC-MOCK-REPLY:' } }],
+        ['content_block_delta', { type: 'content_block_delta', delta: { type: 'text_delta', text: ' first=' + String(first).slice(0, 30) } }],
+        ['message_stop', { type: 'message_stop' }],
+      ];
+      for (const [name, data] of events) {
+        res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+        await sleep(15);
+      }
+      res.end();
+      return;
+    }
+    // 错误路径：用于验证 HTTP 错误透出
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'invalid api key', type: 'auth_error' } }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  return { port, calls, base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
+}
