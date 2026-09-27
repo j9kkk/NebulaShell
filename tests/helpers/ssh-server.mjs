@@ -42,9 +42,12 @@ function memFsAttrs(node) {
 }
 
 // 挂载最小 SFTP 服务端：REALPATH / OPENDIR / READDIR / OPEN / READ / WRITE / CLOSE / MKDIR / RMDIR / REMOVE / STAT
-function attachMockSftp(session, tree) {
-  session.on('subsystem', (accept) => accept && accept()); // sftp 子系统:russh 客户端需显式请求
+function attachMockSftp(session, tree, emit = () => {}) {
+  // 注意:ssh2 在存在 'sftp' 监听器时只发 'sftp' 事件、不发 'subsystem'
+  // (见 ssh2/lib/server.js 的 case 'subsystem'),故计数必须挂在 'sftp' 上。
+  session.on('subsystem', (accept) => accept && accept()); // russh 客户端需显式请求 sftp 子系统
   session.on('sftp', (accept) => {
+    emit('sftp', +1);
     const sftp = accept();
     const handles = new Map();
     let handleSeq = 0;
@@ -157,7 +160,7 @@ function attachMockSftp(session, tree) {
   });
 }
 
-export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0 } = {}) {
+export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent } = {}) {
   const hostPrivateKey = crypto
     .generateKeyPairSync('rsa', { modulusLength: 2048 })
     .privateKey.export({ type: 'pkcs1', format: 'pem' });
@@ -165,7 +168,11 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
 
   const clientListenServers = [];
   const windowChanges = [];
+  // 生命周期计数器(可选):用于断言连接/通道是否被正确回收。
+  const emit = (kind, delta) => { try { onEvent && onEvent(kind, delta); } catch { /* ignore */ } };
   const server = new Server({ hostKeys: [hostPrivateKey], debug: process.env.SSHD_DEBUG ? (l) => console.log('[SSHD]', l) : undefined }, (client) => {
+    emit('client', +1);
+    client.on('close', () => emit('client', -1));
     client.on('authentication', (ctx) => {
       // ssh2 服务端认证上下文用 ctx.method 区分认证方式
       if (ctx.method === 'password') {
@@ -178,10 +185,12 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept();
-        attachMockSftp(session, tree);
+        attachMockSftp(session, tree, emit);
         session.on('pty', (ac) => ac());
         session.on('shell', (ac) => {
+          emit('shell', +1);
           const stream = ac();
+          stream.on('close', () => emit('shell', -1));
           let line = '';
           stream.write('Welcome to NebulaShell mock sshd\r\n');
           stream.write('root@mock:~# ');
@@ -211,7 +220,38 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
           windowChanges.push(info); // 验证 PTY 尺寸同步(E3)
         });
         session.on('exec', (ac, reject, info) => {
+          emit('exec', +1);
           const stream = ac();
+          if (String(info.command).includes('utf8split')) {
+            // 逐字节发送一个多字节字符串:强制跨 SSH 消息边界,
+            // 用于回归"from_utf8_lossy 逐消息转换会把汉字切坏"。
+            const bytes = Buffer.from('中文测试\n', 'utf8');
+            let i = 0;
+            const step = () => {
+              if (i >= bytes.length) { stream.exit(0); stream.end(); return; }
+              stream.write(bytes.subarray(i, i + 1));
+              i += 1;
+              setTimeout(step, 120);
+            };
+            step();
+            return;
+          }
+          // 资源监控探测(monitor::PROBE 读 /proc/*):返回可解析的假数据。
+          // 必须让 parse_proc 判定 supported=true,否则监控循环会立刻退出,
+          // 监控任务的启停行为就无从观察(回归测试会失去判别力)。
+          if (String(info.command).includes('/proc/stat') || String(info.command).includes('__NB_DONE__')) {
+            stream.write(
+              'cpu  100 0 100 800 0 0 0 0 0 0\n' +
+              'MemTotal: 1000000 kB\n' +
+              'MemAvailable: 500000 kB\n' +
+              'Filesystem 1024-blocks Used Available Capacity Mounted on\n' +
+              '/dev/sda1 10000000 4000000 6000000 40% /\n' +
+              '__NB_DONE__\n'
+            );
+            stream.exit(0);
+            stream.end();
+            return;
+          }
           stream.write(`EXEC-OK:${info.command}\n`);
           stream.exit(0);
           stream.end();

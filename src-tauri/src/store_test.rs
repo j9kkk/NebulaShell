@@ -130,6 +130,53 @@ fn fingerprint_tofu_store() {
 }
 
 #[test]
+fn dirty_flag_debounces_persistence() {
+    let store = tmp_store("dirty");
+    // 初始不脏:flush_if_dirty 不应写盘
+    assert!(!store.flush_if_dirty(), "无变更时不应写盘");
+
+    // 模拟 history:add —— 只改内存 + 标脏,不立即落盘
+    {
+        let mut data = store.data.lock().unwrap();
+        data["history"] = json!([{ "cmd": "ls -la", "at": 1 }]);
+    }
+    store.mark_dirty();
+
+    // 磁盘上此刻还没有该变更(去抖生效)
+    let file = store.dir.join("nebulashell-config.json");
+    let on_disk = std::fs::read_to_string(&file).unwrap_or_default();
+    assert!(
+        !on_disk.contains("ls -la"),
+        "标记脏位后不应立即落盘(去抖未生效)"
+    );
+
+    // 触发一次去抖周期:应写入且脏位被清除
+    assert!(store.flush_if_dirty(), "有变更时应写盘");
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(on_disk.contains("ls -la"), "落盘后应包含历史命令");
+    assert!(!store.flush_if_dirty(), "写盘后脏位应被清除");
+
+    // flush_now 无论脏否都写盘(退出路径),且不丢数据
+    {
+        let mut data = store.data.lock().unwrap();
+        data["history"] = json!([{ "cmd": "whoami", "at": 2 }]);
+    }
+    store.flush_now();
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        on_disk.contains("whoami"),
+        "flush_now 应无条件写盘,避免退出时丢最后一次变更"
+    );
+
+    // 重启后仍能读到(真实持久化)
+    let store2 = Store::load_plain(store.dir.clone());
+    let data = store2.data.lock().unwrap();
+    assert_eq!(data["history"][0]["cmd"], json!("whoami"));
+
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+#[test]
 fn diag_plain_enc() {
     let store = tmp_store("diag");
     let c = store.enc("pw", "diag.password");
