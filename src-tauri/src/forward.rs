@@ -15,15 +15,17 @@ pub struct RunningEntry {
     pub task: tokio::task::JoinHandle<()>,
 }
 
-
-
 pub struct ForwardService {
     pub running: Mutex<HashMap<String, RunningEntry>>,
     pub remote_targets: crate::ssh::RemoteTargets, // "bindHost:port" -> (destHost, destPort, ruleId)
 }
 
 pub fn emit_state(app: &tauri::AppHandle, rule_id: &str, running: bool, port: u32) {
-    crate::ai::emit_evt(app, "forward:state", json!({ "ruleId": rule_id, "running": running, "port": port }));
+    crate::ai::emit_evt(
+        app,
+        "forward:state",
+        json!({ "ruleId": rule_id, "running": running, "port": port }),
+    );
 }
 
 async fn pump<T1: AsyncReadWrite + 'static, T2: AsyncReadWrite + 'static>(mut a: T1, mut b: T2) {
@@ -34,7 +36,11 @@ async fn pump<T1: AsyncReadWrite + 'static, T2: AsyncReadWrite + 'static>(mut a:
         loop {
             match ra.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
-                Ok(n) => { if wb.write_all(&buf[..n]).await.is_err() { break; } }
+                Ok(n) => {
+                    if wb.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
         let _ = wb.shutdown().await;
@@ -43,7 +49,11 @@ async fn pump<T1: AsyncReadWrite + 'static, T2: AsyncReadWrite + 'static>(mut a:
     loop {
         match rb.read(&mut buf).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => { if wa.write_all(&buf[..n]).await.is_err() { break; } }
+            Ok(n) => {
+                if wa.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+            }
         }
     }
     let _ = wa.shutdown().await;
@@ -105,7 +115,10 @@ impl ForwardService {
                             Ok(v) => v,
                             Err(_) => break,
                         };
-                        let stream = match ssh.direct_tcpip(&sid, &dest_host, dest_port, "127.0.0.1", 0).await {
+                        let stream = match ssh
+                            .direct_tcpip(&sid, &dest_host, dest_port, "127.0.0.1", 0)
+                            .await
+                        {
                             Ok(s) => s,
                             Err(_) => continue,
                         };
@@ -115,7 +128,13 @@ impl ForwardService {
                 });
                 self.running.lock().unwrap().insert(
                     rule_id.clone(),
-                    RunningEntry { session_id, kind: 'L', bind_host, bound_port, task },
+                    RunningEntry {
+                        session_id,
+                        kind: 'L',
+                        bind_host,
+                        bound_port,
+                        task,
+                    },
                 );
                 emit_state(&app, &rule_id, true, bound_port);
                 Ok(bound_port)
@@ -161,9 +180,13 @@ impl ForwardService {
                             let (host, port) = match req[3] {
                                 1 => {
                                     let mut ip = [0u8; 4];
-                                    if sock.read_exact(&mut ip).await.is_err() { return; }
+                                    if sock.read_exact(&mut ip).await.is_err() {
+                                        return;
+                                    }
                                     let mut p = [0u8; 2];
-                                    if sock.read_exact(&mut p).await.is_err() { return; }
+                                    if sock.read_exact(&mut p).await.is_err() {
+                                        return;
+                                    }
                                     (
                                         format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
                                         u16::from_be_bytes(p),
@@ -171,11 +194,17 @@ impl ForwardService {
                                 }
                                 3 => {
                                     let mut l = [0u8; 1];
-                                    if sock.read_exact(&mut l).await.is_err() { return; }
+                                    if sock.read_exact(&mut l).await.is_err() {
+                                        return;
+                                    }
                                     let mut name = vec![0u8; l[0] as usize];
-                                    if sock.read_exact(&mut name).await.is_err() { return; }
+                                    if sock.read_exact(&mut name).await.is_err() {
+                                        return;
+                                    }
                                     let mut p = [0u8; 2];
-                                    if sock.read_exact(&mut p).await.is_err() { return; }
+                                    if sock.read_exact(&mut p).await.is_err() {
+                                        return;
+                                    }
                                     (
                                         String::from_utf8_lossy(&name).to_string(),
                                         u16::from_be_bytes(p),
@@ -184,7 +213,10 @@ impl ForwardService {
                                 _ => return,
                             };
                             let _ = sock.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-                            if let Ok(stream) = ssh.direct_tcpip(&sid2, &host, port as u32, "127.0.0.1", 0).await {
+                            if let Ok(stream) = ssh
+                                .direct_tcpip(&sid2, &host, port as u32, "127.0.0.1", 0)
+                                .await
+                            {
                                 pump(sock, stream).await;
                             }
                         });
@@ -193,7 +225,13 @@ impl ForwardService {
                 });
                 self.running.lock().unwrap().insert(
                     rule_id.clone(),
-                    RunningEntry { session_id, kind: 'D', bind_host, bound_port, task },
+                    RunningEntry {
+                        session_id,
+                        kind: 'D',
+                        bind_host,
+                        bound_port,
+                        task,
+                    },
                 );
                 emit_state(&app, &rule_id, true, bound_port);
                 Ok(bound_port)
@@ -204,13 +242,19 @@ impl ForwardService {
                 let bound_port = ssh
                     .remote_forward_listen(&session_id, &bind_host, bind_port)
                     .await?;
-                self.remote_targets
-                    .lock()
-                    .unwrap()
-                    .insert(format!("{}:{}", bind_host, bound_port), (dest_host.clone(), dest_port, rule_id.clone()));
+                self.remote_targets.lock().unwrap().insert(
+                    format!("{}:{}", bind_host, bound_port),
+                    (dest_host.clone(), dest_port, rule_id.clone()),
+                );
                 self.running.lock().unwrap().insert(
                     rule_id.clone(),
-                    RunningEntry { session_id, kind: 'R', bind_host, bound_port, task: tokio::spawn(async {}) },
+                    RunningEntry {
+                        session_id,
+                        kind: 'R',
+                        bind_host,
+                        bound_port,
+                        task: tokio::spawn(async {}),
+                    },
                 );
                 emit_state(&app, &rule_id, true, bound_port);
                 Ok(bound_port)
@@ -219,13 +263,21 @@ impl ForwardService {
         }
     }
 
-    pub fn stop(&self, app: &tauri::AppHandle, ssh: Arc<crate::ssh::SshService>, rule_id: &str) -> bool {
+    pub fn stop(
+        &self,
+        app: &tauri::AppHandle,
+        ssh: Arc<crate::ssh::SshService>,
+        rule_id: &str,
+    ) -> bool {
         let entry = self.running.lock().unwrap().remove(rule_id);
         match entry {
             Some(e) => {
                 e.task.abort();
                 if e.kind == 'R' {
-                    self.remote_targets.lock().unwrap().remove(&format!("{}:{}", e.bind_host, e.bound_port));
+                    self.remote_targets
+                        .lock()
+                        .unwrap()
+                        .remove(&format!("{}:{}", e.bind_host, e.bound_port));
                     let sid = e.session_id.clone();
                     let bh = e.bind_host.clone();
                     let bp = e.bound_port;
@@ -240,7 +292,12 @@ impl ForwardService {
         }
     }
 
-    pub fn stop_by_session(&self, app: &tauri::AppHandle, ssh: Arc<crate::ssh::SshService>, session_id: &str) {
+    pub fn stop_by_session(
+        &self,
+        app: &tauri::AppHandle,
+        ssh: Arc<crate::ssh::SshService>,
+        session_id: &str,
+    ) {
         let ids: Vec<String> = self
             .running
             .lock()

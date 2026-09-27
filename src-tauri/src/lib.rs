@@ -17,17 +17,21 @@ mod signing_test;
 mod store_test;
 
 use commands::AppState;
-use tauri::Manager;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let test_mode = std::env::var("NEBULA_TEST").map(|v| v == "1").unwrap_or(false);
+    let test_mode = std::env::var("NEBULA_TEST")
+        .map(|v| v == "1")
+        .unwrap_or(false);
     let data_dir = match std::env::var("NEBULA_USER_DATA") {
         Ok(p) => std::path::PathBuf::from(p),
-        Err(_) => dirs::data_dir().unwrap_or_else(std::path::PathBuf::new).join("NebulaShell"),
+        Err(_) => dirs::data_dir()
+            .unwrap_or_else(std::path::PathBuf::new)
+            .join("NebulaShell"),
     };
     let store = Arc::new(config::Store::load(data_dir.clone()));
     let remote_targets = ssh::RemoteTargets::default();
@@ -65,7 +69,10 @@ pub fn run() {
         })
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                eprintln!("[page] loaded: {}", webview.url().map(|u| u.to_string()).unwrap_or_default());
+                eprintln!(
+                    "[page] loaded: {}",
+                    webview.url().map(|u| u.to_string()).unwrap_or_default()
+                );
                 webview.eval("window.__NB_E2E__ = true; 0").ok();
             }
         })
@@ -116,7 +123,11 @@ impl AppState {
                 };
                 let parsed = monitor::parse_proc(&r, prev.as_ref(), 3.0);
                 if parsed["supported"] == json!(false) {
-                    ai::emit_evt(&app, "ssh:metrics", json!({ "sessionId": sid, "supported": false }));
+                    ai::emit_evt(
+                        &app,
+                        "ssh:metrics",
+                        json!({ "sessionId": sid, "supported": false }),
+                    );
                     break;
                 }
                 prev = Some(parsed["raw"].clone());
@@ -127,7 +138,10 @@ impl AppState {
                 );
             }
         });
-        self.monitors.lock().unwrap().insert(session_id.to_string(), handle);
+        self.monitors
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), handle);
     }
 
     pub fn stop_monitor(&self, session_id: &str) {

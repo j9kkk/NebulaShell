@@ -56,7 +56,11 @@ pub async fn nebula_invoke(
     channel: String,
     payload: Value,
 ) -> Result<Value, String> {
-    let payload = if payload.is_null() { json!({}) } else { payload };
+    let payload = if payload.is_null() {
+        json!({})
+    } else {
+        payload
+    };
     match channel.as_str() {
         "app:info" => ok(json!({ "version": "1.0.0", "platform": std::env::consts::OS })),
 
@@ -72,7 +76,9 @@ pub async fn nebula_invoke(
             }
             #[cfg(target_os = "windows")]
             {
-                let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+                let _ = std::process::Command::new("cmd")
+                    .args(["/C", "start", "", url])
+                    .spawn();
             }
             #[cfg(target_os = "linux")]
             {
@@ -86,7 +92,10 @@ pub async fn nebula_invoke(
             Ok(h) => ok(h),
             Err(e) => err_msg(e),
         },
-        "hosts:delete" => match state.store.delete_host(payload["id"].as_str().unwrap_or("")) {
+        "hosts:delete" => match state
+            .store
+            .delete_host(payload["id"].as_str().unwrap_or(""))
+        {
             Ok(n) => ok(json!(n)),
             Err(e) => err_msg(e),
         },
@@ -101,8 +110,11 @@ pub async fn nebula_invoke(
             };
             if state.test_mode {
                 if let Ok(p) = std::env::var("NEBULA_TEST_SAVE_PATH") {
-                    std::fs::write(&p, serde_json::to_string_pretty(&data).unwrap_or_default()).ok();
-                    return ok(json!({ "path": p, "count": data["hosts"].as_array().map(|a| a.len()).unwrap_or(0) }));
+                    std::fs::write(&p, serde_json::to_string_pretty(&data).unwrap_or_default())
+                        .ok();
+                    return ok(
+                        json!({ "path": p, "count": data["hosts"].as_array().map(|a| a.len()).unwrap_or(0) }),
+                    );
                 }
             }
             let file = rfd::AsyncFileDialog::new()
@@ -112,9 +124,14 @@ pub async fn nebula_invoke(
             match file {
                 Some(f) => {
                     let path = f.path().to_string_lossy().to_string();
-                    std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap_or_default())
-                        .map_err(|e| e.to_string())?;
-                    ok(json!({ "path": path, "count": data["hosts"].as_array().map(|a| a.len()).unwrap_or(0) }))
+                    std::fs::write(
+                        &path,
+                        serde_json::to_string_pretty(&data).unwrap_or_default(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    ok(
+                        json!({ "path": path, "count": data["hosts"].as_array().map(|a| a.len()).unwrap_or(0) }),
+                    )
                 }
                 None => ok(json!(null)),
             }
@@ -123,12 +140,17 @@ pub async fn nebula_invoke(
             let path = if state.test_mode {
                 std::env::var("NEBULA_TEST_PICK_PATHS").ok()
             } else {
-                rfd::AsyncFileDialog::new().pick_file().await.map(|f| f.path().to_string_lossy().to_string())
+                rfd::AsyncFileDialog::new()
+                    .pick_file()
+                    .await
+                    .map(|f| f.path().to_string_lossy().to_string())
             };
             match path {
                 Some(p) => match std::fs::read_to_string(&p) {
                     Ok(text) => match state.store.import_hosts(&text) {
-                        Ok(r) => ok(json!({ "path": p, "added": r["added"], "skipped": r["skipped"] })),
+                        Ok(r) => {
+                            ok(json!({ "path": p, "added": r["added"], "skipped": r["skipped"] }))
+                        }
                         Err(e) => err_msg(e),
                     },
                     Err(e) => err_msg(e),
@@ -139,7 +161,10 @@ pub async fn nebula_invoke(
 
         "ssh:connect" | "ssh:connectQuick" => {
             let host = if channel == "ssh:connect" {
-                match state.store.host_full(payload["hostId"].as_str().unwrap_or("")) {
+                match state
+                    .store
+                    .host_full(payload["hostId"].as_str().unwrap_or(""))
+                {
                     Ok(h) => h,
                     Err(e) => return err_msg(e),
                 }
@@ -150,7 +175,11 @@ pub async fn nebula_invoke(
                 .as_str()
                 .map(String::from)
                 .unwrap_or_else(uid);
-            match state.ssh.connect(app.clone(), host, session_id.clone()).await {
+            match state
+                .ssh
+                .connect(app.clone(), host, session_id.clone())
+                .await
+            {
                 Ok(_) => {
                     // 监控任务随连接启动(批量会话除外)
                     if !session_id.starts_with("batch-") {
@@ -160,10 +189,19 @@ pub async fn nebula_invoke(
                             let data = state.store.data.lock().unwrap();
                             data["forwards"].as_array().cloned().unwrap_or_default()
                         };
-                        let host_id = state.ssh.session_host_id(&session_id).await.unwrap_or_default();
+                        let host_id = state
+                            .ssh
+                            .session_host_id(&session_id)
+                            .await
+                            .unwrap_or_default();
                         for rule in rules {
-                            if rule["autoStart"].as_bool().unwrap_or(false) && rule["hostId"].as_str() == Some(host_id.as_str()) {
-                                let _ = state.forwards.start(app.clone(), state.ssh.clone(), &rule).await;
+                            if rule["autoStart"].as_bool().unwrap_or(false)
+                                && rule["hostId"].as_str() == Some(host_id.as_str())
+                            {
+                                let _ = state
+                                    .forwards
+                                    .start(app.clone(), state.ssh.clone(), &rule)
+                                    .await;
                             }
                         }
                     }
@@ -172,10 +210,14 @@ pub async fn nebula_invoke(
                 Err(e) => err_msg(e),
             }
         }
-        "ssh:write" => match state.ssh.write(
-            payload["sessionId"].as_str().unwrap_or(""),
-            payload["data"].as_str().unwrap_or(""),
-        ).await {
+        "ssh:write" => match state
+            .ssh
+            .write(
+                payload["sessionId"].as_str().unwrap_or(""),
+                payload["data"].as_str().unwrap_or(""),
+            )
+            .await
+        {
             Ok(_) => {
                 // 会话日志记录输入(J1/J2)
                 let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
@@ -189,18 +231,24 @@ pub async fn nebula_invoke(
                         } else {
                             String::new()
                         };
-                        let _ = entry.handle.write_all(format!("{}{}", ts, data.replace('\r', "")).as_bytes());
+                        let _ = entry
+                            .handle
+                            .write_all(format!("{}{}", ts, data.replace('\r', "")).as_bytes());
                     }
                 }
                 ok(json!(null))
             }
             Err(e) => err_msg(e),
         },
-        "ssh:resize" => match state.ssh.resize(
-            payload["sessionId"].as_str().unwrap_or(""),
-            payload["cols"].as_u64().unwrap_or(100) as u32,
-            payload["rows"].as_u64().unwrap_or(30) as u32,
-        ).await {
+        "ssh:resize" => match state
+            .ssh
+            .resize(
+                payload["sessionId"].as_str().unwrap_or(""),
+                payload["cols"].as_u64().unwrap_or(100) as u32,
+                payload["rows"].as_u64().unwrap_or(30) as u32,
+            )
+            .await
+        {
             Ok(_) => ok(json!(null)),
             Err(e) => err_msg(e),
         },
@@ -208,31 +256,123 @@ pub async fn nebula_invoke(
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
             state.ssh.disconnect(&sid).await;
             state.stop_monitor(&sid);
-            state.forwards.stop_by_session(&app, state.ssh.clone(), &sid);
+            state
+                .forwards
+                .stop_by_session(&app, state.ssh.clone(), &sid);
             ok(json!(null))
         }
 
-        "sftp:list" => sftp_op(&state, app.clone(), &payload, |sftp, _app, sid, p| async move {
-            crate::sftp::list(&sftp, p["path"].as_str().map(String::from)).await
-        }).await,
-        "sftp:mkdir" => sftp_op(&state, app.clone(), &payload, |sftp, _app, _sid, p| async move {
-            crate::sftp::mkdir(&sftp, p["path"].as_str().unwrap_or("")).await.map(|_| json!(null))
-        }).await,
-        "sftp:remove" => sftp_op(&state, app.clone(), &payload, |sftp, _app, _sid, p| async move {
-            crate::sftp::remove(&sftp, p["path"].as_str().unwrap_or(""), p["isDir"].as_bool().unwrap_or(false)).await.map(|_| json!(null))
-        }).await,
-        "sftp:rename" => sftp_op(&state, app.clone(), &payload, |sftp, _app, _sid, p| async move {
-            crate::sftp::rename(&sftp, p["from"].as_str().unwrap_or(""), p["to"].as_str().unwrap_or("")).await.map(|_| json!(null))
-        }).await,
-        "sftp:chmod" => sftp_op(&state, app.clone(), &payload, |sftp, _app, _sid, p| async move {
-            crate::sftp::chmod(&sftp, p["path"].as_str().unwrap_or(""), p["mode"].as_u64().unwrap_or(0o644) as u32).await.map(|_| json!(null))
-        }).await,
-        "sftp:upload" => sftp_op(&state, app.clone(), &payload, |sftp, app, sid, p| async move {
-            crate::sftp::upload(&sftp, app, sid, p["localPath"].as_str().unwrap_or(""), p["remoteDir"].as_str().unwrap_or("")).await
-        }).await,
-        "sftp:download" => sftp_op(&state, app.clone(), &payload, |sftp, app, sid, p| async move {
-            crate::sftp::download(&sftp, app, sid, p["remotePath"].as_str().unwrap_or(""), p["localPath"].as_str().unwrap_or("")).await
-        }).await,
+        "sftp:list" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, _app, sid, p| async move {
+                    crate::sftp::list(&sftp, p["path"].as_str().map(String::from)).await
+                },
+            )
+            .await
+        }
+        "sftp:mkdir" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, _app, _sid, p| async move {
+                    crate::sftp::mkdir(&sftp, p["path"].as_str().unwrap_or(""))
+                        .await
+                        .map(|_| json!(null))
+                },
+            )
+            .await
+        }
+        "sftp:remove" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, _app, _sid, p| async move {
+                    crate::sftp::remove(
+                        &sftp,
+                        p["path"].as_str().unwrap_or(""),
+                        p["isDir"].as_bool().unwrap_or(false),
+                    )
+                    .await
+                    .map(|_| json!(null))
+                },
+            )
+            .await
+        }
+        "sftp:rename" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, _app, _sid, p| async move {
+                    crate::sftp::rename(
+                        &sftp,
+                        p["from"].as_str().unwrap_or(""),
+                        p["to"].as_str().unwrap_or(""),
+                    )
+                    .await
+                    .map(|_| json!(null))
+                },
+            )
+            .await
+        }
+        "sftp:chmod" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, _app, _sid, p| async move {
+                    crate::sftp::chmod(
+                        &sftp,
+                        p["path"].as_str().unwrap_or(""),
+                        p["mode"].as_u64().unwrap_or(0o644) as u32,
+                    )
+                    .await
+                    .map(|_| json!(null))
+                },
+            )
+            .await
+        }
+        "sftp:upload" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, app, sid, p| async move {
+                    crate::sftp::upload(
+                        &sftp,
+                        app,
+                        sid,
+                        p["localPath"].as_str().unwrap_or(""),
+                        p["remoteDir"].as_str().unwrap_or(""),
+                    )
+                    .await
+                },
+            )
+            .await
+        }
+        "sftp:download" => {
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, app, sid, p| async move {
+                    crate::sftp::download(
+                        &sftp,
+                        app,
+                        sid,
+                        p["remotePath"].as_str().unwrap_or(""),
+                        p["localPath"].as_str().unwrap_or(""),
+                    )
+                    .await
+                },
+            )
+            .await
+        }
 
         "forwards:list" => {
             let data = state.store.data.lock().unwrap();
@@ -259,23 +399,38 @@ pub async fn nebula_invoke(
             state.forwards.stop(&app, state.ssh.clone(), &id);
             {
                 let mut data = state.store.data.lock().unwrap();
-                data["forwards"].as_array_mut().unwrap().retain(|f| f["id"] != json!(id));
+                data["forwards"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|f| f["id"] != json!(id));
             }
             state.store.save().ok();
             ok(json!(null))
         }
-        "forward:start" => match state.forwards.start(app.clone(), state.ssh.clone(), &payload).await {
+        "forward:start" => match state
+            .forwards
+            .start(app.clone(), state.ssh.clone(), &payload)
+            .await
+        {
             Ok(port) => ok(json!({ "port": port })),
             Err(e) => err_msg(e),
         },
         "forward:stop" => {
-            state.forwards.stop(&app, state.ssh.clone(), payload["id"].as_str().unwrap_or(""));
+            state.forwards.stop(
+                &app,
+                state.ssh.clone(),
+                payload["id"].as_str().unwrap_or(""),
+            );
             ok(json!(null))
         }
         "forward:states" => {
             let ids: Vec<String> = payload["ids"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             ok(state.forwards.states(&ids))
         }
@@ -348,7 +503,9 @@ pub async fn nebula_invoke(
                 let list = data["bookmarks"].as_array_mut().unwrap();
                 let host_id = payload["hostId"].as_str().unwrap_or("");
                 let path = payload["path"].as_str().unwrap_or("");
-                if !list.iter().any(|b| b["hostId"].as_str() == Some(host_id) && b["path"].as_str() == Some(path)) {
+                if !list.iter().any(|b| {
+                    b["hostId"].as_str() == Some(host_id) && b["path"].as_str() == Some(path)
+                }) {
                     list.push(json!({ "hostId": host_id, "path": path, "at": chrono::Utc::now().timestamp_millis() }));
                 }
             }
@@ -369,12 +526,21 @@ pub async fn nebula_invoke(
 
         "log:start" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
-            let dir = dirs::home_dir().unwrap_or_default().join("NebulaShell-logs");
+            let dir = dirs::home_dir()
+                .unwrap_or_default()
+                .join("NebulaShell-logs");
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let label = payload["hostLabel"].as_str().unwrap_or("session").replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
+            let label = payload["hostLabel"].as_str().unwrap_or("session").replace(
+                |c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_',
+                "_",
+            );
             let stamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
             let file = dir.join(format!("{}-{}.log", label, stamp));
-            let handle = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| e.to_string())?;
+            let handle = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .map_err(|e| e.to_string())?;
             let file_str = file.to_string_lossy().to_string();
             state.logs.lock().unwrap().insert(
                 sid,
@@ -416,7 +582,10 @@ pub async fn nebula_invoke(
         })),
 
         "cloud:fetch" => {
-            let provider = payload["provider"].as_str().unwrap_or("tencent").to_string();
+            let provider = payload["provider"]
+                .as_str()
+                .unwrap_or("tencent")
+                .to_string();
             let key = payload["key"].as_str().unwrap_or("").to_string();
             let secret = payload["secret"].as_str().unwrap_or("").to_string();
             let region = payload["region"].as_str().unwrap_or("").to_string();
@@ -424,11 +593,16 @@ pub async fn nebula_invoke(
             let res = if provider == "aliyun" {
                 crate::cloud::aliyun_describe_instances(&key, &secret, &region, &endpoint).await
             } else {
-                crate::cloud::tencent_describe_instances(&key, &secret, &provider, &region, &endpoint).await
+                crate::cloud::tencent_describe_instances(
+                    &key, &secret, &provider, &region, &endpoint,
+                )
+                .await
             };
             match res {
                 Ok(list) => {
-                    state.store.save_cloud_creds(&provider, &key, &secret, &endpoint);
+                    state
+                        .store
+                        .save_cloud_creds(&provider, &key, &secret, &endpoint);
                     ok(json!(list))
                 }
                 Err(e) => err_msg(e),
@@ -444,7 +618,9 @@ pub async fn nebula_invoke(
             let key = payload["apiKey"].as_str().unwrap_or("").to_string();
             let key = if key.is_empty() {
                 let data = state.store.data.lock().unwrap();
-                state.store.dec(data["settings"]["ai"]["apiKeyEnc"].as_str().unwrap_or(""))
+                state
+                    .store
+                    .dec(data["settings"]["ai"]["apiKeyEnc"].as_str().unwrap_or(""))
             } else {
                 key
             };
@@ -465,7 +641,11 @@ pub async fn nebula_invoke(
             }
             let key = state.store.dec(ai["apiKeyEnc"].as_str().unwrap_or(""));
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            state.ai_aborts.lock().unwrap().insert(request_id.clone(), flag.clone());
+            state
+                .ai_aborts
+                .lock()
+                .unwrap()
+                .insert(request_id.clone(), flag.clone());
             let aborts = state.ai_aborts.clone();
             let request_id2 = request_id.clone();
             tokio::spawn(async move {
@@ -500,7 +680,11 @@ pub async fn nebula_invoke(
                     return ok(json!({ "path": p, "content": content }));
                 }
             }
-            match rfd::AsyncFileDialog::new().set_title("选择私钥文件").pick_file().await {
+            match rfd::AsyncFileDialog::new()
+                .set_title("选择私钥文件")
+                .pick_file()
+                .await
+            {
                 Some(f) => {
                     let path = f.path().to_string_lossy().to_string();
                     match std::fs::read_to_string(&path) {
@@ -514,11 +698,21 @@ pub async fn nebula_invoke(
         "dialog:pickAnyFile" => {
             if state.test_mode {
                 if let Ok(paths) = std::env::var("NEBULA_TEST_PICK_PATHS") {
-                    return ok(json!(paths.split(':').filter(|s| !s.is_empty()).collect::<Vec<_>>()));
+                    return ok(json!(paths
+                        .split(':')
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()));
                 }
             }
-            match rfd::AsyncFileDialog::new().set_title("选择要上传的文件").pick_files().await {
-                Some(files) => ok(json!(files.iter().map(|f| f.path().to_string_lossy().to_string()).collect::<Vec<_>>())),
+            match rfd::AsyncFileDialog::new()
+                .set_title("选择要上传的文件")
+                .pick_files()
+                .await
+            {
+                Some(files) => ok(json!(files
+                    .iter()
+                    .map(|f| f.path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>())),
                 None => ok(json!(null)),
             }
         }
@@ -529,7 +723,11 @@ pub async fn nebula_invoke(
                     return ok(json!(p));
                 }
             }
-            match rfd::AsyncFileDialog::new().set_file_name(default_name).save_file().await {
+            match rfd::AsyncFileDialog::new()
+                .set_file_name(default_name)
+                .save_file()
+                .await
+            {
                 Some(f) => ok(json!(f.path().to_string_lossy().to_string())),
                 None => ok(json!(null)),
             }
@@ -539,7 +737,12 @@ pub async fn nebula_invoke(
     }
 }
 
-async fn sftp_op<F, Fut>(state: &tauri::State<'_, AppState>, app: tauri::AppHandle, payload: &Value, f: F) -> Result<Value, String>
+async fn sftp_op<F, Fut>(
+    state: &tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    payload: &Value,
+    f: F,
+) -> Result<Value, String>
 where
     F: FnOnce(russh_sftp::client::SftpSession, tauri::AppHandle, String, Value) -> Fut,
     Fut: std::future::Future<Output = Result<Value, String>>,
@@ -556,7 +759,6 @@ pub fn regex_lite(url: &str) -> bool {
         || url.starts_with("https://console.aliyun.com/")
 }
 
-
 fn batch_exec(
     app: tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
@@ -569,7 +771,11 @@ fn batch_exec(
     Box::pin(async move {
         let host_ids: Vec<String> = payload["hostIds"]
             .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         if host_ids.is_empty() {
             return err_msg("请选择目标主机");
@@ -636,10 +842,3 @@ fn batch_exec(
         ok(json!(results))
     })
 }
-
-
-
-
-
-
-

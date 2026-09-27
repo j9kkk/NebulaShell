@@ -30,11 +30,16 @@ fn password_survives_simulated_restart() {
         let store = Store::load(dir.clone());
         let list = store.list_hosts();
         assert_eq!(list.len(), 1, "主机应持久化");
-        assert_eq!(list[0]["hasPassword"], json!(true), "重启后仍应标记有密码(界面不显示待补全)");
+        assert_eq!(
+            list[0]["hasPassword"],
+            json!(true),
+            "重启后仍应标记有密码(界面不显示待补全)"
+        );
 
         let full = store.host_full(list[0]["id"].as_str().unwrap()).unwrap();
         assert_eq!(
-            full["password"], json!("MyP@ssw0rd-秘密"),
+            full["password"],
+            json!("MyP@ssw0rd-秘密"),
             "重启后密码必须可读回 —— 否则连接会因'未配置密码'失败"
         );
     }

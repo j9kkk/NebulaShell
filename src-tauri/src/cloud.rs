@@ -23,7 +23,11 @@ pub async fn tencent_call(
     } else {
         "https://cvm.tencentcloudapi.com".to_string()
     };
-    let host = reqwest::Url::parse(&base).map_err(|e| e.to_string())?.host_str().unwrap_or("").to_string();
+    let host = reqwest::Url::parse(&base)
+        .map_err(|e| e.to_string())?
+        .host_str()
+        .unwrap_or("")
+        .to_string();
     let timestamp = chrono::Utc::now().timestamp();
     let date = chrono::DateTime::from_timestamp(timestamp, 0)
         .unwrap_or_default()
@@ -70,7 +74,11 @@ pub async fn tencent_describe_instances(
     region: &str,
     endpoint: &str,
 ) -> Result<Vec<Value>, String> {
-    let version = if service == "lighthouse" { "2020-03-24" } else { "2017-03-12" };
+    let version = if service == "lighthouse" {
+        "2020-03-24"
+    } else {
+        "2017-03-12"
+    };
     let resp = tencent_call(
         secret_id,
         secret_key,
@@ -123,7 +131,10 @@ pub async fn aliyun_call(
     params.insert("Format".into(), json!("JSON"));
     params.insert("RegionId".into(), json!(region));
     params.insert("SignatureMethod".into(), json!("HMAC-SHA1"));
-    params.insert("SignatureNonce".into(), json!(uuid::Uuid::new_v4().to_string()));
+    params.insert(
+        "SignatureNonce".into(),
+        json!(uuid::Uuid::new_v4().to_string()),
+    );
     params.insert("SignatureVersion".into(), json!("1.0"));
     params.insert(
         "Timestamp".into(),
@@ -137,7 +148,11 @@ pub async fn aliyun_call(
     }
     let canonical = aliyun_canonical_query(&params);
     let signature = aliyun_sign(&aliyun_string_to_sign(&canonical), access_key_secret);
-    let qs = format!("{}&Signature={}", canonical, aliyun_percent_encode(&signature));
+    let qs = format!(
+        "{}&Signature={}",
+        canonical,
+        aliyun_percent_encode(&signature)
+    );
     let base = if endpoint.trim().is_empty() {
         "https://ecs.aliyuncs.com"
     } else {
@@ -176,7 +191,10 @@ pub async fn aliyun_describe_instances(
         json!({ "PageSize": 100, "PageNumber": 1 }),
     )
     .await?;
-    let list = json["Instances"]["Instance"].as_array().cloned().unwrap_or_default();
+    let list = json["Instances"]["Instance"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     Ok(list
         .iter()
         .map(|i| {

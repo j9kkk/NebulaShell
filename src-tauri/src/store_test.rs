@@ -3,7 +3,8 @@ use crate::config::Store;
 use serde_json::json;
 
 fn tmp_store(tag: &str) -> Store {
-    let dir = std::env::temp_dir().join(format!("nebula-store-test-{}-{}", tag, std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("nebula-store-test-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     Store::load_plain(dir)
 }
@@ -84,7 +85,9 @@ fn settings_roundtrip_and_clamp() {
 #[test]
 fn snippets_persist() {
     let store = tmp_store("snips");
-    store.save_settings(&json!({ "snippets": [ { "name": "df", "cmd": "df -h" }, { "name": "", "cmd": "bad" } ] }));
+    store.save_settings(
+        &json!({ "snippets": [ { "name": "df", "cmd": "df -h" }, { "name": "", "cmd": "bad" } ] }),
+    );
     let s = store.get_settings();
     assert_eq!(s["snippets"].as_array().unwrap().len(), 1, "空名片段被过滤");
 }
@@ -92,7 +95,9 @@ fn snippets_persist() {
 #[test]
 fn import_export_roundtrip() {
     let store = tmp_store("io");
-    store.save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "pa" })).unwrap();
+    store
+        .save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "pa" }))
+        .unwrap();
     let exported = store.export_hosts().unwrap();
     let text = serde_json::to_string(&exported).unwrap();
     let store2 = tmp_store("io2");

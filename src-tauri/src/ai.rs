@@ -8,7 +8,11 @@ pub fn emit_evt<R: tauri::Runtime, E: tauri::Emitter<R>>(app: &E, evt: &str, pay
     app.emit(&name, payload).ok();
 }
 
-pub async fn list_models(protocol: &str, base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+pub async fn list_models(
+    protocol: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
     if base_url.trim().is_empty() {
         return Err("未配置 API Base URL,请先填写".into());
     }
@@ -22,19 +26,33 @@ pub async fn list_models(protocol: &str, base_url: &str, api_key: &str) -> Resul
     } else if !api_key.is_empty() {
         req = req.header("authorization", format!("Bearer {}", api_key));
     }
-    let res = req.send().await.map_err(|e| format!("获取模型列表失败: {}", e))?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("获取模型列表失败: {}", e))?;
     if !res.status().is_success() {
         let status = res.status();
         let t = res.text().await.unwrap_or_default();
-        return Err(format!("获取模型列表失败 HTTP {}: {}", status, &t[..t.len().min(200)]));
+        return Err(format!(
+            "获取模型列表失败 HTTP {}: {}",
+            status,
+            &t[..t.len().min(200)]
+        ));
     }
     let j: Value = res.json().await.map_err(|e| e.to_string())?;
     let list = j["data"].as_array().cloned().unwrap_or_default();
     let ids: Vec<String> = list
         .iter()
         .filter_map(|m| {
-            let id = m["id"].as_str().or_else(|| m["name"].as_str()).unwrap_or("");
-            if id.is_empty() { None } else { Some(id.to_string()) }
+            let id = m["id"]
+                .as_str()
+                .or_else(|| m["name"].as_str())
+                .unwrap_or("");
+            if id.is_empty() {
+                None
+            } else {
+                Some(id.to_string())
+            }
         })
         .collect();
     if ids.is_empty() {
@@ -44,7 +62,10 @@ pub async fn list_models(protocol: &str, base_url: &str, api_key: &str) -> Resul
 }
 
 /// 流式对话;每 250ms 一帧,SSE 逐行解析(与 Electron 版 ai.js 语义一致)
-pub async fn chat_stream<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
+pub async fn chat_stream<
+    R: tauri::Runtime,
+    E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+>(
     app: E,
     request_id: String,
     protocol: String,
@@ -66,11 +87,21 @@ pub async fn chat_stream<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send 
         let url = format!("{}/messages", base_url.trim().trim_end_matches('/'));
         let system: Vec<&str> = messages
             .as_array()
-            .map(|m| m.iter().filter(|m| m["role"] == "system").filter_map(|m| m["content"].as_str()).collect())
+            .map(|m| {
+                m.iter()
+                    .filter(|m| m["role"] == "system")
+                    .filter_map(|m| m["content"].as_str())
+                    .collect()
+            })
             .unwrap_or_default();
         let msgs: Vec<Value> = messages
             .as_array()
-            .map(|m| m.iter().filter(|m| m["role"] != "system").cloned().collect())
+            .map(|m| {
+                m.iter()
+                    .filter(|m| m["role"] != "system")
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         let body = json!({
             "model": model, "max_tokens": 4096,
@@ -95,18 +126,29 @@ pub async fn chat_stream<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send 
     void(&url);
     void(&body);
 
-    let res = req.send().await.map_err(|e| format!("AI 请求失败: {}", e))?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("AI 请求失败: {}", e))?;
     if !res.status().is_success() {
         let status = res.status();
         let t = res.text().await.unwrap_or_default();
-        return Err(format!("AI 请求失败 HTTP {}: {}", status, &t[..t.len().min(300)]));
+        return Err(format!(
+            "AI 请求失败 HTTP {}: {}",
+            status,
+            &t[..t.len().min(300)]
+        ));
     }
 
     let mut stream = res.bytes_stream();
     let mut buffer = String::new();
     loop {
         if abort_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            emit_evt(&app, "ai:done", json!({ "requestId": request_id, "finishReason": "aborted" }));
+            emit_evt(
+                &app,
+                "ai:done",
+                json!({ "requestId": request_id, "finishReason": "aborted" }),
+            );
             return Ok(());
         }
         let chunk = tokio::select! {
@@ -131,7 +173,11 @@ pub async fn chat_stream<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send 
                 continue;
             }
             if data == "[DONE]" {
-                emit_evt(&app, "ai:done", json!({ "requestId": request_id, "finishReason": "stop" }));
+                emit_evt(
+                    &app,
+                    "ai:done",
+                    json!({ "requestId": request_id, "finishReason": "stop" }),
+                );
                 return Ok(());
             }
             let evt: Value = match serde_json::from_str(data) {
@@ -142,21 +188,35 @@ pub async fn chat_stream<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send 
                 match evt["type"].as_str().unwrap_or("") {
                     "content_block_delta" => {
                         if let Some(text) = evt["delta"]["text"].as_str() {
-                            emit_evt(&app, "ai:delta", json!({ "requestId": request_id, "text": text }));
+                            emit_evt(
+                                &app,
+                                "ai:delta",
+                                json!({ "requestId": request_id, "text": text }),
+                            );
                         }
                     }
                     "message_stop" => {
-                        emit_evt(&app, "ai:done", json!({ "requestId": request_id, "finishReason": "stop" }));
+                        emit_evt(
+                            &app,
+                            "ai:done",
+                            json!({ "requestId": request_id, "finishReason": "stop" }),
+                        );
                         return Ok(());
                     }
                     "error" => {
-                        return Err(format!("AI API 错误: {}", &evt.to_string()[..evt.to_string().len().min(300)]));
+                        return Err(format!(
+                            "AI API 错误: {}",
+                            &evt.to_string()[..evt.to_string().len().min(300)]
+                        ));
                     }
                     _ => {}
                 }
             } else {
                 if !evt["error"].is_null() {
-                    return Err(format!("AI API 错误: {}", &evt["error"].to_string()[..evt["error"].to_string().len().min(300)]));
+                    return Err(format!(
+                        "AI API 错误: {}",
+                        &evt["error"].to_string()[..evt["error"].to_string().len().min(300)]
+                    ));
                 }
                 let delta = &evt["choices"][0]["delta"];
                 let text = delta["content"]
@@ -165,12 +225,20 @@ pub async fn chat_stream<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send 
                     .or_else(|| evt["choices"][0]["message"]["content"].as_str())
                     .unwrap_or("");
                 if !text.is_empty() {
-                    emit_evt(&app, "ai:delta", json!({ "requestId": request_id, "text": text }));
+                    emit_evt(
+                        &app,
+                        "ai:delta",
+                        json!({ "requestId": request_id, "text": text }),
+                    );
                 }
             }
         }
     }
-    emit_evt(&app, "ai:done", json!({ "requestId": request_id, "finishReason": "end" }));
+    emit_evt(
+        &app,
+        "ai:done",
+        json!({ "requestId": request_id, "finishReason": "end" }),
+    );
     Ok(())
 }
 

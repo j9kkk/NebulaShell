@@ -46,7 +46,11 @@ pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value 
         let buffers = kb(sections, "Buffers").unwrap_or(0);
         let cached = kb(sections, "Cached").unwrap_or(0);
         let sum = free + buffers + cached;
-        if sum > 0 { Some(sum) } else { None }
+        if sum > 0 {
+            Some(sum)
+        } else {
+            None
+        }
     });
     let (mem_pct, mem_used_mb, mem_total_mb) = match (mem_total, mem_avail) {
         (Some(total), Some(avail)) if total > 0 => (
@@ -81,7 +85,10 @@ pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value 
     let (rx_bps, tx_bps) = match (has_net, prev.and_then(|p| p["rx"].as_u64())) {
         (true, Some(prev_rx)) => (
             Some(rx.saturating_sub(prev_rx) as f64 / interval_sec),
-            Some(tx.saturating_sub(prev.and_then(|p| p["tx"].as_u64()).unwrap_or(0)) as f64 / interval_sec),
+            Some(
+                tx.saturating_sub(prev.and_then(|p| p["tx"].as_u64()).unwrap_or(0)) as f64
+                    / interval_sec,
+            ),
         ),
         _ => (None, None),
     };
@@ -94,8 +101,14 @@ pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value 
         let f: Vec<&str> = line.split_whitespace().collect();
         if f.len() >= 6 && f[4].ends_with('%') && f[5] == "/" && f[0] != "Filesystem" {
             disk_pct = f[4].trim_end_matches('%').parse::<f64>().ok();
-            disk_total_gb = f[1].parse::<f64>().ok().map(|v| (v / 1024.0 / 1024.0 * 10.0).round() / 10.0);
-            disk_used_gb = f[2].parse::<f64>().ok().map(|v| (v / 1024.0 / 1024.0 * 10.0).round() / 10.0);
+            disk_total_gb = f[1]
+                .parse::<f64>()
+                .ok()
+                .map(|v| (v / 1024.0 / 1024.0 * 10.0).round() / 10.0);
+            disk_used_gb = f[2]
+                .parse::<f64>()
+                .ok()
+                .map(|v| (v / 1024.0 / 1024.0 * 10.0).round() / 10.0);
         }
     }
     let mut sectors_r: u64 = 0;
@@ -120,13 +133,19 @@ pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value 
             }
         }
     }
-    let (disk_read_bps, disk_write_bps) = match (has_disk, prev.and_then(|p| p["sectorsR"].as_u64())) {
-        (true, Some(pr)) => (
-            Some(sectors_r.saturating_sub(pr) as f64 * 512.0 / interval_sec),
-            Some(sectors_w.saturating_sub(prev.and_then(|p| p["sectorsW"].as_u64()).unwrap_or(0)) as f64 * 512.0 / interval_sec),
-        ),
-        _ => (None, None),
-    };
+    let (disk_read_bps, disk_write_bps) =
+        match (has_disk, prev.and_then(|p| p["sectorsR"].as_u64())) {
+            (true, Some(pr)) => (
+                Some(sectors_r.saturating_sub(pr) as f64 * 512.0 / interval_sec),
+                Some(
+                    sectors_w.saturating_sub(prev.and_then(|p| p["sectorsW"].as_u64()).unwrap_or(0))
+                        as f64
+                        * 512.0
+                        / interval_sec,
+                ),
+            ),
+            _ => (None, None),
+        };
 
     json!({
         "supported": true,
@@ -142,7 +161,8 @@ pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value 
 fn quick_match(text: &str, word: &str) -> bool {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix(word) {
-            if rest.starts_with(' ') && rest.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+            if rest.starts_with(' ') && rest.trim_start().starts_with(|c: char| c.is_ascii_digit())
+            {
                 return true;
             }
         }
@@ -153,7 +173,10 @@ fn quick_match(text: &str, word: &str) -> bool {
 fn kb(text: &str, key: &str) -> Option<u64> {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix(key) {
-            let rest = rest.trim_start().strip_prefix(':').unwrap_or(rest.trim_start());
+            let rest = rest
+                .trim_start()
+                .strip_prefix(':')
+                .unwrap_or(rest.trim_start());
             if let Some(first) = rest.split_whitespace().next() {
                 if let Ok(n) = first.parse::<u64>() {
                     return Some(n);

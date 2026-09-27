@@ -22,10 +22,15 @@ impl Drop for MockSshd {
 }
 
 fn start_mock_sshd(password: &str) -> MockSshd {
-    let dir = std::env::temp_dir().join(format!("nb-it-sshd-{}-{}", std::process::id(), password.len()));
+    let dir = std::env::temp_dir().join(format!(
+        "nb-it-sshd-{}-{}",
+        std::process::id(),
+        password.len()
+    ));
     let _ = std::fs::create_dir_all(&dir);
     let port_file = dir.join("port");
-    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/helpers/sshd-standalone.mjs");
+    let helper =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/helpers/sshd-standalone.mjs");
     let child = Command::new("node")
         .arg(&helper)
         .arg(&port_file)
@@ -82,10 +87,13 @@ async fn ssh_connect_exec_roundtrip() {
 
     let ssh = Arc::new(SshService::new(store.clone(), Default::default()));
     let sid = "it-sess-1";
-    tokio::time::timeout(Duration::from_secs(20), ssh.connect(handle.clone(), full, sid.into()))
-        .await
-        .expect("连接超时")
-        .expect("连接应成功(密码认证 + shell)");
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        ssh.connect(handle.clone(), full, sid.into()),
+    )
+    .await
+    .expect("连接超时")
+    .expect("连接应成功(密码认证 + shell)");
 
     // exec:独立通道执行命令并收退出码
     let (code, out) = tokio::time::timeout(Duration::from_secs(10), ssh.exec(sid, "nebula-probe"))
@@ -121,11 +129,18 @@ async fn ssh_connect_exec_roundtrip() {
     let full = store.host_full(host2["id"].as_str().unwrap()).unwrap();
     let ssh = Arc::new(SshService::new(store.clone(), Default::default()));
     let sid = "it-sftp";
-    ssh.connect(handle.clone(), full, sid.into()).await.expect("连接");
+    ssh.connect(handle.clone(), full, sid.into())
+        .await
+        .expect("连接");
 
     let sftp = ssh.open_sftp(sid).await.expect("sftp 通道");
-    let root = nebulashell_lib::sftp::list(&sftp, None).await.expect("列目录");
-    assert!(root["entries"].to_string().contains("README.md"), "应有预置文件");
+    let root = nebulashell_lib::sftp::list(&sftp, None)
+        .await
+        .expect("列目录");
+    assert!(
+        root["entries"].to_string().contains("README.md"),
+        "应有预置文件"
+    );
 
     let dir = std::env::temp_dir().join(format!("nb-it-sftp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -133,17 +148,35 @@ async fn ssh_connect_exec_roundtrip() {
     let payload = "tauri-it-payload-0123456789abcdef".repeat(8);
     std::fs::write(&local, &payload).unwrap();
 
-    nebulashell_lib::sftp::upload(&sftp, handle.clone(), sid.into(), local.to_str().unwrap(), "/home/user")
-        .await
-        .expect("上传");
+    nebulashell_lib::sftp::upload(
+        &sftp,
+        handle.clone(),
+        sid.into(),
+        local.to_str().unwrap(),
+        "/home/user",
+    )
+    .await
+    .expect("上传");
 
     let dl = dir.join("down.bin");
-    nebulashell_lib::sftp::download(&sftp, handle.clone(), sid.into(), "/home/user/up.bin", dl.to_str().unwrap())
-        .await
-        .expect("下载");
-    assert_eq!(std::fs::read(&dl).unwrap(), payload.as_bytes(), "下载内容应与上传一致");
+    nebulashell_lib::sftp::download(
+        &sftp,
+        handle.clone(),
+        sid.into(),
+        "/home/user/up.bin",
+        dl.to_str().unwrap(),
+    )
+    .await
+    .expect("下载");
+    assert_eq!(
+        std::fs::read(&dl).unwrap(),
+        payload.as_bytes(),
+        "下载内容应与上传一致"
+    );
 
-    nebulashell_lib::sftp::remove(&sftp, "/home/user/up.bin", false).await.expect("删除");
+    nebulashell_lib::sftp::remove(&sftp, "/home/user/up.bin", false)
+        .await
+        .expect("删除");
 
     let _ = std::fs::remove_dir_all(&dir);
     ssh.disconnect(sid).await;

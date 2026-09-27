@@ -4,7 +4,11 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn attr_val(e: &russh_sftp::protocol::FileAttributes) -> (bool, u64, u64) {
-    (e.is_dir(), e.size.unwrap_or(0), e.mtime.unwrap_or(0) as u64 * 1000)
+    (
+        e.is_dir(),
+        e.size.unwrap_or(0),
+        e.mtime.unwrap_or(0) as u64 * 1000,
+    )
 }
 
 pub async fn list(
@@ -27,9 +31,16 @@ pub async fn list(
         let da = a["dir"].as_bool().unwrap_or(false);
         let db = b["dir"].as_bool().unwrap_or(false);
         if da != db {
-            if da { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }
+            if da {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
         } else {
-            a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
         }
     });
     Ok(json!({ "path": base, "entries": list }))
@@ -39,7 +50,11 @@ pub async fn mkdir(sftp: &russh_sftp::client::SftpSession, path: &str) -> Result
     sftp.create_dir(path).await.map_err(|e| e.to_string())
 }
 
-pub async fn remove(sftp: &russh_sftp::client::SftpSession, path: &str, is_dir: bool) -> Result<(), String> {
+pub async fn remove(
+    sftp: &russh_sftp::client::SftpSession,
+    path: &str,
+    is_dir: bool,
+) -> Result<(), String> {
     if is_dir {
         sftp.remove_dir(path).await.map_err(|e| e.to_string())
     } else {
@@ -47,14 +62,24 @@ pub async fn remove(sftp: &russh_sftp::client::SftpSession, path: &str, is_dir: 
     }
 }
 
-pub async fn rename(sftp: &russh_sftp::client::SftpSession, from: &str, to: &str) -> Result<(), String> {
+pub async fn rename(
+    sftp: &russh_sftp::client::SftpSession,
+    from: &str,
+    to: &str,
+) -> Result<(), String> {
     sftp.rename(from, to).await.map_err(|e| e.to_string())
 }
 
-pub async fn chmod(sftp: &russh_sftp::client::SftpSession, path: &str, mode: u32) -> Result<(), String> {
+pub async fn chmod(
+    sftp: &russh_sftp::client::SftpSession,
+    path: &str,
+    mode: u32,
+) -> Result<(), String> {
     let mut meta = russh_sftp::protocol::FileAttributes::default();
     meta.permissions = Some(mode);
-    sftp.set_metadata(path, meta).await.map_err(|e| e.to_string())
+    sftp.set_metadata(path, meta)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
@@ -70,10 +95,15 @@ pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Syn
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "upload.bin".into());
     let remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
-    let mut local = tokio::fs::File::open(local_path).await.map_err(|e| e.to_string())?;
+    let mut local = tokio::fs::File::open(local_path)
+        .await
+        .map_err(|e| e.to_string())?;
     let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
     let remote = sftp
-        .open_with_flags(&remote_path, OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE)
+        .open_with_flags(
+            &remote_path,
+            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
+        )
         .await
         .map_err(|e| e.to_string())?;
     let mut remote = remote;
@@ -85,13 +115,20 @@ pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Syn
         if n == 0 {
             break;
         }
-        remote.write_all(&buf[..n]).await.map_err(|e| e.to_string())?;
+        remote
+            .write_all(&buf[..n])
+            .await
+            .map_err(|e| e.to_string())?;
         sent += n as u64;
         if total > 0 {
             let pct = (sent * 100 / total) as i64;
             if pct != last_pct {
                 last_pct = pct;
-                crate::ai::emit_evt(&app, "sftp:progress", json!({ "sessionId": session_id, "op": "upload", "name": name, "pct": pct }));
+                crate::ai::emit_evt(
+                    &app,
+                    "sftp:progress",
+                    json!({ "sessionId": session_id, "op": "upload", "name": name, "pct": pct }),
+                );
             }
         }
     }
@@ -110,10 +147,15 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download.bin".into());
-    let meta = sftp.metadata(remote_path).await.map_err(|e| e.to_string())?;
+    let meta = sftp
+        .metadata(remote_path)
+        .await
+        .map_err(|e| e.to_string())?;
     let total = meta.size.unwrap_or(0);
     let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
-    let mut local = tokio::fs::File::create(local_path).await.map_err(|e| e.to_string())?;
+    let mut local = tokio::fs::File::create(local_path)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 64 * 1024];
     let mut got: u64 = 0;
     let mut last_pct = -1;
@@ -122,13 +164,20 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
         if n == 0 {
             break;
         }
-        local.write_all(&buf[..n]).await.map_err(|e| e.to_string())?;
+        local
+            .write_all(&buf[..n])
+            .await
+            .map_err(|e| e.to_string())?;
         got += n as u64;
         if total > 0 {
             let pct = (got * 100 / total) as i64;
             if pct != last_pct {
                 last_pct = pct;
-                crate::ai::emit_evt(&app, "sftp:progress", json!({ "sessionId": session_id, "op": "download", "name": name, "pct": pct }));
+                crate::ai::emit_evt(
+                    &app,
+                    "sftp:progress",
+                    json!({ "sessionId": session_id, "op": "download", "name": name, "pct": pct }),
+                );
             }
         }
     }

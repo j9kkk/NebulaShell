@@ -30,7 +30,6 @@ fn defaults() -> Value {
     })
 }
 
-
 // ===== 凭据加密 =====
 // 设计取舍:不用 keyring 作为主存储。
 // 原因:keyring 在未签名/无 entitlements 的 macOS 进程中 set_password+get_password 均返回 Ok,
@@ -126,7 +125,7 @@ impl Store {
         }
     }
 
-/// 解密:enc: → keyring;plain: → base64;失败返回空串(与 Electron 版一致)
+    /// 解密:enc: → keyring;plain: → base64;失败返回空串(与 Electron 版一致)
     pub fn dec(&self, cipher: &str) -> String {
         if cipher.is_empty() {
             return String::new();
@@ -206,15 +205,22 @@ impl Store {
     pub fn host_full(&self, id: &str) -> Result<Value, String> {
         let data = self.data.lock().unwrap();
         let hosts = data["hosts"].as_array().ok_or("主机列表损坏")?;
-        let h = hosts.iter().find(|h| h["id"] == *id).cloned().ok_or_else(|| {
-            format!(
-                "主机不存在: 查询 {} 在 {:?} (store={:p}, use_keyring={})",
-                id,
-                hosts.iter().map(|x| x["id"].as_str().unwrap_or("")).collect::<Vec<_>>(),
-                self,
-                self.use_keyring
-            )
-        })?;
+        let h = hosts
+            .iter()
+            .find(|h| h["id"] == *id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "主机不存在: 查询 {} 在 {:?} (store={:p}, use_keyring={})",
+                    id,
+                    hosts
+                        .iter()
+                        .map(|x| x["id"].as_str().unwrap_or(""))
+                        .collect::<Vec<_>>(),
+                    self,
+                    self.use_keyring
+                )
+            })?;
         let mut out = h.clone();
         for field in ["password", "privateKey", "passphrase"] {
             let cipher = h[format!("{}Enc", field)].as_str().unwrap_or("");
@@ -232,14 +238,15 @@ impl Store {
         }
         let hosts = data["hosts"].as_array_mut().unwrap();
         // 云导入幂等:provider+instanceId;编辑按 id
-        let cloud_match = if !input["cloud"]["provider"].is_null() && !input["cloud"]["instanceId"].is_null() {
-            hosts.iter().position(|h| {
-                h["cloud"]["provider"] == input["cloud"]["provider"]
-                    && h["cloud"]["instanceId"] == input["cloud"]["instanceId"]
-            })
-        } else {
-            None
-        };
+        let cloud_match =
+            if !input["cloud"]["provider"].is_null() && !input["cloud"]["instanceId"].is_null() {
+                hosts.iter().position(|h| {
+                    h["cloud"]["provider"] == input["cloud"]["provider"]
+                        && h["cloud"]["instanceId"] == input["cloud"]["instanceId"]
+                })
+            } else {
+                None
+            };
         let by_id = input["id"]
             .as_str()
             .and_then(|id| hosts.iter().position(|h| h["id"] == *id));
@@ -270,7 +277,11 @@ impl Store {
         };
         let mut host = host;
         let merge = |host: &mut Value, key: &str, default: Value| {
-            if !input[key].is_null() && (!input[key].is_string() || !input[key].as_str().unwrap_or("").is_empty() || key == "name") {
+            if !input[key].is_null()
+                && (!input[key].is_string()
+                    || !input[key].as_str().unwrap_or("").is_empty()
+                    || key == "name")
+            {
                 host[key] = input[key].clone();
             } else if is_new && host[key].is_null() {
                 host[key] = default;
@@ -328,8 +339,16 @@ impl Store {
     /// 公开形态(不含明文凭据,带 hasPassword/hasKey)
     pub fn public_host(&self, id: &str) -> Option<Value> {
         let data = self.data.lock().unwrap();
-        let h = data["hosts"].as_array()?.iter().find(|h| h["id"] == *id)?.clone();
-        let has = |f: &str| !self.dec(h[format!("{}Enc", f)].as_str().unwrap_or("")).is_empty();
+        let h = data["hosts"]
+            .as_array()?
+            .iter()
+            .find(|h| h["id"] == *id)?
+            .clone();
+        let has = |f: &str| {
+            !self
+                .dec(h[format!("{}Enc", f)].as_str().unwrap_or(""))
+                .is_empty()
+        };
         let mut out = h.clone();
         out["hasPassword"] = json!(has("password"));
         out["hasKey"] = json!(has("privateKey"));
@@ -348,7 +367,10 @@ impl Store {
         };
         hosts
             .iter()
-            .map(|h| self.public_host(h["id"].as_str().unwrap_or("")).unwrap_or_else(|| h.clone()))
+            .map(|h| {
+                self.public_host(h["id"].as_str().unwrap_or(""))
+                    .unwrap_or_else(|| h.clone())
+            })
             .collect()
     }
 
@@ -369,7 +391,9 @@ impl Store {
         payload["id"] = json!(null);
         payload["name"] = json!(format!(
             "{} 副本",
-            full["name"].as_str().unwrap_or_else(|| full["host"].as_str().unwrap_or(""))
+            full["name"]
+                .as_str()
+                .unwrap_or_else(|| full["host"].as_str().unwrap_or(""))
         ));
         payload["cloud"] = json!(null);
         self.save_host(&payload)
@@ -399,7 +423,8 @@ impl Store {
     }
 
     pub fn import_hosts(&self, text: &str) -> Result<Value, String> {
-        let parsed: Value = serde_json::from_str(text).map_err(|_| "文件不是合法 JSON".to_string())?;
+        let parsed: Value =
+            serde_json::from_str(text).map_err(|_| "文件不是合法 JSON".to_string())?;
         let items = if parsed.is_array() {
             parsed.as_array().unwrap().clone()
         } else if !parsed["hosts"].is_null() {
@@ -527,7 +552,8 @@ impl Store {
                     if let Some(v) = pc.get("secret") {
                         let plain = v.as_str().unwrap_or("");
                         if !plain.is_empty() {
-                            c["secretEnc"] = json!(self.enc(plain, &format!("settings.clouds.{}.secret", p)));
+                            c["secretEnc"] =
+                                json!(self.enc(plain, &format!("settings.clouds.{}.secret", p)));
                         }
                     }
                 }
@@ -538,7 +564,7 @@ impl Store {
         self.get_settings()
     }
 
-        pub fn list_fingerprints_for_test(&self) -> Vec<Value> {
+    pub fn list_fingerprints_for_test(&self) -> Vec<Value> {
         let data = self.data.lock().unwrap();
         data["knownHosts"]
             .as_object()
@@ -546,8 +572,18 @@ impl Store {
             .unwrap_or_default()
     }
 
-    pub fn save_cloud_creds(&self, provider: &str, key: &str, secret: &str, endpoint: &str) -> Value {
-        let p = if provider == "aliyun" { "aliyun" } else { "tencent" };
+    pub fn save_cloud_creds(
+        &self,
+        provider: &str,
+        key: &str,
+        secret: &str,
+        endpoint: &str,
+    ) -> Value {
+        let p = if provider == "aliyun" {
+            "aliyun"
+        } else {
+            "tencent"
+        };
         let mut patch = json!({ "clouds": { p: {} } });
         if !key.is_empty() {
             patch["clouds"][p]["key"] = json!(key);

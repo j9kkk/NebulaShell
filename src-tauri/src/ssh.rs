@@ -23,7 +23,7 @@ pub struct SshHandler {
 
 #[derive(Debug)]
 pub enum HandlerError {
-   russh(russh::Error),
+    russh(russh::Error),
     Msg(String),
 }
 
@@ -46,11 +46,16 @@ impl From<russh::Error> for HandlerError {
 impl client::Handler for SshHandler {
     type Error = HandlerError;
 
-    async fn check_server_key(&mut self, key: &russh::keys::key::PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        key: &russh::keys::key::PublicKey,
+    ) -> Result<bool, Self::Error> {
         let fp = key.fingerprint(); // russh_keys::key::PublicKey 自带 SHA256 指纹(base64-nopad)
         let known = {
             let data = self.store.data.lock().unwrap();
-            data["knownHosts"][self.key.clone()].as_str().map(String::from)
+            data["knownHosts"][self.key.clone()]
+                .as_str()
+                .map(String::from)
         };
         match known {
             None => {
@@ -65,7 +70,12 @@ impl client::Handler for SshHandler {
         }
     }
 
-    async fn data(&mut self, _channel: russh::ChannelId, _data: &[u8], _session: &mut client::Session) -> Result<(), Self::Error> {
+    async fn data(
+        &mut self,
+        _channel: russh::ChannelId,
+        _data: &[u8],
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
         // shell 数据泵在专用任务里读取,这里不处理
         Ok(())
     }
@@ -87,7 +97,9 @@ impl client::Handler for SshHandler {
                 let stream = channel.into_stream();
                 void_rule(&rule_id);
                 tokio::spawn(async move {
-                    match tokio::net::TcpStream::connect((dest_host.as_str(), dest_port as u16)).await {
+                    match tokio::net::TcpStream::connect((dest_host.as_str(), dest_port as u16))
+                        .await
+                    {
                         Ok(sock) => {
                             let (mut ra, mut wa) = tokio::io::split(sock);
                             let (mut rb, mut wb) = tokio::io::split(stream);
@@ -169,11 +181,7 @@ impl SshService {
         Arc::new(config)
     }
 
-    async fn auth(
-        handle: &mut Handle<SshHandler>,
-        user: &str,
-        host: &Value,
-    ) -> Result<(), String> {
+    async fn auth(handle: &mut Handle<SshHandler>, user: &str, host: &Value) -> Result<(), String> {
         let auth_type = host["authType"].as_str().unwrap_or("password");
         let password = host["password"].as_str().unwrap_or("");
         if auth_type == "key" {
@@ -216,7 +224,9 @@ impl SshService {
                     match r {
                         Kir::InfoRequest { .. } => {
                             r = handle
-                                .authenticate_keyboard_interactive_respond(vec![password.to_string()])
+                                .authenticate_keyboard_interactive_respond(vec![
+                                    password.to_string()
+                                ])
                                 .await
                                 .map_err(|e| e.to_string())?;
                         }
@@ -265,7 +275,10 @@ impl SshService {
     }
 
     /// 连接(支持跳板链 host.jumpIds):返回 (sessionId, 跳板连接数)
-    pub async fn connect<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
+    pub async fn connect<
+        R: tauri::Runtime,
+        E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+    >(
         self: &Arc<Self>,
         app: E,
         host_full: Value,
@@ -276,7 +289,11 @@ impl SshService {
         let user = host_full["username"].as_str().unwrap_or("root").to_string();
         let jump_ids: Vec<String> = host_full["jumpIds"]
             .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // 跳板链:逐级 forwardOut 直通流到最终目标
@@ -284,11 +301,16 @@ impl SshService {
         let mut prev_sock: Option<BoxStream> = None;
         let chain_len = jump_ids.len();
         for (i, jid) in jump_ids.iter().enumerate() {
-            let jump = self.store.host_full(jid).map_err(|e| format!("跳板: {}", e))?;
+            let jump = self
+                .store
+                .host_full(jid)
+                .map_err(|e| format!("跳板: {}", e))?;
             let jhost = jump["host"].as_str().unwrap_or("").to_string();
             let jport = jump["port"].as_i64().unwrap_or(22);
             let target = if i + 1 < jump_ids.len() {
-                self.store.host_full(&jump_ids[i + 1]).map_err(|e| format!("跳板: {}", e))?
+                self.store
+                    .host_full(&jump_ids[i + 1])
+                    .map_err(|e| format!("跳板: {}", e))?
             } else {
                 host_full.clone()
             };
@@ -313,15 +335,27 @@ impl SshService {
         let mut handle = self
             .connect_one(self.store.clone(), &host_full, prev_sock)
             .await
-            .map_err(|e| if chain_len > 0 { format!("经跳板连接 {} 失败: {}", host_addr, e) } else { e })?;
+            .map_err(|e| {
+                if chain_len > 0 {
+                    format!("经跳板连接 {} 失败: {}", host_addr, e)
+                } else {
+                    e
+                }
+            })?;
 
         // shell 通道
-        let mut channel = handle.channel_open_session().await.map_err(|e| e.to_string())?;
+        let mut channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?;
         channel
             .request_pty(true, "xterm-256color", 100, 30, 0, 0, &[])
             .await
             .map_err(|e| e.to_string())?;
-        channel.request_shell(true).await.map_err(|e| e.to_string())?;
+        channel
+            .request_shell(true)
+            .await
+            .map_err(|e| e.to_string())?;
         let channel_id = channel.id();
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let (resize_tx, mut resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, u32)>();
@@ -424,8 +458,15 @@ impl SshService {
     pub async fn exec(&self, session_id: &str, command: &str) -> Result<(i64, String), String> {
         let mut sessions = self.sessions.lock().await;
         let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-        let mut channel = s.handle.channel_open_session().await.map_err(|e| e.to_string())?;
-        channel.exec(true, command).await.map_err(|e| e.to_string())?;
+        let mut channel = s
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| e.to_string())?;
         let mut output = String::new();
         let mut code: i64 = 0;
         loop {
@@ -444,10 +485,17 @@ impl SshService {
         Ok((code, output))
     }
 
-    pub async fn open_sftp(&self, session_id: &str) -> Result<russh_sftp::client::SftpSession, String> {
+    pub async fn open_sftp(
+        &self,
+        session_id: &str,
+    ) -> Result<russh_sftp::client::SftpSession, String> {
         let mut sessions = self.sessions.lock().await;
         let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-        let mut channel = s.handle.channel_open_session().await.map_err(|e| e.to_string())?;
+        let mut channel = s
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| e.to_string())?;
         channel
             .request_subsystem(true, "sftp")
             .await
@@ -514,7 +562,9 @@ impl SshService {
 
     pub async fn session_host_id(&self, session_id: &str) -> Option<String> {
         let sessions = self.sessions.lock().await;
-        sessions.get(session_id).map(|s| s.host["id"].as_str().unwrap_or("").to_string())
+        sessions
+            .get(session_id)
+            .map(|s| s.host["id"].as_str().unwrap_or("").to_string())
     }
 
     pub async fn find_by_host(&self, host_id: &str) -> Option<String> {

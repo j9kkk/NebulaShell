@@ -27,7 +27,7 @@ fn hmac_sha1_b64(key: &[u8], msg: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(m.finalize().into_bytes())
 }
 
-// —— 腾讯云 TC3 —— 
+// —— 腾讯云 TC3 ——
 
 pub fn tencent_build_canonical_request(host: &str, action: &str, payload_str: &str) -> String {
     let canonical_headers = format!(
@@ -46,7 +46,12 @@ pub fn tencent_build_canonical_request(host: &str, action: &str, payload_str: &s
     .join("\n")
 }
 
-pub fn tencent_string_to_sign(timestamp: i64, date: &str, service: &str, canonical_request: &str) -> String {
+pub fn tencent_string_to_sign(
+    timestamp: i64,
+    date: &str,
+    service: &str,
+    canonical_request: &str,
+) -> String {
     [
         "TC3-HMAC-SHA256",
         &timestamp.to_string(),
@@ -66,7 +71,7 @@ pub fn tencent_signature(k_signing: &[u8], string_to_sign: &str) -> String {
     hex(&hmac_sha256(k_signing, string_to_sign.as_bytes()))
 }
 
-// —— 阿里云 RPC V1 —— 
+// —— 阿里云 RPC V1 ——
 
 pub fn aliyun_percent_encode(s: &str) -> String {
     // RFC3986:保留 A-Za-z0-9-_.~,其余 percent-encode(!'()* 转大写十六进制,空格 %20)
@@ -96,11 +101,18 @@ pub fn aliyun_canonical_query(params: &serde_json::Map<String, Value>) -> String
 }
 
 pub fn aliyun_string_to_sign(canonical_query: &str) -> String {
-    format!("GET&{}&{}", aliyun_percent_encode("/"), aliyun_percent_encode(canonical_query))
+    format!(
+        "GET&{}&{}",
+        aliyun_percent_encode("/"),
+        aliyun_percent_encode(canonical_query)
+    )
 }
 
 pub fn aliyun_sign(string_to_sign: &str, access_key_secret: &str) -> String {
-    hmac_sha1_b64(format!("{}&", access_key_secret).as_bytes(), string_to_sign.as_bytes())
+    hmac_sha1_b64(
+        format!("{}&", access_key_secret).as_bytes(),
+        string_to_sign.as_bytes(),
+    )
 }
 
 pub fn value_to_str(v: &Value) -> String {

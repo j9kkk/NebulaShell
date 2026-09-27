@@ -32,7 +32,10 @@ fn second_sample_delta_and_disk() {
 fn unsupported_graceful() {
     let r = parse_proc("EXEC-OK echo __NB_DONE__\n__NB_DONE__\nDarwin", None, 1.0);
     assert_eq!(r["supported"], serde_json::json!(false));
-    assert_eq!(parse_proc("", None, 1.0)["supported"], serde_json::json!(false));
+    assert_eq!(
+        parse_proc("", None, 1.0)["supported"],
+        serde_json::json!(false)
+    );
 }
 
 #[test]
