@@ -1,6 +1,6 @@
 [package]
 name = "nebulashell"
-version = "1.0.0"
+version = "1.0.1"
 description = "NebulaShell 星云终端 — Tauri 版"
 edition = "2021"
 

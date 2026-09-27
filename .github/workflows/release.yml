@@ -88,6 +88,8 @@ jobs:
             | Windows (64 位) | `*_x64-setup.exe` |
             | Linux (64 位) | `*_amd64.AppImage` / `*.deb` |
 
+            **本次变更**见 [CHANGELOG.md](https://github.com/j9kkk/NebulaShell/blob/main/CHANGELOG.md) 对应版本段。
+
             首次运行提示：未签名的应用可能被系统拦截 ——
             macOS 需右键「打开」，Windows 需在 SmartScreen 提示中选「仍要运行」。
           releaseDraft: false
