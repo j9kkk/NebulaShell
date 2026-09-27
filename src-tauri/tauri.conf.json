@@ -33,7 +33,7 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
-      "icons/icon.png"
+      "icons/icon.ico"
     ],
     "category": "DeveloperTool",
     "shortDescription": "跨平台 SSH 客户端，内置 AI 助手与云主机自动发现",

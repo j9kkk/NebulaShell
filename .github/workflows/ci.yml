@@ -36,10 +36,22 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # 必须先构建前端:tauri::generate_context! 宏在编译期要求 frontendDist(../dist) 存在,
+      # 否则 cargo test/clippy 都会因 proc macro panicked 失败(本地因有残留 dist/ 不易发现)。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 构建前端
+        run: |
+          npm ci
+          npm run build:web
+
       - name: 格式检查
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
-      # Clippy 目前仍有 dead_code 等警告(见 lib 生成的 20 warnings),暂作提示不阻断
+      # Clippy 目前仍有 dead_code 等警告(见 lib 生成的 17 warnings),暂作提示不阻断
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml
         continue-on-error: true
