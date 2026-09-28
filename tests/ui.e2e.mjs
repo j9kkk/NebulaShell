@@ -294,6 +294,40 @@ async function main() {
     JSON.stringify(fpFollow),
   );
 
+  // 放大按钮回归:单窗格时不得进入"已放大"态(视觉无变化,角标让用户以为按钮失效)
+  // 此时处于 T13 的新标签里(单窗格)
+  await evalJs(`
+    const pane = document.querySelector('.term-pane.focused') || document.querySelector('.term-pane');
+    (pane.querySelector('.pane-zoom-btn')||{}).click?.();
+    return 1`);
+  await sleep(1200);
+  const noZoom = asObj(await evalJs(`return JSON.stringify({ chip: !!document.querySelector('.zoom-chip'), toast: document.querySelector('#toasts').textContent })`));
+  check(
+    'T20 单窗格点放大不进入无效放大态',
+    noZoom.chip === false && noZoom.toast.includes('无需放大'),
+    JSON.stringify(noZoom),
+  );
+
+  // 分屏 → 放大 → 窗格占满;还原后窗格数恢复
+  await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
+  await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
+  await evalJs(`document.querySelector('.term-pane.focused .pane-zoom-btn').click(); return 1`);
+  await waitEval(`return String(!!document.querySelector('.zoom-chip'))`, 'true', 10000);
+  const zoomed = asObj(await evalJs(`return JSON.stringify((() => {
+    const ps = [...document.querySelectorAll('.term-pane')].map(p => Math.round(p.getBoundingClientRect().width));
+    return { chip: !!document.querySelector('.zoom-chip'), panes: ps, maxW: Math.max(...ps) };
+  })())`));
+  check(
+    'T21 分屏后放大窗格占满终端区',
+    zoomed.chip === true && zoomed.panes.length === 1,
+    JSON.stringify(zoomed),
+  );
+  await evalJs(`document.querySelector('.zoom-chip').click(); return 1`);
+  await waitEval(`return String(!!document.querySelector('.zoom-chip'))`, 'false', 10000);
+  const panesRestored = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
+  check('T22 还原后恢复分屏布局', panesRestored === 2, `panes=${panesRestored}`);
+
   // 右键:屏蔽 WebView 原生菜单,终端内弹应用菜单
   const ctx = asObj(await evalJs(`return JSON.stringify((() => {
     const pane = document.querySelector('.term-pane .xterm');
