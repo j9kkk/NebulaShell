@@ -572,6 +572,13 @@ function makePaneEl(paneId) {
   return el;
 }
 
+// 布局树里的窗格(叶子)数量
+function leafCount(node) {
+  if (!node) return 0;
+  if (isLeaf(node)) return 1;
+  return leafCount(node.a) + leafCount(node.b);
+}
+
 // 窗格放大/还原(竖向空间不足时的快速聚焦)
 function togglePaneZoom(paneId) {
   if (state.zoomPaneId === paneId) {
@@ -579,6 +586,11 @@ function togglePaneZoom(paneId) {
   } else {
     const pane = state.panes.get(paneId);
     if (!pane || !pane.sessionId) return toast('空窗格无需放大', 'error');
+    // 只有一个窗格时"放大"没有任何视觉效果(本来就是全幅),
+    // 若进入放大态只会留下"已放大"角标,让用户以为按钮坏了。
+    if (leafCount(state.layout) <= 1) {
+      return toast('当前只有一个窗格,无需放大', 'error');
+    }
     state.zoomPaneId = paneId;
   }
   renderLayout();
@@ -659,6 +671,11 @@ function renderLayout() {
     return wrap;
   };
   stack.innerHTML = '';
+  // 放大态但布局已塌缩成单窗格(如放大后关掉了另一窗格):
+  // 视觉上与"未放大"完全一样,残留的"已放大"角标只会让用户以为按钮失效,故自动退出。
+  if (state.zoomPaneId && leafCount(state.layout) <= 1) {
+    state.zoomPaneId = null;
+  }
   if (state.zoomPaneId && state.panes.has(state.zoomPaneId)) {
     // 放大模式:仅渲染目标窗格,独占终端区
     const pane = state.panes.get(state.zoomPaneId);
