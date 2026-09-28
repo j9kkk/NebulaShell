@@ -15,7 +15,7 @@
         <div class="logo-sub">星云终端 · SSH Client</div>
         <div class="side-actions">
           <button id="btn-add-host" class="btn primary small">＋ 新建主机</button>
-          <button id="btn-cloud-import" class="btn small">☁ 导入云主机</button>
+          <button id="btn-cloud-import" class="btn small" title="从腾讯云 / 阿里云导入主机">☁ 云导入</button>
           <button id="btn-batch" class="btn small" title="多主机批量执行命令">⏏ 批量</button>
         </div>
         <input id="host-search" type="text" placeholder="搜索主机名称 / IP…" />
@@ -37,7 +37,8 @@
     <main id="main">
       <div id="tabbar">
         <div id="tabs"></div>
-        <button id="btn-split" class="btn icon-tb" title="分屏(⌘D 垂直 / ⌘⇧D 水平)">⛶</button>
+        <button id="btn-newtab" class="btn icon-tb" title="新建标签页(⌘T)">＋</button>
+        <button id="btn-split" class="btn icon-tb" title="在当前标签内分屏(⌘D 垂直 / ⌘⇧D 水平)">⛶</button>
         <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
         <button id="btn-more" class="btn icon-tb" title="更多工具">⋯</button>
         <div id="more-menu" class="hidden">
@@ -370,6 +371,7 @@
   </div>
 
   <div id="toasts"></div>
+  <div id="ctx-menu" class="hidden"></div>
   <script src="./nebula-shim.js"></script>
   <script src="./app.js"></script>
 </body>

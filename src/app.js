@@ -31,14 +31,43 @@ const state = {
   metrics: new Map(), // sessionId -> 最近一次 ssh:metrics
   metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
   file: { cwd: null, entries: [], selected: null, chmodTarget: null, renameMode: null },
-  layout: null,        // 分屏树(E3): {type:'leaf',paneId,sessionId} | {type:'h'|'v',ratio,a,b}
-  zoomPaneId: null,    // 放大的窗格(占满终端区)
-  panes: new Map(),    // paneId -> { id, el, sessionId }
+  // 标签页(E1)与窗格(E3):每个标签页持有独立的布局树与窗格集合,
+  // 切换标签只渲染该标签的窗格;其余标签的终端对象保留在内存中(不销毁),
+  // 切回时重新挂载并 refresh。state.layout/panes/zoomPaneId/activePaneId
+  // 是"当前标签"的访问器(见下方 defineProperties),便于既有分屏代码原样复用。
+  tabs: new Map(),     // tabId -> { id, el, layout, panes: Map, zoomPaneId, activePaneId, sessionId }
+  activeTabId: null,
+  tabSeq: 0,
   paneSeq: 0,
   broadcast: null,     // E5: Set(sessionId) 广播参与者
   historyOpen: false,
   aiModels: [],        // 已拉取的模型候选(K6)
 };
+
+/* ---------------- 标签/窗格访问器 ----------------
+   把"当前标签的布局树/窗格集合/放大窗格/空窗格焦点"暴露成 state.layout 等属性,
+   让既有分屏代码(renderLayout/splitActive/firstEmptyLeaf...)无需改动即可工作;
+   同时这些 setter 会写回标签对象,保证切换标签后改动落在正确的标签上。 */
+function activeTab() {
+  return state.activeTabId ? state.tabs.get(state.activeTabId) : null;
+}
+Object.defineProperties(state, {
+  layout: {
+    get: () => { const t = activeTab(); return t ? t.layout : null; },
+    set: (v) => { const t = activeTab(); if (t) t.layout = v; },
+  },
+  panes: {
+    get: () => { const t = activeTab(); return t ? t.panes : new Map(); },
+  },
+  zoomPaneId: {
+    get: () => { const t = activeTab(); return t ? t.zoomPaneId : null; },
+    set: (v) => { const t = activeTab(); if (t) t.zoomPaneId = v; },
+  },
+  activePaneId: {
+    get: () => { const t = activeTab(); return t ? t.activePaneId : null; },
+    set: (v) => { const t = activeTab(); if (t) t.activePaneId = v; },
+  },
+});
 
 const PROVIDER_LABEL = { tencent: '腾讯云', lighthouse: '腾讯云轻量', aliyun: '阿里云' };
 const REGION_LIST = { tencent: TENCENT_REGIONS, lighthouse: TENCENT_REGIONS, aliyun: ALIYUN_REGIONS };
@@ -149,7 +178,15 @@ function renderHosts() {
           <button class="hi-edit" title="编辑">✎</button>
           <button class="hi-del" title="删除">🗑</button>
         </div>`;
-      item.addEventListener('click', () => connectHost(h.id));
+      // 普通点击:已有会话则切过去,否则连接。
+      // ⌘/Ctrl+点击 或 中键:强制新开一个标签(支持同主机多会话)。
+      item.addEventListener('click', (e) => {
+        if (e.metaKey || e.ctrlKey) connectHost(h.id, null, { newTab: true });
+        else connectHost(h.id);
+      });
+      item.addEventListener('auxclick', (e) => {
+        if (e.button === 1) { e.preventDefault(); connectHost(h.id, null, { newTab: true }); }
+      });
       item.querySelector('.hi-clone').addEventListener('click', async (e) => {
         e.stopPropagation();
         try {
@@ -311,6 +348,136 @@ function termTheme() {
   return (TERM_THEMES[key] || TERM_THEMES.nebula)();
 }
 
+// —— 标签页(E1):每个标签持有独立的布局树与窗格集合 ——
+function newTabId() { return 'tab-' + (++state.tabSeq); }
+
+function makeTab(tabId) {
+  const el = document.createElement('div');
+  el.className = 'tab';
+  el.dataset.tab = tabId;
+  el.innerHTML = '<span class="tab-dot connecting"></span><span class="tab-title">新标签</span><button class="tab-close" title="关闭标签">✕</button>';
+  el.addEventListener('click', (e) => {
+    if (e.target.classList.contains('tab-close')) return;
+    activateTab(tabId);
+  });
+  el.querySelector('.tab-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeTab(tabId);
+  });
+  $('#tabs').appendChild(el);
+  return el;
+}
+
+function createTab() {
+  const id = newTabId();
+  const tab = {
+    id,
+    el: makeTab(id),
+    layout: null,
+    panes: new Map(),
+    zoomPaneId: null,
+    activePaneId: null,
+    sessionId: null, // 该标签当前挂载的会话(标签与窗格一一对应,分屏时取主窗格)
+  };
+  state.tabs.set(id, tab);
+  return tab;
+}
+
+/// 仅切换"活动标签"的标识与高亮,不触碰 DOM。
+/// 用于新建会话时先把标签设为活动,避免随后的 activateTab 触发
+/// innerHTML 清空 —— 那会把 term.open() 刚挂好的终端摘掉再挂回,造成首屏输出丢失。
+function setActiveTabId(tabId) {
+  state.activeTabId = tabId;
+  for (const [id, t] of state.tabs) t.el.classList.toggle('active', id === tabId);
+}
+
+/// 切换标签:只挂载目标标签的窗格,其余标签的终端保留在内存中不销毁
+function activateTab(tabId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab) return;
+  // 已经是活动标签:窗格已在 DOM 上,只需重算几何与焦点,不要清空重挂
+  if (state.activeTabId === tabId) {
+    const cur = state.sessions.get(state.activeId);
+    if (cur) {
+      try { cur.fit.fit(); } catch { /* ignore */ }
+      syncTabChrome();
+      updateStatusbar(cur);
+    }
+    renderMonitorBar();
+    return;
+  }
+  setActiveTabId(tabId);
+
+  // 先把当前 DOM 里的窗格摘下来(不销毁终端),再挂载目标标签的窗格
+  const stack = $('#layout-root');
+  stack.innerHTML = '';
+  closeCtxMenu();
+  renderLayout();
+
+  // 焦点落到该标签的会话上
+  if (tab.sessionId && state.sessions.has(tab.sessionId)) {
+    state.activeId = tab.sessionId;
+  } else {
+    const first = [...state.sessions.values()].find((s) => (s.tabId || null) === tabId);
+    state.activeId = first ? first.sessionId : null;
+  }
+  syncTabChrome();
+  const s = state.sessions.get(state.activeId);
+  if (s) {
+    try { s.fit.fit(); } catch { /* ignore */ }
+    updateStatusbar(s);
+    loadSessionLogState(s);
+    // 切换标签后重新挂载,xterm 需要重绘并按新尺寸 fit
+    setTimeout(() => {
+      try { s.term.refresh(0, s.term.rows - 1); } catch { /* ignore */ }
+      try { s.fit.fit(); } catch { /* ignore */ }
+      try { s.term.focus(); } catch { /* ignore */ }
+      scheduleResizeSync();
+    }, 20);
+  } else {
+    updateStatusbar(null);
+  }
+  renderMonitorBar();
+  updateWelcome();
+}
+
+/// 关闭标签:释放该标签下所有会话
+function closeTab(tabId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab) return;
+  const ids = [...state.sessions.values()].filter((s) => (s.tabId || null) === tabId).map((s) => s.sessionId);
+  for (const sid of ids) closeSession(sid);
+  tab.el.remove();
+  state.tabs.delete(tabId);
+  if (state.activeTabId === tabId) {
+    const next = [...state.tabs.keys()][0];
+    if (next) activateTab(next);
+    else {
+      state.activeTabId = null;
+      state.activeId = null;
+      $('#layout-root').innerHTML = '';
+      updateStatusbar(null);
+      updateWelcome();
+    }
+  }
+}
+
+/// 同步标签标题/状态点(取该标签主会话)
+function syncTabChrome() {
+  for (const [tabId, tab] of state.tabs) {
+    const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
+    const title = tab.el.querySelector('.tab-title');
+    const dot = tab.el.querySelector('.tab-dot');
+    if (s) {
+      title.textContent = s.host.name;
+      dot.className = 'tab-dot ' + s.status;
+    } else {
+      title.textContent = '新标签';
+      dot.className = 'tab-dot';
+    }
+  }
+}
+
 // —— 分屏布局(E3):二叉布局树,leaf 持有 paneId ——
 function newPaneId() { return 'pane-' + (++state.paneSeq); }
 
@@ -365,12 +532,6 @@ function updateMonitorAutoHide() {
 function leaf(paneId) { return { type: 'leaf', paneId }; }
 function isLeaf(n) { return !!n && n.type === 'leaf'; }
 
-function leafSessions(node, out = []) {
-  if (isLeaf(node)) { out.push(node.sessionId); return out; }
-  leafSessions(node.a, out); leafSessions(node.b, out);
-  return out;
-}
-
 function findLeafPath(node, paneId, path = []) {
   if (isLeaf(node)) return node.paneId === paneId ? path : null;
   const l = findLeafPath(node.a, paneId, [...path, 'a']);
@@ -392,8 +553,15 @@ function replaceAt(path, fn) {
   parent[key] = fn(parent[key]);
 }
 
+// 空窗格判定必须看窗格对象上的 sessionId —— 布局叶节点不持有该字段
+// (此前读 node.sessionId 恒为 undefined,导致"永远存在空窗格",
+//  新会话复用首个窗格并把已有会话的终端 DOM 清掉)。
 function firstEmptyLeaf(node) {
-  if (isLeaf(node)) return node.sessionId ? null : node.paneId;
+  if (!node) return null;
+  if (isLeaf(node)) {
+    const pane = state.panes.get(node.paneId);
+    return pane && !pane.sessionId ? node.paneId : null;
+  }
   return firstEmptyLeaf(node.a) || firstEmptyLeaf(node.b);
 }
 
@@ -446,10 +614,11 @@ function renderLayout() {
     }
   }
   updateWelcome();
-  // reparent 后强制 xterm 重绘并恢复焦点,避免光标/选区残留
+  // reparent 后强制 xterm 重绘并恢复焦点,避免光标/选区残留。
+  // 只处理"本标签、已挂载"的会话:隐藏标签的窗格不在 DOM 上,fit 会算出 0 尺寸。
   const focused = state.sessions.get(state.activeId);
   setTimeout(() => {
-    for (const s of state.sessions.values()) {
+    for (const s of visibleSessions()) {
       try { s.term.refresh(0, s.term.rows - 1); } catch { /* ignore */ }
     }
     fitAllVisible();
@@ -457,6 +626,15 @@ function renderLayout() {
       try { focused.term.focus(); } catch { /* ignore */ }
     }
   }, 30);
+}
+
+/// 当前标签内、且窗格已挂载到 DOM 的会话。
+/// 隐藏标签的窗格不在 DOM 上,对其 fit()/refresh() 会算出 0 尺寸并污染几何,
+/// 因此所有"按可视尺寸重算"的操作都必须限定在这个集合内。
+function visibleSessions() {
+  const tab = activeTab();
+  if (!tab) return [];
+  return [...state.sessions.values()].filter((s) => s.tabId === tab.id && s.pane && s.pane.isConnected);
 }
 
 function attachDivider(div, node, aEl, bEl, wrap) {
@@ -498,7 +676,7 @@ function renderPickers() {
       item.addEventListener('click', () => {
         pane.pickerRendered = false;
         picker.remove();
-        connectHost(h.id, paneId, true);
+        connectHost(h.id, paneId, { force: true });
       });
       picker.appendChild(item);
     }
@@ -553,12 +731,18 @@ function firstLeafPaneId(node) {
   return firstLeafPaneId(node.a) || firstLeafPaneId(node.b);
 }
 
-function removeFromLayout(paneId) {
-  if (!state.layout) return;
-  const path = findLeafPath(state.layout, paneId);
+/// 从指定标签的布局树里摘除一个窗格(作用于 tab 对象,不受当前活动标签影响)
+function removePaneFromTab(tab, paneId) {
+  if (!tab || !tab.layout) return;
+  const path = findLeafPath(tab.layout, paneId);
   if (!path) return;
-  replaceAt(path, () => null);
-  // 折叠:null 与兄弟合并
+  const setAt = (node, p, val) => {
+    if (!p.length) return val;
+    const [k, ...rest] = p;
+    node[k] = setAt(node[k], rest, val);
+    return node;
+  };
+  tab.layout = setAt(tab.layout, path, null);
   const collapse = (node) => {
     if (node === null || isLeaf(node)) return node;
     const a = collapse(node.a); const b = collapse(node.b);
@@ -567,11 +751,13 @@ function removeFromLayout(paneId) {
     node.a = a; node.b = b;
     return node;
   };
-  state.layout = collapse(state.layout);
+  tab.layout = collapse(tab.layout);
 }
 
 function fitAllVisible() {
-  for (const s of state.sessions.values()) {
+  // 只 fit 当前标签内已挂载的会话:隐藏标签的窗格不在 DOM 上,
+  // fit() 会得到 0 尺寸并把 PTY 尺寸推成 0。
+  for (const s of visibleSessions()) {
     try {
       const before = { cols: s.term.cols, rows: s.term.rows };
       s.fit.fit();
@@ -591,34 +777,47 @@ function scheduleResizeSync() {
 }
 function resizeResizeSync() {
   resizeSyncTimer = setTimeout(() => {
-    for (const s of state.sessions.values()) {
+    for (const s of visibleSessions()) {
       if (s.status !== 'connected') continue;
       api('ssh:resize', { sessionId: s.sessionId, cols: s.term.cols, rows: s.term.rows }).catch(() => {});
     }
   }, 150);
 }
 
-function createSession(host, paneId) {
+function createSession(host, paneId, tabId) {
   const sessionId = crypto.randomUUID();
-  // 确定挂载窗格:指定 paneId(选择器) > 活动空窗格 > 与活动会话分屏 > 首个窗格
-  let targetPaneId = paneId || (state.layout && firstEmptyLeaf(state.layout));
+  // 目标标签:显式指定(新标签) > 当前标签 > 新建一个
+  let tab = tabId ? state.tabs.get(tabId) : activeTab();
+  if (!tab) tab = createTab();
+  // 先把标签设为活动(仅改标识与高亮,不动 DOM)。
+  // 注意不能用 activateTab:它会清空 #layout-root,而本函数随后就要把新终端
+  // 挂到该标签的窗格里 —— 若中途清空,term.open() 挂好的终端会被摘掉,
+  // 首屏输出(如登录 banner)即丢失。
+  const tabChanged = state.activeTabId !== tab.id;
+  if (tabChanged) {
+    setActiveTabId(tab.id);
+    $('#layout-root').innerHTML = '';
+  }
+
+  // 在"该标签"内确定挂载窗格:指定 paneId(选择器) > 该标签的空窗格 > 该标签内新增分屏
+  let targetPaneId = paneId || (tab.layout && firstEmptyLeaf(tab.layout));
   if (!targetPaneId) {
-    if (!state.layout) {
+    if (!tab.layout) {
       targetPaneId = newPaneId();
-      state.layout = leaf(targetPaneId);
-      state.panes.set(targetPaneId, { id: targetPaneId, el: makePaneEl(targetPaneId), sessionId: null });
+      tab.layout = leaf(targetPaneId);
+      tab.panes.set(targetPaneId, { id: targetPaneId, el: makePaneEl(targetPaneId), sessionId: null });
     } else {
       const anchor = activeLeafPaneId();
-      const path = findLeafPath(state.layout, anchor) || [];
+      const path = findLeafPath(tab.layout, anchor) || [];
       targetPaneId = newPaneId();
       replaceAt(path, (leafNode) => ({ type: 'h', ratio: 0.5, a: leafNode, b: leaf(targetPaneId) }));
-      state.panes.set(targetPaneId, { id: targetPaneId, el: makePaneEl(targetPaneId), sessionId: null });
+      tab.panes.set(targetPaneId, { id: targetPaneId, el: makePaneEl(targetPaneId), sessionId: null });
     }
   }
-  state.panes.get(targetPaneId).sessionId = sessionId;
+  tab.panes.get(targetPaneId).sessionId = sessionId;
   renderLayout(); // 先挂载窗格 DOM,再初始化终端
 
-  const pane = state.panes.get(targetPaneId).el;
+  const pane = tab.panes.get(targetPaneId).el;
   pane.innerHTML = '';
   pane.dataset.session = sessionId;
 
@@ -683,40 +882,97 @@ function createSession(host, paneId) {
     return true;
   });
 
-  const tab = document.createElement('div');
-  tab.className = 'tab';
-  tab.dataset.id = sessionId;
-  tab.innerHTML = `<span class="tab-dot connecting"></span><span class="tab-title">${escapeHtml(host.name)}</span><button class="tab-close" title="关闭">✕</button>`;
-  tab.addEventListener('click', (e) => {
-    if (e.target.classList.contains('tab-close')) return;
-    activateSession(sessionId);
-  });
-  tab.querySelector('.tab-close').addEventListener('click', () => closeSession(sessionId));
-  $('#tabs').appendChild(tab);
-
-  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tab, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0 };
+  // 标签元素由标签模型持有(不再每个会话建一个标签):
+  // 一个标签可在其内部承载多个分屏窗格。
+  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0 };
   state.sessions.set(sessionId, session);
+  tab.sessionId = sessionId;
+  syncTabChrome();
+  // 走统一的激活路径:打上 .focused、刷新状态栏、fit 并聚焦。
+  // (activateTab 在"已是当前标签"时提前返回,不会清空 DOM 把刚挂好的终端摘掉。)
   activateSession(sessionId);
   updateWelcome();
+  session.pendingFirstPaint = true;
+  void tabChanged;
   return session;
 }
 
+/// 首帧重算行几何(仅在会话首个数据绘制完成后调用一次)。
+///
+/// 背景:xterm 的 DOM 渲染器在 open() 时缓存一次行几何;新建会话时容器尚未
+/// 首帧重算行几何(会话首个数据绘制完成后触发)。
+///
+/// 背景:xterm 的 DOM 渲染器在 open() 时缓存一次行几何;新建会话时容器尚未
+/// 完成布局,缓存的行高不可用,表现为"缓冲区有数据、DOM 的行却是空的"。
+/// refresh() 会复用该缓存(实测无效),只有 resize 才会重算;而布局完成时机
+/// 与帧不对齐。这里做两件事:立即尝试一次,再用有界轮询兜底直到内容可见,
+/// 既覆盖慢布局,也不长期占用定时器(可见即停,超时即弃)。
+function firstPaint(session) {
+  const { term, pane, fit } = session;
+  if (!term || !pane || session._paintTimer) return;
+
+  const domHasText = () => {
+    const rows = pane.querySelector('.xterm-rows');
+    if (!rows) return false;
+    for (const d of rows.children) if ((d.textContent || '').trim()) return true;
+    return false;
+  };
+  const repaint = () => {
+    if (!pane.isConnected) return;
+    try {
+      fit.fit();
+      const c = term.cols;
+      const r = term.rows;
+      term.resize(c, Math.max(1, r - 1));
+      term.resize(c, r);
+      term.refresh(0, Math.max(0, r - 1));
+    } catch { /* ignore */ }
+    scheduleResizeSync();
+  };
+
+  if (!domHasText()) repaint();
+  if (domHasText()) return;
+
+  let elapsed = 0;
+  const STEP = 60;
+  const LIMIT = 1500; // 覆盖慢首包与布局抖动;可见即停,超时即弃
+  session._paintTimer = setInterval(() => {
+    elapsed += STEP;
+    if (!pane.isConnected || !state.sessions.has(session.sessionId)) {
+      clearInterval(session._paintTimer);
+      session._paintTimer = null;
+      return;
+    }
+    if (!domHasText()) repaint();
+    if (domHasText() || elapsed >= LIMIT) {
+      clearInterval(session._paintTimer);
+      session._paintTimer = null;
+    }
+  }, STEP);
+}
+
 function activateSession(sessionId) {
+  const s = state.sessions.get(sessionId);
+  if (!s) return;
+  // 会话属于某个标签:先切到该标签(会挂载它的窗格并处理 fit/refresh)
+  if (s.tabId && state.activeTabId !== s.tabId) {
+    activateTab(s.tabId);
+  }
   state.activeId = sessionId;
   state.activePaneId = null;
-  for (const [id, s] of state.sessions) {
-    s.tab.classList.toggle('active', id === sessionId);
-    const pane = state.panes.get(s.paneId);
+  const tab = s.tabId ? state.tabs.get(s.tabId) : null;
+  if (tab) tab.sessionId = sessionId;
+  // 仅在当前标签内标记焦点窗格
+  for (const [id, other] of state.sessions) {
+    if (!tab || other.tabId !== tab.id) continue;
+    const pane = tab.panes.get(other.paneId);
     if (pane) pane.el.classList.toggle('focused', id === sessionId);
   }
-  const s = state.sessions.get(sessionId);
-  if (s) {
-    try { s.fit.fit(); } catch { /* ignore */ }
-    s.term.focus();
-    s.tab.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-    updateStatusbar(s);
-    loadSessionLogState(s);
-  }
+  try { s.fit.fit(); } catch { /* ignore */ }
+  s.term.focus();
+  syncTabChrome();
+  updateStatusbar(s);
+  loadSessionLogState(s);
   closeSnippetMenu();
   renderMonitorBar();
 }
@@ -726,35 +982,45 @@ function closeSession(sessionId) {
   if (!s) return;
   api('ssh:disconnect', { sessionId }).catch(() => {});
   stopLogIfActive(sessionId);
+  if (s._paintTimer) { clearInterval(s._paintTimer); s._paintTimer = null; }
   s.term.dispose();
-  s.tab.remove();
-  const pane = state.panes.get(s.paneId);
-  if (pane) {
+  // 只在"所属标签"里摘除窗格(可能同时有多个标签各自的分屏)
+  const tab = s.tabId ? state.tabs.get(s.tabId) : null;
+  const pane = tab ? tab.panes.get(s.paneId) : null;
+  if (tab && pane) {
     pane.sessionId = null;
     pane.el.innerHTML = '';
     pane.el.dataset.session = '';
-    removeFromLayout(s.paneId);
-    state.panes.delete(s.paneId);
+    // 用该标签的布局树做摘除(闭包内操作 tab.layout,避免误动当前标签)
+    removePaneFromTab(tab, s.paneId);
+    tab.panes.delete(s.paneId);
   }
   state.broadcast && state.broadcast.delete(sessionId);
   if (!state.broadcast || !state.broadcast.size) setBroadcast(null);
-  if (state.zoomPaneId === s.paneId) state.zoomPaneId = null;
+  if (tab && tab.zoomPaneId === s.paneId) tab.zoomPaneId = null;
   state.metrics.delete(sessionId);
   state.sessions.delete(sessionId);
-  if (state.layout) rebalanceRatios(state.layout);
+  if (tab && tab.layout) tab.layout = rebalanceRatios(tab.layout);
+  if (tab && tab.sessionId === sessionId) {
+    // 该标签的主会话被关闭:改为挂载标签内其余会话,无则保留空标签
+    const rest = [...state.sessions.values()].find((x) => x.tabId === tab.id);
+    tab.sessionId = rest ? rest.sessionId : null;
+  }
   if (state.activeId === sessionId) {
     state.activeId = null;
-    const next = [...state.sessions.keys()][0];
+    const next = tab && tab.sessionId ? tab.sessionId : [...state.sessions.keys()][0];
     if (next) activateSession(next);
     else updateStatusbar(null);
   }
+  syncTabChrome();
   renderLayout();
   updateWelcome();
 }
 
+/// 会话状态变化后刷新标签外观(标题与状态点取自该标签的主会话)
 function updateTab(session) {
-  const dot = session.tab.querySelector('.tab-dot');
-  dot.className = 'tab-dot ' + session.status;
+  void session;
+  syncTabChrome();
 }
 
 function updateStatusbar(session, error) {
@@ -821,11 +1087,13 @@ function scheduleReconnect(sessionId, why) {
   }, delay);
 }
 
-async function connectHost(hostId, paneId, force = false) {
+async function connectHost(hostId, paneId, opts = {}) {
+  const { force = false, newTab = false } = opts;
   const host = state.hosts.find((h) => h.id === hostId);
   if (!host) return;
-  // 已有活动会话则直接切过去(分屏强制新建时跳过)
-  if (!force) {
+  // 已有会话则切过去 —— 但"新开标签"的意图要尊重:
+  // 同主机可以再开一个独立会话(⌘/Ctrl+点击、中键,或标签栏的 ＋)。
+  if (!force && !newTab) {
     for (const s of state.sessions.values()) {
       if (s.host.id === hostId && (s.status === 'connected' || s.status === 'connecting')) {
         activateSession(s.sessionId);
@@ -833,13 +1101,19 @@ async function connectHost(hostId, paneId, force = false) {
       }
     }
   }
-  const session = createSession(host, paneId);
+  // 目标位置:指定窗格(分屏/窗格选择器)→ 放进该窗格;
+  // 否则一律新开一个标签 —— 点主机就是"打开一个会话标签",分屏是显式动作(⛶ / ⌘D)。
+  let tabId = null;
+  if (!paneId) {
+    tabId = createTab().id;
+  }
+  const session = createSession(host, paneId, tabId);
   try {
     await api('ssh:connect', { hostId, sessionId: session.sessionId });
     if (host.initcmd) api('ssh:write', { sessionId: session.sessionId, data: host.initcmd + '\r' }).catch(() => {});
   } catch (e) {
     session.status = 'error';
-    updateTab(session);
+    syncTabChrome();
     if (state.activeId === session.sessionId) updateStatusbar(session, e.message);
     toast('连接失败：' + e.message, 'error');
     scheduleReconnect(session.sessionId, e.message);
@@ -855,7 +1129,8 @@ function parseQuickTarget(text) {
 
 async function quickConnect(parsed, paneId) {
   const host = { id: 'quick-' + crypto.randomUUID(), quick: true, name: `${parsed.host}:${parsed.port}`, ...parsed, authType: 'password' };
-  const session = createSession(host, paneId);
+  // 与点主机一致:无指定窗格时新开标签
+  const session = createSession(host, paneId, paneId ? null : createTab().id);
   try {
     await api('ssh:connectQuick', { host });
     toast('快速连接成功', 'success');
@@ -1392,8 +1667,8 @@ async function saveTermSettings() {
       s.term.options.scrollback = scrollback;
     } catch { /* ignore */ }
   }
-  // 字号变化会改变字符网格,需重算几何并同步远端 PTY
-  for (const s of state.sessions.values()) {
+  // 字号变化会改变字符网格,需重算几何并同步远端 PTY(只对本标签已挂载的会话)
+  for (const s of visibleSessions()) {
     try { s.fit.fit(); } catch { /* ignore */ }
   }
   scheduleResizeSync();
@@ -1860,6 +2135,88 @@ async function saveAiSettings() {
 
 /* ---------------- 事件绑定与启动 ---------------- */
 
+/* ---------------- 右键菜单(替代 WebView 原生菜单) ----------------
+   wry/WKWebView 的默认右键菜单是网页菜单(重新加载/检查元素等),对终端应用毫无用处,
+   且会盖住界面。这里全局屏蔽,仅在终端区域给出终端常用操作。 */
+
+function termFromEvent(e) {
+  const paneEl = e.target && e.target.closest ? e.target.closest('.term-pane') : null;
+  if (!paneEl) return null;
+  const sid = paneEl.dataset.session;
+  return sid ? state.sessions.get(sid) || null : null;
+}
+
+function closeCtxMenu() {
+  const m = $('#ctx-menu');
+  if (m) m.classList.add('hidden');
+}
+
+function showCtxMenu(x, y, items) {
+  const menu = $('#ctx-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  for (const it of items) {
+    if (it === '-') {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      continue;
+    }
+    const btn = document.createElement('button');
+    btn.className = 'ctx-item';
+    btn.innerHTML = `<span>${escapeHtml(it.label)}</span>${it.key ? `<span class="ctx-key">${escapeHtml(it.key)}</span>` : ''}`;
+    btn.disabled = !!it.disabled;
+    btn.addEventListener('click', () => {
+      closeCtxMenu();
+      try { it.run(); } catch { /* ignore */ }
+    });
+    menu.appendChild(btn);
+  }
+  // 先显示以便量取尺寸,再按视口边缘回推,避免菜单溢出屏幕
+  menu.classList.remove('hidden');
+  const r = menu.getBoundingClientRect();
+  const px = Math.min(x, window.innerWidth - r.width - 8);
+  const py = Math.min(y, window.innerHeight - r.height - 8);
+  menu.style.left = `${Math.max(8, px)}px`;
+  menu.style.top = `${Math.max(8, py)}px`;
+}
+
+/// 终端右键菜单:复制/粘贴/全选 + 清屏/搜索/只读
+function openTermCtxMenu(e, session) {
+  const term = session.term;
+  const hasSel = (() => { try { return term.hasSelection(); } catch { return false; } })();
+  showCtxMenu(e.clientX, e.clientY, [
+    { label: '复制', key: '⌘C', disabled: !hasSel, run: () => { try { navigator.clipboard.writeText(term.getSelection()).catch(() => {}); } catch { /* ignore */ } } },
+    { label: '粘贴', key: '⌘V', run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
+    { label: '全选', key: '⌘A', run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
+    '-',
+    { label: '搜索…', key: '⌘F', run: () => { activateSession(session.sessionId); openTermSearch(); } },
+    { label: '清屏', run: () => { activateSession(session.sessionId); clearActiveTerm(); } },
+    { label: session.readOnly ? '关闭只读' : '设为只读', run: () => { activateSession(session.sessionId); toggleReadonly(); } },
+    '-',
+    { label: '复制会话 ID', run: () => { navigator.clipboard.writeText(session.sessionId).catch(() => {}); toast('已复制会话 ID', 'success'); } },
+  ]);
+}
+
+function bindContextMenu() {
+  // 全局屏蔽原生菜单:oncontextmenu 返回 false 即阻止默认行为
+  window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const session = termFromEvent(e);
+    if (session) openTermCtxMenu(e, session);
+    else closeCtxMenu();
+    return false;
+  });
+  // 点击/滚动/失焦/缩放后收起
+  window.addEventListener('mousedown', (e) => {
+    const menu = $('#ctx-menu');
+    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#ctx-menu')) closeCtxMenu();
+  }, true);
+  window.addEventListener('resize', closeCtxMenu);
+  window.addEventListener('blur', closeCtxMenu);
+  document.addEventListener('scroll', closeCtxMenu, true);
+}
+
 function bindEvents() {
   $('#btn-add-host').addEventListener('click', () => openHostModal(null));
   $('#btn-welcome-add').addEventListener('click', () => openHostModal(null));
@@ -1914,6 +2271,19 @@ function bindEvents() {
   $('#btn-ai-fetch-models').addEventListener('click', fetchAiModels);
   $('#ai-model-switch').addEventListener('change', (e) => switchModel(e.target.value).then(renderModelSwitch).catch(() => {}));
   $('#btn-ai-diagnose').addEventListener('click', aiDiagnose);
+
+  // ＋ 新建标签页:空标签,等待用户在窗格选择器里选主机
+  $('#btn-newtab').addEventListener('click', () => {
+    const tab = createTab();
+    activateTab(tab.id);
+    // 空标签给一个空窗格,渲染窗格选择器
+    const paneId = newPaneId();
+    tab.layout = leaf(paneId);
+    tab.panes.set(paneId, { id: paneId, el: makePaneEl(paneId), sessionId: null });
+    tab.el.querySelector('.tab-title').textContent = '新标签';
+    renderLayout();
+    updateWelcome();
+  });
 
   // ⋯ 更多菜单
   const moreMenu = $('#more-menu');
@@ -2127,23 +2497,39 @@ function bindEvents() {
     if (e.key === 'Escape') { e.preventDefault(); closeTermSearch(); }
   });
 
-  // 全局快捷键：Cmd/Ctrl+F 搜索、Cmd/Ctrl+W 关闭标签、Cmd/Ctrl+1..9 切换标签
+  // 全局快捷键：⌘F 搜索、⌘T 新标签、⌘W 关标签、⌘D 分屏、⌘1..9 切标签
   window.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && !e.shiftKey && e.key === 'f') { e.preventDefault(); openTermSearch(); return; }
     if (mod && !e.shiftKey && (e.key === 'w' || e.key === 'W')) {
       e.preventDefault();
+      // 优先关"当前窗格";窗格只剩一个时关整个标签
       const s = state.sessions.get(state.activeId);
-      if (s) closeSession(s.sessionId);
+      const tab = activeTab();
+      const paneCount = tab ? [...state.sessions.values()].filter((x) => x.tabId === tab.id).length : 0;
+      if (s && paneCount > 1) closeSession(s.sessionId);
+      else if (tab) closeTab(tab.id);
+      return;
+    }
+    if (mod && !e.shiftKey && (e.key === 't' || e.key === 'T')) {
+      e.preventDefault();
+      const tab = createTab();
+      activateTab(tab.id);
+      const paneId = newPaneId();
+      tab.layout = leaf(paneId);
+      tab.panes.set(paneId, { id: paneId, el: makePaneEl(paneId), sessionId: null });
+      renderLayout();
+      updateWelcome();
       return;
     }
     if (mod && e.key === 'd') { e.preventDefault(); splitActive(e.shiftKey ? 'v' : 'h'); return; }
     if (mod && e.shiftKey && e.key === 'Enter') { e.preventDefault(); const pid = state.zoomPaneId || (state.sessions.get(state.activeId) || {}).paneId; if (pid) togglePaneZoom(pid); return; }
+    // ⌘1..9 切标签(标签是会话的容器,切标签比切会话更符合直觉)
     if (mod && /^[1-9]$/.test(e.key)) {
       e.preventDefault();
-      const ids = [...state.sessions.keys()];
+      const ids = [...state.tabs.keys()];
       const target = ids[Number(e.key) - 1];
-      if (target) activateSession(target);
+      if (target) activateTab(target);
       return;
     }
     if (e.key === 'Escape' && !$('#term-search').classList.contains('hidden')) { closeTermSearch(); return; }
@@ -2173,7 +2559,14 @@ function bindEvents() {
   // 主进程事件
   window.nebula.on('ssh:data', ({ sessionId, data }) => {
     const s = state.sessions.get(sessionId);
-    if (s) s.term.write(data);
+    if (!s) return;
+    // term.write 是异步的:数据先入队、稍后解析绘制。首个数据块用回调在
+    // "已解析并绘制"之后做一次尺寸重算,修正 open() 期间过早缓存的行几何。
+    s.term.write(data);
+    if (s.pendingFirstPaint) {
+      s.pendingFirstPaint = false;
+      firstPaint(s);
+    }
   });
   window.nebula.on('ssh:status', ({ sessionId, state: st, error, label }) => {
     const s = state.sessions.get(sessionId);
@@ -2221,6 +2614,7 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
+  bindContextMenu();
   try {
     const info = await api('app:info');
     $('#app-version').textContent = `v${info.version} · ${info.platform === 'darwin' ? 'macOS' : info.platform}`;
@@ -2246,6 +2640,20 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       if (s && s.status === 'connected' && !s.readOnly) s.term.input(d);
     },
     paneCount: () => state.panes.size,
+    // 标签/窗格状态:供 e2e 断言"同主机可多开标签且互不干扰"
+    tabState: () => ({
+      tabs: state.tabs.size,
+      activeTab: state.activeTabId,
+      panes: state.panes.size,
+      // 每个会话的窗格是否仍挂载在 DOM 上(用于回归"新会话顶掉旧会话终端")
+      sessions: [...state.sessions.values()].map((s) => ({
+        id: s.sessionId,
+        host: s.host.id,
+        tabId: s.tabId,
+        mounted: !!(s.pane && s.pane.isConnected),
+        hasText: (() => { try { return s.term.buffer.active.length > 0; } catch { return false; } })(),
+      })),
+    }),
     broadcastCount: () => (state.broadcast ? state.broadcast.size : 0),
     // 终端缓冲状态:供 e2e 断言(回滚上限是否生效、内容是否送达)
     termBuffer: () => {
