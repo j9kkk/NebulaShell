@@ -65,12 +65,12 @@
 
 | 平台 | 文件 | 大小 |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `NebulaShell_1.0.1_aarch64.dmg` | 5.4 MB |
-| macOS (Intel) | `NebulaShell_1.0.1_x64.dmg` | 5.7 MB |
-| Windows (64 位) | `NebulaShell_1.0.1_x64-setup.exe` | 3.6 MB |
-| Windows (MSI) | `NebulaShell_1.0.1_x64_en-US.msi` | 5.1 MB |
-| Linux (AppImage) | `NebulaShell_1.0.1_amd64.AppImage` | 79.7 MB |
-| Linux (deb / rpm) | `NebulaShell_1.0.1_amd64.deb` / `-1.x86_64.rpm` | 5.3 MB |
+| macOS (Apple Silicon) | `NebulaShell_1.1.0_aarch64.dmg` | 5.4 MB |
+| macOS (Intel) | `NebulaShell_1.1.0_x64.dmg` | 5.7 MB |
+| Windows (64 位) | `NebulaShell_1.1.0_x64-setup.exe` | 3.6 MB |
+| Windows (MSI) | `NebulaShell_1.1.0_x64_en-US.msi` | 5.1 MB |
+| Linux (AppImage) | `NebulaShell_1.1.0_amd64.AppImage` | 79.7 MB |
+| Linux (deb / rpm) | `NebulaShell_1.1.0_amd64.deb` / `-1.x86_64.rpm` | 5.3 MB |
 
 > 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
 > [.github/workflows/release.yml](.github/workflows/release.yml)。
@@ -194,7 +194,7 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 发布新版本：
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
 ## 🤝 贡献
