@@ -70,7 +70,7 @@
 | Windows (64 位) | `NebulaShell_1.1.0_x64-setup.exe` | 3.6 MB |
 | Windows (MSI) | `NebulaShell_1.1.0_x64_en-US.msi` | 5.1 MB |
 | Linux (AppImage) | `NebulaShell_1.1.0_amd64.AppImage` | 79.7 MB |
-| Linux (deb / rpm) | `NebulaShell_1.1.0_amd64.deb` / `-1.x86_64.rpm` | 5.3 MB |
+| Linux (deb / rpm) | `NebulaShell_1.1.0_amd64.deb` / `-1.x86_64.rpm` | 5.4 MB |
 
 > 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
 > [.github/workflows/release.yml](.github/workflows/release.yml)。
