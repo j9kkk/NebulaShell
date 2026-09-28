@@ -180,10 +180,12 @@ async function main() {
   check('T5 SSH 连接 + 终端输出', true);
 
   // 分屏
+  // 分屏:同一标签内并排两个终端(标签数不变,窗格数 +1)
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
   await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
-  await waitEval(`return document.querySelectorAll('.tab-dot.connected').length`, '2', 30000);
-  check('T6 分屏双会话', true);
+  await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
+  const splitState = await evalJs(`return JSON.stringify({ tabs: document.querySelectorAll('.tab').length, panes: document.querySelectorAll('.term-pane').length })`);
+  check('T6 分屏双会话(同一标签内并排)', asObj(splitState).panes === 2, splitState);
 
   // 删除确认对话框(回归:confirm 在 WKWebView 失效 → 已换应用内实现)
   await evalJs(`
@@ -242,6 +244,41 @@ async function main() {
     })()`);
   const cloudObj = asObj(cloudRes);
   check('T11 腾讯云实例拉取(TC3 签名链路)', cloudObj.ok === true && cloudObj.count === 2, cloudRes);
+
+  // 同一主机再开一个独立标签(回归:此前同主机点击只切焦点,无法多开会话)
+  const beforeTabs = Number(await evalJs(`return document.querySelectorAll('.tab').length`));
+  await evalJs(`
+    const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
+    it.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true, ctrlKey: true }));
+    return 1`);
+  await waitEval(`return document.querySelectorAll('.tab').length`, String(beforeTabs + 1), 30000);
+  // 两个会话都要保活:切标签不应销毁另一个会话的终端
+  const twoTabs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
+  const allMountedOrAlive = twoTabs.sessions.length >= 2 && twoTabs.sessions.every((s) => s.hasText);
+  check('T13 同主机可再开标签且会话互不干扰', twoTabs.tabs === beforeTabs + 1 && allMountedOrAlive, JSON.stringify(twoTabs));
+
+  // 右键:屏蔽 WebView 原生菜单,终端内弹应用菜单
+  const ctx = asObj(await evalJs(`return JSON.stringify((() => {
+    const pane = document.querySelector('.term-pane .xterm');
+    const r = (pane || document.body).getBoundingClientRect();
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 40 });
+    (pane || document.body).dispatchEvent(e);
+    const menu = document.querySelector('#ctx-menu');
+    return { prevented: e.defaultPrevented, items: menu.querySelectorAll('.ctx-item').length };
+  })())`));
+  check('T14 右键屏蔽原生菜单并弹出应用菜单', ctx.prevented === true && ctx.items >= 4, JSON.stringify(ctx));
+
+  // 按钮尺寸收敛(回归:此前存在 15/27/28/42px 四种高度混杂)
+  const btnHeights = await evalJs(`return JSON.stringify((() => {
+    const hs = new Set();
+    for (const b of document.querySelectorAll('button')) {
+      const r = b.getBoundingClientRect();
+      if (r.height > 0 && !b.closest('.hidden') && !b.closest('#ctx-menu')) hs.add(Math.round(r.height));
+    }
+    return [...hs].sort((a, b) => a - b);
+  })())`);
+  const heights = asObj(btnHeights);
+  check('T15 按钮高度层级收敛(≤4 档)', Array.isArray(heights) && heights.length <= 4, JSON.stringify(heights));
 
   // 无未捕获异常
   const errs = await evalJs(`return JSON.stringify(window.__errs)`);
