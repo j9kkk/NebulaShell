@@ -119,7 +119,10 @@
     <!-- SFTP 文件面板 -->
     <aside id="file-panel" class="hidden">
       <div class="ai-header">
-        <span class="ai-title">📁 文件管理</span>
+        <div class="fp-head">
+          <span class="ai-title">📁 文件管理</span>
+          <span id="file-target" class="fp-target muted" title="当前操作的目标服务器">未连接</span>
+        </div>
         <span class="spacer"></span>
         <button id="btn-file-close" class="btn icon" title="收起">✕</button>
       </div>

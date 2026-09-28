@@ -30,7 +30,9 @@ const state = {
   monitorVisible: true,
   metrics: new Map(), // sessionId -> 最近一次 ssh:metrics
   metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
-  file: { cwd: null, entries: [], selected: null, chmodTarget: null, renameMode: null },
+  // 文件面板:显示的是"哪个会话"的目录必须显式记录 —— 面板是全局单例,
+  // 若只靠 activeId,切标签后会出现"显示 A 的目录、操作落到 B"的误删风险。
+  file: { sessionId: null, cwd: null, entries: [], selected: null, chmodTarget: null, renameMode: null },
   // 标签页(E1)与窗格(E3):每个标签页持有独立的布局树与窗格集合,
   // 切换标签只渲染该标签的窗格;其余标签的终端对象保留在内存中(不销毁),
   // 切回时重新挂载并 refresh。state.layout/panes/zoomPaneId/activePaneId
@@ -495,6 +497,35 @@ function activateTab(tabId) {
   }
   renderMonitorBar();
   updateWelcome();
+  followFilePanel();
+}
+
+/// 文件面板跟随当前会话。
+/// 面板是全局单例,若不跟随,切标签后会显示上一台服务器的目录,而操作却落到
+/// 新会话上(看着 A 的目录删 B 的文件)。这里在切换后按"新会话"重新加载,
+/// 并用该会话上次访问过的目录(没记录则回到根)。
+function followFilePanel() {
+  const panel = $('#file-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  const s = activeConnectedSession();
+  if (!s) {
+    state.file.sessionId = null;
+    state.file.cwd = null;
+    state.file.entries = [];
+    $('#file-list').innerHTML = '<div class="file-empty">请先连接主机</div>';
+    renderFileTarget();
+    return;
+  }
+  if (state.file.sessionId === s.sessionId) { renderFileTarget(); return; }
+  // 换目标:清掉上一个服务器的列表与选择,避免残留造成误操作
+  state.file.selected = null;
+  state.file.chmodTarget = null;
+  state.file.renameMode = null;
+  $('#file-chmod-row').classList.add('hidden');
+  $('#file-mkdir-row').classList.add('hidden');
+  $('#file-list').innerHTML = '<div class="file-empty">加载中…</div>';
+  const remembered = s.lastFileDir || null;
+  loadFileDir(remembered).catch(() => {});
 }
 
 /// 关闭标签:释放该标签下所有会话
@@ -1031,6 +1062,10 @@ function activateSession(sessionId) {
   loadSessionLogState(s);
   closeSnippetMenu();
   renderMonitorBar();
+  // 会话切换(含新建后激活)时让文件面板跟随。
+  // 注意不能只依赖 activateTab:新建会话时标签已是活动态,activateTab 会走
+  // "已活动"的提前返回分支,不会执行到它的 followFilePanel()。
+  followFilePanel();
 }
 
 function closeSession(sessionId) {
@@ -1591,24 +1626,64 @@ function renderFileList() {
   if (!entries.length) box.innerHTML = '<div class="file-empty">目录为空</div>';
 }
 
+/// 文件面板的目标会话。
+/// 面板是全局的(一个 DOM),但 SFTP 操作必须落在"面板显示的那台服务器"上。
+/// 这里以 fileSessionId 为准,而不是 activeConnectedSession() ——
+/// 否则切标签后会出现"看着 A 的目录、操作落到 B"的误删风险。
+function filePanelSession() {
+  const s = state.file.sessionId ? state.sessions.get(state.file.sessionId) : null;
+  return s && s.status === 'connected' ? s : null;
+}
+
+/// 渲染面板的服务器标识(标题下方),让用户明确当前操作对象
+function renderFileTarget() {
+  const el = $('#file-target');
+  if (!el) return;
+  const s = filePanelSession();
+  if (!s) {
+    const active = state.sessions.get(state.activeId);
+    el.textContent = active && active.status === 'connected' ? '未选择目录(点刷新加载)' : '未连接';
+    el.classList.toggle('warn', !active || active.status !== 'connected');
+    return;
+  }
+  el.textContent = `${s.host.username}@${s.host.host}:${s.host.port}`;
+  el.classList.remove('warn');
+  el.title = `当前文件操作目标：${s.host.name}（${s.host.username}@${s.host.host}:${s.host.port}）`;
+}
+
 async function loadFileDir(dir) {
   const s = activeConnectedSession();
-  if (!s) { $('#file-list').innerHTML = '<div class="file-empty">请先连接主机</div>'; return; }
+  if (!s) {
+    state.file.sessionId = null;
+    state.file.cwd = null;
+    state.file.entries = [];
+    $('#file-list').innerHTML = '<div class="file-empty">请先连接主机</div>';
+    renderFileTarget();
+    return;
+  }
+  // 记录本次列表属于哪个会话:操作时以此为准,避免切标签后张冠李戴
+  state.file.sessionId = s.sessionId;
+  renderFileTarget();
   $('#file-status').textContent = '加载中…';
   try {
     const r = await api('sftp:list', { sessionId: s.sessionId, path: dir });
+    // 期间用户可能已切换会话:丢弃过期响应,避免把旧服务器的目录画到新目标上
+    if (state.file.sessionId !== s.sessionId) return;
     state.file.cwd = r.path;
     state.file.entries = r.entries;
     state.file.selected = null;
+    s.lastFileDir = r.path; // 记住各会话的最后目录,切回时恢复到原处
     renderFileList();
+    renderFileTarget();
     $('#file-status').textContent = '';
   } catch (e) {
+    if (state.file.sessionId !== s.sessionId) return;
     $('#file-status').textContent = '加载失败：' + e.message;
   }
 }
 
 async function fileUpload() {
-  const s = activeConnectedSession();
+  const s = filePanelSession();
   if (!s) return toast('请先连接主机', 'error');
   const paths = await api('dialog:pickAnyFile');
   if (!paths || !paths.length) return;
@@ -1627,7 +1702,7 @@ async function fileUpload() {
 }
 
 async function fileDownload() {
-  const s = activeConnectedSession();
+  const s = filePanelSession();
   if (!s) return toast('请先连接主机', 'error');
   const en = state.file.entries.find((x) => x.name === state.file.selected);
   if (!en) return toast('请先在列表中选中文件', 'error');
@@ -1646,7 +1721,7 @@ async function fileDownload() {
 }
 
 async function fileDelete() {
-  const s = activeConnectedSession();
+  const s = filePanelSession();
   if (!s) return toast('请先连接主机', 'error');
   const en = state.file.entries.find((x) => x.name === state.file.selected);
   if (!en) return toast('请先在列表中选中要删除的项', 'error');
@@ -2399,7 +2474,7 @@ function bindEvents() {
     $('#file-chmod-octal').value = en.dir ? '0755' : '0644';
   });
   $('#btn-file-chmod-ok').addEventListener('click', async () => {
-    const s = activeConnectedSession();
+    const s = filePanelSession();
     const en = state.file.chmodTarget;
     const mode = parseInt($('#file-chmod-octal').value, 8);
     if (!s || !en || Number.isNaN(mode)) return toast('权限格式错误(八进制,如 0644)', 'error');
@@ -2412,7 +2487,7 @@ function bindEvents() {
   });
   $('#btn-file-chmod-cancel').addEventListener('click', () => $('#file-chmod-row').classList.add('hidden'));
   $('#btn-file-bookmark').addEventListener('click', async () => {
-    const s = activeConnectedSession();
+    const s = filePanelSession();
     if (!s || !state.file.cwd) return toast('请先连接并打开目录', 'error');
     await api('bookmarks:add', { hostId: s.host.id, path: state.file.cwd });
     await renderFileBookmarks();
@@ -2426,7 +2501,7 @@ function bindEvents() {
     $('#file-drop-hint').classList.add('hidden');
     const files = [...(e.dataTransfer.files || [])].map((f) => f.path).filter(Boolean);
     if (!files.length) return;
-    const s = activeConnectedSession();
+    const s = filePanelSession();
     if (!s) return toast('请先连接主机', 'error');
     for (const p of files) {
       const name = p.split('/').pop();
@@ -2552,8 +2627,12 @@ function bindEvents() {
     if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); fitActive(); return; }
     panel.classList.remove('hidden');
     $('#file-list').innerHTML = '<div class="file-empty">加载中…</div>';
+    renderFileTarget();
     fitActive();
-    await loadFileDir(null);
+    // 用"当前会话自己"记住的目录打开,而不是全局 cwd ——
+    // 后者可能属于另一台服务器,拿它的路径去 list 会张冠李戴。
+    const s = activeConnectedSession();
+    await loadFileDir(s ? (s.lastFileDir || null) : null);
   });
   $('#btn-file-close').addEventListener('click', () => { $('#file-panel').classList.add('hidden'); fitActive(); });
   $('#btn-file-refresh').addEventListener('click', () => loadFileDir(state.file.cwd));
@@ -2563,7 +2642,7 @@ function bindEvents() {
   });
   $('#btn-file-mkdir-cancel').addEventListener('click', () => $('#file-mkdir-row').classList.add('hidden'));
   $('#btn-file-mkdir-ok').addEventListener('click', async () => {
-    const s = activeConnectedSession();
+    const s = filePanelSession();
     const name = $('#file-mkdir-name').value.trim();
     if (!s) return toast('请先连接主机', 'error');
     if (!name) return toast('请填写名称', 'error');
@@ -2679,10 +2758,22 @@ function bindEvents() {
     if (label) s.label = label;
     updateTab(s);
     if (state.activeId === sessionId) updateStatusbar(s, error);
-    if (st !== 'connected') {
+    if (st === 'connected') {
+      // 面板开着但还没有可用目标(例如刚切换过去时会话还在 connecting),
+      // 等它连上后再补一次,否则面板会一直停在"未连接"。
+      if (!$('#file-panel').classList.contains('hidden') && !filePanelSession()) {
+        followFilePanel();
+      }
+    } else {
       state.metrics.delete(sessionId);
       if (state.activeId === sessionId) renderMonitorBar();
-      if (!$('#file-panel').classList.contains('hidden')) loadFileDir(state.file.cwd).catch(() => {});
+      // 断开的是"面板正在展示的那台"才需要重新加载(否则会拿错会话的路径)
+      if (state.file.sessionId === sessionId) {
+        state.file.sessionId = null;
+        state.file.cwd = null;
+        state.file.entries = [];
+        if (!$('#file-panel').classList.contains('hidden')) followFilePanel();
+      }
     }
   });
   window.nebula.on('ssh:metrics', (m) => {
@@ -2764,6 +2855,22 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       })),
     }),
     broadcastCount: () => (state.broadcast ? state.broadcast.size : 0),
+    // 文件面板状态:供 e2e 断言"面板标识的目标 = 当前会话",以及切换后是否跟随
+    filePanel: () => {
+      const s = state.file.sessionId ? state.sessions.get(state.file.sessionId) : null;
+      const active = state.sessions.get(state.activeId);
+      return {
+        open: !$('#file-panel').classList.contains('hidden'),
+        target: $('#file-target').textContent,
+        targetName: s ? s.host.name : null,
+        activeName: active ? active.host.name : null,
+        // 用 id 比对(同一台主机可能有多个会话,按名字比不足以判别)
+        targetId: s ? s.sessionId : null,
+        activeId: active ? active.sessionId : null,
+        cwd: state.file.cwd,
+        rows: document.querySelectorAll('#file-list .file-row').length,
+      };
+    },
     // 终端缓冲状态:供 e2e 断言(回滚上限是否生效、内容是否送达)
     termBuffer: () => {
       const s = state.sessions.get(state.activeId);
