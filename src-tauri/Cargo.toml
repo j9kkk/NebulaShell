@@ -23,6 +23,7 @@ base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 keyring = "3"
 aes-gcm = "0.10"
+scrypt = "0.11"      # 导出文件口令派生(凭据必须加密,不能落明文)
 rfd = "0.15"
 dirs = "5"
 chrono = "0.4"
