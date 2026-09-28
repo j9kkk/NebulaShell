@@ -121,6 +121,8 @@ async function main() {
       NEBULA_USER_DATA: userData,
       NEBULA_TEST_BRIDGE_FILE: portFile,
       NEBULA_TEST_PICK_PATHS: uploadSrc,
+      NEBULA_TEST_SAVE_PATH: path.join(work, 'hosts-export.json'),
+      NEBULA_TEST_IMPORT_PATH: path.join(work, 'hosts-export.json'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -279,6 +281,62 @@ async function main() {
   })())`);
   const heights = asObj(btnHeights);
   check('T15 按钮高度层级收敛(≤4 档)', Array.isArray(heights) && heights.length <= 4, JSON.stringify(heights));
+
+  // 导出:走带口令的加密导出,随后直接检查落盘文件不含明文凭据
+  const exportPath = path.join(work, 'hosts-export.json');
+  await evalJs(`window.__exportPath = ${JSON.stringify(exportPath)}; return 1`);
+  await evalJs(`document.querySelector('#btn-hosts-export').click(); return 1`);
+  await waitEval(`window.__nbTest.promptOpen()`, 'true', 10000);
+  await evalJs(`window.__nbTest.promptFill('e2e-passphrase-1'); window.__nbTest.promptClickOk(); return 1`);
+  // 二次确认口令
+  await waitEval(`window.__nbTest.promptTitle()`, '确认口令', 10000);
+  await evalJs(`window.__nbTest.promptFill('e2e-passphrase-1'); window.__nbTest.promptClickOk(); return 1`);
+  // 等文件落盘(mock 保存路径由 NEBULA_TEST_SAVE_PATH 决定)
+  let exportText = '';
+  for (let i = 0; i < 60; i++) {
+    await sleep(250);
+    if (fs.existsSync(exportPath)) {
+      const t = fs.readFileSync(exportPath, 'utf8');
+      if (t.includes('credentialsIncluded')) { exportText = t; break; } // 等写完整
+    }
+  }
+  const exportObj = exportText ? JSON.parse(exportText) : {};
+  // 不能用 /password/i 这类关键词判断 —— authType:"password" 与 credentialsIncluded
+  // 等键名本身就会命中。要断言的是"主机字段里没有明文凭据值"。
+  const credFields = (exportObj.hosts || []).flatMap((h) =>
+    ['password', 'privateKey', 'passphrase'].map((k) => h[k]));
+  const hasPlainCredField = credFields.some((v) => v !== undefined && v !== null && String(v) !== '');
+  const leaksValue = exportText.includes(PASSWORD) || /BEGIN [A-Z ]*PRIVATE KEY/.test(exportText);
+  check(
+    'T16 导出含加密凭据且文件无明文密码',
+    exportObj.credentialsIncluded === true && !!exportObj.credentials && !hasPlainCredField && !leaksValue,
+    `included=${exportObj.credentialsIncluded} plainField=${hasPlainCredField} leakedValue=${leaksValue}`,
+  );
+
+  // 导入验证:先删掉该主机,再从导出文件导回 —— 这样能真正检验"凭据被恢复",
+  // 而不是被去重逻辑挡掉(同一 profile 里主机还在时会算重复)。
+  await evalJs(`
+    const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
+    it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    it.querySelector('.hi-del').click(); return 1`);
+  await waitEval(`window.__nbTest.confirmOpen()`, 'true', 10000);
+  await evalJs(`window.__nbTest.confirmClickOk(); return 1`);
+  await sleep(800);
+  await evalJs(`document.querySelector('#btn-hosts-import').click(); return 1`);
+  await waitEval(`window.__nbTest.promptTitle()`, '输入解密口令', 15000);
+  await evalJs(`window.__nbTest.promptFill('e2e-passphrase-1'); window.__nbTest.promptClickOk(); return 1`);
+  await waitEval(`document.querySelector('#toasts').textContent`, '导入完成', 20000);
+  const importToast = await evalJs(`return document.querySelector('#toasts').textContent`);
+  // 恢复后的主机应带凭据(界面不再标记"待补全凭据")
+  const restored = asObj(await evalJs(`return JSON.stringify((() => {
+    const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
+    return { chip: !!(it && it.querySelector('.host-chip')), hosts: document.querySelectorAll('.host-item').length };
+  })())`));
+  check(
+    'T17 导入加密导出文件并恢复凭据',
+    String(importToast).includes('恢复凭据') && restored.chip === false,
+    `${String(importToast).slice(0, 90)} | chip=${restored.chip}`,
+  );
 
   // 无未捕获异常
   const errs = await evalJs(`return JSON.stringify(window.__errs)`);
