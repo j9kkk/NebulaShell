@@ -309,3 +309,118 @@ fn diag_plain_enc() {
     eprintln!("dec={}", d);
     assert_eq!(d, "pw");
 }
+
+/// 多账号云凭据:从旧的单密钥结构(settings.clouds.*)自动迁移,
+/// secretEnc 直接搬移(已是加密串,无需解密再加密)。
+#[test]
+fn cloud_accounts_migrate_from_legacy_single_key() {
+    let dir = std::env::temp_dir().join(format!("nb-legacy-cloud-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 模拟"旧版应用留下的配置文件":直接写盘(含旧结构、无 cloudAccounts 标志),
+    // 再用新版 load —— 与真实升级路径一致。secretEnc 用当前实现加密,
+    // 保证格式与旧版兼容(同一段代码自 v1.0 起未变)。
+    {
+        let probe = Store::load_plain(dir.clone());
+        let secret_enc = probe.enc("legacy-secret-1", "t");
+        let legacy = json!({
+            "version": 1, "hosts": [], "snippets": [], "forwards": [], "bookmarks": [], "history": [],
+            "knownHosts": {},
+            "settings": {
+                "clouds": { "tencent": { "key": "AKID-legacy-1", "secretEnc": secret_enc, "endpoint": "" },
+                            "aliyun": { "key": "", "secret": "", "endpoint": "" } }
+            }
+        });
+        std::fs::write(
+            dir.join("nebulashell-config.json"),
+            serde_json::to_string_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+    }
+    let s2 = Store::load_plain(dir.clone());
+    // 迁移发生(load 时 cloudAccounts 为空 → 从旧结构搬移)
+    let accounts = {
+        let data = s2.data.lock().unwrap();
+        data["settings"]["cloudAccounts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(accounts.len(), 1, "应迁移出 1 个腾讯云账号");
+    assert_eq!(accounts[0]["vendor"], json!("tencent"));
+    assert_eq!(accounts[0]["keyId"], json!("AKID-legacy-1"));
+    // 迁移后凭据应可解密回原值
+    let (key, secret, _, vendor) = s2
+        .cloud_account_creds(accounts[0]["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(key, "AKID-legacy-1");
+    assert_eq!(secret, "legacy-secret-1");
+    assert_eq!(vendor, "tencent");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 多账号 CRUD:保存(新增/编辑)、删除、凭据读取。
+#[test]
+fn cloud_accounts_crud() {
+    let store = tmp_store("cloud-acct");
+    // 新增腾讯云账号
+    let r1 = store
+        .save_cloud_account("", "公司主账号", "tencent", "AKID-aaa", "secret-one", "")
+        .unwrap();
+    let id1 = r1["id"].as_str().unwrap().to_string();
+    // 新增阿里云账号
+    let r2 = store
+        .save_cloud_account(
+            "",
+            "测试账号",
+            "aliyun",
+            "LTAI-bbb",
+            "secret-two",
+            "https://ecs.example.com",
+        )
+        .unwrap();
+    let id2 = r2["id"].as_str().unwrap().to_string();
+    assert_ne!(id1, id2);
+
+    let accounts = store.get_settings()["cloudAccounts"]
+        .as_array()
+        .cloned()
+        .unwrap();
+    assert_eq!(accounts.len(), 2);
+    // 公开形态不得包含密文
+    for a in &accounts {
+        assert!(a["secretEnc"].is_null(), "公开形态泄漏了 secretEnc");
+        assert_eq!(a["secretSet"], json!(true));
+    }
+    // 凭据可读回
+    let (k, s, ep, v) = store.cloud_account_creds(&id2).unwrap();
+    assert_eq!(
+        (k.as_str(), s.as_str(), v.as_str()),
+        ("LTAI-bbb", "secret-two", "aliyun")
+    );
+    assert_eq!(ep, "https://ecs.example.com");
+    // 编辑:留空 secret 保持不变
+    store
+        .save_cloud_account(&id1, "改名了", "tencent", "AKID-aaa", "", "")
+        .unwrap();
+    let (_, s1, _, _) = store.cloud_account_creds(&id1).unwrap();
+    assert_eq!(s1, "secret-one", "编辑时留空 Secret 不应清掉原密钥");
+    // 删除
+    let removed = store.delete_cloud_account(&id1).unwrap();
+    assert_eq!(removed, 1);
+    assert!(store.cloud_account_creds(&id1).is_err());
+    // 非法输入
+    assert!(
+        store
+            .save_cloud_account("", "x", "tencent", "", "s", "")
+            .is_err(),
+        "空 KeyId 应拒绝"
+    );
+    assert!(
+        store
+            .save_cloud_account("", "x", "tencent", "K", "", "")
+            .is_err(),
+        "新增缺 Secret 应拒绝"
+    );
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

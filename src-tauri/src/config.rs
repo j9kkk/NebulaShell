@@ -259,6 +259,36 @@ impl Store {
                 data["settings"]["clouds"][p] = defaults()["settings"]["clouds"][p].clone();
             }
         }
+        // 云账号多密钥(2026-09-28):settings.cloudAccounts = [{id,label,vendor,keyId,secretEnc,endpoint}]
+        // 从旧的单密钥结构(settings.clouds.{tencent,aliyun})一次性迁移。
+        // 旧 secretEnc 已是加密串,直接搬移即可,无需解密再加密。
+        // 迁移标志:防止"用户删光所有账号"后,下次启动又从残留旧字段里复活。
+        if data["settings"]["cloudAccountsMigrated"].is_null()
+            && (data["settings"]["cloudAccounts"].is_null()
+                || data["settings"]["cloudAccounts"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false))
+        {
+            let mut migrated: Vec<Value> = Vec::new();
+            for (vendor, label) in [("tencent", "腾讯云账号"), ("aliyun", "阿里云账号")] {
+                let old = &data["settings"]["clouds"][vendor];
+                let key = old["key"].as_str().unwrap_or("");
+                let secret_enc = old["secretEnc"].as_str().unwrap_or("");
+                if !key.is_empty() && !secret_enc.is_empty() {
+                    migrated.push(json!({
+                        "id": uuid::Uuid::new_v4().to_string(),
+                        "label": label,
+                        "vendor": vendor,
+                        "keyId": key,
+                        "secretEnc": secret_enc,
+                        "endpoint": old["endpoint"].as_str().unwrap_or(""),
+                    }));
+                }
+            }
+            data["settings"]["cloudAccounts"] = json!(migrated);
+            data["settings"]["cloudAccountsMigrated"] = json!(true);
+        }
         for k in ["hosts", "snippets", "forwards", "bookmarks", "history"] {
             if data[k].is_null() {
                 data[k] = json!([]);
@@ -678,11 +708,107 @@ impl Store {
             },
             "terminal": data["settings"]["terminal"].clone(),
             "snippets": data["snippets"].clone(),
-            "clouds": {
-                "tencent": { "key": data["settings"]["clouds"]["tencent"]["key"], "endpoint": data["settings"]["clouds"]["tencent"]["endpoint"], "secretSet": !self.dec(data["settings"]["clouds"]["tencent"]["secretEnc"].as_str().unwrap_or("")).is_empty() },
-                "aliyun": { "key": data["settings"]["clouds"]["aliyun"]["key"], "endpoint": data["settings"]["clouds"]["aliyun"]["endpoint"], "secretSet": !self.dec(data["settings"]["clouds"]["aliyun"]["secretEnc"].as_str().unwrap_or("")).is_empty() }
-            }
+            // 多账号云凭据:公开形态不回传 Secret,只给 keyId 与"是否已存"
+            "cloudAccounts": data["settings"]["cloudAccounts"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|a| {
+                    json!({
+                        "id": a["id"], "label": a["label"], "vendor": a["vendor"],
+                        "keyId": a["keyId"], "endpoint": a["endpoint"],
+                        "secretSet": !self.dec(a["secretEnc"].as_str().unwrap_or("")).is_empty(),
+                    })
+                })
+                .collect::<Vec<_>>(),
         })
+    }
+
+    /// 保存一个云账号(多 API Key)。带 id 即更新,否则新建。
+    /// secret 为空表示保持原值不变(编辑但不重输密钥)。
+    pub fn save_cloud_account(
+        &self,
+        id: &str,
+        label: &str,
+        vendor: &str,
+        key_id: &str,
+        secret: &str,
+        endpoint: &str,
+    ) -> Result<Value, String> {
+        if key_id.trim().is_empty() {
+            return Err("Key ID 不能为空".into());
+        }
+        let v = match vendor {
+            "aliyun" => "aliyun",
+            _ => "tencent",
+        };
+        let mut data = self.data.lock().unwrap();
+        let accounts = data["settings"]["cloudAccounts"]
+            .as_array_mut()
+            .ok_or("云账号存储损坏")?;
+        let existing = if id.is_empty() {
+            None
+        } else {
+            accounts.iter().position(|a| a["id"] == json!(id))
+        };
+        match existing {
+            Some(i) => {
+                accounts[i]["label"] = json!(label.chars().take(50).collect::<String>());
+                accounts[i]["vendor"] = json!(v);
+                accounts[i]["keyId"] = json!(key_id.trim());
+                accounts[i]["endpoint"] = json!(endpoint.trim());
+                if !secret.is_empty() {
+                    accounts[i]["secretEnc"] = json!(self.enc(secret, "cloudAccounts.secret"));
+                }
+                Ok(json!({ "id": accounts[i]["id"] }))
+            }
+            None => {
+                if secret.is_empty() {
+                    return Err("请填写 Secret".into());
+                }
+                let new_id = uuid::Uuid::new_v4().to_string();
+                accounts.push(json!({
+                    "id": new_id,
+                    "label": label.chars().take(50).collect::<String>(),
+                    "vendor": v,
+                    "keyId": key_id.trim(),
+                    "secretEnc": self.enc(secret, "cloudAccounts.secret"),
+                    "endpoint": endpoint.trim(),
+                }));
+                Ok(json!({ "id": new_id }))
+            }
+        }
+    }
+
+    pub fn delete_cloud_account(&self, id: &str) -> Result<i64, String> {
+        let mut data = self.data.lock().unwrap();
+        let accounts = data["settings"]["cloudAccounts"]
+            .as_array_mut()
+            .ok_or("云账号存储损坏")?;
+        let before = accounts.len();
+        accounts.retain(|a| a["id"] != json!(id));
+        Ok((before - accounts.len()) as i64)
+    }
+
+    /// 取某账号的明文凭据(仅后端内部使用,不经过 IPC 返回)
+    pub fn cloud_account_creds(
+        &self,
+        id: &str,
+    ) -> Result<(String, String, String, String), String> {
+        let data = self.data.lock().unwrap();
+        let a = data["settings"]["cloudAccounts"]
+            .as_array()
+            .ok_or("云账号存储损坏")?
+            .iter()
+            .find(|a| a["id"] == json!(id))
+            .ok_or_else(|| "云账号不存在".to_string())?;
+        Ok((
+            a["keyId"].as_str().unwrap_or("").to_string(),
+            self.dec(a["secretEnc"].as_str().unwrap_or("")),
+            a["endpoint"].as_str().unwrap_or("").to_string(),
+            a["vendor"].as_str().unwrap_or("tencent").to_string(),
+        ))
     }
 
     pub fn save_settings(&self, patch: &Value) -> Value {

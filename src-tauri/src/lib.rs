@@ -10,6 +10,8 @@ pub mod signing;
 pub mod ssh;
 
 #[cfg(test)]
+mod cloud_test;
+#[cfg(test)]
 mod monitor_test;
 #[cfg(test)]
 mod signing_test;

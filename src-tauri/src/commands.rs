@@ -614,6 +614,82 @@ pub async fn nebula_invoke(
             "registered": []
         })),
 
+        "cloud:accounts" => ok(json!({
+            "accounts": state.store.get_settings()["cloudAccounts"]
+        })),
+
+        "cloud:saveAccount" => {
+            let r = state.store.save_cloud_account(
+                payload["id"].as_str().unwrap_or(""),
+                payload["label"].as_str().unwrap_or(""),
+                payload["vendor"].as_str().unwrap_or("tencent"),
+                payload["keyId"].as_str().unwrap_or(""),
+                payload["secret"].as_str().unwrap_or(""),
+                payload["endpoint"].as_str().unwrap_or(""),
+            );
+            match r {
+                Ok(id) => ok(id),
+                Err(e) => err_msg(e),
+            }
+        }
+        "cloud:deleteAccount" => match state
+            .store
+            .delete_cloud_account(payload["id"].as_str().unwrap_or(""))
+        {
+            Ok(n) => ok(json!({ "removed": n })),
+            Err(e) => err_msg(e),
+        },
+
+        // 一键拉取:按账号(可多个)全区域探测并拉取实例。
+        // 腾讯云一次拉 CVM+轻量;单账号/单区域失败不阻断,错误汇总返回。
+        "cloud:fetchAll" => {
+            let ids: Vec<String> = payload["accountIds"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                return err_msg("请先添加云账号");
+            }
+            let mut instances: Vec<Value> = Vec::new();
+            let mut errors: Vec<String> = Vec::new();
+            for id in &ids {
+                let (key, secret, endpoint, vendor) = match state.store.cloud_account_creds(id) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
+                };
+                let r = if vendor == "aliyun" {
+                    crate::cloud::aliyun_fetch_all(&key, &secret, &endpoint).await
+                } else {
+                    crate::cloud::tencent_fetch_all(&key, &secret, &endpoint).await
+                };
+                match r {
+                    Ok((mut list, mut errs)) => {
+                        // 默认名 {云}-{区域}-{IP};已命名的实例保留原名
+                        for it in list.iter_mut() {
+                            if it["name"]
+                                .as_str()
+                                .map(|s| s.trim().is_empty())
+                                .unwrap_or(true)
+                            {
+                                it["name"] = default_cloud_name(it);
+                            }
+                        }
+                        instances.append(&mut list);
+                        errors.append(&mut errs);
+                    }
+                    Err(e) => errors.push(e),
+                }
+            }
+            ok(json!({ "instances": instances, "errors": errors }))
+        }
+
         "cloud:fetch" => {
             let provider = payload["provider"]
                 .as_str()
@@ -806,6 +882,20 @@ pub fn regex_lite(url: &str) -> bool {
     url.starts_with("https://console.cloud.tencent.com/")
         || url.starts_with("https://ram.console.aliyun.com/")
         || url.starts_with("https://console.aliyun.com/")
+}
+
+/// 云实例默认名:{云}-{区域}-{IP}。仅在实例没有名字时使用。
+fn default_cloud_name(it: &Value) -> Value {
+    let provider = it["cloud"]["provider"].as_str().unwrap_or("");
+    let vendor = match provider {
+        "lighthouse" => "腾讯轻量",
+        "tencent" | "cvm" => "腾讯云",
+        "aliyun" => "阿里云",
+        other => other,
+    };
+    let region = it["cloud"]["region"].as_str().unwrap_or("");
+    let ip = it["host"].as_str().unwrap_or("");
+    json!(format!("{}-{}-{}", vendor, region, ip))
 }
 
 fn batch_exec(
