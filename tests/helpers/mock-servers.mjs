@@ -22,6 +22,13 @@ export const TENCENT_MOCK_INSTANCES = [
   },
 ];
 
+export const LIGHTHOUSE_MOCK_INSTANCES = [
+  {
+    InstanceId: 'lhins-e2e-1', InstanceName: 'e2e-lh-1', InstanceState: 'RUNNING',
+    PublicAddresses: ['203.0.113.30'], PrivateAddresses: ['10.0.0.30'], OsName: 'OpenCloudOS 9',
+  },
+];
+
 export const ALIYUN_MOCK_INSTANCES = [
   {
     InstanceId: 'i-e2e-1', InstanceName: 'e2e-ecs-1', Status: 'Running', OSName: 'Alibaba Cloud Linux',
@@ -39,6 +46,32 @@ export async function startMockCloudServer() {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('content-type', 'application/json');
+    // 根路径:腾讯云统一入口(真实 API 为 cvm/lighthouse.tencentcloudapi.com,
+    // 测试里两个 service 都打到同一 host,故按 body 里的字段无法区分 ——
+    // 这里用自定义头 X-Mock-Service 区分(仅测试客户端可见),否则返回合并数据。
+    if (url.pathname === '/' || url.pathname === '') {
+      const action = req.headers['x-tc-action'];
+      const svc = req.headers['x-mock-service'] || '';
+      if (!String(req.headers['authorization'] || '').startsWith('TC3-HMAC-SHA256 Credential=')) {
+        res.writeHead(401).end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SignatureFailure', Message: '缺少 TC3 签名' }, RequestId: 'mock' } }));
+        return;
+      }
+      calls.tencent++; calls.tencentAuthOk++;
+      if (action === 'DescribeRegions') {
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', RegionSet: [
+          { Region: 'ap-guangzhou', RegionName: '广州', RegionState: 'AVAILABLE' },
+          { Region: 'ap-shanghai', RegionName: '上海', RegionState: 'AVAILABLE' },
+        ] } }));
+        return;
+      }
+      if (action === 'DescribeInstances') {
+        const set = svc === 'lighthouse' ? LIGHTHOUSE_MOCK_INSTANCES : TENCENT_MOCK_INSTANCES;
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', TotalCount: set.length, InstanceSet: set } }));
+        return;
+      }
+      res.end(JSON.stringify({ Response: { Error: { Code: 'InvalidAction', Message: 'unknown action ' + action }, RequestId: 'mock' } }));
+      return;
+    }
     if (url.pathname.startsWith('/tencent')) {
       if (req.method !== 'POST') { res.writeHead(405).end(); return; }
       const auth = req.headers['authorization'] || '';
@@ -50,6 +83,41 @@ export async function startMockCloudServer() {
       calls.tencent++; calls.tencentAuthOk++;
       if (action === 'DescribeInstances') {
         res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', TotalCount: TENCENT_MOCK_INSTANCES.length, InstanceSet: TENCENT_MOCK_INSTANCES } }));
+        return;
+      }
+      if (action === 'DescribeRegions') {
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', RegionSet: [
+          { Region: 'ap-guangzhou', RegionName: '广州', RegionState: 'AVAILABLE' },
+          { Region: 'ap-shanghai', RegionName: '上海', RegionState: 'AVAILABLE' },
+        ] } }));
+        return;
+      }
+      res.end(JSON.stringify({ Response: { Error: { Code: 'InvalidAction', Message: 'unknown action ' + action }, RequestId: 'mock' } }));
+      return;
+    }
+    if (url.pathname.startsWith('/lighthouse')) {
+      const auth = req.headers['authorization'] || '';
+      const action = req.headers['x-tc-action'];
+      if (!auth.startsWith('TC3-HMAC-SHA256 Credential=')) {
+        res.writeHead(401).end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SignatureFailure', Message: '缺少 TC3 签名' }, RequestId: 'mock' } }));
+        return;
+      }
+      calls.tencent++; calls.tencentAuthOk++;
+      // 轻量:字段名与 CVM 不同(PublicAddresses/PrivateAddresses),
+      // 用于回归"轻量 IP 读成空、被过滤"的缺陷。
+      if (action === 'DescribeInstances') {
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-lh', TotalCount: 1, InstanceSet: [
+          {
+            InstanceId: 'lhins-e2e-1', InstanceName: 'e2e-lh-1', InstanceState: 'RUNNING',
+            PublicAddresses: ['203.0.113.30'], PrivateAddresses: ['10.0.0.30'], OsName: 'OpenCloudOS 9',
+          },
+        ] } }));
+        return;
+      }
+      if (action === 'DescribeRegions') {
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-lh', RegionSet: [
+          { Region: 'ap-guangzhou', RegionName: '广州', RegionState: 'AVAILABLE' },
+        ] } }));
         return;
       }
       res.end(JSON.stringify({ Response: { Error: { Code: 'InvalidAction', Message: 'unknown action ' + action }, RequestId: 'mock' } }));
@@ -64,6 +132,13 @@ export async function startMockCloudServer() {
       calls.aliyun++; calls.aliyunAuthOk++;
       if (q.get('Action') === 'DescribeInstances') {
         res.end(JSON.stringify({ RequestId: 'mock-aliyun', TotalCount: ALIYUN_MOCK_INSTANCES.length, Instances: { Instance: ALIYUN_MOCK_INSTANCES } }));
+        return;
+      }
+      if (q.get('Action') === 'DescribeRegions') {
+        res.end(JSON.stringify({ RequestId: 'mock-aliyun', Regions: { Region: [
+          { RegionId: 'cn-hangzhou', LocalName: '华东 1 (杭州)' },
+          { RegionId: 'cn-shanghai', LocalName: '华东 2 (上海)' },
+        ] } }));
         return;
       }
       res.end(JSON.stringify({ Code: 'InvalidAction', Message: 'unknown action' }));

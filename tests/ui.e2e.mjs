@@ -246,16 +246,32 @@ async function main() {
     JSON.stringify(fp0),
   );
 
-  // 云导入(测试签名链路)
-  const cloudRes = await evalJs(`
+  // 云导入:多账号 CRUD + 一键全区域拉取(腾讯云 CVM+轻量合并)
+  // 回归:轻量实例的 IP 字段名(PublicAddresses)与 CVM(PublicIpAddresses)不同,
+  // 旧实现读不到 → 轻量主机被过滤 → "没有获取到可用实例"。
+  await evalJs(`
     return (async () => {
-      const r = await window.nebula.invoke('cloud:fetch', {
-        provider: 'tencent', region: 'ap-guangzhou', key: 'AKID-ui', secret: 'sk-ui', endpoint: '${cloud.base}/tencent'
+      await window.nebula.invoke('cloud:saveAccount', {
+        id: '', label: 'e2e账号', vendor: 'tencent',
+        keyId: 'AKID-ui', secret: 'sk-ui', endpoint: '${cloud.base}'
       });
-      return JSON.stringify({ ok: r.ok, count: (r.data || []).length });
+      return 1;
     })()`);
-  const cloudObj = asObj(cloudRes);
-  check('T11 腾讯云实例拉取(TC3 签名链路)', cloudObj.ok === true && cloudObj.count === 2, cloudRes);
+  const fetchAll = asObj(await evalJs(`
+    return (async () => {
+      const accs = await window.nebula.invoke('cloud:accounts');
+      const ids = accs.data.accounts.map((a) => a.id);
+      const r = await window.nebula.invoke('cloud:fetchAll', { accountIds: ids });
+      return JSON.stringify({ ok: r.ok, data: r.data, count: (r.data.instances || []).filter((i) => i.host).length });
+    })()`));
+  const fa = fetchAll;
+  const lhFound = (fa.data?.instances || []).some((i) => i.cloud.provider === 'lighthouse' && i.host === '203.0.113.30');
+  const cvmFound = (fa.data?.instances || []).some((i) => i.host === '203.0.113.10');
+  check(
+    'T11 云账号一键拉取(全区域,CVM+轻量合并)',
+    fa.ok === true && fa.count >= 3 && cvmFound && lhFound,
+    `count=${fa.count} cvm=${cvmFound} lh=${lhFound}`,
+  );
 
   // 同一主机再开一个独立标签(回归:此前同主机点击只切焦点,无法多开会话)
   const beforeTabs = Number(await evalJs(`return document.querySelectorAll('.tab').length`));

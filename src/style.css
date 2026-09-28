@@ -256,6 +256,27 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 
 /* 云导入 */
 .cloud-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+/* 多账号云凭据 */
+.cloud-accounts-head { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.cloud-accounts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.cloud-account-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg2); font-size: 12px;
+}
+.cloud-account-row .ca-vendor { font-weight: 600; }
+.cloud-account-row .ca-label { color: var(--text); }
+.cloud-account-row .ca-key { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.cloud-account-row .ca-ok { color: var(--accent2); }
+.cloud-account-row .ca-miss { color: var(--warn); }
+.cloud-errors {
+  margin: 6px 0; padding: 8px 10px; border: 1px solid var(--warn);
+  border-radius: 8px; font-size: 12px; color: var(--warn); max-height: 110px; overflow: auto;
+}
+#cloud-table .cloud-group-row td {
+  background: var(--bg2); font-weight: 600; font-size: 12px;
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+}
 .cloud-help {
   margin: -2px 0 12px;
   padding: 8px 10px;

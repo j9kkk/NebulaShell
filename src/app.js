@@ -6,7 +6,6 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import './style.css';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from './shared/ai-presets.js';
-import { TENCENT_REGIONS, ALIYUN_REGIONS } from './shared/regions.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -22,7 +21,7 @@ const state = {
   activeId: null,
   settings: null,
   pickedKey: null, // { path, content }
-  cloudProvider: 'tencent',
+  cloudAccounts: [],     // 云账号(多 API Key,见 cloud:accounts)
   cloudResults: [],
   aiHistory: [],
   aiReq: null,
@@ -72,21 +71,7 @@ Object.defineProperties(state, {
 });
 
 const PROVIDER_LABEL = { tencent: '腾讯云', lighthouse: '腾讯云轻量', aliyun: '阿里云' };
-const REGION_LIST = { tencent: TENCENT_REGIONS, lighthouse: TENCENT_REGIONS, aliyun: ALIYUN_REGIONS };
 
-// 云导入密钥获取帮助：不同厂商的入口、控制台地址与最小权限建议
-const CLOUD_KEY_HELP = {
-  tencent: `
-    <b>腾讯云 SecretId / SecretKey</b> 获取方式：登录腾讯云控制台 → <span class="help-link" data-url="https://console.cloud.tencent.com/cam/capi">访问管理 CAM · API 密钥管理</span> → 「新建密钥」。
-    建议使用子用户密钥并仅授予只读策略 <b>QcloudCVMReadOnlyAccess</b>，避免直接使用主账号密钥。`,
-  lighthouse: `
-    <b>腾讯云轻量与 CVM 共用同一套 API 密钥</b>：在 <span class="help-link" data-url="https://console.cloud.tencent.com/cam/capi">访问管理 CAM · API 密钥管理</span> 创建 SecretId / SecretKey。
-    轻量服务器建议授予只读策略 <b>QcloudLighthouseReadOnlyAccess</b>；若同时需要 CVM 与轻量，可同时勾选两个只读策略。`,
-  aliyun: `
-    <b>阿里云 AccessKeyId / AccessKeySecret</b> 获取方式：登录阿里云控制台 → <span class="help-link" data-url="https://ram.console.aliyun.com/manage/ak">RAM 访问控制 · AccessKey 管理</span> → 「创建 AccessKey」。
-    注意 <b>AccessKeySecret 仅在创建时显示一次</b>，请立即保存；建议创建 RAM 子用户并仅授予只读权限 <b>AliyunECSReadOnlyAccess</b>。`,
-};
-const CLOUD_KEY_HELP_FOOT = '密钥仅加密保存在本机，不会上传到任何第三方服务器。';
 
 /* ---------------- 通用 UI ---------------- */
 
@@ -1248,57 +1233,162 @@ function updateWelcome() {
   $('#welcome').classList.toggle('hidden', !!state.layout);
 }
 
-/* ---------------- 云主机导入 ---------------- */
+/* ---------------- 云主机导入(多账号 + 全区域一键拉取) ---------------- */
 
-function setCloudProvider(p) {
-  state.cloudProvider = p;
-  document.querySelectorAll('.cloud-tab').forEach((t) => t.classList.toggle('active', t.dataset.provider === p));
-  $('#cloud-key-help').innerHTML = (CLOUD_KEY_HELP[p] || '') + '<br />' + CLOUD_KEY_HELP_FOOT;
-  const isAli = p === 'aliyun';
-  $('#cloud-key-label').textContent = isAli ? 'AccessKeyId' : 'SecretId';
-  $('#cloud-secret-label').textContent = isAli ? 'AccessKeySecret' : 'SecretKey';
-  $('#cloud-key').placeholder = isAli ? 'AccessKeyId（LTAI…）' : 'SecretId（AKID…）';
-  $('#cloud-secret').placeholder = isAli ? 'AccessKeySecret' : 'SecretKey';
-  const regionSel = $('#cloud-region');
-  regionSel.innerHTML = '';
-  for (const [v, label] of REGION_LIST[p]) {
-    const opt = document.createElement('option');
-    opt.value = v;
-    opt.textContent = `${label}（${v}）`;
-    regionSel.appendChild(opt);
-  }
-  // 预填已保存的密钥
-  const credsKey = p === 'aliyun' ? 'aliyun' : 'tencent';
-  const saved = state.settings && state.settings.clouds && state.settings.clouds[credsKey];
-  $('#cloud-key').value = (saved && saved.key) || '';
-  $('#cloud-secret').value = '';
-  $('#cloud-secret').placeholder = (saved && saved.secretSet) ? '已保存（留空保持不变）' : $('#cloud-secret').placeholder;
-  $('#cloud-endpoint').value = (saved && saved.endpoint) || '';
-  $('#cloud-table').classList.add('hidden');
-  $('#cloud-tbody').innerHTML = '';
-  $('#cloud-count').textContent = '';
-  $('#btn-cloud-import-selected').classList.add('hidden');
-  $('#cloud-status').textContent = '填写密钥后点击获取';
-}
+const VENDOR_LABEL = { tencent: '腾讯云', aliyun: '阿里云' };
+const SERVICE_LABEL = { cvm: 'CVM', lighthouse: '轻量', aliyun: 'ECS', tencent: 'CVM' };
 
 function providerLabel(p) { return PROVIDER_LABEL[p] || p; }
+
+/// 账号列表(含已保存凭据的形态)。secret 不回传,编辑时留空 = 保持不变
+async function refreshCloudAccounts() {
+  const r = await api('cloud:accounts');
+  state.cloudAccounts = r.accounts || [];
+  renderCloudAccounts();
+}
+
+function renderCloudAccounts() {
+  const box = $('#cloud-accounts');
+  box.innerHTML = '';
+  if (!state.cloudAccounts.length) {
+    box.innerHTML = '<div class="muted small-note" style="padding:6px 2px;">尚未添加账号。添加后即可一键拉取该账号下所有地域的主机(腾讯云自动包含 CVM 与轻量)。</div>';
+    return;
+  }
+  for (const a of state.cloudAccounts) {
+    const row = document.createElement('div');
+    row.className = 'cloud-account-row';
+    row.innerHTML = `
+      <span class="ca-vendor">${escapeHtml(VENDOR_LABEL[a.vendor] || a.vendor)}</span>
+      <span class="ca-label">${escapeHtml(a.label || '(未命名)')}</span>
+      <span class="ca-key mono">${escapeHtml(a.keyId || '')}</span>
+      ${a.secretSet ? '<span class="ca-ok">已保存密钥</span>' : '<span class="ca-miss">缺密钥</span>'}
+      <span class="spacer"></span>
+      <button class="btn small ca-edit">编辑</button>
+      <button class="btn small ca-del">删除</button>`;
+    row.querySelector('.ca-edit').addEventListener('click', () => editCloudAccount(a));
+    row.querySelector('.ca-del').addEventListener('click', async () => {
+      if (!(await askConfirm(`删除云账号「${a.label || a.keyId}」?已导入的主机不受影响。`, { title: '删除云账号', okText: '删除' }))) return;
+      await api('cloud:deleteAccount', { id: a.id });
+      await refreshCloudAccounts();
+    });
+    box.appendChild(row);
+  }
+}
+
+/// 添加/编辑账号:弹出输入对话框逐项填写(无需新开 modal)
+async function editCloudAccount(existing) {
+  const vendor = existing ? existing.vendor : ($('#cloud-new-vendor').value || 'tencent');
+  const keyName = vendor === 'aliyun' ? 'AccessKeyId' : 'SecretId';
+  const secretName = vendor === 'aliyun' ? 'AccessKeySecret' : 'SecretKey';
+  const label = await askPrompt('账号备注名(例如「公司主账号」「测试账号」):', {
+    title: existing ? '编辑云账号' : '添加云账号',
+    okText: '下一步',
+    password: false,
+    placeholder: '我的账号',
+    validate: (v) => (v.trim().length > 50 ? '备注名过长(≤50 字)' : null),
+  });
+  if (label === null) return;
+  const initial = existing ? label.trim() || (existing.label || '') : label.trim();
+  const keyId = await askPrompt(`${keyName}:`, {
+    title: existing ? '编辑云账号' : '添加云账号',
+    okText: '下一步',
+    password: false,
+    placeholder: vendor === 'aliyun' ? 'LTAI…' : 'AKID…',
+  });
+  if (keyId === null) return;
+  const secret = await askPrompt(`${secretName}(密钥只保存在本机,加密存储):`, {
+    title: existing ? '编辑云账号' : '添加云账号',
+    okText: existing ? '保存' : '添加',
+    placeholder: existing && existing.secretSet ? '已保存(留空保持不变)' : secretName,
+    validate: (v) => {
+      if (existing && existing.secretSet) return null; // 编辑可不重输
+      return v.length > 0 ? null : '请填写 Secret';
+    },
+  });
+  if (secret === null) return;
+  try {
+    await api('cloud:saveAccount', {
+      id: existing ? existing.id : '',
+      label: initial,
+      vendor,
+      keyId: keyId.trim(),
+      secret: secret.trim(),
+      endpoint: existing ? existing.endpoint || '' : '',
+    });
+    toast(existing ? '云账号已更新' : '云账号已添加', 'success');
+    await refreshCloudAccounts();
+  } catch (e) {
+    toast('保存失败：' + e.message, 'error');
+  }
+}
+
+/// 一键拉取:所有(或勾选的)账号 × 全部地域,腾讯云自动合并 CVM + 轻量
+async function cloudFetchAll() {
+  const ids = state.cloudAccounts.map((a) => a.id);
+  if (!ids.length) return toast('请先添加云账号', 'error');
+  $('#cloud-status').textContent = '正在探测所有地域并拉取实例…(首次约需数秒)';
+  $('#btn-cloud-fetch').disabled = true;
+  try {
+    const r = await api('cloud:fetchAll', { accountIds: ids });
+    state.cloudResults = (r.instances || []).filter((i) => i.host);
+    // 错误去重后展示(单地域失败不阻断)
+    const errs = [...new Set(r.errors || [])];
+    const errBox = $('#cloud-errors');
+    if (errs.length) {
+      errBox.classList.remove('hidden');
+      errBox.innerHTML = `<b>部分地域拉取失败(${errs.length})</b>` +
+        errs.slice(0, 5).map((e) => `<div class="muted">${escapeHtml(e)}</div>`).join('') +
+        (errs.length > 5 ? `<div class="muted">… 共 ${errs.length} 条</div>` : '');
+    } else {
+      errBox.classList.add('hidden');
+    }
+    if (!state.cloudResults.length) {
+      $('#cloud-status').textContent = '所有地域均未发现可用实例(无公网 IP 的实例已过滤)';
+      renderCloudRows();
+      return;
+    }
+    $('#cloud-status').textContent = `获取到 ${state.cloudResults.length} 台实例(按地域分组)`;
+    renderCloudRows();
+  } catch (e) {
+    $('#cloud-status').textContent = '获取失败';
+    toast('获取失败：' + e.message, 'error');
+  } finally {
+    $('#btn-cloud-fetch').disabled = false;
+  }
+}
 
 function renderCloudRows() {
   const tbody = $('#cloud-tbody');
   tbody.innerHTML = '';
-  for (let i = 0; i < state.cloudResults.length; i++) {
-    const it = state.cloudResults[i];
-    const running = /running/i.test(it.state);
-    const tr = document.createElement('tr');
-    tr.className = 'cloud-row';
-    tr.innerHTML = `
-      <td><input type="checkbox" class="cloud-check" data-i="${i}" ${running ? 'checked' : ''} /></td>
-      <td>${escapeHtml(it.name)}</td>
-      <td>${escapeHtml(it.host || '（无公网 IP）')}</td>
-      <td><span class="badge ${running ? 'running' : /stop/i.test(it.state) ? 'stopped' : 'other'}">${escapeHtml(it.state || '-')}</span></td>
-      <td class="muted">${escapeHtml(it.cloud.os || '-')}</td>
-      <td><button class="btn small cloud-connect" data-i="${i}">连接</button></td>`;
-    tbody.appendChild(tr);
+  // 按地域分组展示(组内:厂商 + 实例)
+  const groups = new Map();
+  for (const it of state.cloudResults) {
+    const g = `${it.cloud.region}`;
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(it);
+  }
+  let idx = 0;
+  for (const [region, list] of groups) {
+    const head = document.createElement('tr');
+    head.className = 'cloud-group-row';
+    head.innerHTML = `<td colspan="8">📍 ${escapeHtml(region)} · ${list.length} 台</td>`;
+    tbody.appendChild(head);
+    for (const it of list) {
+      const i = idx++;
+      const running = /running/i.test(it.state);
+      const tr = document.createElement('tr');
+      tr.className = 'cloud-row';
+      tr.innerHTML = `
+        <td><input type="checkbox" class="cloud-check" data-i="${i}" ${running ? 'checked' : ''} /></td>
+        <td>${escapeHtml(it.name)}</td>
+        <td class="mono">${escapeHtml(it.host || '（无公网 IP）')}</td>
+        <td><span class="tag">${escapeHtml(SERVICE_LABEL[it.cloud.provider] || it.cloud.provider)}</span></td>
+        <td class="muted">${escapeHtml(it.cloud.region)}</td>
+        <td><span class="badge ${running ? 'running' : /stop/i.test(it.state) ? 'stopped' : 'other'}">${escapeHtml(it.state || '-')}</span></td>
+        <td class="muted">${escapeHtml(it.cloud.os || '-')}</td>
+        <td><button class="btn small cloud-connect" data-i="${i}">连接</button></td>`;
+      tbody.appendChild(tr);
+    }
   }
   tbody.querySelectorAll('.cloud-connect').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -1330,28 +1420,6 @@ function instancePayload(it, group) {
 
 async function importInstance(it) {
   return api('hosts:save', instancePayload(it, providerLabel(it.cloud.provider)));
-}
-
-async function cloudFetch() {
-  const key = $('#cloud-key').value.trim();
-  const secret = $('#cloud-secret').value;
-  const region = $('#cloud-region').value;
-  const endpoint = $('#cloud-endpoint').value.trim();
-  if (!key || !secret) return toast('请填写 API 密钥', 'error');
-  $('#cloud-status').textContent = '获取中…';
-  try {
-    const instances = await api('cloud:fetch', { provider: state.cloudProvider, region, key, secret, endpoint });
-    state.cloudResults = instances.filter((i) => i.host);
-    if (!state.cloudResults.length) {
-      $('#cloud-status').textContent = '没有获取到可用实例（无 IP 的实例已过滤）';
-      return;
-    }
-    $('#cloud-status').textContent = `获取到 ${state.cloudResults.length} 台实例`;
-    renderCloudRows();
-  } catch (e) {
-    $('#cloud-status').textContent = '获取失败';
-    toast('获取失败：' + e.message, 'error');
-  }
 }
 
 async function cloudImportSelected() {
@@ -2352,11 +2420,15 @@ function bindEvents() {
   $('#btn-add-host').addEventListener('click', () => openHostModal(null));
   $('#btn-welcome-add').addEventListener('click', () => openHostModal(null));
   $('#btn-cloud-import').addEventListener('click', async () => {
-    state.settings = await api('settings:get');
-    setCloudProvider('tencent');
     openModal('#modal-cloud');
+    try {
+      await refreshCloudAccounts();
+    } catch (e) {
+      toast('读取云账号失败：' + e.message, 'error');
+    }
   });
   $('#btn-welcome-cloud').addEventListener('click', () => $('#btn-cloud-import').click());
+  $('#btn-cloud-add-account').addEventListener('click', () => editCloudAccount(null));
 
   $('#host-search').addEventListener('input', renderHosts);
   $('#host-auth').addEventListener('change', toggleAuthRows);
@@ -2374,15 +2446,7 @@ function bindEvents() {
     }
   });
 
-  document.querySelectorAll('.cloud-tab').forEach((t) => {
-    t.addEventListener('click', () => setCloudProvider(t.dataset.provider));
-  });
-  $('#cloud-key-help').addEventListener('click', (e) => {
-    const link = e.target.closest('.help-link');
-    if (!link) return;
-    api('app:openExternal', { url: link.dataset.url }).catch((err) => toast('无法打开链接：' + err.message, 'error'));
-  });
-  $('#btn-cloud-fetch').addEventListener('click', cloudFetch);
+  $('#btn-cloud-fetch').addEventListener('click', cloudFetchAll);
   $('#btn-cloud-import-selected').addEventListener('click', cloudImportSelected);
   $('#btn-cloud-close').addEventListener('click', () => closeModal('#modal-cloud'));
 
