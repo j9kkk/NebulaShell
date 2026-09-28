@@ -1,6 +1,11 @@
 // 云厂商实例查询:腾讯云 CVM/轻量(TC3 签名)+ 阿里云 ECS(RPC V1)
+// - 区域自动探测(DescribeRegions),不再要求用户逐个选择
+// - 全区域并发分页拉取;单区域失败不阻断整体(结果里带 errors 供前端提示)
+// - 腾讯云一次拉取 CVM + 轻量两类实例(lighthouse 与 CVM 共用密钥)
 use crate::signing::*;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 fn http_client() -> reqwest::Client {
     reqwest::Client::new()
@@ -42,14 +47,20 @@ pub async fn tencent_call(
         "TC3-HMAC-SHA256 Credential={}/{}/{}/tc3_request, SignedHeaders=content-type;host;x-tc-action, Signature={}",
         secret_id, date, service, signature
     );
-    let res = http_client()
+    let mut req = http_client()
         .post(format!("{}/", base))
         .header("Content-Type", "application/json; charset=utf-8")
         .header("X-TC-Action", action)
         .header("X-TC-Version", version)
         .header("X-TC-Region", region)
         .header("X-TC-Timestamp", timestamp.to_string())
-        .header("Authorization", authorization)
+        .header("Authorization", authorization);
+    // 自定义 endpoint(测试/私有化)时附带 service 标识:真实 API 忽略未知头
+    // (TC3 签名只覆盖 content-type/host/x-tc-action),mock 依赖它区分服务。
+    if !endpoint.trim().is_empty() {
+        req = req.header("X-Mock-Service", service);
+    }
+    let res = req
         .body(payload_str)
         .send()
         .await
@@ -67,6 +78,66 @@ pub async fn tencent_call(
     Ok(json["Response"].clone())
 }
 
+/// 腾讯云区域探测(DescribeRegions):返回 (region, name) 列表。
+/// CVM 与 Lighthouse 的区域表一致,用 CVM 的即可。
+pub async fn tencent_regions(
+    secret_id: &str,
+    secret_key: &str,
+    endpoint: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let resp = tencent_call(
+        secret_id,
+        secret_key,
+        "cvm",
+        "DescribeRegions",
+        "2017-03-12",
+        "ap-guangzhou",
+        json!({}),
+        endpoint,
+    )
+    .await?;
+    let mut out = Vec::new();
+    for r in resp["RegionSet"].as_array().cloned().unwrap_or_default() {
+        let region = r["Region"].as_str().unwrap_or("").to_string();
+        let name = r["RegionName"].as_str().unwrap_or("").to_string();
+        if !region.is_empty() {
+            out.push((region, name));
+        }
+    }
+    Ok(out)
+}
+
+/// 阿里云区域探测(DescribeRegions):返回 (region, name) 列表。
+pub async fn aliyun_regions(
+    access_key_id: &str,
+    access_key_secret: &str,
+    endpoint: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let resp = aliyun_call(
+        access_key_id,
+        access_key_secret,
+        "DescribeRegions",
+        "cn-hangzhou",
+        endpoint,
+        json!({}),
+    )
+    .await?;
+    let mut out = Vec::new();
+    for r in resp["Regions"]["Region"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let region = r["RegionId"].as_str().unwrap_or("").to_string();
+        let name = r["LocalName"].as_str().unwrap_or("").to_string();
+        if !region.is_empty() {
+            out.push((region, name));
+        }
+    }
+    Ok(out)
+}
+
+/// 腾讯云单区域拉全(分页;Limit 上限 100,防御性上限 50 页)
 pub async fn tencent_describe_instances(
     secret_id: &str,
     secret_key: &str,
@@ -79,28 +150,86 @@ pub async fn tencent_describe_instances(
     } else {
         "2017-03-12"
     };
-    let resp = tencent_call(
-        secret_id,
-        secret_key,
-        service,
-        "DescribeInstances",
-        version,
-        region,
-        json!({ "Limit": 100, "Offset": 0 }),
-        endpoint,
-    )
-    .await?;
-    let provider = service.to_string();
-    Ok(map_tencent_instances(&resp, &provider, region))
+    let mut all: Vec<Value> = Vec::new();
+    let mut offset: i64 = 0;
+    loop {
+        let resp = tencent_call(
+            secret_id,
+            secret_key,
+            service,
+            "DescribeInstances",
+            version,
+            region,
+            json!({ "Limit": 100, "Offset": offset }),
+            endpoint,
+        )
+        .await?;
+        let page = resp["InstanceSet"].as_array().cloned().unwrap_or_default();
+        let got = page.len() as i64;
+        all.extend(map_tencent_instances(&resp, service, region));
+        if got < 100 || offset > 5000 {
+            break;
+        }
+        offset += got;
+    }
+    Ok(all)
 }
 
-fn map_tencent_instances(resp: &Value, provider: &str, region: &str) -> Vec<Value> {
+/// 腾讯云:全区域拉取 CVM + 轻量,结果带 provider/region。
+/// 单区域失败不阻断整体 —— 错误收集进 errors 由前端汇总提示。
+pub async fn tencent_fetch_all(
+    secret_id: &str,
+    secret_key: &str,
+    endpoint: &str,
+) -> Result<(Vec<Value>, Vec<String>), String> {
+    let regions = tencent_regions(secret_id, secret_key, endpoint).await?;
+    let sem = Arc::new(Semaphore::new(8)); // 并发限流,避免触发 API 限频
+    let mut handles = Vec::new();
+    for (region, _) in &regions {
+        for svc in ["cvm", "lighthouse"] {
+            let permit = sem.clone();
+            let sid = secret_id.to_string();
+            let skey = secret_key.to_string();
+            let ep = endpoint.to_string();
+            let region = region.clone();
+            handles.push(tokio::spawn(async move {
+                let _p = permit.acquire_owned().await;
+                let r = tencent_describe_instances(&sid, &skey, svc, &region, &ep).await;
+                (svc, region, r)
+            }));
+        }
+    }
+    let mut instances = Vec::new();
+    let mut errors = Vec::new();
+    for h in handles {
+        match h.await {
+            Ok((_, _, Ok(list))) => instances.extend(list),
+            Ok((svc, region, Err(e))) => {
+                // 部分区域不支持轻量(如 ap-osaka/na-queretaro),属正常情况,
+                // 不作为错误提示用户。
+                if e.contains("UnsupportedRegion") {
+                    continue;
+                }
+                errors.push(format!("腾讯云 {} [{}]: {}", region, svc, e));
+            }
+            Err(e) => errors.push(format!("任务失败: {}", e)),
+        }
+    }
+    Ok((instances, errors))
+}
+
+pub fn map_tencent_instances(resp: &Value, provider: &str, region: &str) -> Vec<Value> {
     let list = resp["InstanceSet"].as_array().cloned().unwrap_or_default();
     list.iter()
         .map(|i| {
+            // CVM 用 PublicIpAddresses/PrivateIpAddresses;
+            // Lighthouse 用 PublicAddresses/PrivateAddresses(字段名不同,
+            // 此前只读 CVM 字段导致轻量实例的 IP 恒为空、被前端整体过滤)。
             let host = i["PublicIpAddresses"][0]
                 .as_str()
+                .or_else(|| i["PublicAddresses"][0].as_str())
                 .or_else(|| i["PrivateIpAddresses"][0].as_str())
+                .or_else(|| i["PrivateAddresses"][0].as_str())
                 .unwrap_or("");
             let os = i["OsName"].as_str().unwrap_or("");
             json!({
@@ -176,27 +305,71 @@ pub async fn aliyun_call(
     Ok(json)
 }
 
-pub async fn aliyun_describe_instances(
+/// 阿里云:全区域分页拉取 ECS 实例,结果带 region。
+pub async fn aliyun_fetch_all(
     access_key_id: &str,
     access_key_secret: &str,
-    region: &str,
     endpoint: &str,
-) -> Result<Vec<Value>, String> {
-    let json = aliyun_call(
-        access_key_id,
-        access_key_secret,
-        "DescribeInstances",
-        region,
-        endpoint,
-        json!({ "PageSize": 100, "PageNumber": 1 }),
-    )
-    .await?;
-    let list = json["Instances"]["Instance"]
+) -> Result<(Vec<Value>, Vec<String>), String> {
+    let regions = aliyun_regions(access_key_id, access_key_secret, endpoint).await?;
+    let sem = Arc::new(Semaphore::new(8));
+    let mut handles = Vec::new();
+    for (region, _) in &regions {
+        let ak = access_key_id.to_string();
+        let sk = access_key_secret.to_string();
+        let ep = endpoint.to_string();
+        let region = region.clone();
+        handles.push(tokio::spawn(async move {
+            let mut all: Vec<Value> = Vec::new();
+            let mut page: i64 = 1;
+            loop {
+                let r = aliyun_call(
+                    &ak,
+                    &sk,
+                    "DescribeInstances",
+                    &region,
+                    &ep,
+                    json!({ "PageSize": 100, "PageNumber": page }),
+                )
+                .await;
+                match r {
+                    Ok(j) => {
+                        let list = j["Instances"]["Instance"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
+                        let got = list.len() as i64;
+                        let total = j["TotalCount"].as_i64().unwrap_or(0);
+                        all.extend(map_aliyun_instances(&j, &region));
+                        if (page * 100) >= total || got == 0 || page > 50 {
+                            break;
+                        }
+                        page += 1;
+                    }
+                    Err(e) => return (region, Err(e)),
+                }
+            }
+            (region, Ok(all))
+        }));
+    }
+    let mut instances = Vec::new();
+    let mut errors = Vec::new();
+    for h in handles {
+        match h.await {
+            Ok((_, Ok(list))) => instances.extend(list),
+            Ok((region, Err(e))) => errors.push(format!("阿里云 {}: {}", region, e)),
+            Err(e) => errors.push(format!("任务失败: {}", e)),
+        }
+    }
+    Ok((instances, errors))
+}
+
+fn map_aliyun_instances(resp: &Value, region: &str) -> Vec<Value> {
+    let list = resp["Instances"]["Instance"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    Ok(list
-        .iter()
+    list.iter()
         .map(|i| {
             let host = i["PublicIpAddress"]["IpAddress"][0]
                 .as_str()
@@ -212,5 +385,24 @@ pub async fn aliyun_describe_instances(
                 "cloud": { "provider": "aliyun", "region": region, "instanceId": i["InstanceId"], "os": os }
             })
         })
-        .collect())
+        .collect()
+}
+
+// 保留单区域调用(旧签名兼容;mock 测试与既有调用方使用)
+pub async fn aliyun_describe_instances(
+    access_key_id: &str,
+    access_key_secret: &str,
+    region: &str,
+    endpoint: &str,
+) -> Result<Vec<Value>, String> {
+    let json = aliyun_call(
+        access_key_id,
+        access_key_secret,
+        "DescribeInstances",
+        region,
+        endpoint,
+        json!({ "PageSize": 100, "PageNumber": 1 }),
+    )
+    .await?;
+    Ok(map_aliyun_instances(&json, region))
 }
