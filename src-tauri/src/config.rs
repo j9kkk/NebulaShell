@@ -109,6 +109,93 @@ fn aes_decrypt(b64: &str) -> Result<String, String> {
     String::from_utf8(pt).map_err(|e| e.to_string())
 }
 
+// ===== 导出文件的口令加密 =====
+// 导出文件会被复制/同步/转发,凭据绝不能明文落盘。这里用 scrypt 从口令派生密钥
+// (故意慢,抵御离线暴力破解),再用 AES-256-GCM 加密并附认证标签。
+// 文件格式(单行 base64):magic(4) | log_n(1) | r(4) | p(4) | salt(16) | nonce(12) | ciphertext
+const EXPORT_MAGIC: &[u8; 4] = b"NBS1";
+const EXPORT_LOG_N: u8 = 15; // N = 2^15,约 32MB 内存开销,单次派生 ~50ms 量级
+const EXPORT_R: u32 = 8;
+const EXPORT_P: u32 = 1;
+
+fn scrypt_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
+    let params =
+        scrypt::Params::new(EXPORT_LOG_N, EXPORT_R, EXPORT_P, 32).map_err(|e| e.to_string())?;
+    let mut key = [0u8; 32];
+    scrypt::scrypt(passphrase.as_bytes(), salt, &params, &mut key).map_err(|e| e.to_string())?;
+    Ok(key)
+}
+
+fn encrypt_with_passphrase(passphrase: &str, plain: &[u8]) -> Result<String, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use base64::Engine;
+    use rand::RngCore;
+
+    let mut salt = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
+    {
+        let mut rng = rand::thread_rng();
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut nonce_bytes);
+    }
+    let key = scrypt_key(passphrase, &salt)?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ct = cipher
+        .encrypt(nonce, plain)
+        .map_err(|e| format!("加密失败: {}", e))?;
+
+    let mut blob = Vec::with_capacity(4 + 1 + 4 + 4 + 16 + 12 + ct.len());
+    blob.extend_from_slice(EXPORT_MAGIC);
+    blob.push(EXPORT_LOG_N);
+    blob.extend_from_slice(&EXPORT_R.to_be_bytes());
+    blob.extend_from_slice(&EXPORT_P.to_be_bytes());
+    blob.extend_from_slice(&salt);
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&ct);
+    Ok(base64::engine::general_purpose::STANDARD.encode(&blob))
+}
+
+fn decrypt_with_passphrase(passphrase: &str, b64: &str) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use base64::Engine;
+
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| e.to_string())?;
+    // 先把头部参数读出来,再按文件里记录的 log_n/r/p 派生 ——
+    // 这样以后调强参数也不会让旧文件失效。
+    if blob.len() < 4 + 1 + 4 + 4 + 16 + 12 || &blob[..4] != EXPORT_MAGIC {
+        return Err("凭据块格式不正确".into());
+    }
+    let log_n = blob[4];
+    let r = u32::from_be_bytes([blob[5], blob[6], blob[7], blob[8]]);
+    let p = u32::from_be_bytes([blob[9], blob[10], blob[11], blob[12]]);
+    let salt = &blob[13..29];
+    let nonce_bytes = &blob[29..41];
+    let ct = &blob[41..];
+
+    let params = scrypt::Params::new(log_n, r, p, 32).map_err(|e| e.to_string())?;
+    let mut key = [0u8; 32];
+    scrypt::scrypt(passphrase.as_bytes(), salt, &params, &mut key).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    cipher
+        .decrypt(Nonce::from_slice(nonce_bytes), ct)
+        .map_err(|_| "口令错误".to_string())
+}
+
+/// 凭据与主机的对应键(导出/导入两侧必须一致)
+fn cred_key(v: &Value) -> String {
+    format!(
+        "{}:{}:{}",
+        v["host"].as_str().unwrap_or("").to_lowercase(),
+        v["port"].as_i64().unwrap_or(22),
+        v["username"].as_str().unwrap_or("root").to_lowercase()
+    )
+}
+
 impl Store {
     pub fn enc(&self, plain: &str, path: &str) -> String {
         if plain.is_empty() {
@@ -430,7 +517,13 @@ impl Store {
         self.save_host(&payload)
     }
 
-    pub fn export_hosts(&self) -> Result<Value, String> {
+    /// 导出主机。
+    ///
+    /// `passphrase` 为 None 时**只导出非敏感字段**(主机/端口/用户名/分组等),
+    /// 凭据一律不写入 —— 导出文件常被复制、同步或随聊天工具转发,明文密码
+    /// 一旦落盘就很难收回。需要连同凭据迁移时,调用方必须提供口令,
+    /// 此时凭据用 scrypt 派生密钥 + AES-256-GCM 加密后单独放在 credentials 里。
+    pub fn export_hosts(&self, passphrase: Option<&str>) -> Result<Value, String> {
         let data = self.data.lock().unwrap();
         let hosts: Vec<Value> = data["hosts"]
             .as_array()
@@ -440,20 +533,48 @@ impl Store {
                 json!({
                     "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
                     "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
-                    "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
-                    "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
-                    "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
                 })
             })
             .collect();
-        Ok(json!({
-            "app": "nebulashell", "version": 1,
+
+        let mut out = json!({
+            "app": "nebulashell", "version": 2,
             "exportedAt": chrono::Utc::now().to_rfc3339(),
-            "hosts": hosts
-        }))
+            "hosts": hosts,
+            // 明确标记:本文件不含明文凭据
+            "credentialsIncluded": false,
+        });
+
+        if let Some(pass) = passphrase {
+            if pass.trim().is_empty() {
+                return Err("口令不能为空".into());
+            }
+            let creds: Vec<Value> = data["hosts"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|h| {
+                    json!({
+                        "host": h["host"], "port": h["port"], "username": h["username"],
+                        "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
+                        "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
+                        "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
+                    })
+                })
+                .collect();
+            let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
+            let blob = encrypt_with_passphrase(pass, plain.as_bytes())?;
+            out["credentialsIncluded"] = json!(true);
+            out["credentials"] = json!(blob);
+        }
+        Ok(out)
     }
 
-    pub fn import_hosts(&self, text: &str) -> Result<Value, String> {
+    /// 导入主机。兼容三种来源:
+    ///  - 旧版(v1)明文导出:凭据是明文,导入后按当前存储方式重新加密
+    ///  - 新版(v2)不带凭据:只导入主机信息
+    ///  - 新版(v2)带凭据:需提供口令解密 credentials
+    pub fn import_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
         let parsed: Value =
             serde_json::from_str(text).map_err(|_| "文件不是合法 JSON".to_string())?;
         let items = if parsed.is_array() {
@@ -463,6 +584,25 @@ impl Store {
         } else {
             return Err("文件格式不对:需要 { hosts: [...] } 或主机数组".into());
         };
+
+        // 凭据表:host:port:user -> {password, privateKey, passphrase}
+        let mut creds: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        let mut legacy_plaintext = false;
+
+        if !parsed["credentials"].is_null() {
+            let pass = passphrase
+                .filter(|p| !p.is_empty())
+                .ok_or("该导出文件包含凭据,请输入导出时设置的口令")?;
+            let blob = parsed["credentials"].as_str().ok_or("凭据字段格式不正确")?;
+            let plain = decrypt_with_passphrase(pass, blob)
+                .map_err(|_| "口令错误,或文件已损坏".to_string())?;
+            let list: Vec<Value> = serde_json::from_slice(&plain)
+                .map_err(|_| "凭据内容解析失败(口令是否正确?)".to_string())?;
+            for c in &list {
+                creds.insert(cred_key(c), c.clone());
+            }
+        }
+
         // 锁内筛选,锁外逐条保存(save_host 需要拿锁)
         let payloads: Vec<Value> = {
             let data = self.data.lock().unwrap();
@@ -485,15 +625,46 @@ impl Store {
                 let mut payload = it.clone();
                 payload["id"] = json!(null);
                 payload["host"] = json!(host);
+                // 旧版明文导出:v1 的凭据直接挂在主机对象上
+                let has_inline = ["password", "privateKey", "passphrase"]
+                    .iter()
+                    .any(|f| !it[*f].is_null() && it[*f].as_str().unwrap_or("") != "");
+                if has_inline {
+                    legacy_plaintext = true;
+                } else {
+                    // 用新版凭据表补上
+                    if let Some(c) = creds.get(&cred_key(it)) {
+                        for f in ["password", "privateKey", "passphrase"] {
+                            if payload[f].is_null() {
+                                payload[f] = c[f].clone();
+                            }
+                        }
+                    }
+                    // v1 也可能把凭据放在 credentials 之外的明文位置,这里不再猜测。
+                }
                 payloads.push(payload);
             }
             payloads
         };
         let skipped = items.len() - payloads.len();
+        // 计算实际恢复了多少条凭据(用于给用户明确反馈)
+        let with_cred = payloads
+            .iter()
+            .filter(|p| {
+                ["password", "privateKey", "passphrase"]
+                    .iter()
+                    .any(|f| p[*f].as_str().map(|s| !s.is_empty()).unwrap_or(false))
+            })
+            .count();
         for payload in &payloads {
             self.save_host(payload)?;
         }
-        Ok(json!({ "added": payloads.len(), "skipped": skipped }))
+        Ok(json!({
+            "added": payloads.len(),
+            "skipped": skipped,
+            "withCredentials": with_cred,
+            "legacyPlaintext": legacy_plaintext,
+        }))
     }
 
     pub fn get_settings(&self) -> Value {

@@ -98,20 +98,144 @@ fn import_export_roundtrip() {
     store
         .save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "pa" }))
         .unwrap();
-    let exported = store.export_hosts().unwrap();
+    // 带凭据导出必须提供口令
+    let exported = store.export_hosts(Some("correct horse battery")).unwrap();
     let text = serde_json::to_string(&exported).unwrap();
     let store2 = tmp_store("io2");
-    let r = store2.import_hosts(&text).unwrap();
+    let r = store2
+        .import_hosts(&text, Some("correct horse battery"))
+        .unwrap();
     assert_eq!(r["added"], json!(1));
+    assert_eq!(r["withCredentials"], json!(1), "应恢复凭据");
     let list = store2.list_hosts();
     assert_eq!(list.len(), 1);
     let full = store2.host_full(list[0]["id"].as_str().unwrap()).unwrap();
     assert_eq!(full["password"], json!("pa"));
     // 重复导入去重
-    let r2 = store2.import_hosts(&text).unwrap();
+    let r2 = store2
+        .import_hosts(&text, Some("correct horse battery"))
+        .unwrap();
     assert_eq!(r2["added"], json!(0));
     let _ = std::fs::remove_dir_all(&store.dir);
     let _ = std::fs::remove_dir_all(&store2.dir);
+}
+
+/// 安全回归:不带口令导出时,文件里**不得出现任何明文凭据**。
+#[test]
+fn export_without_passphrase_contains_no_credentials() {
+    let store = tmp_store("io-nocred");
+    store
+        .save_host(&json!({
+            "name": "a", "host": "10.0.0.1", "username": "root",
+            "password": "SuperSecret123", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----"
+        }))
+        .unwrap();
+    let exported = store.export_hosts(None).unwrap();
+    let text = serde_json::to_string(&exported).unwrap();
+
+    assert!(
+        !text.contains("SuperSecret123"),
+        "导出文件泄漏了明文密码: {}",
+        text
+    );
+    assert!(
+        !text.contains("BEGIN OPENSSH PRIVATE KEY"),
+        "导出文件泄漏了明文私钥"
+    );
+    assert_eq!(exported["credentialsIncluded"], json!(false));
+    assert!(exported["credentials"].is_null());
+    // 主机信息本身仍应导出
+    assert_eq!(exported["hosts"].as_array().unwrap().len(), 1);
+    assert_eq!(exported["hosts"][0]["host"], json!("10.0.0.1"));
+
+    // 导入该文件:主机到位,但凭据应缺失(需用户重填)
+    let store2 = tmp_store("io-nocred2");
+    let r = store2.import_hosts(&text, None).unwrap();
+    assert_eq!(r["added"], json!(1));
+    assert_eq!(r["withCredentials"], json!(0));
+    let full = store2
+        .host_full(store2.list_hosts()[0]["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(full["password"], json!(""), "无凭据导出不应恢复出密码");
+    let _ = std::fs::remove_dir_all(&store.dir);
+    let _ = std::fs::remove_dir_all(&store2.dir);
+}
+
+/// 加密导出:密文不得包含明文,且错误口令必须失败。
+#[test]
+fn encrypted_export_is_confidential_and_passphrase_checked() {
+    let store = tmp_store("io-enc");
+    store
+        .save_host(&json!({ "name": "b", "host": "10.0.0.2", "password": "TopSecret!" }))
+        .unwrap();
+    let exported = store.export_hosts(Some("my-passphrase-1")).unwrap();
+    let text = serde_json::to_string(&exported).unwrap();
+    assert!(!text.contains("TopSecret!"), "加密导出不应含明文");
+    assert_eq!(exported["credentialsIncluded"], json!(true));
+
+    // 错误口令:必须报错,不能悄悄导入空凭据或 panic
+    let wrong = tmp_store("io-enc-wrong");
+    let e = wrong.import_hosts(&text, Some("not-the-passphrase"));
+    assert!(e.is_err(), "错误口令应失败,实际: {:?}", e);
+    assert!(wrong.list_hosts().is_empty(), "失败时不应写入任何主机");
+
+    // 缺失口令:也应失败并提示
+    let missing = tmp_store("io-enc-missing");
+    assert!(missing.import_hosts(&text, None).is_err());
+
+    // 正确口令:凭据完整恢复(含解密后的明文)
+    let ok = tmp_store("io-enc-ok");
+    let r = ok.import_hosts(&text, Some("my-passphrase-1")).unwrap();
+    assert_eq!(r["added"], json!(1));
+    assert_eq!(r["withCredentials"], json!(1));
+    let full = ok
+        .host_full(ok.list_hosts()[0]["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(full["password"], json!("TopSecret!"));
+
+    let _ = std::fs::remove_dir_all(&store.dir);
+    let _ = std::fs::remove_dir_all(&wrong.dir);
+    let _ = std::fs::remove_dir_all(&missing.dir);
+    let _ = std::fs::remove_dir_all(&ok.dir);
+}
+
+/// 向后兼容:旧版(v1)明文导出仍可导入,并标记 legacyPlaintext 以便提示用户。
+#[test]
+fn legacy_plaintext_export_still_imports() {
+    let legacy = json!({
+        "app": "nebulashell", "version": 1,
+        "hosts": [{
+            "name": "old", "host": "10.0.0.9", "port": 22, "username": "root",
+            "authType": "password", "password": "legacy-plain-pw"
+        }]
+    });
+    let store = tmp_store("io-legacy");
+    let r = store
+        .import_hosts(&serde_json::to_string(&legacy).unwrap(), None)
+        .unwrap();
+    assert_eq!(r["added"], json!(1));
+    assert_eq!(r["legacyPlaintext"], json!(true), "应识别并提示旧格式");
+    let full = store
+        .host_full(store.list_hosts()[0]["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(full["password"], json!("legacy-plain-pw"));
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// 同一口令/内容两次导出应产生不同密文(随机 salt+nonce,避免可被比对)。
+#[test]
+fn export_ciphertext_is_nondeterministic() {
+    let store = tmp_store("io-rand");
+    store
+        .save_host(&json!({ "name": "c", "host": "10.0.0.3", "password": "pw" }))
+        .unwrap();
+    let a = store.export_hosts(Some("same-passphrase")).unwrap();
+    let b = store.export_hosts(Some("same-passphrase")).unwrap();
+    assert_ne!(
+        a["credentials"], b["credentials"],
+        "两次导出的密文不应相同(salt/nonce 必须随机)"
+    );
+    let _ = std::fs::remove_dir_all(&store.dir);
 }
 
 #[test]

@@ -108,7 +108,17 @@ pub async fn nebula_invoke(
             Err(e) => err_msg(e),
         },
         "hosts:exportFile" => {
-            let data = match state.store.export_hosts() {
+            // includeCredentials 为真时必须带 passphrase,由 Store 用 scrypt+AES-GCM 加密;
+            // 否则导出文件不含任何凭据(明文密码落盘后很难收回)。
+            let pass: Option<String> = if payload["includeCredentials"].as_bool().unwrap_or(false) {
+                match payload["passphrase"].as_str() {
+                    Some(p) if !p.trim().is_empty() => Some(p.to_string()),
+                    _ => return err_msg("请设置导出加密口令"),
+                }
+            } else {
+                None
+            };
+            let data = match state.store.export_hosts(pass.as_deref()) {
                 Ok(d) => d,
                 Err(e) => return err_msg(e),
             };
@@ -141,22 +151,39 @@ pub async fn nebula_invoke(
             }
         }
         "hosts:importFile" => {
-            let path = if state.test_mode {
-                std::env::var("NEBULA_TEST_PICK_PATHS").ok()
-            } else {
-                rfd::AsyncFileDialog::new()
+            // 允许复用已选路径:文件含加密凭据时,前端需要二次调用并带上口令,
+            // 不能要求用户重选一次文件。
+            let preset = payload["path"].as_str().filter(|s| !s.is_empty());
+            let path = match preset {
+                Some(p) => Some(p.to_string()),
+                // 测试模式:优先用专用的导入路径变量,避免与 SFTP 选文件的
+                // NEBULA_TEST_PICK_PATHS 抢同一个值(两者会同时出现在 e2e 里)。
+                None if state.test_mode => std::env::var("NEBULA_TEST_IMPORT_PATH")
+                    .ok()
+                    .or_else(|| std::env::var("NEBULA_TEST_PICK_PATHS").ok()),
+                None => rfd::AsyncFileDialog::new()
                     .pick_file()
                     .await
-                    .map(|f| f.path().to_string_lossy().to_string())
+                    .map(|f| f.path().to_string_lossy().to_string()),
             };
             match path {
                 Some(p) => match std::fs::read_to_string(&p) {
-                    Ok(text) => match state.store.import_hosts(&text) {
-                        Ok(r) => {
-                            ok(json!({ "path": p, "added": r["added"], "skipped": r["skipped"] }))
+                    Ok(text) => {
+                        let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
+                        // 文件带凭据但未给口令:先回一个信号让前端弹口令框,
+                        // 不要把"需要口令"当成错误(前端 api() 会把错误当失败抛掉)。
+                        if pass.is_none() && file_has_credentials(&text) {
+                            return ok(json!({ "needsPassphrase": true, "path": p }));
                         }
-                        Err(e) => err_msg(e),
-                    },
+                        match state.store.import_hosts(&text, pass) {
+                            Ok(r) => ok(json!({
+                                "path": p, "added": r["added"], "skipped": r["skipped"],
+                                "withCredentials": r["withCredentials"],
+                                "legacyPlaintext": r["legacyPlaintext"],
+                            })),
+                            Err(e) => err_msg(e),
+                        }
+                    }
                     Err(e) => err_msg(e),
                 },
                 None => ok(json!(null)),
@@ -741,6 +768,14 @@ pub async fn nebula_invoke(
 
         _ => err_msg(format!("IPC 通道未授权: {}", channel)),
     }
+}
+
+/// 判断导出文件是否携带(加密的)凭据块。
+/// 用于决定是否需要向用户索取口令,而不把"需要口令"报成错误。
+fn file_has_credentials(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .map(|v| !v["credentials"].is_null() || v["credentialsIncluded"] == json!(true))
+        .unwrap_or(false)
 }
 
 async fn sftp_op<F, Fut>(
