@@ -96,6 +96,62 @@ function toast(msg, type = '') {
   setTimeout(() => el.remove(), 4000);
 }
 
+/// 应用内输入对话框:返回 Promise<string|null>(null = 取消)。
+/// 与 askConfirm 同因 —— wry/WKWebView 未实现原生 prompt,直接调用拿不到输入。
+function askPrompt(message, opts = {}) {
+  const {
+    title = '请输入',
+    okText = '确定',
+    hint = '',
+    password = true,
+    placeholder = '',
+    validate = null,
+  } = opts;
+  return new Promise((resolve) => {
+    const modal = $('#modal-prompt');
+    const input = $('#prompt-input');
+    const hintEl = $('#prompt-hint');
+    const okBtn = $('#btn-prompt-ok');
+    const cancelBtn = $('#btn-prompt-cancel');
+    $('#prompt-title').textContent = title;
+    $('#prompt-message').textContent = message;
+    hintEl.textContent = hint || '';
+    hintEl.style.display = hint ? 'block' : 'none';
+    input.type = password ? 'password' : 'text';
+    input.value = '';
+    input.placeholder = placeholder;
+    okBtn.textContent = okText;
+    okBtn.disabled = false;
+
+    const done = (val) => {
+      modal.classList.add('hidden');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onEsc);
+      resolve(val);
+    };
+    const onOk = () => {
+      const v = input.value;
+      const err = validate ? validate(v) : null;
+      if (err) { toast(err, 'error'); return; }
+      done(v);
+    };
+    const onCancel = () => done(null);
+    const onKey = (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') onOk();
+    };
+    const onEsc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onEsc);
+    modal.classList.remove('hidden');
+    input.focus();
+  });
+}
+
 // 应用内确认对话框:返回 Promise<boolean>
 // 替代 window.confirm —— wry/WKWebView 未实现 runJavaScriptConfirmPanel,原生 confirm 会被
 // WebKit 直接判为 false,导致删除等操作静默失效(Chromium 正常,两栈行为不一致)。
@@ -2413,17 +2469,64 @@ function bindEvents() {
   // 主机导入/导出/克隆
   $('#btn-hosts-export').addEventListener('click', async () => {
     try {
-      const r = await api('hosts:exportFile');
-      if (r) toast(`已导出 ${r.count} 台主机到 ${r.path}（含凭据，请妥善保管）`, 'success');
+      // 导出文件常被复制/同步/转发,明文密码落盘后很难收回,因此默认不含凭据。
+      // 需连同凭据迁移时,在同一步里输入口令(留空 = 只导出主机信息)。
+      const pass = await askPrompt(
+        '输入口令以加密导出凭据;留空则只导出主机信息(不含密码/私钥),导入后需重新填写。',
+        {
+          title: '导出主机',
+          okText: '导出',
+          hint: '口令不会保存在任何地方,请自行记牢(至少 8 位)',
+          validate: (v) => (v.length > 0 && v.length < 8 ? '口令至少 8 位(或留空以不含凭据导出)' : null),
+        },
+      );
+      if (pass === null) return; // 取消 = 中止导出
+
+      let passphrase = null;
+      if (pass.length > 0) {
+        const again = await askPrompt('请再次输入同一口令以确认。', {
+          title: '确认口令', okText: '确定',
+          validate: (v) => (v !== pass ? '两次输入的口令不一致' : null),
+        });
+        if (again === null) return;
+        passphrase = pass;
+      }
+
+      const r = await api('hosts:exportFile', {
+        includeCredentials: !!passphrase,
+        passphrase: passphrase || undefined,
+      });
+      if (r) {
+        toast(
+          passphrase
+            ? `已导出 ${r.count} 台主机（凭据已加密）到 ${r.path}`
+            : `已导出 ${r.count} 台主机（不含凭据）到 ${r.path}`,
+          'success',
+        );
+      }
     } catch (e) {
       toast('导出失败：' + e.message, 'error');
     }
   });
   $('#btn-hosts-import').addEventListener('click', async () => {
     try {
-      const r = await api('hosts:importFile');
+      // 首次不带口令:文件不含凭据时一次完成;含凭据则返回 needsPassphrase,
+      // 此时弹出口令框并复用同一路径重试(不让用户重选文件)。
+      let r = await api('hosts:importFile');
+      if (r && r.needsPassphrase) {
+        const pass = await askPrompt('该导出文件包含加密凭据,请输入导出时设置的口令。', {
+          title: '输入解密口令', okText: '解密导入',
+        });
+        if (pass === null) return;
+        r = await api('hosts:importFile', { passphrase: pass, path: r.path });
+      }
       if (r) {
-        toast(`导入完成：新增 ${r.added} 台，跳过重复 ${r.skipped} 台`, 'success');
+        const parts = [`新增 ${r.added} 台`, `跳过重复 ${r.skipped} 台`];
+        if (r.withCredentials) parts.push(`恢复凭据 ${r.withCredentials} 台`);
+        toast(`导入完成：${parts.join('，')}`, 'success');
+        if (r.legacyPlaintext) {
+          toast('该文件是旧版明文导出,已导入;建议删除该文件并改用加密导出', 'error');
+        }
         refreshHosts();
       }
     } catch (e) {
@@ -2635,6 +2738,12 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     confirmClickOk: () => $('#btn-confirm-ok').click(),
     confirmClickCancel: () => $('#btn-confirm-cancel').click(),
     confirmText: () => $('#confirm-message').textContent,
+    // 口令输入框(导出/导入用)
+    promptOpen: () => !$('#modal-prompt').classList.contains('hidden'),
+    promptTitle: () => $('#prompt-title').textContent,
+    promptFill: (v) => { $('#prompt-input').value = v; },
+    promptClickOk: () => $('#btn-prompt-ok').click(),
+    promptClickCancel: () => $('#btn-prompt-cancel').click(),
     write: (d) => {
       const s = state.sessions.get(state.activeId);
       if (s && s.status === 'connected' && !s.readOnly) s.term.input(d);
