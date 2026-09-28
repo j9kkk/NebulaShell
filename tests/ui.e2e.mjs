@@ -236,6 +236,16 @@ async function main() {
   const filesOk = await evalJs(`return document.querySelector('#file-list').textContent`);
   check('T10 SFTP 列目录', String(filesOk).includes('README.md'));
 
+  // 文件面板必须标明"操作的是哪台服务器",且在切换会话后跟随
+  // (回归:面板原先只写"文件管理",切标签后仍显示上一台的目录,
+  //  而操作会落到新会话 —— 看着 A 的目录删 B 的文件)
+  const fp0 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`));
+  check(
+    'T18 文件面板标明目标服务器',
+    fp0.open === true && !!fp0.target && fp0.target.includes('@') && fp0.targetId === fp0.activeId,
+    JSON.stringify(fp0),
+  );
+
   // 云导入(测试签名链路)
   const cloudRes = await evalJs(`
     return (async () => {
@@ -258,6 +268,15 @@ async function main() {
   const twoTabs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
   const allMountedOrAlive = twoTabs.sessions.length >= 2 && twoTabs.sessions.every((s) => s.hasText);
   check('T13 同主机可再开标签且会话互不干扰', twoTabs.tabs === beforeTabs + 1 && allMountedOrAlive, JSON.stringify(twoTabs));
+
+  // 切换会话后,文件面板必须跟着换目标(否则会出现"显示 A、操作到 B")。
+  // 用 sessionId 比对:同主机可能有多个会话,按名字比不足以判别。
+  const fpFollow = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`));
+  check(
+    'T19 切换会话后文件面板跟随目标',
+    !!fpFollow.targetId && fpFollow.targetId === fpFollow.activeId,
+    JSON.stringify(fpFollow),
+  );
 
   // 右键:屏蔽 WebView 原生菜单,终端内弹应用菜单
   const ctx = asObj(await evalJs(`return JSON.stringify((() => {
