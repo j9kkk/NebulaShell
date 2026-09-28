@@ -147,7 +147,7 @@ async function main() {
   check('T1 应用启动 / webview 就绪', true);
 
   await evalJs(`return document.querySelector('#welcome') ? 1 : 0`);
-  await waitEval(`return document.querySelector('#app-version').textContent`, 'v1.0.1');
+  await waitEval(`return document.querySelector('#app-version').textContent`, 'v1.1.0');
   check('T2 欢迎页 + 版本号', true);
 
   // 新建主机(密码)

@@ -3,9 +3,12 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/) 与
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范。
 
-## [Unreleased]
+## [1.1.0] - 2026-09-28
 
-界面修复与导出文件安全加固。
+标签与窗格模型重构、界面修复与导出文件安全加固。
+
+本次含新增能力（同一主机多开会话、⌘T 新建标签、终端右键菜单），
+按语义化版本升 minor。
 
 ### 安全
 
@@ -170,5 +173,6 @@
 - 运行时内存约 220 MB（含系统 WebKit 子进程），与 Electron 方案相当
 - 安装包体积优势（9.7 MB）来自不打包浏览器引擎，非内存优化
 
+[1.1.0]: https://github.com/j9kkk/NebulaShell/releases/tag/v1.1.0
 [1.0.1]: https://github.com/j9kkk/NebulaShell/releases/tag/v1.0.1
 [1.0.0]: https://github.com/j9kkk/NebulaShell/releases/tag/v1.0.0
