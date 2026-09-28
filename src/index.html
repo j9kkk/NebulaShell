@@ -370,6 +370,20 @@
     </div>
   </div>
 
+  <!-- 应用内输入对话框(替代原生 prompt:与 confirm 同因,WKWebView 下不返回) -->
+  <div id="modal-prompt" class="modal hidden">
+    <div class="modal-card confirm-card">
+      <h3 id="prompt-title">请输入</h3>
+      <p id="prompt-message" class="confirm-message"></p>
+      <input id="prompt-input" class="inp" type="password" autocomplete="new-password" />
+      <label id="prompt-hint" class="muted small-note"></label>
+      <div class="modal-actions">
+        <button id="btn-prompt-cancel" class="btn">取消</button>
+        <button id="btn-prompt-ok" class="btn primary">确定</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toasts"></div>
   <div id="ctx-menu" class="hidden"></div>
   <script src="./nebula-shim.js"></script>
