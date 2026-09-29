@@ -16,6 +16,8 @@ mod monitor_test;
 #[cfg(test)]
 mod signing_test;
 #[cfg(test)]
+mod ssh_test;
+#[cfg(test)]
 mod store_test;
 
 use commands::AppState;

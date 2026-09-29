@@ -201,13 +201,35 @@
       <div class="cloud-accounts-head">
         <span class="muted">云账号（同一厂商可添加多个账号的密钥）</span>
         <span class="spacer"></span>
-        <select id="cloud-new-vendor" class="inp" style="width:auto;">
-          <option value="tencent">腾讯云（CVM + 轻量）</option>
-          <option value="aliyun">阿里云（ECS）</option>
-        </select>
         <button id="btn-cloud-add-account" class="btn small">＋ 添加账号</button>
       </div>
       <div id="cloud-accounts" class="cloud-accounts"></div>
+      <!-- 凭据一次性填写:密钥与备注同表单提交,并可在保存前"测试连接"校验 -->
+      <div id="cloud-account-form" class="cloud-account-form hidden">
+        <div class="form-grid">
+          <label>厂商</label>
+          <select id="cloud-form-vendor">
+            <option value="tencent">腾讯云（CVM + 轻量）</option>
+            <option value="aliyun">阿里云（ECS）</option>
+          </select>
+          <label>备注名</label>
+          <input id="cloud-form-label" type="text" placeholder="例如：公司主账号（可留空）" maxlength="50" />
+          <label id="cloud-form-keyid-label">SecretId</label>
+          <input id="cloud-form-keyid" type="text" autocomplete="off" placeholder="AKID…" />
+          <label id="cloud-form-secret-label">SecretKey</label>
+          <input id="cloud-form-secret" type="password" autocomplete="new-password" placeholder="SecretKey" />
+          <label>接口地址</label>
+          <input id="cloud-form-endpoint" type="text" placeholder="留空使用官方 API（私有化部署可填）" />
+        </div>
+        <div id="cloud-form-help" class="cloud-help"></div>
+        <div class="cloud-form-actions">
+          <button id="btn-cloud-test" class="btn small">测试连接</button>
+          <span id="cloud-test-status" class="muted"></span>
+          <span class="spacer"></span>
+          <button id="btn-cloud-form-cancel" class="btn">取消</button>
+          <button id="btn-cloud-form-save" class="btn primary">保存</button>
+        </div>
+      </div>
       <div class="cloud-fetch-row">
         <button id="btn-cloud-fetch" class="btn primary">⟳ 一键拉取全部主机</button>
         <span id="cloud-status" class="muted">添加账号后点击拉取,将自动探测所有地域</span>

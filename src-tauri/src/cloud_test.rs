@@ -1,5 +1,5 @@
 // 云厂商实例映射测试:重点回归"轻量与 CVM 字段名不同导致轻量 IP 读成空"的缺陷
-use crate::cloud::map_tencent_instances;
+use crate::cloud::{aliyun_probe, map_tencent_instances, tencent_probe};
 use serde_json::{json, Value};
 
 /// 回归:腾讯云轻量(Lighthouse)返回 PublicAddresses/PrivateAddresses,
@@ -72,4 +72,15 @@ fn no_ip_yields_empty_host_without_panic() {
     let resp = json!({ "InstanceSet": [{ "InstanceId": "i" }] });
     let out: Vec<Value> = map_tencent_instances(&resp, "cvm", "r");
     assert_eq!(out[0]["host"], json!(""));
+}
+
+/// 凭据校验:空密钥在发请求前就被拦下(否则会拿空签名打网络)
+#[tokio::test]
+async fn probe_rejects_empty_credentials() {
+    let e = tencent_probe("", "sk", "").await.unwrap_err();
+    assert!(e.contains("SecretId"), "应提示填写 SecretId: {}", e);
+    let e = tencent_probe("AKID", "  ", "").await.unwrap_err();
+    assert!(e.contains("SecretKey"), "应提示填写 SecretKey: {}", e);
+    let e = aliyun_probe("", "", "").await.unwrap_err();
+    assert!(e.contains("AccessKeyId"), "应提示填写 AccessKeyId: {}", e);
 }

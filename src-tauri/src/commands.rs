@@ -640,6 +640,53 @@ pub async fn nebula_invoke(
             Err(e) => err_msg(e),
         },
 
+        // 凭据校验:保存前先探一次(地域 + 首个地域实例),只读不落库。
+        // keyId/secret 留空时回退到已保存账号的值(编辑场景无需重输密钥)。
+        "cloud:testAccount" => {
+            let id = payload["id"].as_str().unwrap_or("");
+            let mut vendor = payload["vendor"].as_str().unwrap_or("tencent").to_string();
+            let mut key = payload["keyId"].as_str().unwrap_or("").trim().to_string();
+            let mut secret = payload["secret"].as_str().unwrap_or("").trim().to_string();
+            let mut endpoint = payload["endpoint"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !id.is_empty() && (key.is_empty() || secret.is_empty()) {
+                match state.store.cloud_account_creds(id) {
+                    Ok((k, s, ep, v)) => {
+                        if key.is_empty() {
+                            key = k;
+                        }
+                        if secret.is_empty() {
+                            secret = s;
+                        }
+                        if endpoint.is_empty() {
+                            endpoint = ep;
+                        }
+                        if payload["vendor"].as_str().unwrap_or("").is_empty() {
+                            vendor = v;
+                        }
+                    }
+                    Err(e) => return err_msg(e),
+                }
+            }
+            let r = if vendor == "aliyun" {
+                crate::cloud::aliyun_probe(&key, &secret, &endpoint).await
+            } else {
+                crate::cloud::tencent_probe(&key, &secret, &endpoint).await
+            };
+            match r {
+                Ok((regions, instances, region, services)) => ok(json!({
+                    "regionCount": regions,
+                    "instanceCount": instances,
+                    "sampleRegion": region,
+                    "services": services,
+                })),
+                Err(e) => err_msg(e),
+            }
+        }
+
         // 一键拉取:按账号(可多个)全区域探测并拉取实例。
         // 腾讯云一次拉 CVM+轻量;单账号/单区域失败不阻断,错误汇总返回。
         "cloud:fetchAll" => {

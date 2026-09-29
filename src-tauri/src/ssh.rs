@@ -44,6 +44,41 @@ impl From<russh::Error> for HandlerError {
     }
 }
 
+/// 指纹归一:把同一 SHA256 摘要的各种历史存法还原成字节。
+/// - 现行 russh `fingerprint()`:`base64-nopad`(43 字符)
+/// - 遗留记录:hex(64 字符,Electron 版写入,随配置文件原样迁移而来)
+/// - "SHA256:xxx"(OpenSSH 展示格式)顺带兼容
+/// 比较前必须归一,否则同一把服务器密钥会因为编码不同被误判为"指纹变更"。
+pub(crate) fn fp_digest(s: &str) -> Option<Vec<u8>> {
+    use data_encoding::{BASE64_NOPAD, HEXLOWER};
+    let t = s.strip_prefix("SHA256:").unwrap_or(s).trim();
+    if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return HEXLOWER.decode(t.as_bytes()).ok();
+    }
+    BASE64_NOPAD
+        .decode(t.as_bytes())
+        .ok()
+        .filter(|b| b.len() == 32)
+}
+
+pub(crate) fn fp_matches(stored: &str, current: &str) -> bool {
+    match (fp_digest(stored), fp_digest(current)) {
+        (Some(a), Some(b)) => a == b,
+        // 双方都归一失败(理论不可能:两侧都是程序写入的摘要)时退回字符串比较
+        _ => stored == current,
+    }
+}
+
+/// 连接错误转人话:UnknownKey 只说明"指纹与记录不一致",直接甩 russh 原文
+/// ("Unknown server key")用户既不知道原因也不知道怎么恢复。
+fn humanize_connect_error(e: HandlerError) -> String {
+    match e {
+        HandlerError::russh(russh::Error::UnknownKey) => "服务器主机指纹与已保存记录不一致(该服务器可能更换过 SSH 主机密钥)。若确认属预期(如服务器重装过系统),点左侧栏底部「指纹」按钮删除该记录后重连;若非本人操作,请警惕中间人风险".into(),
+        HandlerError::russh(e) => e.to_string(),
+        HandlerError::Msg(m) => m,
+    }
+}
+
 #[async_trait::async_trait]
 impl client::Handler for SshHandler {
     type Error = HandlerError;
@@ -68,7 +103,22 @@ impl client::Handler for SshHandler {
                 self.store.save().ok();
                 Ok(true)
             }
-            Some(stored) => Ok(stored == fp),
+            Some(stored) => {
+                if stored == fp {
+                    return Ok(true);
+                }
+                if !fp_matches(&stored, &fp) {
+                    return Ok(false); // 摘要真的不同:服务器换钥,拒绝连接
+                }
+                // 同一把密钥、仅编码不同(hex 遗留):升级为现行格式,自愈迁移数据,
+                // 之后走快速字符串比较,不再进兼容分支。
+                {
+                    let mut data = self.store.data.lock().unwrap();
+                    data["knownHosts"][self.key.clone()] = json!(fp);
+                }
+                self.store.save().ok();
+                Ok(true)
+            }
         }
     }
 
@@ -149,7 +199,7 @@ fn void_rule(_: &str) {}
 ///
 /// 直接对每条 ChannelMsg 调 `from_utf8_lossy` 会在 SSH 分包切开多字节字符时
 /// 产生 U+FFFD(中文/emoji 场景实测可见)。这里按"完整前缀"解码,残留尾部留待下一批。
-fn take_utf8(pending: &mut Vec<u8>) -> String {
+pub(crate) fn take_utf8(pending: &mut Vec<u8>) -> String {
     if pending.is_empty() {
         return String::new();
     }
@@ -347,12 +397,12 @@ impl SshService {
         let mut handle = match sock {
             Some(stream) => client::connect_stream(Self::make_config(), stream, handler)
                 .await
-                .map_err(|e| format!("{}:{}", host_addr, e))?,
+                .map_err(|e| format!("{}:{}", host_addr, humanize_connect_error(e)))?,
             None => {
                 let addr = format!("{}:{}", host_addr, port);
                 client::connect(Self::make_config(), addr, handler)
                     .await
-                    .map_err(|e| format!("{}:{}", host_addr, e))?
+                    .map_err(|e| format!("{}:{}", host_addr, humanize_connect_error(e)))?
             }
         };
         Self::auth(&mut handle, user, host).await?;
@@ -749,70 +799,5 @@ impl SshService {
             .iter()
             .find(|(_, s)| s.host["id"].as_str() == Some(host_id))
             .map(|(k, _)| k.clone())
-    }
-}
-
-#[cfg(test)]
-mod utf8_test {
-    use super::take_utf8;
-
-    /// 完整的 ASCII 应立即全部取出
-    #[test]
-    fn ascii_passes_through() {
-        let mut p = b"hello".to_vec();
-        assert_eq!(take_utf8(&mut p), "hello");
-        assert!(p.is_empty());
-    }
-
-    /// 多字节字符被切成两半时,前一半必须留在缓冲里等下一批,
-    /// 不能产出 U+FFFD(这正是"中文跨包变乱码"的根因)。
-    #[test]
-    fn split_multibyte_is_buffered_not_replaced() {
-        let full = "中".as_bytes().to_vec(); // 3 字节
-        let mut p = vec![full[0]];
-        assert_eq!(take_utf8(&mut p), "", "不完整字符不应产出任何文本");
-        assert_eq!(p, vec![full[0]], "不完整字节应留在缓冲");
-
-        // 第二批补齐剩余字节 -> 拼出完整汉字
-        p.extend_from_slice(&full[1..]);
-        assert_eq!(take_utf8(&mut p), "中");
-        assert!(p.is_empty());
-    }
-
-    /// 前缀完整 + 尾部残缺:只吐出完整部分,残缺留待下批
-    #[test]
-    fn partial_tail_is_retained() {
-        let mut p = b"abc".to_vec();
-        p.extend_from_slice(&"中".as_bytes()[..2]); // 只有 2/3 字节
-        assert_eq!(take_utf8(&mut p), "abc");
-        assert_eq!(p.len(), 2, "残缺的 2 字节应留存");
-
-        p.push("中".as_bytes()[2]);
-        assert_eq!(take_utf8(&mut p), "中");
-    }
-
-    /// 4 字节字符(emoji)同样不能被切断
-    #[test]
-    fn four_byte_sequence_is_buffered() {
-        let e = "😀".as_bytes().to_vec(); // 4 字节
-        let mut p = e[..3].to_vec();
-        assert_eq!(take_utf8(&mut p), "", "3/4 字节时不应产出文本");
-        p.push(e[3]);
-        assert_eq!(take_utf8(&mut p), "😀");
-    }
-
-    /// 逐字节喂入完整字符串,最终结果必须与原文逐字一致
-    #[test]
-    fn byte_by_byte_reassembly_matches_original() {
-        let text = "中文测试 emoji😀 混排 abc";
-        let bytes = text.as_bytes();
-        let mut p = Vec::new();
-        let mut out = String::new();
-        for b in bytes {
-            p.push(*b);
-            out.push_str(&take_utf8(&mut p));
-        }
-        assert_eq!(out, text, "逐字节重组结果应与原文一致");
-        assert!(!out.contains('\u{FFFD}'), "不应出现替换字符");
     }
 }

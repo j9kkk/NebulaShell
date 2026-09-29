@@ -22,11 +22,18 @@ npm run dev          # 开发模式(前端 + Tauri 热重载)
 ## 项目结构
 
 - `src/` — 前端（xterm.js 终端 UI）。改 UI 只动这里
+  - `app.js` 是启动/事件绑定入口与全局状态；按域拆分的实现放在 `src/modules/`
 - `src-tauri/src/` — Rust 后端。每个模块职责单一：
   - `commands.rs` 是唯一的 IPC 入口，新增功能在此注册 channel
   - `ssh.rs` / `sftp.rs` / `forward.rs` 是协议层
   - `config.rs` 是持久化层
-- `tests/` — UI e2e 与 mock 服务（mock sshd / 云 API / AI API，均为进程内实现，无需外部依赖）
+  - 单元测试一律独立成 `*_test.rs`（在 `lib.rs` 里 `#[cfg(test)] mod x_test;` 挂载），
+    不在业务文件里夹带 `#[cfg(test)]` 内联模块
+- `e2e/` — UI 端到端测试与 mock 服务（mock sshd / 云 API / AI API，均为进程内实现，无需外部依赖）
+- `src-tauri/tests/` — Rust 集成测试，通过 `../e2e/helpers/` 复用同一批 mock 服务
+
+> 两个 `src/`（`src/` 前端、`src-tauri/` Rust）是 [Tauri 官方项目结构](https://v2.tauri.app/start/project-structure/)，不是历史遗留。
+> 前端经 `build.mjs` 打包到 `dist/`，编译期内嵌进二进制 —— 改前端后必须重跑 `npm run build:web` **且** `cargo build`，否则跑的是旧前端。
 
 ## 代码规范
 

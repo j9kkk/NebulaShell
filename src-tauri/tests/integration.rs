@@ -36,7 +36,7 @@ fn start_mock_sshd(password: &str) -> MockSshd {
     let _ = std::fs::create_dir_all(&dir);
     let port_file = dir.join("port");
     let helper =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/helpers/sshd-standalone.mjs");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../e2e/helpers/sshd-standalone.mjs");
     let child = Command::new("node")
         .arg(&helper)
         .arg(&port_file)

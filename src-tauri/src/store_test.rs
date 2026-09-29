@@ -422,5 +422,24 @@ fn cloud_accounts_crud() {
             .is_err(),
         "新增缺 Secret 应拒绝"
     );
+    // 编辑时改厂商:留空 Secret 必须被拒绝(否则旧厂商的密钥会被静默沿用)
+    assert!(
+        store
+            .save_cloud_account(&id2, "改成腾讯", "tencent", "LTAI-bbb", "", "")
+            .is_err(),
+        "换厂商留空 Secret 应拒绝"
+    );
+    let (_, s2, _, v2) = store.cloud_account_creds(&id2).unwrap();
+    assert_eq!(v2, "aliyun", "被拒的换厂商保存不应改动原账号");
+    assert_eq!(s2, "secret-two");
+    // 换厂商且重输了 Secret 则允许
+    store
+        .save_cloud_account(&id2, "改成腾讯", "tencent", "AKID-ccc", "secret-new", "")
+        .unwrap();
+    let (k2, s2b, _, v2b) = store.cloud_account_creds(&id2).unwrap();
+    assert_eq!(
+        (k2.as_str(), s2b.as_str(), v2b.as_str()),
+        ("AKID-ccc", "secret-new", "tencent")
+    );
     let _ = std::fs::remove_dir_all(&store.dir);
 }

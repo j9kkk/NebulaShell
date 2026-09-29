@@ -124,12 +124,13 @@ npm run dev            # 开发模式（热重载）
 
 ```
 ├── src/                     # 前端(xterm.js 终端 UI)
-│   ├── app.js               # 渲染层主逻辑
+│   ├── app.js               # 入口(装配模块 + 引入全局样式),约 10 行
+│   ├── modules/             # 按域拆分的实现(见下)
 │   ├── index.html           # 界面结构
 │   ├── style.css            # 样式
 │   ├── nebula-shim.js       # IPC 适配层(前端 ↔ Rust 后端)
-│   └── shared/              # 前后端共享常量(AI 预设 / 云地域)
-├── src-tauri/               # Rust 后端 + Tauri 配置
+│   └── shared/              # 前后端共享常量(AI 预设)
+├── src-tauri/               # Rust 后端 + Tauri 配置(官方约定的 Rust 侧目录)
 │   ├── src/
 │   │   ├── lib.rs           # 应用入口 / 状态管理 / 监控任务
 │   │   ├── main.rs          # 二进制入口
@@ -142,11 +143,35 @@ npm run dev            # 开发模式（热重载）
 │   │   ├── ai.rs            # AI 流式对话(双协议)+ 模型发现
 │   │   ├── cloud.rs         # 腾讯云 / 阿里云实例查询
 │   │   ├── signing.rs       # 云厂商签名算法
-│   │   └── bridge.rs        # 测试桥(NEBULA_TEST 时启用)
+│   │   ├── bridge.rs        # 测试桥(NEBULA_TEST 时启用)
+│   │   └── *_test.rs        # 单元测试(与业务文件同目录,独立文件)
 │   └── tests/               # Rust 集成测试(真实 SSH 协议)
-├── tests/                   # 前端 UI e2e + mock 服务
+├── e2e/                     # 前端 UI e2e(Node)+ mock 服务(mock sshd / 云 API / AI)
 └── docs/                    # 需求文档 / 原型 / 迁移报告
 ```
+
+**前端模块划分**(`src/modules/`,按域拆分):
+
+| 模块 | 职责 |
+| --- | --- |
+| `core.js` | 共享底座:DOM 查询、IPC 封装、全局状态、通用弹窗/toast、标签与窗格访问器 |
+| `terminal.js` | 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志 |
+| `hosts.js` | 主机列表、主机编辑弹窗、指纹管理 |
+| `cloud.js` | 云主机导入:多账号凭据 + 全区域一键拉取 |
+| `ai.js` | AI 助手:流式对话、模型切换、设置弹窗、诊断 |
+| `monitor.js` | 资源监控:指标采集与监控条 |
+| `sftp.js` | SFTP 文件面板:列目录、上传下载、权限、书签 |
+| `settings.js` | 终端设置(字号 / 回滚 / 配色) |
+| `tools.js` | 批量执行、命令历史、端口转发 |
+| `entry.js` | 应用入口:右键菜单、事件绑定、启动 |
+
+> **关于两个 `src/`**:`src/` 是前端(web 侧)、`src-tauri/` 是 Rust 侧,这是
+> [Tauri 官方约定的项目结构](https://v2.tauri.app/start/project-structure/),
+> 并非历史遗留。前端源码经 `build.mjs`(esbuild)打包到 `dist/`,再由
+> `tauri.conf.json` 的 `frontendDist` 引用并在编译期内嵌进二进制 ——
+> **改了前端必须重新打包 + `cargo build`**,否则跑的是旧前端。
+> 顶层 `e2e/` 与 `src-tauri/tests/` 分工不同:前者是 Node 驱动的 UI 端到端,
+> 后者是 Rust 集成测试(通过 `../e2e/helpers/` 复用同一批 mock 服务)。
 
 **技术选型**
 
@@ -177,10 +202,10 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 
 | 层次 | 覆盖内容 |
 | --- | --- |
-| Rust 单元测试(20) | 云厂商签名(官方文档测试向量)、`/proc` 解析、配置存储 CRUD/克隆/幂等导入 |
+| Rust 单元测试(24) | 云厂商签名(官方文档测试向量)、云凭据校验前置守卫、主机指纹格式兼容、`/proc` 解析、配置存储 CRUD/克隆/幂等导入 |
 | Rust 回归测试(5) | 凭据往返、模拟重启持久化(捕获"密码保存后失效")、私钥/口令 |
 | Rust 集成测试(1) | 真实 SSH 协议:启动 mock sshd → 认证 → exec → resize → SFTP 全链路 |
-| UI e2e(12) | 应用启动、建主机、连接、分屏、删除确认、AI 对话、SFTP、云导入 |
+| UI e2e(33) | 应用启动、建主机、连接(含 legacy 指纹兼容)、分屏、删除确认、AI 对话、SFTP、云导入(凭据表单/测试连接/密钥帮助/拉取/编辑) |
 
 ---
 
@@ -194,7 +219,7 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 发布新版本：
 
 ```bash
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.2.0 && git push origin v1.2.0
 ```
 
 ## 🤝 贡献

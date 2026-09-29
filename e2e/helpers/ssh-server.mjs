@@ -310,9 +310,34 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     server.listen(port, '127.0.0.1', resolve);
   });
 
+  // 主机密钥指纹:SSH wire blob 的 SHA256,hex(legacy 格式)与 base64-nopad(现行)都要给 ——
+  // e2e 用它预置 knownHosts 遗留记录,回归"legacy hex 指纹被误判为密钥变更"。
+  // ssh2 1.16 的 utils.parseKey 不吃裸 PEM,这里从 JWK 手工拼 ssh-rsa wire blob
+  // (已与 `ssh-keygen -y` 输出逐字节比对一致)。
+  const jwk = crypto.createPublicKey(hostPrivateKey).export({ format: 'jwk' });
+  const mpint = (b64url) => {
+    let b = Buffer.from(b64url, 'base64url');
+    if (b[0] & 0x80) b = Buffer.concat([Buffer.from([0]), b]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(b.length);
+    return Buffer.concat([len, b]);
+  };
+  const name = Buffer.from(jwk.kty === 'RSA' ? 'ssh-rsa' : jwk.kty);
+  const nameLen = Buffer.alloc(4);
+  nameLen.writeUInt32BE(name.length);
+  const hostKeyBlob = Buffer.concat([nameLen, name, mpint(jwk.e), mpint(jwk.n)]);
+  const hostFingerprintHex = crypto.createHash('sha256').update(hostKeyBlob).digest('hex');
+  const hostFingerprintB64 = crypto
+    .createHash('sha256')
+    .update(hostKeyBlob)
+    .digest('base64')
+    .replace(/=+$/, '');
+
   return {
     port: server.address().port,
     hostPrivateKey,
+    hostFingerprintHex,
+    hostFingerprintB64,
     windowChanges,
     close: () => new Promise((r) => {
       for (const s of clientListenServers) { try { s.close(); } catch { /* ignore */ } }

@@ -1,0 +1,1040 @@
+// 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
+import { $, activeTab, api, state, toast } from './core.js';
+import { escapeHtml } from './hosts.js';
+import { closeSnippetMenu, renderMonitorBar } from './monitor.js';
+import { activeConnectedSession, loadFileDir, renderFileTarget } from './sftp.js';
+import { closeCtxMenu } from './entry.js';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+
+export const v = (n, f) => (getComputedStyle(document.documentElement).getPropertyValue(n) || '').trim() || f;
+
+export const TERM_THEMES = {
+  nebula: () => ({
+    background: v('--bg', '#0d1117'),
+    foreground: v('--text', '#e6edf3'),
+    cursor: '#5b8cff',
+    cursorAccent: '#0d1117',
+    selectionBackground: 'rgba(91,140,255,0.35)',
+    black: '#0d1117', brightBlack: '#57606f',
+    green: '#3ddc97', brightGreen: '#69f0ae',
+    blue: '#5b8cff', brightBlue: '#79a2ff',
+    red: '#ff6b6b', brightRed: '#ff8a8a',
+    yellow: '#ffc24b', brightYellow: '#ffd37a',
+    cyan: '#4dd0e1', magenta: '#c792ea', white: '#e6edf3',
+  }),
+  light: () => ({
+    background: '#f6f8fa', foreground: '#1f2328', cursor: '#0969da', cursorAccent: '#f6f8fa',
+    selectionBackground: 'rgba(9,105,218,0.25)',
+    black: '#1f2328', brightBlack: '#6e7781',
+    green: '#116329', brightGreen: '#1a7f37',
+    blue: '#0969da', brightBlue: '#218bff',
+    red: '#cf222e', brightRed: '#a40e26',
+    yellow: '#9a6700', brightYellow: '#bf8700',
+    cyan: '#1b7c83', magenta: '#8250df', white: '#f6f8fa',
+  }),
+  forest: () => ({
+    background: '#0b1f16', foreground: '#d7e8dc', cursor: '#34d399', cursorAccent: '#0b1f16',
+    selectionBackground: 'rgba(52,211,153,0.3)',
+    black: '#0b1f16', brightBlack: '#5a7a68',
+    green: '#34d399', brightGreen: '#6ee7b7',
+    blue: '#60a5fa', brightBlue: '#93c5fd',
+    red: '#f87171', brightRed: '#fca5a5',
+    yellow: '#fbbf24', brightYellow: '#fcd34d',
+    cyan: '#22d3ee', magenta: '#c084fc', white: '#d7e8dc',
+  }),
+};
+
+export function termTheme() {
+  const key = (state.settings && state.settings.terminal && state.settings.terminal.theme) || 'nebula';
+  return (TERM_THEMES[key] || TERM_THEMES.nebula)();
+}
+
+// —— 标签页(E1):每个标签持有独立的布局树与窗格集合 ——
+export function newTabId() { return 'tab-' + (++state.tabSeq); }
+
+export function makeTab(tabId) {
+  const el = document.createElement('div');
+  el.className = 'tab';
+  el.dataset.tab = tabId;
+  el.innerHTML = '<span class="tab-dot connecting"></span><span class="tab-title">新标签</span><button class="tab-close" title="关闭标签">✕</button>';
+  el.addEventListener('click', (e) => {
+    if (e.target.classList.contains('tab-close')) return;
+    activateTab(tabId);
+  });
+  el.querySelector('.tab-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeTab(tabId);
+  });
+  $('#tabs').appendChild(el);
+  return el;
+}
+
+export function createTab() {
+  const id = newTabId();
+  const tab = {
+    id,
+    el: makeTab(id),
+    layout: null,
+    panes: new Map(),
+    zoomPaneId: null,
+    activePaneId: null,
+    sessionId: null, // 该标签当前挂载的会话(标签与窗格一一对应,分屏时取主窗格)
+  };
+  state.tabs.set(id, tab);
+  return tab;
+}
+
+/// 仅切换"活动标签"的标识与高亮,不触碰 DOM。
+/// 用于新建会话时先把标签设为活动,避免随后的 activateTab 触发
+/// innerHTML 清空 —— 那会把 term.open() 刚挂好的终端摘掉再挂回,造成首屏输出丢失。
+export function setActiveTabId(tabId) {
+  state.activeTabId = tabId;
+  for (const [id, t] of state.tabs) t.el.classList.toggle('active', id === tabId);
+}
+
+/// 切换标签:只挂载目标标签的窗格,其余标签的终端保留在内存中不销毁
+export function activateTab(tabId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab) return;
+  // 已经是活动标签:窗格已在 DOM 上,只需重算几何与焦点,不要清空重挂
+  if (state.activeTabId === tabId) {
+    const cur = state.sessions.get(state.activeId);
+    if (cur) {
+      try { cur.fit.fit(); } catch { /* ignore */ }
+      syncTabChrome();
+      updateStatusbar(cur);
+    }
+    renderMonitorBar();
+    return;
+  }
+  setActiveTabId(tabId);
+
+  // 先把当前 DOM 里的窗格摘下来(不销毁终端),再挂载目标标签的窗格
+  const stack = $('#layout-root');
+  stack.innerHTML = '';
+  closeCtxMenu();
+  renderLayout();
+
+  // 焦点落到该标签的会话上
+  if (tab.sessionId && state.sessions.has(tab.sessionId)) {
+    state.activeId = tab.sessionId;
+  } else {
+    const first = [...state.sessions.values()].find((s) => (s.tabId || null) === tabId);
+    state.activeId = first ? first.sessionId : null;
+  }
+  syncTabChrome();
+  const s = state.sessions.get(state.activeId);
+  if (s) {
+    try { s.fit.fit(); } catch { /* ignore */ }
+    updateStatusbar(s);
+    loadSessionLogState(s);
+    // 切换标签后重新挂载,xterm 需要重绘并按新尺寸 fit
+    setTimeout(() => {
+      try { s.term.refresh(0, s.term.rows - 1); } catch { /* ignore */ }
+      try { s.fit.fit(); } catch { /* ignore */ }
+      try { s.term.focus(); } catch { /* ignore */ }
+      scheduleResizeSync();
+    }, 20);
+  } else {
+    updateStatusbar(null);
+  }
+  renderMonitorBar();
+  updateWelcome();
+  followFilePanel();
+}
+
+/// 文件面板跟随当前会话。
+/// 面板是全局单例,若不跟随,切标签后会显示上一台服务器的目录,而操作却落到
+/// 新会话上(看着 A 的目录删 B 的文件)。这里在切换后按"新会话"重新加载,
+/// 并用该会话上次访问过的目录(没记录则回到根)。
+export function followFilePanel() {
+  const panel = $('#file-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  const s = activeConnectedSession();
+  if (!s) {
+    state.file.sessionId = null;
+    state.file.cwd = null;
+    state.file.entries = [];
+    $('#file-list').innerHTML = '<div class="file-empty">请先连接主机</div>';
+    renderFileTarget();
+    return;
+  }
+  if (state.file.sessionId === s.sessionId) { renderFileTarget(); return; }
+  // 换目标:清掉上一个服务器的列表与选择,避免残留造成误操作
+  state.file.selected = null;
+  state.file.chmodTarget = null;
+  state.file.renameMode = null;
+  $('#file-chmod-row').classList.add('hidden');
+  $('#file-mkdir-row').classList.add('hidden');
+  $('#file-list').innerHTML = '<div class="file-empty">加载中…</div>';
+  const remembered = s.lastFileDir || null;
+  loadFileDir(remembered).catch(() => {});
+}
+
+/// 关闭标签:释放该标签下所有会话
+export function closeTab(tabId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab) return;
+  const ids = [...state.sessions.values()].filter((s) => (s.tabId || null) === tabId).map((s) => s.sessionId);
+  for (const sid of ids) closeSession(sid);
+  tab.el.remove();
+  state.tabs.delete(tabId);
+  if (state.activeTabId === tabId) {
+    const next = [...state.tabs.keys()][0];
+    if (next) activateTab(next);
+    else {
+      state.activeTabId = null;
+      state.activeId = null;
+      $('#layout-root').innerHTML = '';
+      updateStatusbar(null);
+      updateWelcome();
+    }
+  }
+}
+
+/// 同步标签标题/状态点(取该标签主会话)
+export function syncTabChrome() {
+  for (const [tabId, tab] of state.tabs) {
+    const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
+    const title = tab.el.querySelector('.tab-title');
+    const dot = tab.el.querySelector('.tab-dot');
+    if (s) {
+      title.textContent = s.host.name;
+      dot.className = 'tab-dot ' + s.status;
+    } else {
+      title.textContent = '新标签';
+      dot.className = 'tab-dot';
+    }
+  }
+}
+
+// —— 分屏布局(E3):二叉布局树,leaf 持有 paneId ——
+export function newPaneId() { return 'pane-' + (++state.paneSeq); }
+
+export function makePaneEl(paneId) {
+  const el = document.createElement('div');
+  el.className = 'term-pane';
+  el.dataset.pane = paneId;
+  el.addEventListener('mousedown', () => {
+    const pane = state.panes.get(paneId);
+    if (pane && pane.sessionId) activateSession(pane.sessionId);
+    else state.activePaneId = paneId;
+  });
+  const zoomBtn = document.createElement('button');
+  zoomBtn.className = 'pane-zoom-btn';
+  zoomBtn.title = '放大该窗格(⌘⇧↵ 还原)';
+  zoomBtn.textContent = '⤢';
+  zoomBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+  zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(paneId); });
+  el.appendChild(zoomBtn);
+  return el;
+}
+
+// 布局树里的窗格(叶子)数量
+export function leafCount(node) {
+  if (!node) return 0;
+  if (isLeaf(node)) return 1;
+  return leafCount(node.a) + leafCount(node.b);
+}
+
+// 窗格放大/还原(竖向空间不足时的快速聚焦)
+export function togglePaneZoom(paneId) {
+  if (state.zoomPaneId === paneId) {
+    state.zoomPaneId = null;
+  } else {
+    const pane = state.panes.get(paneId);
+    if (!pane || !pane.sessionId) return toast('空窗格无需放大', 'error');
+    // 只有一个窗格时"放大"没有任何视觉效果(本来就是全幅),
+    // 若进入放大态只会留下"已放大"角标,让用户以为按钮坏了。
+    if (leafCount(state.layout) <= 1) {
+      return toast('当前只有一个窗格,无需放大', 'error');
+    }
+    state.zoomPaneId = paneId;
+  }
+  renderLayout();
+}
+
+export function rebalanceRatios(node) {
+  if (isLeaf(node)) return node;
+  node.ratio = 0.5; // 关闭窗格后重新均分,避免残留比例导致某侧过窄
+  node.a = rebalanceRatios(node.a);
+  node.b = rebalanceRatios(node.b);
+  return node;
+}
+
+// 窗格过矮时自动隐藏监控条,还空间给终端
+export function updateMonitorAutoHide() {
+  const bar = $('#monitor-bar');
+  if (!bar) return;
+  const heights = [...state.panes.values()].map((p) => p.el.getBoundingClientRect().height).filter(Boolean);
+  const tooShort = state.panes.size > 1 && heights.length && Math.min(...heights) < 150;
+  bar.classList.toggle('auto-hidden', tooShort);
+}
+
+export function leaf(paneId) { return { type: 'leaf', paneId }; }
+export function isLeaf(n) { return !!n && n.type === 'leaf'; }
+
+export function findLeafPath(node, paneId, path = []) {
+  if (isLeaf(node)) return node.paneId === paneId ? path : null;
+  const l = findLeafPath(node.a, paneId, [...path, 'a']);
+  if (l) return l;
+  return findLeafPath(node.b, paneId, [...path, 'b']);
+}
+
+export function nodeAt(node, path) {
+  let cur = node;
+  for (const k of path) cur = cur[k];
+  return cur;
+}
+
+export function replaceAt(path, fn) {
+  if (!path.length) { state.layout = fn(state.layout); return; }
+  const parentPath = path.slice(0, -1);
+  const key = path[path.length - 1];
+  const parent = nodeAt(state.layout, parentPath);
+  parent[key] = fn(parent[key]);
+}
+
+// 空窗格判定必须看窗格对象上的 sessionId —— 布局叶节点不持有该字段
+// (此前读 node.sessionId 恒为 undefined,导致"永远存在空窗格",
+//  新会话复用首个窗格并把已有会话的终端 DOM 清掉)。
+export function firstEmptyLeaf(node) {
+  if (!node) return null;
+  if (isLeaf(node)) {
+    const pane = state.panes.get(node.paneId);
+    return pane && !pane.sessionId ? node.paneId : null;
+  }
+  return firstEmptyLeaf(node.a) || firstEmptyLeaf(node.b);
+}
+
+export function renderLayout() {
+  const stack = $('#layout-root');
+  const render = (node) => {
+    void node;
+    if (isLeaf(node)) {
+      const pane = state.panes.get(node.paneId);
+      if (!pane) return document.createElement('div');
+      return pane.el;
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'split-node ' + (node.type === 'v' ? 'v' : 'h');
+    const a = render(node.a);
+    const b = render(node.b);
+    const div = document.createElement('div');
+    div.className = 'split-divider';
+    a.style.flex = `${node.ratio} 1 0`;
+    b.style.flex = `${1 - node.ratio} 1 0`;
+    wrap.appendChild(a); wrap.appendChild(div); wrap.appendChild(b);
+    attachDivider(div, node, a, b, wrap);
+    return wrap;
+  };
+  stack.innerHTML = '';
+  // 放大态但布局已塌缩成单窗格(如放大后关掉了另一窗格):
+  // 视觉上与"未放大"完全一样,残留的"已放大"角标只会让用户以为按钮失效,故自动退出。
+  if (state.zoomPaneId && leafCount(state.layout) <= 1) {
+    state.zoomPaneId = null;
+  }
+  if (state.zoomPaneId && state.panes.has(state.zoomPaneId)) {
+    // 放大模式:仅渲染目标窗格,独占终端区
+    const pane = state.panes.get(state.zoomPaneId);
+    pane.el.style.flex = '1 1 0';
+    stack.appendChild(pane.el);
+    const chip = document.createElement('span');
+    chip.className = 'zoom-chip';
+    chip.title = '点击还原布局(⌘⇧↵)';
+    chip.textContent = '⤢ 已放大';
+    chip.addEventListener('click', () => togglePaneZoom(state.zoomPaneId));
+    stack.appendChild(chip);
+  } else if (state.layout) {
+    stack.appendChild(render(state.layout));
+  }
+  renderPickers();
+  for (const [, pane] of state.panes) {
+    if (!pane.el.querySelector('.pane-zoom-btn')) {
+      const zoomBtn = document.createElement('button');
+      zoomBtn.className = 'pane-zoom-btn';
+      zoomBtn.title = '放大该窗格(⌘⇧↵ 还原)';
+      zoomBtn.textContent = '⤢';
+      zoomBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+      zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(pane.id); });
+      pane.el.appendChild(zoomBtn);
+    }
+  }
+  updateWelcome();
+  // reparent 后强制 xterm 重绘并恢复焦点,避免光标/选区残留。
+  // 只处理"本标签、已挂载"的会话:隐藏标签的窗格不在 DOM 上,fit 会算出 0 尺寸。
+  const focused = state.sessions.get(state.activeId);
+  setTimeout(() => {
+    for (const s of visibleSessions()) {
+      try { s.term.refresh(0, s.term.rows - 1); } catch { /* ignore */ }
+    }
+    fitAllVisible();
+    if (focused && state.sessions.has(focused.sessionId)) {
+      try { focused.term.focus(); } catch { /* ignore */ }
+    }
+  }, 30);
+}
+
+/// 当前标签内、且窗格已挂载到 DOM 的会话。
+/// 隐藏标签的窗格不在 DOM 上,对其 fit()/refresh() 会算出 0 尺寸并污染几何,
+/// 因此所有"按可视尺寸重算"的操作都必须限定在这个集合内。
+export function visibleSessions() {
+  const tab = activeTab();
+  if (!tab) return [];
+  return [...state.sessions.values()].filter((s) => s.tabId === tab.id && s.pane && s.pane.isConnected);
+}
+
+export function attachDivider(div, node, aEl, bEl, wrap) {
+  div.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    let raf = 0;
+    const move = (ev) => {
+      const rect = wrap.getBoundingClientRect();
+      const ratio = node.type === 'v'
+        ? Math.min(0.85, Math.max(0.15, (ev.clientY - rect.top) / rect.height))
+        : Math.min(0.85, Math.max(0.15, (ev.clientX - rect.left) / rect.width));
+      node.ratio = ratio;
+      aEl.style.flex = `${ratio} 1 0`;
+      bEl.style.flex = `${1 - ratio} 1 0`;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; fitAllVisible(); }); // rAF 节流
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      scheduleResizeSync(); // 拖拽结束后统一同步 PTY
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+}
+
+// 空窗格渲染主机选择器(分屏新建时)
+export function renderPickers() {
+  for (const [paneId, pane] of state.panes) {
+    if (pane.sessionId || pane.pickerRendered) continue;
+    pane.pickerRendered = true;
+    const picker = document.createElement('div');
+    picker.className = 'pane-picker';
+    picker.innerHTML = '<div class="muted">选择要在该窗格连接的主机:</div>';
+    for (const h of state.hosts) {
+      const item = document.createElement('div');
+      item.className = 'pp-item';
+      item.textContent = `${h.name} · ${h.username}@${h.host}:${h.port}`;
+      item.addEventListener('click', () => {
+        pane.pickerRendered = false;
+        picker.remove();
+        connectHost(h.id, paneId, { force: true });
+      });
+      picker.appendChild(item);
+    }
+    const inp = document.createElement('input');
+    inp.className = 'inp';
+    inp.placeholder = 'user@host:port 快速连接…';
+    inp.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const parsed = parseQuickTarget(inp.value);
+      if (!parsed) return toast('格式:user@host:port', 'error');
+      pane.pickerRendered = false;
+      picker.remove();
+      quickConnect(parsed, paneId);
+    });
+    picker.appendChild(inp);
+    pane.el.appendChild(picker);
+  }
+}
+
+// 在活动窗格旁分出新窗格(空,显示选择器)
+export function splitActive(dir) {
+  if (!state.sessions.size && !state.layout) {
+    state.layout = leaf(newPaneId());
+    state.panes.set(state.layout.paneId, { id: state.layout.paneId, el: makePaneEl(state.layout.paneId), sessionId: null });
+    renderLayout();
+    return;
+  }
+  const activePaneId = activeLeafPaneId();
+  const path = findLeafPath(state.layout, activePaneId) || [];
+  replaceAt(path, (leafNode) => {
+    const newId = newPaneId();
+    state.panes.set(newId, { id: newId, el: makePaneEl(newId), sessionId: null });
+    return { type: dir, ratio: 0.5, a: leafNode, b: leaf(newId) };
+  });
+  renderLayout();
+}
+
+export function activeLeafPaneId() {
+  if (state.activePaneId) {
+    const p = state.panes.get(state.activePaneId);
+    if (p && !p.sessionId) return state.activePaneId;
+  }
+  const s = state.sessions.get(state.activeId);
+  if (s && s.paneId) return s.paneId;
+  const first = firstLeafPaneId(state.layout);
+  return first;
+}
+
+export function firstLeafPaneId(node) {
+  if (!node) return null;
+  if (isLeaf(node)) return node.paneId;
+  return firstLeafPaneId(node.a) || firstLeafPaneId(node.b);
+}
+
+/// 从指定标签的布局树里摘除一个窗格(作用于 tab 对象,不受当前活动标签影响)
+export function removePaneFromTab(tab, paneId) {
+  if (!tab || !tab.layout) return;
+  const path = findLeafPath(tab.layout, paneId);
+  if (!path) return;
+  const setAt = (node, p, val) => {
+    if (!p.length) return val;
+    const [k, ...rest] = p;
+    node[k] = setAt(node[k], rest, val);
+    return node;
+  };
+  tab.layout = setAt(tab.layout, path, null);
+  const collapse = (node) => {
+    if (node === null || isLeaf(node)) return node;
+    const a = collapse(node.a); const b = collapse(node.b);
+    if (a === null) return b;
+    if (b === null) return a;
+    node.a = a; node.b = b;
+    return node;
+  };
+  tab.layout = collapse(tab.layout);
+}
+
+export function fitAllVisible() {
+  // 只 fit 当前标签内已挂载的会话:隐藏标签的窗格不在 DOM 上,
+  // fit() 会得到 0 尺寸并把 PTY 尺寸推成 0。
+  for (const s of visibleSessions()) {
+    try {
+      const before = { cols: s.term.cols, rows: s.term.rows };
+      s.fit.fit();
+      // 布局/窗口变化后同步 PTY 尺寸(E3 关键:远端列行数必须跟随,否则全屏应用错乱)
+      if (s.status === 'connected' && (s.term.cols !== before.cols || s.term.rows !== before.rows)) {
+        api('ssh:resize', { sessionId: s.sessionId, cols: s.term.cols, rows: s.term.rows }).catch(() => {});
+      }
+    } catch { /* ignore */ }
+  }
+  updateMonitorAutoHide();
+}
+
+export let resizeSyncTimer = null;
+export function scheduleResizeSync() {
+  clearTimeout(resizeSyncTimer);
+  resizeResizeSync();
+}
+export function resizeResizeSync() {
+  resizeSyncTimer = setTimeout(() => {
+    for (const s of visibleSessions()) {
+      if (s.status !== 'connected') continue;
+      api('ssh:resize', { sessionId: s.sessionId, cols: s.term.cols, rows: s.term.rows }).catch(() => {});
+    }
+  }, 150);
+}
+
+export function createSession(host, paneId, tabId) {
+  const sessionId = crypto.randomUUID();
+  // 目标标签:显式指定(新标签) > 当前标签 > 新建一个
+  let tab = tabId ? state.tabs.get(tabId) : activeTab();
+  if (!tab) tab = createTab();
+  // 先把标签设为活动(仅改标识与高亮,不动 DOM)。
+  // 注意不能用 activateTab:它会清空 #layout-root,而本函数随后就要把新终端
+  // 挂到该标签的窗格里 —— 若中途清空,term.open() 挂好的终端会被摘掉,
+  // 首屏输出(如登录 banner)即丢失。
+  const tabChanged = state.activeTabId !== tab.id;
+  if (tabChanged) {
+    setActiveTabId(tab.id);
+    $('#layout-root').innerHTML = '';
+  }
+
+  // 在"该标签"内确定挂载窗格:指定 paneId(选择器) > 该标签的空窗格 > 该标签内新增分屏
+  let targetPaneId = paneId || (tab.layout && firstEmptyLeaf(tab.layout));
+  if (!targetPaneId) {
+    if (!tab.layout) {
+      targetPaneId = newPaneId();
+      tab.layout = leaf(targetPaneId);
+      tab.panes.set(targetPaneId, { id: targetPaneId, el: makePaneEl(targetPaneId), sessionId: null });
+    } else {
+      const anchor = activeLeafPaneId();
+      const path = findLeafPath(tab.layout, anchor) || [];
+      targetPaneId = newPaneId();
+      replaceAt(path, (leafNode) => ({ type: 'h', ratio: 0.5, a: leafNode, b: leaf(targetPaneId) }));
+      tab.panes.set(targetPaneId, { id: targetPaneId, el: makePaneEl(targetPaneId), sessionId: null });
+    }
+  }
+  tab.panes.get(targetPaneId).sessionId = sessionId;
+  renderLayout(); // 先挂载窗格 DOM,再初始化终端
+
+  const pane = tab.panes.get(targetPaneId).el;
+  pane.innerHTML = '';
+  pane.dataset.session = sessionId;
+
+  const ts = (state.settings && state.settings.terminal) || {};
+  const term = new Terminal({
+    fontSize: Number(ts.fontSize) || 13,
+    fontFamily: ts.fontFamily || '"SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    cursorBlink: true,
+    scrollback: Number(ts.scrollback) || 2000,
+    theme: termTheme(),
+  });
+  const fit = new FitAddon();
+  const search = new SearchAddon();
+  term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon()); // D7:链接识别,点击经主进程开系统浏览器
+  term.open(pane);
+  fit.fit();
+  // innerHTML 清空会抹掉放大按钮,重新挂回
+  const zb = document.createElement('button');
+  zb.className = 'pane-zoom-btn';
+  zb.title = '放大该窗格(⌘⇧↵ 还原)';
+  zb.textContent = '⤢';
+  zb.addEventListener('mousedown', (e) => e.stopPropagation());
+  zb.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(targetPaneId); });
+  pane.appendChild(zb);
+
+  // 输入:只读拦截(D9) / 广播分发(E5) / 命令历史采集(F2)
+  let histBuf = '';
+  term.onData((d) => {
+    const s = state.sessions.get(state.activeId);
+    if (!s || s.sessionId !== sessionId || s.status !== 'connected') return;
+    if (s.readOnly) return;
+    histBuf += d;
+    // 多字符 chunk(粘贴)也要逐字符识别回车
+    let idx;
+    while ((idx = histBuf.indexOf('\r')) >= 0) {
+      const cmd = histBuf.slice(0, idx).replace(/[\x08\x7f]/g, '').trim(); // 清理退格控制符
+      histBuf = histBuf.slice(idx + 1);
+      if (cmd) api('history:add', { hostId: s.host.id, host: `${s.host.username}@${s.host.host}`, cmd }).catch(() => {});
+    }
+    const targets = state.broadcast && state.broadcast.has(sessionId)
+      ? [...state.broadcast].map((id) => state.sessions.get(id)).filter((x) => x && x.status === 'connected' && !x.readOnly)
+      : [s];
+    for (const t of targets) {
+      api('ssh:write', { sessionId: t.sessionId, data: d }).catch(() => {});
+    }
+  });
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    const mod = ev.metaKey || ev.ctrlKey;
+    if (mod && ev.key === 'c' && (ev.shiftKey || (ev.metaKey && term.hasSelection()))) {
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      return false;
+    }
+    if (mod && ev.key === 'v' && !ev.shiftKey) {
+      navigator.clipboard.readText().then((t) => { if (t) term.paste(t); }).catch(() => {});
+      return false;
+    }
+    if (mod && (ev.key === 'f' || ev.key === 'd')) return false; // 交给全局快捷键(搜索/分屏)
+    return true;
+  });
+
+  // 标签元素由标签模型持有(不再每个会话建一个标签):
+  // 一个标签可在其内部承载多个分屏窗格。
+  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0 };
+  state.sessions.set(sessionId, session);
+  tab.sessionId = sessionId;
+  syncTabChrome();
+  // 走统一的激活路径:打上 .focused、刷新状态栏、fit 并聚焦。
+  // (activateTab 在"已是当前标签"时提前返回,不会清空 DOM 把刚挂好的终端摘掉。)
+  activateSession(sessionId);
+  updateWelcome();
+  session.pendingFirstPaint = true;
+  void tabChanged;
+  return session;
+}
+
+/// 首帧重算行几何(仅在会话首个数据绘制完成后调用一次)。
+///
+/// 背景:xterm 的 DOM 渲染器在 open() 时缓存一次行几何;新建会话时容器尚未
+/// 首帧重算行几何(会话首个数据绘制完成后触发)。
+///
+/// 背景:xterm 的 DOM 渲染器在 open() 时缓存一次行几何;新建会话时容器尚未
+/// 完成布局,缓存的行高不可用,表现为"缓冲区有数据、DOM 的行却是空的"。
+/// refresh() 会复用该缓存(实测无效),只有 resize 才会重算;而布局完成时机
+/// 与帧不对齐。这里做两件事:立即尝试一次,再用有界轮询兜底直到内容可见,
+/// 既覆盖慢布局,也不长期占用定时器(可见即停,超时即弃)。
+export function firstPaint(session) {
+  const { term, pane, fit } = session;
+  if (!term || !pane || session._paintTimer) return;
+
+  const domHasText = () => {
+    const rows = pane.querySelector('.xterm-rows');
+    if (!rows) return false;
+    for (const d of rows.children) if ((d.textContent || '').trim()) return true;
+    return false;
+  };
+  const repaint = () => {
+    if (!pane.isConnected) return;
+    try {
+      fit.fit();
+      const c = term.cols;
+      const r = term.rows;
+      term.resize(c, Math.max(1, r - 1));
+      term.resize(c, r);
+      term.refresh(0, Math.max(0, r - 1));
+    } catch { /* ignore */ }
+    scheduleResizeSync();
+  };
+
+  if (!domHasText()) repaint();
+  if (domHasText()) return;
+
+  let elapsed = 0;
+  const STEP = 60;
+  const LIMIT = 1500; // 覆盖慢首包与布局抖动;可见即停,超时即弃
+  session._paintTimer = setInterval(() => {
+    elapsed += STEP;
+    if (!pane.isConnected || !state.sessions.has(session.sessionId)) {
+      clearInterval(session._paintTimer);
+      session._paintTimer = null;
+      return;
+    }
+    if (!domHasText()) repaint();
+    if (domHasText() || elapsed >= LIMIT) {
+      clearInterval(session._paintTimer);
+      session._paintTimer = null;
+    }
+  }, STEP);
+}
+
+export function activateSession(sessionId) {
+  const s = state.sessions.get(sessionId);
+  if (!s) return;
+  // 会话属于某个标签:先切到该标签(会挂载它的窗格并处理 fit/refresh)
+  if (s.tabId && state.activeTabId !== s.tabId) {
+    activateTab(s.tabId);
+  }
+  state.activeId = sessionId;
+  state.activePaneId = null;
+  const tab = s.tabId ? state.tabs.get(s.tabId) : null;
+  if (tab) tab.sessionId = sessionId;
+  // 仅在当前标签内标记焦点窗格
+  for (const [id, other] of state.sessions) {
+    if (!tab || other.tabId !== tab.id) continue;
+    const pane = tab.panes.get(other.paneId);
+    if (pane) pane.el.classList.toggle('focused', id === sessionId);
+  }
+  try { s.fit.fit(); } catch { /* ignore */ }
+  s.term.focus();
+  syncTabChrome();
+  updateStatusbar(s);
+  loadSessionLogState(s);
+  closeSnippetMenu();
+  renderMonitorBar();
+  // 会话切换(含新建后激活)时让文件面板跟随。
+  // 注意不能只依赖 activateTab:新建会话时标签已是活动态,activateTab 会走
+  // "已活动"的提前返回分支,不会执行到它的 followFilePanel()。
+  followFilePanel();
+}
+
+export function closeSession(sessionId) {
+  const s = state.sessions.get(sessionId);
+  if (!s) return;
+  api('ssh:disconnect', { sessionId }).catch(() => {});
+  stopLogIfActive(sessionId);
+  if (s._paintTimer) { clearInterval(s._paintTimer); s._paintTimer = null; }
+  s.term.dispose();
+  // 只在"所属标签"里摘除窗格(可能同时有多个标签各自的分屏)
+  const tab = s.tabId ? state.tabs.get(s.tabId) : null;
+  const pane = tab ? tab.panes.get(s.paneId) : null;
+  if (tab && pane) {
+    pane.sessionId = null;
+    pane.el.innerHTML = '';
+    pane.el.dataset.session = '';
+    // 用该标签的布局树做摘除(闭包内操作 tab.layout,避免误动当前标签)
+    removePaneFromTab(tab, s.paneId);
+    tab.panes.delete(s.paneId);
+  }
+  state.broadcast && state.broadcast.delete(sessionId);
+  if (!state.broadcast || !state.broadcast.size) setBroadcast(null);
+  if (tab && tab.zoomPaneId === s.paneId) tab.zoomPaneId = null;
+  state.metrics.delete(sessionId);
+  state.sessions.delete(sessionId);
+  if (tab && tab.layout) tab.layout = rebalanceRatios(tab.layout);
+  if (tab && tab.sessionId === sessionId) {
+    // 该标签的主会话被关闭:改为挂载标签内其余会话,无则保留空标签
+    const rest = [...state.sessions.values()].find((x) => x.tabId === tab.id);
+    tab.sessionId = rest ? rest.sessionId : null;
+  }
+  if (state.activeId === sessionId) {
+    state.activeId = null;
+    const next = tab && tab.sessionId ? tab.sessionId : [...state.sessions.keys()][0];
+    if (next) activateSession(next);
+    else updateStatusbar(null);
+  }
+  syncTabChrome();
+  renderLayout();
+  updateWelcome();
+}
+
+/// 会话状态变化后刷新标签外观(标题与状态点取自该标签的主会话)
+export function updateTab(session) {
+  void session;
+  syncTabChrome();
+}
+
+export function updateStatusbar(session, error) {
+  const dot = $('#status-dot');
+  const text = $('#status-text');
+  const btnRe = $('#btn-reconnect');
+  const btnDis = $('#btn-disconnect');
+  const btnRo = $('#btn-readonly');
+  const btnClear = $('#btn-clear');
+  const btnLog = $('#btn-log-toggle');
+  const roBadge = $('#ro-badge');
+  if (!session) {
+    dot.className = 'dot idle';
+    text.textContent = '就绪 — 尚未建立连接';
+    for (const b of [btnRe, btnDis, btnRo, btnClear, btnLog]) b.classList.add('hidden');
+    roBadge.classList.add('hidden');
+    return;
+  }
+  const label = `${session.host.username}@${session.host.host}:${session.host.port}`;
+  roBadge.classList.toggle('hidden', !session.readOnly);
+  btnRo.classList.toggle('hidden', session.status !== 'connected');
+  btnClear.classList.toggle('hidden', session.status !== 'connected');
+  btnLog.classList.toggle('hidden', session.status !== 'connected');
+  btnLog.textContent = session.logActive ? '⏺ 记录中' : '⏺ 日志';
+  if (session.status === 'connected') {
+    dot.className = 'dot connected';
+    text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 📢广播中' : '');
+    btnRe.classList.add('hidden');
+    btnDis.classList.remove('hidden');
+  } else if (session.status === 'connecting') {
+    dot.className = 'dot connecting';
+    text.textContent = `正在连接 ${label}…`;
+    btnRe.classList.add('hidden');
+    btnDis.classList.remove('hidden');
+  } else {
+    dot.className = 'dot ' + session.status;
+    const retry = session.reconnectScheduled ? `(自动重连 ${session.reconnectAttempt}/3)` : '';
+    text.textContent = `已断开 ${label}` + (error ? `（${error}）` : '') + retry;
+    btnRe.classList.remove('hidden');
+    btnDis.classList.add('hidden');
+  }
+}
+
+// 自动重连(O2):最多 3 次,指数退避 1s/2s/4s
+export function scheduleReconnect(sessionId, why) {
+  const s = state.sessions.get(sessionId);
+  if (!s || s.reconnectAttempt >= 3 || s.host.quick) return;
+  s.reconnectAttempt += 1;
+  s.reconnectScheduled = true;
+  const delay = 1000 * Math.pow(2, s.reconnectAttempt - 1);
+  updateStatusbar(s, why);
+  setTimeout(() => {
+    if (!state.sessions.has(sessionId) || s.status === 'connected') return;
+    s.status = 'connecting';
+    updateTab(s);
+    api('ssh:connect', { hostId: s.host.id, sessionId }).then(() => {
+      s.reconnectAttempt = 0;
+      s.reconnectScheduled = false;
+    }).catch((e) => {
+      s.status = 'error';
+      updateTab(s);
+      scheduleReconnect(sessionId, e.message);
+    });
+  }, delay);
+}
+
+export async function connectHost(hostId, paneId, opts = {}) {
+  const { force = false, newTab = false } = opts;
+  const host = state.hosts.find((h) => h.id === hostId);
+  if (!host) return;
+  // 已有会话则切过去 —— 但"新开标签"的意图要尊重:
+  // 同主机可以再开一个独立会话(⌘/Ctrl+点击、中键,或标签栏的 ＋)。
+  if (!force && !newTab) {
+    for (const s of state.sessions.values()) {
+      if (s.host.id === hostId && (s.status === 'connected' || s.status === 'connecting')) {
+        activateSession(s.sessionId);
+        return;
+      }
+    }
+  }
+  // 目标位置:指定窗格(分屏/窗格选择器)→ 放进该窗格;
+  // 否则一律新开一个标签 —— 点主机就是"打开一个会话标签",分屏是显式动作(⛶ / ⌘D)。
+  let tabId = null;
+  if (!paneId) {
+    tabId = createTab().id;
+  }
+  const session = createSession(host, paneId, tabId);
+  try {
+    await api('ssh:connect', { hostId, sessionId: session.sessionId });
+    if (host.initcmd) api('ssh:write', { sessionId: session.sessionId, data: host.initcmd + '\r' }).catch(() => {});
+  } catch (e) {
+    session.status = 'error';
+    syncTabChrome();
+    if (state.activeId === session.sessionId) updateStatusbar(session, e.message);
+    toast('连接失败：' + e.message, 'error');
+    scheduleReconnect(session.sessionId, e.message);
+  }
+}
+
+// 快速连接(A2):不入库,凭据仅驻内存
+export function parseQuickTarget(text) {
+  const m = String(text || '').trim().match(/^(?:([\w.-]+)@)?([\w.-]+)(?::(\d+))?$/);
+  if (!m) return null;
+  return { username: m[1] || 'root', host: m[2], port: Number(m[3]) || 22 };
+}
+
+export async function quickConnect(parsed, paneId) {
+  const host = { id: 'quick-' + crypto.randomUUID(), quick: true, name: `${parsed.host}:${parsed.port}`, ...parsed, authType: 'password' };
+  // 与点主机一致:无指定窗格时新开标签
+  const session = createSession(host, paneId, paneId ? null : createTab().id);
+  try {
+    await api('ssh:connectQuick', { host });
+    toast('快速连接成功', 'success');
+  } catch (e) {
+    session.status = 'error';
+    updateTab(session);
+    updateStatusbar(session, e.message);
+    toast('快速连接失败:' + e.message, 'error');
+  }
+}
+
+export function fitActive() {
+  const s = state.sessions.get(state.activeId);
+  if (!s) return;
+  try {
+    s.fit.fit();
+    if (s.status === 'connected') {
+      api('ssh:resize', { sessionId: s.sessionId, cols: s.term.cols, rows: s.term.rows }).catch(() => {});
+    }
+  } catch { /* ignore */ }
+}
+
+export function updateWelcome() {
+  $('#welcome').classList.toggle('hidden', !!state.layout);
+}
+
+/* ---------------- 云主机导入(多账号 + 全区域一键拉取) ---------------- */
+
+export function activeSearch() {
+  const s = state.sessions.get(state.activeId);
+  return s ? s.search : null;
+}
+
+export function openTermSearch() {
+  if (!state.sessions.size) return toast('请先连接主机', 'error');
+  $('#term-search').classList.remove('hidden');
+  $('#term-search-input').focus();
+  $('#term-search-input').select();
+}
+
+export function closeTermSearch() {
+  $('#term-search').classList.add('hidden');
+  const s = state.sessions.get(state.activeId);
+  if (s) { try { s.search.clearDecorations(); } catch { /* ignore */ } s.term.focus(); }
+  $('#term-search-count').textContent = '';
+}
+
+export function doTermSearch(backwards) {
+  const q = $('#term-search-input').value;
+  const addon = activeSearch();
+  if (!q || !addon) return;
+  try {
+    addon.findNext(q, { backwards: !!backwards, incremental: true });
+    $('#term-search-count').textContent = '';
+  } catch { /* ignore */ }
+}
+
+/* ---------------- 终端设置 ---------------- */
+
+export function setBroadcast(sessionIds) {
+  state.broadcast = sessionIds && sessionIds.size ? new Set(sessionIds) : null;
+  let bar = $('#broadcast-bar');
+  if (state.broadcast) {
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'broadcast-bar';
+      $('#tabbar').insertAdjacentElement('afterend', bar);
+    }
+    bar.classList.remove('hidden');
+    bar.innerHTML = `<b>📢 广播中 → ${state.broadcast.size} 个会话</b><span class="grow"></span><button id="btn-broadcast-stop" class="btn sm">停止广播</button>`;
+    $('#btn-broadcast-stop').addEventListener('click', () => setBroadcast(null));
+  } else if (bar) {
+    bar.classList.add('hidden');
+  }
+  $('#btn-broadcast').classList.toggle('active', !!state.broadcast);
+  const s = state.sessions.get(state.activeId);
+  if (s) updateStatusbar(s);
+}
+
+export function openBroadcastPicker() {
+  const connected = [...state.sessions.values()].filter((s) => s.status === 'connected');
+  if (connected.length < 1) return toast('没有已连接的会话', 'error');
+  if (state.broadcast) return setBroadcast(null); // 再点一次关闭
+  const overlay = document.createElement('div');
+  overlay.className = 'modal';
+  overlay.id = 'modal-broadcast';
+  overlay.innerHTML = `<div class="modal-card"><h3>选择广播目标</h3><div class="batch-hosts" id="bc-list"></div>
+    <div class="modal-actions"><button class="btn" id="bc-cancel">取消</button><button class="btn primary" id="bc-ok">开始广播</button></div></div>`;
+  const list = overlay.querySelector('#bc-list');
+  // 默认全选已连接会话(广播的典型意图是"下发到所有"),活动会话置顶
+  const ordered = [...connected].sort((a, b) => (a.sessionId === state.activeId ? -1 : b.sessionId === state.activeId ? 1 : 0));
+  for (const s of ordered) {
+    const label = document.createElement('label');
+    label.innerHTML = `<input type="checkbox" value="${s.sessionId}" checked /> ${escapeHtml(s.host.name)} · ${escapeHtml(s.host.username)}@${escapeHtml(s.host.host)}${s.sessionId === state.activeId ? ' <span class="tag">当前</span>' : ''}`;
+    list.appendChild(label);
+  }
+  overlay.querySelector('#bc-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#bc-ok').addEventListener('click', () => {
+    const ids = [...list.querySelectorAll('input:checked')].map((i) => i.value);
+    overlay.remove();
+    if (!ids.length) return toast('请至少选择一个会话', 'error');
+    setBroadcast(new Set(ids));
+    toast(`广播已开启:${ids.length} 个会话`, 'success');
+  });
+  document.body.appendChild(overlay);
+}
+
+/* ---------------- 批量执行(F6) ---------------- */
+
+export function toggleReadonly() {
+  const s = state.sessions.get(state.activeId);
+  if (!s) return;
+  s.readOnly = !s.readOnly;
+  updateStatusbar(s);
+  toast(s.readOnly ? '已开启只读模式' : '已关闭只读模式', 'success');
+}
+
+export function clearActiveTerm() {
+  const s = state.sessions.get(state.activeId);
+  if (!s) return;
+  try { s.term.clear(); s.term.write('\x1b[2J\x1b[H'); } catch { /* ignore */ }
+}
+
+export async function toggleSessionLog() {
+  const s = state.sessions.get(state.activeId);
+  if (!s || s.status !== 'connected') return toast('请先连接主机', 'error');
+  if (s.logActive) {
+    const r = await api('log:stop', { sessionId: s.sessionId });
+    s.logActive = false;
+    toast('日志已保存到 ' + (r.file || ''), 'success');
+  } else {
+    const r = await api('log:start', { sessionId: s.sessionId, hostLabel: `${s.host.name || s.host.host}`, timestamps: true, recordInput: true });
+    s.logActive = true;
+    s.logFile = r.file;
+    toast('日志记录中:' + r.file, 'success');
+  }
+  updateStatusbar(s);
+}
+
+export function stopLogIfActive(sessionId) {
+  const s = state.sessions.get(sessionId);
+  if (s && s.logActive) { api('log:stop', { sessionId }).catch(() => {}); s.logActive = false; }
+}
+
+export function loadSessionLogState(s) {
+  api('log:status', { sessionId: s.sessionId }).then((r) => {
+    s.logActive = !!r.active;
+    updateStatusbar(s);
+  }).catch(() => {});
+}
+
+/* ---------------- AI 模型切换(K6) + 诊断(K7) ---------------- */
+

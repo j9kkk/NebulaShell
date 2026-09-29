@@ -2,7 +2,8 @@
 /dist/
 /build/
 /src-tauri/target/
-/src-tauri/gen/schemas/
+# Tauri CLI 生成的 schema/代码(桌面端无需入库;mobile 项目才需要保留)
+/src-tauri/gen/
 
 # 依赖
 node_modules/

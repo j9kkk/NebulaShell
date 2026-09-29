@@ -1,6 +1,6 @@
 [package]
 name = "nebulashell"
-version = "1.1.0"
+version = "1.2.0"
 description = "NebulaShell 星云终端 — Tauri 版"
 edition = "2021"
 
@@ -20,6 +20,7 @@ hmac = "0.12"
 sha1 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
+data-encoding = "2" # 指纹归一(hex↔base64):兼容 Electron 时代遗留的 knownHosts 记录
 uuid = { version = "1", features = ["v4"] }
 keyring = "3"
 aes-gcm = "0.10"

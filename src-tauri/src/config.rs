@@ -754,6 +754,12 @@ impl Store {
         };
         match existing {
             Some(i) => {
+                // 换厂商时必须重输 Secret:留空会沿用上一家的密钥,但那把密钥
+                // 对新厂商必然无效(签名算法与凭据体系都不同),静默保留只会
+                // 让"保存成功"变成下一次拉取的鉴权失败。
+                if secret.is_empty() && accounts[i]["vendor"] != json!(v) {
+                    return Err("更换厂商需重新填写 Secret".into());
+                }
                 accounts[i]["label"] = json!(label.chars().take(50).collect::<String>());
                 accounts[i]["vendor"] = json!(v);
                 accounts[i]["keyId"] = json!(key_id.trim());

@@ -48,8 +48,7 @@ fn start_counting_sshd(tag: &str, password: &str) -> CountingSshd {
     let _ = std::fs::create_dir_all(&dir);
     let port_file = dir.join("port");
     let count_file = dir.join("count.json");
-    let helper =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/helpers/sshd-counting.mjs");
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../e2e/helpers/sshd-counting.mjs");
     let child = Command::new("node")
         .arg(&helper)
         .arg(&port_file)

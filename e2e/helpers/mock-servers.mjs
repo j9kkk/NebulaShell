@@ -42,7 +42,13 @@ export const ALIYUN_MOCK_INSTANCES = [
 ];
 
 export async function startMockCloudServer() {
-  const calls = { tencent: 0, aliyun: 0, tencentAuthOk: 0, aliyunAuthOk: 0 };
+  const calls = { tencent: 0, aliyun: 0, tencentAuthOk: 0, aliyunAuthOk: 0, rejected: 0 };
+  // 故意用错密钥时校验必须失败 —— 真实厂商按签名/密钥判有效性,
+  // mock 通过约定"密钥里含 BAD"来模拟(否则任何字符串都能通过,负例无从测起)。
+  const tencentKeyId = (req) => {
+    const m = /Credential=([^/]+)\//.exec(String(req.headers['authorization'] || ''));
+    return m ? m[1] : '';
+  };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('content-type', 'application/json');
@@ -54,6 +60,11 @@ export async function startMockCloudServer() {
       const svc = req.headers['x-mock-service'] || '';
       if (!String(req.headers['authorization'] || '').startsWith('TC3-HMAC-SHA256 Credential=')) {
         res.writeHead(401).end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SignatureFailure', Message: '缺少 TC3 签名' }, RequestId: 'mock' } }));
+        return;
+      }
+      if (tencentKeyId(req).includes('BAD')) {
+        calls.rejected++;
+        res.end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SecretIdNotFound', Message: 'The SecretId is not found' }, RequestId: 'mock' } }));
         return;
       }
       calls.tencent++; calls.tencentAuthOk++;
@@ -78,6 +89,11 @@ export async function startMockCloudServer() {
       const action = req.headers['x-tc-action'];
       if (!auth.startsWith('TC3-HMAC-SHA256 Credential=')) {
         res.writeHead(401).end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SignatureFailure', Message: '缺少 TC3 签名' }, RequestId: 'mock' } }));
+        return;
+      }
+      if (tencentKeyId(req).includes('BAD')) {
+        calls.rejected++;
+        res.end(JSON.stringify({ Response: { Error: { Code: 'AuthFailure.SecretIdNotFound', Message: 'The SecretId is not found' }, RequestId: 'mock' } }));
         return;
       }
       calls.tencent++; calls.tencentAuthOk++;
@@ -127,6 +143,11 @@ export async function startMockCloudServer() {
       const q = url.searchParams;
       if (!q.get('Signature') || !q.get('SignatureMethod')) {
         res.writeHead(401).end(JSON.stringify({ Code: 'MissingSignature', Message: '缺少签名参数' }));
+        return;
+      }
+      if (String(q.get('AccessKeyId') || '').includes('BAD')) {
+        calls.rejected++;
+        res.end(JSON.stringify({ Code: 'InvalidAccessKeyId.NotFound', Message: 'Specified Access Key ID not found.' }));
         return;
       }
       calls.aliyun++; calls.aliyunAuthOk++;

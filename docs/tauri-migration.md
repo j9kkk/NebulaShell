@@ -130,7 +130,7 @@ Chromium 子进程量级相当。实测(启动前后差分法):
 
 ## 七、已知限制与后续
 
-1. **UI 自动化**:Tauri 版 e2e(`tests/ui.e2e.mjs`,走 `NEBULA_TEST=1` 本地 HTTP 桥)**已可用**
+1. **UI 自动化**:Tauri 版 e2e(`e2e/ui.e2e.mjs`,走 `NEBULA_TEST=1` 本地 HTTP 桥)**已可用**
    (12/12);macOS WKWebView 仍无 WebDriver,ATS 限制见上文 6.4。
 2. **打包分发**:Tauri 版已可 `npx tauri build` 出 dmg;签名/公证(notarization)未做。
 3. **未覆盖**:WebView2(Windows)/Linux 未实测;runtime 侧 dialog/keyring 仅在 macOS 验证。

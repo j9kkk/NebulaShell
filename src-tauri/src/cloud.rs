@@ -388,6 +388,61 @@ fn map_aliyun_instances(resp: &Value, region: &str) -> Vec<Value> {
         .collect()
 }
 
+/// 凭据校验(腾讯云):探测地域 + 首个地域的实例,只读不落库。
+/// 返回 (地域数, 实例数, 探测地域, 可用的服务名列表)。
+/// 与"拉取全部"共用同一套签名/调用路径 —— 校验通过即代表后续拉取能成功。
+pub async fn tencent_probe(
+    secret_id: &str,
+    secret_key: &str,
+    endpoint: &str,
+) -> Result<(usize, usize, String, Vec<String>), String> {
+    if secret_id.trim().is_empty() || secret_key.trim().is_empty() {
+        return Err("请填写腾讯云 SecretId 与 SecretKey".into());
+    }
+    let regions = tencent_regions(secret_id, secret_key, endpoint).await?;
+    if regions.is_empty() {
+        return Err("该密钥未返回任何可用地域".into());
+    }
+    let region = regions[0].0.clone();
+    let mut count = 0usize;
+    let mut ok_services: Vec<String> = Vec::new();
+    let mut last_err: Option<String> = None;
+    for svc in ["cvm", "lighthouse"] {
+        match tencent_describe_instances(secret_id, secret_key, svc, &region, endpoint).await {
+            Ok(list) => {
+                count += list.len();
+                ok_services.push(svc.to_string());
+            }
+            // 个别地域不支持轻量属正常,不影响凭据有效性判定
+            Err(e) if e.contains("UnsupportedRegion") => {}
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if ok_services.is_empty() {
+        return Err(last_err.unwrap_or_else(|| "两个服务均未返回实例".into()));
+    }
+    Ok((regions.len(), count, region, ok_services))
+}
+
+/// 凭据校验(阿里云):探测地域 + 首个地域的实例,只读不落库。
+pub async fn aliyun_probe(
+    access_key_id: &str,
+    access_key_secret: &str,
+    endpoint: &str,
+) -> Result<(usize, usize, String, Vec<String>), String> {
+    if access_key_id.trim().is_empty() || access_key_secret.trim().is_empty() {
+        return Err("请填写阿里云 AccessKeyId 与 AccessKeySecret".into());
+    }
+    let regions = aliyun_regions(access_key_id, access_key_secret, endpoint).await?;
+    if regions.is_empty() {
+        return Err("该密钥未返回任何可用地域".into());
+    }
+    let region = regions[0].0.clone();
+    let list =
+        aliyun_describe_instances(access_key_id, access_key_secret, &region, endpoint).await?;
+    Ok((regions.len(), list.len(), region, vec!["ecs".into()]))
+}
+
 // 保留单区域调用(旧签名兼容;mock 测试与既有调用方使用)
 pub async fn aliyun_describe_instances(
     access_key_id: &str,

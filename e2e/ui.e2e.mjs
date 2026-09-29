@@ -4,7 +4,7 @@
 // POST /eval 注入 JS 到 webview,结果经 Tauri invoke 回传;GET /result/{id} 取回。
 //
 // 前置:先构建 Rust 二进制(npm run build:web && cd src-tauri && cargo build)
-// 用法:node tests/ui.e2e.mjs
+// 用法:node e2e/ui.e2e.mjs
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -17,6 +17,10 @@ import { startMockCloudServer, startMockAiServer } from './helpers/mock-servers.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(root, 'src-tauri/target/debug/nebulashell');
 const PASSWORD = 'ui-e2e-pass';
+// 版本号从配置读,避免每发一版都要改测试(T2 断言用)
+const APP_VERSION = JSON.parse(
+  fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'),
+).version;
 
 const PASS = '\x1b[32m✔\x1b[0m';
 const FAIL = '\x1b[31m✗\x1b[0m';
@@ -109,6 +113,14 @@ async function main() {
 
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-ui-'));
   userData = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-ui-data-'));
+  // 预置 legacy 格式(64 位 hex)的 knownHosts 记录:模拟 Electron 时代迁移过来的数据。
+  // 回归:旧记录与现行 base64 指纹编码不同,曾被误判成"服务器密钥变更"而拒连
+  // (表现为 "Unknown server key")。T5 的连接必须照常成功,且记录被自愈升级。
+  const tofuKey = `127.0.0.1:${sshd.port}`;
+  fs.writeFileSync(
+    path.join(userData, 'nebulashell-config.json'),
+    JSON.stringify({ knownHosts: { [tofuKey]: sshd.hostFingerprintHex }, hosts: [], settings: {} }),
+  );
   const portFile = path.join(work, 'bridge.port');
   const uploadSrc = path.join(work, 'upload.txt');
   const uploadPayload = 'ui-e2e-upload-' + 'Z'.repeat(1024);
@@ -147,7 +159,7 @@ async function main() {
   check('T1 应用启动 / webview 就绪', true);
 
   await evalJs(`return document.querySelector('#welcome') ? 1 : 0`);
-  await waitEval(`return document.querySelector('#app-version').textContent`, 'v1.1.0');
+  await waitEval(`return document.querySelector('#app-version').textContent`, `v${APP_VERSION}`);
   check('T2 欢迎页 + 版本号', true);
 
   // 新建主机(密码)
@@ -180,6 +192,15 @@ async function main() {
   // textContent 直接读 DOM 文本,更贴合"输出是否已到达终端"的语义。
   await waitEval(`return (document.querySelector('.term-pane.focused .xterm-rows')||{}).textContent||''`, 'Welcome to NebulaShell mock sshd', 25000);
   check('T5 SSH 连接 + 终端输出', true);
+
+  // legacy hex 指纹被兼容(连接已成功)后,记录必须被自愈升级为现行 base64 格式
+  await sleep(500);
+  const upgradedFp = JSON.parse(fs.readFileSync(path.join(userData, 'nebulashell-config.json'), 'utf8')).knownHosts[tofuKey];
+  check(
+    'T5b legacy hex 指纹放行并自愈升级为 base64',
+    upgradedFp === sshd.hostFingerprintB64,
+    `got=${String(upgradedFp).slice(0, 20)}… want=${sshd.hostFingerprintB64.slice(0, 20)}…`,
+  );
 
   // 分屏
   // 分屏:同一标签内并排两个终端(标签数不变,窗格数 +1)
@@ -246,32 +267,154 @@ async function main() {
     JSON.stringify(fp0),
   );
 
-  // 云导入:多账号 CRUD + 一键全区域拉取(腾讯云 CVM+轻量合并)
+  // 云导入:在界面上一张表单填完凭据 + 保存前"测试连接"校验,
+  // 然后多账号 CRUD + 一键全区域拉取(腾讯云 CVM+轻量合并)。
   // 回归:轻量实例的 IP 字段名(PublicAddresses)与 CVM(PublicIpAddresses)不同,
   // 旧实现读不到 → 轻量主机被过滤 → "没有获取到可用实例"。
+  await evalJs(`document.querySelector('#btn-cloud-import').click(); return 1`);
+  await waitEval(`return String(!document.querySelector('#modal-cloud').classList.contains('hidden'))`, 'true', 10000);
+  // 打开添加账号表单:厂商切换必须同步字段名(阿里云是 AccessKeyId/Secret)
+  await evalJs(`document.querySelector('#btn-cloud-add-account').click(); return 1`);
+  const formOpen = asObj(await evalJs(`window.__nbTest.cloudFormFill({ vendor: 'tencent' }); return JSON.stringify(window.__nbTest.cloudForm())`));
+  check(
+    'T23 云账号凭据表单一次展开(腾讯云字段名)',
+    formOpen.open === true && formOpen.editingId === null && formOpen.keyIdLabel === 'SecretId',
+    JSON.stringify(formOpen),
+  );
+  // 密钥帮助随表单厂商切换;外链必须是白名单控制台域名(回归:90f0e96 重构时整块丢失)
+  check(
+    'T23b 密钥帮助说明随表单展示(腾讯云,白名单外链)',
+    formOpen.helpHtml.includes('QcloudCVMReadOnlyAccess')
+      && formOpen.helpHtml.includes('data-url="https://console.cloud.tencent.com/cam/capi"')
+      && formOpen.helpHtml.includes('密钥仅加密保存在本机'),
+    formOpen.helpHtml.slice(0, 80),
+  );
+  const aliyunLabels = asObj(await evalJs(`
+    window.__nbTest.cloudFormFill({ vendor: 'aliyun' });
+    const a = window.__nbTest.cloudForm();
+    window.__nbTest.cloudFormFill({ vendor: 'tencent' });
+    return JSON.stringify(a)`));
+  check(
+    'T24 切换厂商同步字段名与帮助(阿里云 AccessKeyId/AccessKeySecret)',
+    aliyunLabels.keyIdLabel === 'AccessKeyId' && aliyunLabels.secretLabel === 'AccessKeySecret'
+      && aliyunLabels.helpHtml.includes('AliyunECSReadOnlyAccess')
+      && aliyunLabels.helpHtml.includes('data-url="https://ram.console.aliyun.com/manage/ak"'),
+    JSON.stringify(aliyunLabels),
+  );
+
+  // 负例:故意填错密钥,"测试连接"必须报错且不落库
   await evalJs(`
-    return (async () => {
-      await window.nebula.invoke('cloud:saveAccount', {
-        id: '', label: 'e2e账号', vendor: 'tencent',
-        keyId: 'AKID-ui', secret: 'sk-ui', endpoint: '${cloud.base}'
-      });
-      return 1;
-    })()`);
+    window.__nbTest.cloudFormFill({ label: 'e2e错密钥', keyId: 'BADAKID-ui', secret: 'sk-bad', endpoint: '${cloud.base}' });
+    window.__nbTest.cloudFormTest(); return 1`);
+  await waitEval(`window.__nbTest.cloudForm().testStatus`, '✗', 20000);
+  const badTest = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
+  check(
+    'T25 错误密钥测试连接失败且不保存',
+    badTest.testStatus.startsWith('✗') && badTest.accountCount === 0,
+    JSON.stringify(badTest),
+  );
+
+  // 正例:正确密钥 → 校验通过(报出地域数/实例数),再保存
+  await evalJs(`
+    window.__nbTest.cloudFormFill({ label: 'e2e账号', keyId: 'AKID-ui', secret: 'sk-ui' });
+    window.__nbTest.cloudFormTest(); return 1`);
+  await waitEval(`window.__nbTest.cloudForm().testStatus`, '✓', 20000);
+  const goodTest = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
+  check(
+    'T26 正确密钥测试连接通过(报出地域与实例数)',
+    goodTest.testStatus.includes('校验通过') && goodTest.testStatus.includes('2 个地域'),
+    JSON.stringify(goodTest),
+  );
+  // 校验结论只对当时那组凭据有效:改动字段后必须作废(否则"✓ 通过"会
+  // 停留在未校验过的新值上,用户改错密钥还以为是好的)
+  const staleCleared = asObj(await evalJs(`
+    window.__nbTest.cloudFormFill({ keyId: 'AKID-changed-after-test' });
+    return JSON.stringify(window.__nbTest.cloudForm())`));
+  check(
+    'T31 改动凭据后上次校验结论作废',
+    staleCleared.testStatus === '',
+    JSON.stringify(staleCleared),
+  );
+  // 改回来再测一次,恢复通过态以便后续保存
+  await evalJs(`
+    window.__nbTest.cloudFormFill({ keyId: 'AKID-ui' });
+    window.__nbTest.cloudFormTest(); return 1`);
+  await waitEval(`window.__nbTest.cloudForm().testStatus`, '✓', 20000);
+  await evalJs(`window.__nbTest.cloudFormSave(); return 1`);
+  await waitEval(`window.__nbTest.cloudForm().accountCount`, '1', 10000);
+  const saved = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
+  check(
+    'T27 保存后表单收起且账号入列',
+    saved.open === false && saved.accountCount === 1,
+    JSON.stringify(saved),
+  );
+
+  // 一键拉取:直接点界面按钮(而非 IPC),验证全区域 CVM+轻量合并
+  await evalJs(`document.querySelector('#btn-cloud-fetch').click(); return 1`);
+  await waitEval(`return document.querySelector('#cloud-status').textContent`, '获取到', 30000);
   const fetchAll = asObj(await evalJs(`
-    return (async () => {
-      const accs = await window.nebula.invoke('cloud:accounts');
-      const ids = accs.data.accounts.map((a) => a.id);
-      const r = await window.nebula.invoke('cloud:fetchAll', { accountIds: ids });
-      return JSON.stringify({ ok: r.ok, data: r.data, count: (r.data.instances || []).filter((i) => i.host).length });
-    })()`));
-  const fa = fetchAll;
-  const lhFound = (fa.data?.instances || []).some((i) => i.cloud.provider === 'lighthouse' && i.host === '203.0.113.30');
-  const cvmFound = (fa.data?.instances || []).some((i) => i.host === '203.0.113.10');
+    return JSON.stringify({
+      status: document.querySelector('#cloud-status').textContent,
+      rows: document.querySelectorAll('#cloud-tbody .cloud-row').length,
+      groups: document.querySelectorAll('#cloud-tbody .cloud-group-row').length,
+    })`));
+  const lhRow = await evalJs(`return document.querySelector('#cloud-tbody').textContent.includes('203.0.113.30')`);
+  const cvmRow = await evalJs(`return document.querySelector('#cloud-tbody').textContent.includes('203.0.113.10')`);
   check(
     'T11 云账号一键拉取(全区域,CVM+轻量合并)',
-    fa.ok === true && fa.count >= 3 && cvmFound && lhFound,
-    `count=${fa.count} cvm=${cvmFound} lh=${lhFound}`,
+    fetchAll.rows >= 3 && cvmRow === true && lhRow === true,
+    `rows=${fetchAll.rows} groups=${fetchAll.groups} cvm=${cvmRow} lh=${lhRow}`,
   );
+
+  // 编辑已存账号:密钥留空 = 保持不变(不该因"没重输密钥"而保存失败)
+  await evalJs(`document.querySelector('.cloud-account-row .ca-edit').click(); return 1`);
+  const editState = asObj(await evalJs(`
+    window.__nbTest.cloudFormFill({ keyId: 'AKID-ui-edited' });
+    return JSON.stringify(window.__nbTest.cloudForm())`));
+  check(
+    'T28 编辑已存账号可留空密钥(placeholder 提示保持不变)',
+    editState.open === true && !!editState.editingId && editState.secretLabel.includes('保持不变'),
+    JSON.stringify(editState),
+  );
+  await evalJs(`window.__nbTest.cloudFormSave(); return 1`);
+  await waitEval(`window.__nbTest.cloudForm().accountCount`, '1', 10000);
+  const afterEdit = asObj(await evalJs(`
+    return (async () => {
+      const r = await window.nebula.invoke('cloud:accounts');
+      const a = r.data.accounts[0];
+      return JSON.stringify({ count: r.data.accounts.length, keyId: a.keyId, secretSet: a.secretSet });
+    })()`));
+  check(
+    'T29 编辑保存后 keyId 更新且密钥仍保留',
+    afterEdit.count === 1 && afterEdit.keyId === 'AKID-ui-edited' && afterEdit.secretSet === true,
+    JSON.stringify(afterEdit),
+  );
+
+  // 编辑时改厂商不能沿用旧密钥:placeholder 撤销"保持不变"暗示,保存被拦下
+  await evalJs(`document.querySelector('.cloud-account-row .ca-edit').click(); return 1`);
+  const vendorSwitch = asObj(await evalJs(`
+    window.__nbTest.cloudFormFill({ vendor: 'aliyun' });
+    const s = window.__nbTest.cloudForm();
+    window.__nbTest.cloudFormSave();
+    return JSON.stringify({ secretLabel: s.secretLabel, keyIdLabel: s.keyIdLabel })`));
+  await sleep(400);
+  const vendorBlocked = asObj(await evalJs(`
+    return (async () => {
+      const r = await window.nebula.invoke('cloud:accounts');
+      return JSON.stringify({ vendor: r.data.accounts[0].vendor, toast: document.querySelector('#toasts').textContent,
+                              open: window.__nbTest.cloudForm().open });
+    })()`));
+  check(
+    'T30 编辑改厂商时必须重输密钥(不静默沿用旧密钥)',
+    vendorSwitch.keyIdLabel === 'AccessKeyId' && !vendorSwitch.secretLabel.includes('保持不变')
+      && vendorBlocked.vendor === 'tencent' && vendorBlocked.toast.includes('请填写 AccessKeySecret')
+      && vendorBlocked.open === true,
+    `${JSON.stringify(vendorSwitch)} | ${JSON.stringify(vendorBlocked)}`,
+  );
+  await evalJs(`document.querySelector('#btn-cloud-form-cancel').click(); return 1`);
+  await sleep(300);
+  await evalJs(`document.querySelector('#btn-cloud-close').click(); return 1`);
+  await sleep(300);
 
   // 同一主机再开一个独立标签(回归:此前同主机点击只切焦点,无法多开会话)
   const beforeTabs = Number(await evalJs(`return document.querySelectorAll('.tab').length`));
