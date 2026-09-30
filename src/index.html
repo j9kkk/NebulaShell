@@ -22,9 +22,7 @@
       </div>
       <nav id="host-list"></nav>
       <div class="side-footer">
-        <span id="app-version">v…</span>
-        <span class="spacer"></span>
-        <button id="btn-fingerprints" class="btn small" title="已知主机指纹管理">指纹</button>
+        <!-- 版本号已移入「关于」弹窗(见 #modal-about):侧边栏底部只留导入/导出 -->
         <button id="btn-hosts-import" class="btn small" title="从 JSON 文件导入主机">导入</button>
         <button id="btn-hosts-export" class="btn small" title="导出主机为 JSON(含凭据,请妥善保管)">导出</button>
       </div>
@@ -35,34 +33,39 @@
 
     <!-- 主区域：标签页 + 终端 -->
     <main id="main">
+      <!-- 快捷键提示按平台渲染:data-title 是文案模板(%1/%2 为占位符),
+           data-accel 用 | 分隔快捷键,由 core.js 的 applyAccelTitles() 按
+           macOS(⌘⇧⌥)/ Windows·Linux(Ctrl+Shift+Alt)重写为 title。
+           不再写死 ⌘ —— 在 Windows/Linux 上那是错的提示。 -->
       <div id="tabbar">
         <div id="tabs"></div>
-        <button id="btn-newtab" class="btn icon-tb" title="新建标签页(⌘T)">＋</button>
-        <button id="btn-split" class="btn icon-tb" title="在当前标签内分屏(⌘D 垂直 / ⌘⇧D 水平)">⛶</button>
+        <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="mod+T">＋</button>
+        <button id="btn-split" class="btn icon-tb" data-title="在当前标签内分屏(%1 左右 / %2 上下)" data-accel="mod+D|mod+shift+D">⛶</button>
         <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
         <button id="btn-more" class="btn icon-tb" title="更多工具">⋯</button>
+        <!-- 功能菜单:横向工具条,锚定在标签栏正下方、宽度即标签栏宽度
+             (绝不越过右侧的文件/AI 面板),因此不会再遮挡文件管理展示区。 -->
         <div id="more-menu" class="hidden">
-          <button id="btn-broadcast" class="btn small">📢 广播输入</button>
-          <button id="btn-files" class="btn small">📁 文件管理</button>
-          <button id="btn-monitor" class="btn small">📊 资源监控</button>
-          <button id="btn-snippets" class="btn small">⚡ 常用片段</button>
-          <button id="btn-history" class="btn small">🕘 命令历史</button>
-          <button id="btn-forwards" class="btn small">🔀 端口转发</button>
-          <button id="btn-term-settings" class="btn small">⚙ 终端设置</button>
+          <button id="btn-broadcast" class="btn small"><span class="mi">📢</span>广播输入</button>
+          <button id="btn-files" class="btn small"><span class="mi">📁</span>文件管理</button>
+          <button id="btn-split-left-right" class="btn small" data-title="左右分屏(%1)" data-accel="mod+D"><span class="mi">◫</span>左右分屏</button>
+          <button id="btn-split-top-bottom" class="btn small" data-title="上下分屏(%1)" data-accel="mod+shift+D"><span class="mi">⬓</span>上下分屏</button>
+          <button id="btn-auto-layout" class="btn small" title="把当前标签的窗格重新排成等分网格"><span class="mi">▦</span>自动整理布局</button>
+          <button id="btn-close-pane" class="btn small" data-title="关闭当前窗格(%1)" data-accel="mod+W"><span class="mi">✕</span>关闭当前窗格</button>
+          <button id="btn-snippets" class="btn small"><span class="mi">⚡</span>常用片段</button>
+          <button id="btn-history" class="btn small"><span class="mi">🕘</span>命令历史</button>
+          <button id="btn-forwards" class="btn small"><span class="mi">🔀</span>端口转发</button>
+          <button id="btn-fingerprints" class="btn small" title="已知主机指纹管理(TOFU 信任记录)"><span class="mi">🔑</span>主机指纹</button>
+          <button id="btn-term-settings" class="btn small"><span class="mi">⚙</span>终端设置</button>
+          <button id="btn-about" class="btn small" title="关于 NebulaShell"><span class="mi">ℹ</span>关于</button>
         </div>
       </div>
-      <div id="monitor-bar" class="hidden">
-        <span class="mon-title">📊 监控</span>
-        <span class="mon-item">CPU <b id="mon-cpu">–</b></span>
-        <span class="mon-track"><span id="mon-cpu-bar"></span></span>
-        <span class="mon-item">内存 <b id="mon-mem">–</b></span>
-        <span class="mon-track"><span id="mon-mem-bar"></span></span>
-        <span class="mon-item">磁盘 <b id="mon-disk">–</b></span>
-        <span class="mon-item">↑<b id="mon-rx">–</b> ↓<b id="mon-tx">–</b></span>
-        <span class="mon-spark" id="mon-spark-cpu"></span>
-        <span id="mon-note" class="muted"></span>
-      </div>
       <div id="snippet-menu" class="hidden">
+        <div class="pop-head">
+          <span class="pop-title">⚡ 常用片段</span>
+          <span class="spacer"></span>
+          <button id="btn-snippet-close" class="btn icon" title="关闭">✕</button>
+        </div>
         <div id="snippet-list"></div>
         <div class="snippet-add">
           <input id="snippet-name" type="text" placeholder="名称" />
@@ -86,6 +89,18 @@
         <span id="status-dot" class="dot idle"></span>
         <span id="status-text">就绪 — 尚未建立连接</span>
         <span id="ro-badge" class="ro-badge hidden">只读</span>
+        <!-- 资源监控固定显示在状态栏:跟着"已连接 xxx@ip"一行。
+             自身可收缩(min-width:0),行尾按钮不可压缩,窄窗口下先裁监控而非挤掉按钮。 -->
+        <span id="monitor-bar" class="hidden">
+          <span class="mon-item mon-cpu-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
+          <span class="mon-track"><span id="mon-cpu-bar"></span></span>
+          <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
+          <span class="mon-track"><span id="mon-mem-bar"></span></span>
+          <span class="mon-item mon-disk-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
+          <span class="mon-item">↑<b id="mon-rx" class="mon-val">–</b> ↓<b id="mon-tx" class="mon-val">–</b></span>
+          <span class="mon-spark" id="mon-spark-cpu"></span>
+          <span id="mon-note" class="muted"></span>
+        </span>
         <span class="spacer"></span>
         <button id="btn-log-toggle" class="btn small hidden" title="记录会话日志到文件">⏺ 日志</button>
         <button id="btn-clear" class="btn small hidden" title="清屏并清空回滚">🧹 清屏</button>
@@ -127,14 +142,11 @@
         <button id="btn-file-close" class="btn icon" title="收起">✕</button>
       </div>
       <div class="file-toolbar">
-        <button id="btn-file-refresh" class="btn small" title="刷新">↻ 刷新</button>
-        <button id="btn-file-mkdir" class="btn small">新建文件夹</button>
-        <button id="btn-file-upload" class="btn small">上传</button>
-        <button id="btn-file-download" class="btn small">下载</button>
-        <button id="btn-file-rename" class="btn small">重命名</button>
-        <button id="btn-file-chmod" class="btn small">权限</button>
-        <button id="btn-file-delete" class="btn small">删除</button>
-        <button id="btn-file-bookmark" class="btn small" title="收藏当前目录">★ 书签</button>
+        <button id="btn-file-refresh" class="btn icon" title="刷新当前目录">↻</button>
+        <button id="btn-file-mkdir" class="btn icon" title="新建文件夹">＋</button>
+        <button id="btn-file-upload" class="btn icon" title="上传文件(也可直接把文件拖进本面板)">⬆</button>
+        <span class="spacer"></span>
+        <span class="file-toolbar-hint muted">右键文件可下载 / 重命名 / 删除</span>
       </div>
       <div id="file-bookmarks" class="file-bookmarks"></div>
       <div id="file-mkdir-row" class="hidden">
@@ -182,7 +194,7 @@
           <label>私钥口令</label><input id="host-passphrase" type="password" placeholder="无则留空" autocomplete="off" />
         </div>
         <label>跳板机</label>
-        <select id="host-jump" multiple size="1" title="按住 ⌘ 多选,自上而下形成跳板链"><option value="">(无)</option></select>
+        <select id="host-jump" multiple size="1" data-title="按住 %1 多选,自上而下形成跳板链" data-accel="mod"><option value="">(无)</option></select>
         <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />
       </div>
@@ -318,6 +330,25 @@
       </table>
       <p class="muted small-note">TOFU 首次信任记录;主机指纹变更会被拒绝连接,此处可重置信任。</p>
       <div class="modal-actions"><button id="btn-fp-close" class="btn">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 关于弹窗(版本号此前挤在侧边栏左下角,信息零散且碍眼) -->
+  <div id="modal-about" class="modal hidden">
+    <div class="modal-card about-card">
+      <div class="about-logo">✦</div>
+      <h3 class="about-name">NebulaShell 星云终端</h3>
+      <p class="about-tag muted">跨平台 SSH 客户端 · 内置 AI 助手 · 云主机自动发现</p>
+      <div class="about-grid">
+        <span class="muted">版本</span><span id="about-version" class="mono">–</span>
+        <span class="muted">运行平台</span><span id="about-platform" class="mono">–</span>
+        <span class="muted">技术栈</span><span class="mono">Tauri 2 · Rust · xterm.js</span>
+      </div>
+      <p class="muted small-note">主机凭据仅加密保存在本机,不会上传到任何第三方服务器。</p>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="btn-about-close" class="btn primary">关闭</button>
+      </div>
     </div>
   </div>
 

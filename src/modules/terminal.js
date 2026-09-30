@@ -1,9 +1,8 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, activeTab, api, state, toast } from './core.js';
+import { $, accel, activeTab, api, askConfirm, closeCtxMenu, parseFpError, state, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
 import { closeSnippetMenu, renderMonitorBar } from './monitor.js';
 import { activeConnectedSession, loadFileDir, renderFileTarget } from './sftp.js';
-import { closeCtxMenu } from './entry.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -225,7 +224,7 @@ export function makePaneEl(paneId) {
   });
   const zoomBtn = document.createElement('button');
   zoomBtn.className = 'pane-zoom-btn';
-  zoomBtn.title = '放大该窗格(⌘⇧↵ 还原)';
+  zoomBtn.title = `放大该窗格(${accel('mod+shift+Enter')} 还原)`;
   zoomBtn.textContent = '⤢';
   zoomBtn.addEventListener('mousedown', (e) => e.stopPropagation());
   zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(paneId); });
@@ -265,14 +264,9 @@ export function rebalanceRatios(node) {
   return node;
 }
 
-// 窗格过矮时自动隐藏监控条,还空间给终端
-export function updateMonitorAutoHide() {
-  const bar = $('#monitor-bar');
-  if (!bar) return;
-  const heights = [...state.panes.values()].map((p) => p.el.getBoundingClientRect().height).filter(Boolean);
-  const tooShort = state.panes.size > 1 && heights.length && Math.min(...heights) < 150;
-  bar.classList.toggle('auto-hidden', tooShort);
-}
+// 监控已固定显示在状态栏(不再是终端区上方的独立条),既不占终端高度也无需自动隐藏。
+// 保留空实现:调用点较多,删掉反而让"为什么这里不管监控"更难理解。
+export function updateMonitorAutoHide() { /* no-op:见上 */ }
 
 export function leaf(paneId) { return { type: 'leaf', paneId }; }
 export function isLeaf(n) { return !!n && n.type === 'leaf'; }
@@ -344,7 +338,7 @@ export function renderLayout() {
     stack.appendChild(pane.el);
     const chip = document.createElement('span');
     chip.className = 'zoom-chip';
-    chip.title = '点击还原布局(⌘⇧↵)';
+    chip.title = `点击还原布局(${accel('mod+shift+Enter')})`;
     chip.textContent = '⤢ 已放大';
     chip.addEventListener('click', () => togglePaneZoom(state.zoomPaneId));
     stack.appendChild(chip);
@@ -356,7 +350,7 @@ export function renderLayout() {
     if (!pane.el.querySelector('.pane-zoom-btn')) {
       const zoomBtn = document.createElement('button');
       zoomBtn.className = 'pane-zoom-btn';
-      zoomBtn.title = '放大该窗格(⌘⇧↵ 还原)';
+      zoomBtn.title = `放大该窗格(${accel('mod+shift+Enter')} 还原)`;
       zoomBtn.textContent = '⤢';
       zoomBtn.addEventListener('mousedown', (e) => e.stopPropagation());
       zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(pane.id); });
@@ -461,7 +455,78 @@ export function splitActive(dir) {
     state.panes.set(newId, { id: newId, el: makePaneEl(newId), sessionId: null });
     return { type: dir, ratio: 0.5, a: leafNode, b: leaf(newId) };
   });
+  // 新增分屏后自动整理为最优布局:手动分屏是"围绕当前窗格一刀切",连开几个
+  // 之后长宽比严重失衡(比例还会被拖得五花八门)。用户新增分屏想要的是
+  // "多一块可用区域",不是继承被反复切分的历史形状,故每次新增后重排成等分网格。
+  reflowIfSplitting(dir);
+}
+
+/// 分屏数 ≥ 2 时把布局重排成等分网格。窗格对象与其中的会话都保留
+/// (renderLayout 会重组 DOM,但终端实例不销毁),所有比例回到等分。
+/// tab 默认当前标签 —— 但 createSession 可能操作"非活动标签",故允许显式传入。
+/// dir 是"刚新增那一刀"的方向(h=左右并排 / v=上下堆叠),用于决定网格朝向。
+export function reflowIfSplitting(dir, tab = activeTab()) {
+  if (!tab || !tab.layout) return false;
+  const ids = paneIdsInOrder(tab);
+  if (ids.length <= 1) { renderLayout(); return false; }
+  tab.layout = buildGrid(ids, dir);
+  tab.zoomPaneId = null; // 整理后退出放大态,否则看不到整理结果
   renderLayout();
+  return true;
+}
+
+/// 布局树里的窗格 id,按"视觉顺序"(先上后下、先左后右)展开。
+/// 自动整理会改变窗格的相对位置;若按任意顺序重排,同一块终端会在每次
+/// 新增分屏后跳到别的格子。按视觉顺序重排 = 原地整理。
+export function paneIdsInOrder(tab) {
+  const out = [];
+  (function walk(n) {
+    if (!n) return;
+    if (isLeaf(n)) { if (tab.panes.has(n.paneId)) out.push(n.paneId); return; }
+    walk(n.a); walk(n.b);
+  })(tab.layout);
+  return out;
+}
+
+/// 把一组窗格 id 编成"接近正方形"的等分网格二叉布局。
+/// 列数取 ceil(sqrt(n))(6 个 → 3 列 2 行);每行窗格数按 ceil(剩余/剩余行数)
+/// 均摊,避免 7 个时排成 3+3+1 那样最后一行只剩一个。
+/// dir 只在"朝向有歧义"时起作用:2 个窗格横竖都算正方,此时听用户的
+/// (点了上下分屏就该得到上下两格);n ≥ 3 时若朝向与用户那一刀相反,
+/// 交换行列即可 —— 仍是同一套均衡网格,只是整体转 90°。
+export function buildGrid(paneIds, dir) {
+  let cols = Math.ceil(Math.sqrt(paneIds.length));
+  let rows = Math.ceil(paneIds.length / cols);
+  if (dir === 'v' && cols > rows) { const t = cols; cols = rows; rows = t; }
+  else if (dir === 'h' && rows > cols) { const t = cols; cols = rows; rows = t; }
+  const perRow = [];
+  let rest = paneIds.length;
+  for (let r = 0; r < rows; r++) {
+    const take = Math.ceil(rest / (rows - r));
+    perRow.push(take);
+    rest -= take;
+  }
+  // 横向把一段窗格均分:每次包一层,让"前 i 个"占 i/(i+1)
+  const buildRow = (ids) => {
+    let node = leaf(ids[0]);
+    for (let i = 1; i < ids.length; i++) {
+      node = { type: 'h', ratio: i / (i + 1), a: node, b: leaf(ids[i]) };
+    }
+    return node;
+  };
+  const rowNodes = [];
+  let cursor = 0;
+  for (const take of perRow) {
+    const ids = paneIds.slice(cursor, cursor + take);
+    cursor += take;
+    if (ids.length) rowNodes.push(buildRow(ids));
+  }
+  // 纵向把各行均分(同 buildRow 的算法)
+  let root = rowNodes[0];
+  for (let i = 1; i < rowNodes.length; i++) {
+    root = { type: 'v', ratio: i / (i + 1), a: root, b: rowNodes[i] };
+  }
+  return root;
 }
 
 export function activeLeafPaneId() {
@@ -473,6 +538,76 @@ export function activeLeafPaneId() {
   if (s && s.paneId) return s.paneId;
   const first = firstLeafPaneId(state.layout);
   return first;
+}
+
+/* ---------------- 关闭窗格 / 自动整理布局 ---------------- */
+
+/// 解析"用户此刻看着的那个窗格"(关闭操作的靶子)。
+/// 不能用 activeLeafPaneId():它为了"分屏时复用空窗格"而**优先返回空窗格**,
+/// 用作关闭靶子就会把旁边的空窗格关掉、留下用户正用的那个 —— 与直觉相反。
+/// 定序:DOM 焦点标记 > 活动会话 > 记下的空窗格 > 首个。
+export function focusedPaneId() {
+  const tab = activeTab();
+  if (!tab || !tab.layout) return null;
+  // 1) DOM 上有 focused 标记的窗格(点过/正在输入的)
+  const el = document.querySelector('.term-pane.focused');
+  if (el && el.dataset.pane && tab.panes.has(el.dataset.pane)) return el.dataset.pane;
+  // 2) 活动会话所在窗格
+  const s = state.sessions.get(state.activeId);
+  if (s && s.paneId && s.tabId === tab.id && tab.panes.has(s.paneId)) return s.paneId;
+  // 3) 记下的空窗格(用户刚点过的),最后退回首个
+  if (tab.activePaneId && tab.panes.has(tab.activePaneId)) return tab.activePaneId;
+  return firstLeafPaneId(tab.layout);
+}
+
+/// 关闭标签内"最该关"的那个窗格:**优先空窗格**,其次才是当前焦点窗格。
+/// 为什么不是"直接关焦点窗格":分屏后焦点一直留在会话窗格上(新建的空窗格
+/// 不会抢走 .focused 标记),用户连开几个空窗格再点"关闭当前窗格",若按焦点
+/// 就会先把正在用的连接关掉、把空窗格全留着 —— 与"撤销分屏"的意图正好相反。
+/// 空窗格用后进先出:连续点关闭就是逐个撤销刚才的分屏。
+export function pickPaneToClose(tab) {
+  const empties = [...tab.panes.values()].filter((p) => !p.sessionId);
+  if (empties.length) return empties[empties.length - 1].id;
+  return focusedPaneId();
+}
+
+/// 关闭当前活动窗格(窗格内会话一并关闭;空窗格直接摘除)。
+/// 这是"分屏开得进去、退不出来"的入口:此前只有 ⌘W 且必须先聚焦窗格,
+/// 而空窗格(尚未选主机)连 ⌘W 都关不掉 —— 没有会话可关。
+export function closeActivePane() {
+  const tab = activeTab();
+  if (!tab || !tab.layout) return toast('当前没有可分屏的窗格', 'error');
+  if (leafCount(tab.layout) <= 1) return toast('只有一个窗格,无需关闭', 'error');
+  const paneId = pickPaneToClose(tab);
+  const pane = paneId ? tab.panes.get(paneId) : null;
+  if (!pane) return toast('找不到当前窗格', 'error');
+  // 有会话的窗格走 closeSession:它会断开连接、释放终端并从布局树摘除
+  if (pane.sessionId) { closeSession(pane.sessionId); return; }
+  // 空窗格:直接从布局树与窗格表摘除
+  removePaneFromTab(tab, paneId);
+  tab.panes.delete(paneId);
+  if (tab.zoomPaneId === paneId) tab.zoomPaneId = null;
+  if (tab.activePaneId === paneId) tab.activePaneId = null;
+  tab.layout = rebalanceRatios(tab.layout);
+  renderLayout();
+  updateWelcome();
+}
+
+/// 自动整理布局:把当前标签的窗格重排成"接近正方形"的等分网格。
+/// 手动分屏容易越分越歪(自定义比例 + 嵌套结构),窗格数一多就出现极窄条。
+/// 这里按窗格数算出行列数,重建为行列均衡的二叉布局,比例全部回到等分。
+/// 网格算法与"新增分屏后自动整理"共用 buildGrid,避免两处规则漂移。
+export function autoLayoutTab() {
+  const tab = activeTab();
+  if (!tab || !tab.layout) return toast('当前没有窗格', 'error');
+  const paneIds = paneIdsInOrder(tab);
+  if (paneIds.length <= 1) return toast('只有一个窗格,无需整理', 'error');
+  const cols = Math.ceil(Math.sqrt(paneIds.length));
+  const rows = Math.ceil(paneIds.length / cols);
+  tab.layout = buildGrid(paneIds);
+  tab.zoomPaneId = null; // 整理后退出放大态,否则看不到整理结果
+  renderLayout();
+  toast(`已整理为 ${rows} × ${cols} 布局`, 'success');
 }
 
 export function firstLeafPaneId(node) {
@@ -565,7 +700,11 @@ export function createSession(host, paneId, tabId) {
     }
   }
   tab.panes.get(targetPaneId).sessionId = sessionId;
-  renderLayout(); // 先挂载窗格 DOM,再初始化终端
+  // 走到这里说明"该标签原本没有空窗格"(否则会在上面复用),即刚刚新增了一格。
+  // 新格是在活动格旁一刀切出来的,布局随之偏斜;与 splitActive 一致地整理成
+  // 等分网格。reflow 内部已调用 renderLayout,故不再重复渲染。
+  if (tab.panes.size > 1) reflowIfSplitting('h', tab);
+  else renderLayout(); // 先挂载窗格 DOM,再初始化终端
 
   const pane = tab.panes.get(targetPaneId).el;
   pane.innerHTML = '';
@@ -589,7 +728,7 @@ export function createSession(host, paneId, tabId) {
   // innerHTML 清空会抹掉放大按钮,重新挂回
   const zb = document.createElement('button');
   zb.className = 'pane-zoom-btn';
-  zb.title = '放大该窗格(⌘⇧↵ 还原)';
+  zb.title = `放大该窗格(${accel('mod+shift+Enter')} 还原)`;
   zb.textContent = '⤢';
   zb.addEventListener('mousedown', (e) => e.stopPropagation());
   zb.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(targetPaneId); });
@@ -818,10 +957,41 @@ export function updateStatusbar(session, error) {
   }
 }
 
+// 指纹变更:后端在连接错误里附加可机读标记 [NB-FP host:port|旧指纹|新指纹],
+// 解析见 core.js 的 parseFpError。这里是"变更后如何恢复"的交互。
+/// 指纹变更的一键恢复:确认后删除该记录并重连。
+/// 关键在"确认"而非"自动":变更可能是重装,也可能是中间人。弹窗把当前/上次指纹
+/// 都摆出来,且默认焦点落在"取消"(见 core.js 的 defaultFocus),
+/// 逼用户做出明确判断 —— 这仍是安全提示,只是不再让用户自己去翻指纹列表。
+export async function offerFpRetrust(session, info) {
+  const ok = await askConfirm(
+    `服务器「${info.key}」的 SSH 主机指纹与本地记录不一致。\n\n` +
+    `本地记录：${info.stored}\n服务器出示：${info.current}\n\n` +
+    '服务器重装系统、更换主机密钥会如此；被中间人冒充也会如此。\n' +
+    '确认这是你的服务器后，可删除旧记录并重新信任（若无法确认，请先核实服务器状态）。',
+    { title: '服务器指纹已变更', okText: '重新信任并重连', cancelText: '不信任（取消）', danger: true, defaultFocus: 'cancel' },
+  );
+  if (!ok) return;
+  await api('fingerprints:delete', { id: info.key });
+  // 重连走与「↻ 重连」按钮同一套路:先关掉失败会话再重连。
+  // 注意 closeSession 会把窗格从布局里摘掉,因此不能再传旧 paneId(已失效),
+  // 让 connectHost/quickConnect 自行新建窗格或标签。
+  const quick = session && session.host && session.host.quick;
+  const target = session && session.host;
+  if (session) closeSession(session.sessionId);
+  if (quick && target) {
+    await quickConnect({ username: target.username, host: target.host, port: target.port });
+  } else if (target) {
+    await connectHost(target.id);
+  }
+}
+
 // 自动重连(O2):最多 3 次,指数退避 1s/2s/4s
 export function scheduleReconnect(sessionId, why) {
   const s = state.sessions.get(sessionId);
-  if (!s || s.reconnectAttempt >= 3 || s.host.quick) return;
+  // 指纹变更不会因重试而自愈(服务器不会自己换回去),继续退避重连只会反复失败;
+  // 交给 offerFpRetrust 的显式路径处置。
+  if (!s || s.reconnectAttempt >= 3 || s.host.quick || parseFpError(why)) return;
   s.reconnectAttempt += 1;
   s.reconnectScheduled = true;
   const delay = 1000 * Math.pow(2, s.reconnectAttempt - 1);
@@ -868,9 +1038,12 @@ export async function connectHost(hostId, paneId, opts = {}) {
   } catch (e) {
     session.status = 'error';
     syncTabChrome();
-    if (state.activeId === session.sessionId) updateStatusbar(session, e.message);
-    toast('连接失败：' + e.message, 'error');
-    scheduleReconnect(session.sessionId, e.message);
+    const fp = parseFpError(e.message);
+    const shown = fp ? fp.clean : e.message;
+    if (state.activeId === session.sessionId) updateStatusbar(session, shown);
+    toast('连接失败：' + shown, 'error');
+    if (fp) offerFpRetrust(session, fp);
+    else scheduleReconnect(session.sessionId, e.message);
   }
 }
 
@@ -891,8 +1064,11 @@ export async function quickConnect(parsed, paneId) {
   } catch (e) {
     session.status = 'error';
     updateTab(session);
-    updateStatusbar(session, e.message);
-    toast('快速连接失败:' + e.message, 'error');
+    const fp = parseFpError(e.message);
+    const shown = fp ? fp.clean : e.message;
+    updateStatusbar(session, shown);
+    toast('快速连接失败:' + shown, 'error');
+    if (fp) offerFpRetrust(session, fp);
   }
 }
 

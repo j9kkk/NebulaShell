@@ -1,11 +1,11 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, api, askPrompt, closeModal, openModal, state, toast } from './core.js';
-import { activateSession, activateTab, clearActiveTerm, closeSession, closeTab, closeTermSearch, connectHost, createTab, doTermSearch, firstPaint, fitActive, fitAllVisible, followFilePanel, leaf, makePaneEl, newPaneId, openBroadcastPicker, openTermSearch, parseQuickTarget, quickConnect, renderLayout, scheduleResizeSync, splitActive, togglePaneZoom, toggleReadonly, toggleSessionLog, updateStatusbar, updateTab, updateWelcome } from './terminal.js';
-import { escapeHtml, openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
+import { $, activeTab, accel, api, applyAccelTitles, askPrompt, bindCtxMenuDismiss, closeCtxMenu, closeModal, openModal, PLATFORM, showCtxMenu, state, toast } from './core.js';
+import { activateSession, activateTab, autoLayoutTab, clearActiveTerm, closeActivePane, closeSession, closeTab, closeTermSearch, connectHost, createTab, doTermSearch, firstPaint, fitActive, fitAllVisible, followFilePanel, leaf, leafCount, makePaneEl, newPaneId, openBroadcastPicker, openTermSearch, parseQuickTarget, quickConnect, renderLayout, scheduleResizeSync, splitActive, togglePaneZoom, toggleReadonly, toggleSessionLog, updateStatusbar, updateTab, updateWelcome } from './terminal.js';
+import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { aiDiagnose, aiFinishHolder, aiSend, aiTestConnection, fetchAiModels, fillPreset, openAiSettings, renderAiMessage, renderModelSwitch, saveAiSettings, switchModel, updateGenChip } from './ai.js';
-import { addSnippet, closeSnippetMenu, renderMonitorBar, renderSnippets } from './monitor.js';
-import { activeConnectedSession, fileDelete, fileDownload, filePanelSession, fileUpload, loadFileDir, renderFileTarget } from './sftp.js';
+import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
+import { activeConnectedSession, addBookmark, filePanelSession, fileUpload, loadFileDir, renderFileTarget, uploadLocalPaths } from './sftp.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
 import { openBatchModal, openForwardModal, renderBatchHosts, runBatch, saveForwardRule, toggleHistory } from './tools.js';
 
@@ -16,51 +16,16 @@ export function termFromEvent(e) {
   return sid ? state.sessions.get(sid) || null : null;
 }
 
-export function closeCtxMenu() {
-  const m = $('#ctx-menu');
-  if (m) m.classList.add('hidden');
-}
-
-export function showCtxMenu(x, y, items) {
-  const menu = $('#ctx-menu');
-  if (!menu) return;
-  menu.innerHTML = '';
-  for (const it of items) {
-    if (it === '-') {
-      const sep = document.createElement('div');
-      sep.className = 'ctx-sep';
-      menu.appendChild(sep);
-      continue;
-    }
-    const btn = document.createElement('button');
-    btn.className = 'ctx-item';
-    btn.innerHTML = `<span>${escapeHtml(it.label)}</span>${it.key ? `<span class="ctx-key">${escapeHtml(it.key)}</span>` : ''}`;
-    btn.disabled = !!it.disabled;
-    btn.addEventListener('click', () => {
-      closeCtxMenu();
-      try { it.run(); } catch { /* ignore */ }
-    });
-    menu.appendChild(btn);
-  }
-  // 先显示以便量取尺寸,再按视口边缘回推,避免菜单溢出屏幕
-  menu.classList.remove('hidden');
-  const r = menu.getBoundingClientRect();
-  const px = Math.min(x, window.innerWidth - r.width - 8);
-  const py = Math.min(y, window.innerHeight - r.height - 8);
-  menu.style.left = `${Math.max(8, px)}px`;
-  menu.style.top = `${Math.max(8, py)}px`;
-}
-
-/// 终端右键菜单:复制/粘贴/全选 + 清屏/搜索/只读
+/// 终端右键菜单:复制/粘贴/全选 + 清屏/搜索/只读。快捷键提示按平台渲染。
 export function openTermCtxMenu(e, session) {
   const term = session.term;
   const hasSel = (() => { try { return term.hasSelection(); } catch { return false; } })();
   showCtxMenu(e.clientX, e.clientY, [
-    { label: '复制', key: '⌘C', disabled: !hasSel, run: () => { try { navigator.clipboard.writeText(term.getSelection()).catch(() => {}); } catch { /* ignore */ } } },
-    { label: '粘贴', key: '⌘V', run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
-    { label: '全选', key: '⌘A', run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
+    { label: '复制', key: accel('mod+C'), disabled: !hasSel, run: () => { try { navigator.clipboard.writeText(term.getSelection()).catch(() => {}); } catch { /* ignore */ } } },
+    { label: '粘贴', key: accel('mod+V'), run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
+    { label: '全选', key: accel('mod+A'), run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
     '-',
-    { label: '搜索…', key: '⌘F', run: () => { activateSession(session.sessionId); openTermSearch(); } },
+    { label: '搜索…', key: accel('mod+F'), run: () => { activateSession(session.sessionId); openTermSearch(); } },
     { label: '清屏', run: () => { activateSession(session.sessionId); clearActiveTerm(); } },
     { label: session.readOnly ? '关闭只读' : '设为只读', run: () => { activateSession(session.sessionId); toggleReadonly(); } },
     '-',
@@ -69,7 +34,9 @@ export function openTermCtxMenu(e, session) {
 }
 
 export function bindContextMenu() {
-  // 全局屏蔽原生菜单:oncontextmenu 返回 false 即阻止默认行为
+  // 全局屏蔽原生菜单:oncontextmenu 返回 false 即阻止默认行为。
+  // 文件列表行有自己的菜单(见 sftp.js openFileCtxMenu),那里 stopPropagation
+  // 后不会再走到这支;这里只负责终端区与"点空白处收起"。
   window.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const session = termFromEvent(e);
@@ -77,15 +44,68 @@ export function bindContextMenu() {
     else closeCtxMenu();
     return false;
   });
-  // 点击/滚动/失焦/缩放后收起
-  window.addEventListener('mousedown', (e) => {
-    const menu = $('#ctx-menu');
-    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#ctx-menu')) closeCtxMenu();
-  }, true);
-  window.addEventListener('resize', closeCtxMenu);
-  window.addEventListener('blur', closeCtxMenu);
-  document.addEventListener('scroll', closeCtxMenu, true);
+  bindCtxMenuDismiss();
 }
+
+/// 拖拽上传(Tauri 原生拖放)。
+/// 为什么不用 HTML5 dragover/drop:Tauri 出于安全默认**禁用** webview 内的
+/// HTML5 文件拖放,落到 drop 事件上的 dataTransfer.files 里拿不到本地路径
+/// (f.path 为 undefined)—— 旧实现因此在真机上一律"拖了没反应"(浏览器里
+/// 调试却正常)。这里改用 Tauri 的 onDragDropEvent,它给出的是绝对路径数组。
+/// 仅在文件面板可见时接管:否则会把"拖到终端/其它面板"的意图也吞掉。
+export function bindFileDrop() {
+  const cur = window.__TAURI__ && window.__TAURI__.webviewWindow
+    && window.__TAURI__.webviewWindow.getCurrentWebviewWindow
+    && window.__TAURI__.webviewWindow.getCurrentWebviewWindow();
+  if (!cur || typeof cur.onDragDropEvent !== 'function') return;
+  const panel = $('#file-panel');
+  const hint = $('#file-drop-hint');
+  // 拖放位置是物理像素,要换算成 CSS 像素再与元素矩形比较(高 DPI 屏差一倍)
+  const dpr = window.devicePixelRatio || 1;
+  const inPanel = (pos) => {
+    if (panel.classList.contains('hidden')) return false;
+    if (!pos || typeof pos.x !== 'number') return true; // 无坐标信息时按"在整个窗口内"处理
+    const r = panel.getBoundingClientRect();
+    const x = pos.x / dpr;
+    const y = pos.y / dpr;
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  };
+  const hideHint = () => hint.classList.add('hidden');
+  cur.onDragDropEvent(({ payload }) => {
+    if (payload.type === 'enter' || payload.type === 'over') {
+      if (inPanel(payload.position)) hint.classList.remove('hidden');
+      else hideHint();
+      return;
+    }
+    if (payload.type === 'leave') { hideHint(); return; }
+    if (payload.type === 'drop') {
+      hideHint();
+      if (!inPanel(payload.position)) return;
+      const paths = (payload.paths || []).filter(Boolean);
+      if (!paths.length) return;
+      uploadLocalPaths(paths).catch(() => {});
+    }
+  });
+}
+
+/// 关于弹窗:版本号的正式归宿(此前挤在侧边栏左下角,只能读不能看)
+export async function openAbout() {
+  const set = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+  try {
+    const info = await api('app:info');
+    set('#about-version', 'v' + info.version);
+    set('#about-platform', PLATFORM_LABEL[info.platform] || info.platform);
+  } catch {
+    set('#about-version', '未知');
+    set('#about-platform', PLATFORM_LABEL[PLATFORM] || PLATFORM);
+  }
+  openModal('#modal-about');
+}
+
+/// 平台显示名。两个来源的平台串不一致,都要认:
+/// 后端 app:info 用 std::env::consts::OS(→ "macos"/"windows"/"linux"),
+/// shim 的 window.nebula.platform 由 UA 推导(→ "darwin")。
+const PLATFORM_LABEL = { darwin: 'macOS', macos: 'macOS', windows: 'Windows', linux: 'Linux' };
 
 export function bindEvents() {
   $('#btn-add-host').addEventListener('click', () => openHostModal(null));
@@ -205,8 +225,6 @@ export function bindEvents() {
   $('#batch-search').addEventListener('input', (e) => renderBatchHosts(e.target.value));
   $('#btn-batch-run').addEventListener('click', runBatch);
   $('#btn-batch-close').addEventListener('click', () => closeModal('#modal-batch'));
-  $('#btn-fingerprints').addEventListener('click', openFingerprints);
-  $('#btn-fp-close').addEventListener('click', () => closeModal('#modal-fp'));
   $('#quick-connect').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     const parsed = parseQuickTarget(e.target.value);
@@ -220,22 +238,44 @@ export function bindEvents() {
   $('#btn-clear').addEventListener('click', clearActiveTerm);
   $('#btn-log-toggle').addEventListener('click', toggleSessionLog);
 
-  // 文件面板扩展:重命名 / 权限 / 书签 / 拖拽上传
-  $('#btn-file-rename').addEventListener('click', () => {
-    const en = state.file.entries.find((x) => x.name === state.file.selected);
-    if (!en) return toast('请先选中文件或目录', 'error');
-    state.file.renameMode = { from: en.name };
+  // 文件面板扩展:重命名 / 权限 / 书签 / 拖拽上传。
+  // 工具栏只留"新建文件夹 / 上传 / 刷新"这三个全局动作;针对具体文件的
+  // 下载·重命名·权限·删除一律走该行的右键菜单(见 sftp.js openFileCtxMenu)。
+  $('#btn-file-refresh').addEventListener('click', () => loadFileDir(state.file.cwd));
+  $('#btn-file-mkdir').addEventListener('click', () => {
+    state.file.renameMode = null; // 从"新建"进入,别把上次的重命名态带过来
     $('#file-mkdir-row').classList.remove('hidden');
-    $('#file-mkdir-name').value = en.name;
+    $('#file-mkdir-name').value = '';
+    $('#file-mkdir-name').placeholder = '新建文件夹名称';
     $('#file-mkdir-name').focus();
   });
-  $('#btn-file-chmod').addEventListener('click', () => {
-    const en = state.file.entries.find((x) => x.name === state.file.selected);
-    if (!en) return toast('请先选中文件或目录', 'error');
-    state.file.chmodTarget = en;
-    $('#file-chmod-row').classList.remove('hidden');
-    $('#file-chmod-octal').value = en.dir ? '0755' : '0644';
+  $('#btn-file-upload').addEventListener('click', fileUpload);
+  $('#btn-file-mkdir-cancel').addEventListener('click', () => {
+    state.file.renameMode = null;
+    $('#file-mkdir-row').classList.add('hidden');
   });
+  $('#btn-file-mkdir-ok').addEventListener('click', async () => {
+    const s = filePanelSession();
+    const name = $('#file-mkdir-name').value.trim();
+    if (!s) return toast('请先连接主机', 'error');
+    if (!name) return toast('请填写名称', 'error');
+    try {
+      if (state.file.renameMode) {
+        await api('sftp:rename', { sessionId: s.sessionId, from: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + state.file.renameMode.from, to: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + name });
+        state.file.renameMode = null;
+        toast('已重命名', 'success');
+      } else {
+        await api('sftp:mkdir', { sessionId: s.sessionId, path: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + name });
+        toast('目录已创建', 'success');
+      }
+      $('#file-mkdir-row').classList.add('hidden');
+      $('#file-mkdir-name').value = '';
+      loadFileDir(state.file.cwd);
+    } catch (e) {
+      toast('操作失败：' + e.message, 'error');
+    }
+  });
+  $('#file-mkdir-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-file-mkdir-ok').click(); });
   $('#btn-file-chmod-ok').addEventListener('click', async () => {
     const s = filePanelSession();
     const en = state.file.chmodTarget;
@@ -249,31 +289,21 @@ export function bindEvents() {
     } catch (e) { toast('修改权限失败:' + e.message, 'error'); }
   });
   $('#btn-file-chmod-cancel').addEventListener('click', () => $('#file-chmod-row').classList.add('hidden'));
-  $('#btn-file-bookmark').addEventListener('click', async () => {
-    const s = filePanelSession();
-    if (!s || !state.file.cwd) return toast('请先连接并打开目录', 'error');
-    await api('bookmarks:add', { hostId: s.host.id, path: state.file.cwd });
-    await renderFileBookmarks();
-    toast('已收藏当前目录', 'success');
-  });
-  const filePanel = $('#file-panel');
-  filePanel.addEventListener('dragover', (e) => { e.preventDefault(); $('#file-drop-hint').classList.remove('hidden'); });
-  filePanel.addEventListener('dragleave', () => $('#file-drop-hint').classList.add('hidden'));
-  filePanel.addEventListener('drop', async (e) => {
+  // 路径栏右键 = 收藏当前目录(原工具栏的「★ 书签」按钮已移除)
+  $('#file-path').addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    $('#file-drop-hint').classList.add('hidden');
-    const files = [...(e.dataTransfer.files || [])].map((f) => f.path).filter(Boolean);
-    if (!files.length) return;
-    const s = filePanelSession();
-    if (!s) return toast('请先连接主机', 'error');
-    for (const p of files) {
-      const name = p.split('/').pop();
-      $('#file-status').textContent = `上传 ${name}…`;
-      try { await api('sftp:upload', { sessionId: s.sessionId, localPath: p, remoteDir: state.file.cwd }); }
-      catch (err) { toast('上传失败:' + err.message, 'error'); }
-    }
-    loadFileDir(state.file.cwd);
+    e.stopPropagation();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: '收藏当前目录', disabled: !state.file.cwd, run: () => addBookmark() },
+      { label: '复制当前路径', disabled: !state.file.cwd, run: () => { navigator.clipboard.writeText(state.file.cwd).catch(() => {}); toast('已复制路径', 'success'); } },
+    ]);
   });
+
+  // 拖拽上传。Tauri 会**关闭** webview 的 HTML5 拖放(dataTransfer 里拿不到
+  // 本地路径),必须用 Tauri 的拖放事件:enter/over/leave/drop 各带 paths。
+  // 仅在面板可见时接管,避免把"拖文件到终端"这种别处用法也吃掉。
+  bindFileDrop();
+
   $('#btn-ai-explain').addEventListener('click', () => {
     const s = state.sessions.get(state.activeId);
     const sel = s && s.term.getSelection();
@@ -372,19 +402,16 @@ export function bindEvents() {
     }
   });
 
-  // 片段 / 监控 / 文件 / 终端设置
-  $('#btn-snippets').addEventListener('click', () => {
-    const menu = $('#snippet-menu');
-    menu.classList.toggle('hidden');
-    if (!menu.classList.contains('hidden')) renderSnippets();
-  });
+  // 片段 / 文件 / 终端设置
+  $('#btn-snippets').addEventListener('click', toggleSnippetMenu);
+  $('#btn-snippet-close').addEventListener('click', closeSnippetMenu);
   $('#btn-snippet-add').addEventListener('click', addSnippet);
   $('#snippet-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') addSnippet(); });
-  $('#btn-monitor').addEventListener('click', () => {
-    state.monitorVisible = !state.monitorVisible;
-    $('#btn-monitor').classList.toggle('active', state.monitorVisible);
-    renderMonitorBar();
-  });
+  // 分屏:左右 / 上下(原先只有左右,且入口只在标签栏的图标按钮上)
+  $('#btn-split-left-right').addEventListener('click', () => splitActive('h'));
+  $('#btn-split-top-bottom').addEventListener('click', () => splitActive('v'));
+  $('#btn-auto-layout').addEventListener('click', () => autoLayoutTab());
+  $('#btn-close-pane').addEventListener('click', closeActivePane);
   $('#btn-files').addEventListener('click', async () => {
     const panel = $('#file-panel');
     if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); fitActive(); return; }
@@ -398,40 +425,13 @@ export function bindEvents() {
     await loadFileDir(s ? (s.lastFileDir || null) : null);
   });
   $('#btn-file-close').addEventListener('click', () => { $('#file-panel').classList.add('hidden'); fitActive(); });
-  $('#btn-file-refresh').addEventListener('click', () => loadFileDir(state.file.cwd));
-  $('#btn-file-mkdir').addEventListener('click', () => {
-    $('#file-mkdir-row').classList.remove('hidden');
-    $('#file-mkdir-name').focus();
-  });
-  $('#btn-file-mkdir-cancel').addEventListener('click', () => $('#file-mkdir-row').classList.add('hidden'));
-  $('#btn-file-mkdir-ok').addEventListener('click', async () => {
-    const s = filePanelSession();
-    const name = $('#file-mkdir-name').value.trim();
-    if (!s) return toast('请先连接主机', 'error');
-    if (!name) return toast('请填写名称', 'error');
-    try {
-      if (state.file.renameMode) {
-        await api('sftp:rename', { sessionId: s.sessionId, from: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + state.file.renameMode.from, to: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + name });
-        state.file.renameMode = null;
-        toast('已重命名', 'success');
-      } else {
-        await api('sftp:mkdir', { sessionId: s.sessionId, path: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + name });
-        toast('目录已创建', 'success');
-      }
-      $('#file-mkdir-row').classList.add('hidden');
-      $('#file-mkdir-name').value = '';
-      loadFileDir(state.file.cwd);
-    } catch (e) {
-      toast('操作失败：' + e.message, 'error');
-    }
-  });
-  $('#file-mkdir-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-file-mkdir-ok').click(); });
-  $('#btn-file-upload').addEventListener('click', fileUpload);
-  $('#btn-file-download').addEventListener('click', fileDownload);
-  $('#btn-file-delete').addEventListener('click', fileDelete);
   $('#btn-term-settings').addEventListener('click', openTermSettings);
   $('#btn-term-cancel').addEventListener('click', () => closeModal('#modal-term'));
   $('#btn-term-save').addEventListener('click', saveTermSettings);
+  $('#btn-fingerprints').addEventListener('click', openFingerprints);
+  $('#btn-fp-close').addEventListener('click', () => closeModal('#modal-fp'));
+  $('#btn-about').addEventListener('click', openAbout);
+  $('#btn-about-close').addEventListener('click', () => closeModal('#modal-about'));
 
   // 终端搜索
   $('#term-search-next').addEventListener('click', () => doTermSearch(false));
@@ -448,12 +448,13 @@ export function bindEvents() {
     if (mod && !e.shiftKey && e.key === 'f') { e.preventDefault(); openTermSearch(); return; }
     if (mod && !e.shiftKey && (e.key === 'w' || e.key === 'W')) {
       e.preventDefault();
-      // 优先关"当前窗格";窗格只剩一个时关整个标签
-      const s = state.sessions.get(state.activeId);
+      // ⌘W 与菜单里的"关闭当前窗格"必须是同一套规则:都走 closeActivePane
+      // (它优先关空窗格)。此前这里按"标签内会话数>1"判断,连开多个空窗格时
+      // 会话数仍是 1 → 直接关掉整个标签,与用户"退掉一个分屏"的意图不符。
       const tab = activeTab();
-      const paneCount = tab ? [...state.sessions.values()].filter((x) => x.tabId === tab.id).length : 0;
-      if (s && paneCount > 1) closeSession(s.sessionId);
-      else if (tab) closeTab(tab.id);
+      if (!tab) return;
+      if (leafCount(tab.layout) > 1) closeActivePane();
+      else closeTab(tab.id);
       return;
     }
     if (mod && !e.shiftKey && (e.key === 't' || e.key === 'T')) {
@@ -570,12 +571,10 @@ export function bindEvents() {
 }
 
 export async function boot() {
+  // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
+  applyAccelTitles();
   bindEvents();
   bindContextMenu();
-  try {
-    const info = await api('app:info');
-    $('#app-version').textContent = `v${info.version} · ${info.platform === 'darwin' ? 'macOS' : info.platform}`;
-  } catch { /* ignore */ }
   state.settings = await api('settings:get');
   await refreshHosts();
   try { state.aiModels = await api('ai:models', { protocol: state.settings.ai.protocol, baseUrl: state.settings.ai.baseUrl }).catch(() => []); } catch { /* ignore */ }
@@ -592,6 +591,9 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     confirmClickOk: () => $('#btn-confirm-ok').click(),
     confirmClickCancel: () => $('#btn-confirm-cancel').click(),
     confirmText: () => $('#confirm-message').textContent,
+    confirmTitle: () => $('#confirm-title').textContent,
+    // 默认焦点落在哪个键 —— 用于断言安全决策(指纹变更)不会默认选中"信任"
+    confirmFocus: () => (document.activeElement === $('#btn-confirm-ok') ? 'ok' : document.activeElement === $('#btn-confirm-cancel') ? 'cancel' : 'other'),
     // 口令输入框(导出/导入用)
     promptOpen: () => !$('#modal-prompt').classList.contains('hidden'),
     promptTitle: () => $('#prompt-title').textContent,
@@ -658,6 +660,114 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
         activeId: active ? active.sessionId : null,
         cwd: state.file.cwd,
         rows: document.querySelectorAll('#file-list .file-row').length,
+        names: [...document.querySelectorAll('#file-list .file-row .f-name')].map((e) => e.textContent),
+        // 工具栏只剩图标按钮(不再有"新建文件夹/上传/下载/重命名/权限/删除/书签"文字按钮)
+        toolbar: [...document.querySelectorAll('.file-toolbar .btn')].map((b) => ({
+          id: b.id, text: b.textContent.trim(), title: b.title,
+        })),
+        bookmarks: [...document.querySelectorAll('#file-bookmarks .bm-chip')].map((c) => c.textContent),
+        // 状态:加载中的输入行可见性(重命名/新建共用)
+        mkdirRowOpen: !$('#file-mkdir-row').classList.contains('hidden'),
+        chmodRowOpen: !$('#file-chmod-row').classList.contains('hidden'),
+      };
+    },
+    /// 文件行右键菜单:按名字在列表里找行并派发真实 contextmenu 事件
+    fileCtxMenu: (name) => {
+      const rows = [...document.querySelectorAll('#file-list .file-row')];
+      const row = rows.find((r) => r.querySelector('.f-name').textContent === name);
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 6 }));
+      return [...document.querySelectorAll('#ctx-menu .ctx-item')].map((b) => ({ label: b.querySelector('.ctx-label').textContent, disabled: b.disabled }));
+    },
+    ctxItemClick: (label) => {
+      const btn = [...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === label);
+      if (!btn) return false;
+      btn.click();
+      return true;
+    },
+    ctxMenuOpen: () => !$('#ctx-menu').classList.contains('hidden'),
+    /// 注入 Tauri 拖放事件(与真机走同一条 onDragDropEvent 通道)。
+    /// 用 event.emit 触发 webview 已注册的监听器 —— 测试因此覆盖的是真实链路,
+    /// 而不是"手工调用上传函数"这种绕开事件绑定的假通过。
+    fireDragDrop: (type, paths, pos) => {
+      const payload = { position: pos || null };
+      if (paths) payload.paths = paths;
+      return window.__TAURI__.event.emit('tauri://drag-' + type, payload);
+    },
+    /// 拖拽上传提示条是否可见(拖到面板上方时应出现)
+    dropHintVisible: () => !$('#file-drop-hint').classList.contains('hidden'),
+    // 关于弹窗:版本号的新家
+    about: () => ({
+      open: !$('#modal-about').classList.contains('hidden'),
+      version: $('#about-version').textContent,
+      platform: $('#about-platform').textContent,
+    }),
+    // 快捷键提示:断言按平台渲染(mac ⌘ / win·linux Ctrl)
+    accelTitles: () => ({
+      platform: window.nebula.platform,
+      newtab: $('#btn-newtab').title,
+      split: $('#btn-split').title,
+      closePane: $('#btn-close-pane').title,
+      splitLR: $('#btn-split-left-right').title,
+      splitTB: $('#btn-split-top-bottom').title,
+      zoom: (document.querySelector('.pane-zoom-btn') || {}).title || '',
+    }),
+    // 侧边栏底部:版本号已移除(移入关于弹窗)
+    footer: () => ({
+      version: $('#app-version') ? $('#app-version').textContent : null,
+      hasVersion: !!$('#app-version'),
+      hasFingerprintBtn: !!$('#btn-fingerprints') && $('#btn-fingerprints').closest('.side-footer') !== null,
+      text: document.querySelector('.side-footer').textContent.trim(),
+    }),
+    // 功能菜单项(含指纹/关于是否已并入)
+    moreMenuItems: () => [...document.querySelectorAll('#more-menu .btn')].map((b) => b.textContent.trim()),
+    // 更多菜单几何:用于断言"文件面板打开时菜单不遮挡面板展示区"
+    moreMenuGeom: () => {
+      const mm = $('#more-menu');
+      const wasHidden = mm.classList.contains('hidden');
+      if (wasHidden) mm.classList.remove('hidden');
+      const mr = mm.getBoundingClientRect();
+      const pr = $('#file-panel').getBoundingClientRect();
+      const overlap = mr.right > pr.left && mr.left < pr.right && mr.bottom > pr.top && mr.top < pr.bottom;
+      if (wasHidden) mm.classList.add('hidden');
+      return {
+        menu: [Math.round(mr.left), Math.round(mr.top), Math.round(mr.right), Math.round(mr.bottom)],
+        panel: [Math.round(pr.left), Math.round(pr.top), Math.round(pr.right), Math.round(pr.bottom)],
+        overlap,
+        panelOpen: !$('#file-panel').classList.contains('hidden'),
+      };
+    },
+    // 窗格几何网格:用于断言"新增分屏后自动整理为均衡网格"
+    paneGrid: () => {
+      const panes = [...document.querySelectorAll('.term-pane')].map((p) => {
+        const r = p.getBoundingClientRect();
+        return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+      });
+      const tops = [...new Set(panes.map((p) => p[1]))].sort((a, b) => a - b);
+      const rows = tops.map((t) => panes.filter((p) => p[1] === t).length);
+      const widths = panes.map((p) => p[2]);
+      const heights = panes.map((p) => p[3]);
+      // 逐行明细:同一行内的窗格应等宽、各行应等高(等分网格的判据)。
+      // 注意"最后一行只放 1 个窗格"时它会占满整行 —— 宽度自然与上一行不同,
+      // 这是 tmux 式 2+1 的常态,不是缺陷。
+      const rowDetail = tops.map((t) => {
+        const inRow = panes.filter((p) => p[1] === t);
+        const ws = inRow.map((p) => p[2]);
+        return { count: inRow.length, minW: Math.min(...ws), maxW: Math.max(...ws), h: inRow[0][3] };
+      });
+      return {
+        count: panes.length,
+        rows,
+        cols: rows.length ? Math.max(...rows) : 0,
+        rowDetail,
+        // 行内等宽 / 行间等高;以及"最窄窗格"是否仍可用
+        withinRowWidthSpread: rowDetail.length ? Math.max(...rowDetail.map((r) => r.maxW - r.minW)) : 0,
+        acrossRowHeightSpread: rowDetail.length ? Math.max(...rowDetail.map((r) => r.h)) - Math.min(...rowDetail.map((r) => r.h)) : 0,
+        minW: widths.length ? Math.min(...widths) : 0,
+        minH: heights.length ? Math.min(...heights) : 0,
+        widthSpread: widths.length ? Math.max(...widths) - Math.min(...widths) : 0,
+        heightSpread: heights.length ? Math.max(...heights) - Math.min(...heights) : 0,
       };
     },
     // 终端缓冲状态:供 e2e 断言(回滚上限是否生效、内容是否送达)
@@ -670,6 +780,51 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
         length: b.length,
         baseY: b.baseY,
       };
+    },
+    // 资源监控条:用给定采样值驱动**真实**渲染路径,并回报各元素几何。
+    // 用于回归"数据不定长导致布局抖动" —— 断言不同取值下每个元素的 left/width 恒定。
+    // 同时回报渲染文本:测试据此确认"值确实变了",否则几何不变可能只是没渲染出来的假通过。
+    monitorProbe: (samples) => {
+      const s = state.sessions.get(state.activeId);
+      if (!s) return null;
+      const ids = ['#mon-cpu', '#mon-mem-det', '#mon-disk-det', '#mon-rx', '#mon-tx', '#mon-spark-cpu', '#mon-note', '#mon-cpu-bar', '#mon-mem-bar'];
+      const prev = state.metrics.get(state.activeId);
+      const history = state.metricHistory.get(state.activeId);
+      const out = [];
+      for (const sample of samples) {
+        state.metrics.set(state.activeId, { supported: true, sessionId: state.activeId, ...sample });
+        // 固定历史:sparkline 方格数随采样增长会独立改变自身宽度,先隔离这一变量
+        state.metricHistory.set(state.activeId, new Array(16).fill(sample.cpuPct == null ? 0 : sample.cpuPct));
+        renderMonitorBar();
+        const geo = {};
+        for (const id of ids) {
+          const el = document.querySelector(id);
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          geo[id] = [Math.round(r.left * 10) / 10, Math.round(r.width * 10) / 10];
+        }
+        // 状态栏(监控块的容器)几何:高度变化说明整行折了;行尾按钮的位置
+        // 更能说明"监控是否把按钮挤走"——监控数据变化绝不该推动按钮。
+        const bar = document.querySelector('#monitor-bar');
+        const br = bar.getBoundingClientRect();
+        const sb = document.querySelector('#statusbar');
+        const btns = ['#btn-log-toggle', '#btn-clear', '#btn-readonly', '#btn-disconnect', '#btn-reconnect']
+          .map((id) => document.querySelector(id))
+          .filter((e) => e && !e.classList.contains('hidden'))
+          .map((e) => Math.round(e.getBoundingClientRect().right * 10) / 10);
+        geo.__bar = [
+          Math.round(sb.getBoundingClientRect().height * 10) / 10,
+          sb.scrollWidth - sb.clientWidth,
+          Math.round(br.width * 10) / 10,
+          btns,
+        ];
+        // 渲染文本:证明这次采样真的反映到了界面上
+        geo.__text = { cpu: $('#mon-cpu').textContent, mem: $('#mon-mem-det').textContent, disk: $('#mon-disk-det').textContent, rx: $('#mon-rx').textContent, tx: $('#mon-tx').textContent, note: $('#mon-note').textContent };
+        out.push(geo);
+      }
+      if (prev === undefined) state.metrics.delete(state.activeId); else state.metrics.set(state.activeId, prev);
+      if (history === undefined) state.metricHistory.delete(state.activeId); else state.metricHistory.set(state.activeId, history);
+      return out;
     },
   };
 }

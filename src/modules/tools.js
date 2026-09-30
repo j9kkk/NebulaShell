@@ -1,5 +1,5 @@
 // 批量执行、命令历史、端口转发
-import { $, api, askConfirm, openModal, state, toast } from './core.js';
+import { $, api, askConfirm, makeDraggable, openModal, state, stripFpMark, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
 
 export let batchChecked = new Set();
@@ -55,7 +55,10 @@ export async function runBatch() {
     done.push(p);
     $('#batch-status').textContent = `执行中(${done.length}/${hostIds.length})…`;
     const tr = rowFor(p.hostId);
-    tr.innerHTML = `<td>${escapeHtml(p.host)}</td><td>${p.ok ? '<span class="tag ok">成功</span>' : `<span class="tag p1">失败 ${p.code != null ? 'code ' + p.code : ''}</span>`}</td><td>${p.ms}ms</td><td class="out" title="${escapeHtml(p.output || p.error || '')}">${escapeHtml((p.output || p.error || '').slice(0, 120))}</td>`;
+    // 错误串可能带指纹变更的可机读标记,展示前剥掉(批量场景不弹恢复框,
+    // 也不该让用户看到 [NB-FP …] 这种内部编码)。
+    const detail = stripFpMark(p.output || p.error || '');
+    tr.innerHTML = `<td>${escapeHtml(p.host)}</td><td>${p.ok ? '<span class="tag ok">成功</span>' : `<span class="tag p1">失败 ${p.code != null ? 'code ' + p.code : ''}</span>`}</td><td>${p.ms}ms</td><td class="out" title="${escapeHtml(detail)}">${escapeHtml(detail.slice(0, 120))}</td>`;
   });
   try {
     const results = await api('batch:exec', { hostIds, command: cmd, timeoutMs, maxParallel: Number($('#batch-parallel').value) || 5 });
@@ -161,9 +164,20 @@ export async function toggleHistory() {
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'history-panel';
-    panel.innerHTML = `<div class="row" style="padding:0 4px 6px;"><input id="hist-search" class="inp" style="flex:1;" placeholder="过滤历史…"/><button id="hist-clear" class="btn sm">清空</button></div><div id="hist-list"></div>`;
+    // 标题栏兼作拖拽把手;带关闭按钮,不必再靠 Esc 或重复点按钮退出
+    panel.innerHTML = `
+      <div class="pop-head">
+        <span class="pop-title">🕘 命令历史</span>
+        <span class="spacer"></span>
+        <input id="hist-search" class="inp" placeholder="过滤历史…" />
+        <button id="hist-clear" class="btn sm">清空</button>
+        <button id="hist-close" class="btn icon" title="关闭">✕</button>
+      </div>
+      <div id="hist-list"></div>`;
     $('#term-stack').appendChild(panel);
+    makeDraggable(panel, panel.querySelector('.pop-head'));
     panel.querySelector('#hist-search').addEventListener('input', (e) => renderHistory(e.target.value));
+    panel.querySelector('#hist-close').addEventListener('click', () => toggleHistory());
     panel.querySelector('#hist-clear').addEventListener('click', async () => {
       if (!(await askConfirm('清空全部命令历史?', { title: '清空历史', okText: '清空' }))) return;
       await api('history:clear');

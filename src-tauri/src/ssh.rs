@@ -10,6 +10,11 @@ use futures::FutureExt; // Channel::wait().now_or_never():收干已就绪数据�
 
 pub type RemoteTargets = Arc<std::sync::Mutex<HashMap<String, (String, u32, String)>>>;
 
+/// 指纹校验失败时由 `check_server_key` 填入 (主机 host:port, 记录中的指纹, 服务器出示的指纹)。
+/// Handler 会被 russh 的 connect 消费掉,失败后无法再访问,故与 remote_targets 同法:
+/// 用共享句柄把详情带出来,供连接错误构造"重新信任"提示(跳板链上任一跳失败都能定位到那一跳)。
+pub type FpMismatch = Arc<std::sync::Mutex<Option<(String, String, String)>>>;
+
 pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
 pub type BoxStream = Box<dyn AsyncReadWrite>;
@@ -21,6 +26,7 @@ pub struct SshHandler {
     pub store: Arc<crate::config::Store>,
     pub remote_targets: RemoteTargets,
     pub remote_pump: Option<(String, u32)>, // 回连目的地缓存
+    pub fp_mismatch: FpMismatch,            // 指纹不匹配时回填,供上层给出可操作的恢复提示
 }
 
 #[derive(Debug)]
@@ -73,10 +79,34 @@ pub(crate) fn fp_matches(stored: &str, current: &str) -> bool {
 /// ("Unknown server key")用户既不知道原因也不知道怎么恢复。
 fn humanize_connect_error(e: HandlerError) -> String {
     match e {
-        HandlerError::russh(russh::Error::UnknownKey) => "服务器主机指纹与已保存记录不一致(该服务器可能更换过 SSH 主机密钥)。若确认属预期(如服务器重装过系统),点左侧栏底部「指纹」按钮删除该记录后重连;若非本人操作,请警惕中间人风险".into(),
+        HandlerError::russh(russh::Error::UnknownKey) => "服务器主机指纹与已保存记录不一致(该服务器可能更换过 SSH 主机密钥)。若非本人操作,请警惕中间人风险".into(),
         HandlerError::russh(e) => e.to_string(),
         HandlerError::Msg(m) => m,
     }
+}
+
+/// 指纹变更的错误文案,末尾附可机读标记 `[NB-FP key|stored|current]`。
+/// 前端据此把"可一键恢复的指纹变更"与普通连接失败区分开:错误通道全程是纯
+/// 字符串(见 commands.rs err_msg),跳板链还会再套一层"跳板 X 失败:"前缀,
+/// 所以标记放在句中任意位置都可被检索,前端按标记解析后再剥掉它显示。
+/// key/stored/current 分别取自 host:port 与两种指纹编码(base64-nopad 或 hex),
+/// 均不含 `]` 与 `|`,不会与分隔符冲突。
+pub(crate) fn fp_mismatch_error(key: &str, stored: &str, current: &str) -> String {
+    format!(
+        "服务器主机指纹与已保存记录不一致(该服务器可能更换过 SSH 主机密钥)。若非本人操作,请警惕中间人风险。[NB-FP {}|{}|{}]",
+        key, stored, current
+    )
+}
+
+/// 连接失败的错误串。指纹变更优先于通用文案:此时 UnknownKey 只是表象,
+/// 用户需要的是"哪台、怎么恢复",而这些只存在于 fp_mismatch(Handler 已被消费)。
+pub(crate) fn connect_err(host_addr: &str, e: HandlerError, fp_mismatch: &FpMismatch) -> String {
+    if let Ok(m) = fp_mismatch.lock() {
+        if let Some((key, stored, current)) = m.as_ref() {
+            return format!("{}:{}", host_addr, fp_mismatch_error(key, stored, current));
+        }
+    }
+    format!("{}:{}", host_addr, humanize_connect_error(e))
 }
 
 #[async_trait::async_trait]
@@ -108,6 +138,11 @@ impl client::Handler for SshHandler {
                     return Ok(true);
                 }
                 if !fp_matches(&stored, &fp) {
+                    // 记下这一跳的主机与双方指纹:Handler 随后被 russh 消费,
+                    // 这是把"是谁、旧指纹、新指纹"带出连接流程的唯一时机。
+                    if let Ok(mut m) = self.fp_mismatch.lock() {
+                        *m = Some((self.key.clone(), stored.clone(), fp.clone()));
+                    }
                     return Ok(false); // 摘要真的不同:服务器换钥,拒绝连接
                 }
                 // 同一把密钥、仅编码不同(hex 遗留):升级为现行格式,自愈迁移数据,
@@ -386,6 +421,9 @@ impl SshService {
         let port = host["port"].as_i64().unwrap_or(22);
         let user = host["username"].as_str().unwrap_or("root");
         let key = format!("{}:{}", host_addr, port);
+        // 每一跳各持一个槽:check_server_key 填入后由 connect_err 读出,
+        // 这样跳板链上"哪一跳换钥"能定位到具体主机,而不是笼统报最终目标失败。
+        let fp_mismatch: FpMismatch = Arc::new(std::sync::Mutex::new(None));
         let handler = SshHandler {
             host_id: host["id"].as_str().unwrap_or("").to_string(),
             key,
@@ -393,16 +431,17 @@ impl SshService {
             store: store.clone(),
             remote_targets: self.remote_targets.clone(),
             remote_pump: None,
+            fp_mismatch: fp_mismatch.clone(),
         };
         let mut handle = match sock {
             Some(stream) => client::connect_stream(Self::make_config(), stream, handler)
                 .await
-                .map_err(|e| format!("{}:{}", host_addr, humanize_connect_error(e)))?,
+                .map_err(|e| connect_err(host_addr, e, &fp_mismatch))?,
             None => {
                 let addr = format!("{}:{}", host_addr, port);
                 client::connect(Self::make_config(), addr, handler)
                     .await
-                    .map_err(|e| format!("{}:{}", host_addr, humanize_connect_error(e)))?
+                    .map_err(|e| connect_err(host_addr, e, &fp_mismatch))?
             }
         };
         Self::auth(&mut handle, user, host).await?;

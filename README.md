@@ -219,7 +219,7 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 发布新版本：
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v1.3.0 && git push origin v1.3.0
 ```
 
 ## 🤝 贡献

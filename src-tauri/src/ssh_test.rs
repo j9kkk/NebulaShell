@@ -1,7 +1,9 @@
 // SSH 层单测:流式 UTF-8 重组 + 服务器指纹格式兼容。
 // 与 cloud_test.rs / store_test.rs 等保持一致 —— 单测一律独立成文件,
 // 不在业务文件里夹带 #[cfg(test)] 模块。
-use crate::ssh::{fp_digest, fp_matches, take_utf8, RemoteTargets, SshHandler};
+use crate::ssh::{
+    connect_err, fp_digest, fp_matches, fp_mismatch_error, take_utf8, RemoteTargets, SshHandler,
+};
 use russh::client::Handler as _;
 use serde_json::json;
 
@@ -113,6 +115,7 @@ async fn check_server_key_accepts_legacy_hex_and_upgrades_it() {
         store: std::sync::Arc::new(store),
         remote_targets: RemoteTargets::default(),
         remote_pump: None,
+        fp_mismatch: Default::default(),
     };
     // 预置 hex 遗留记录
     {
@@ -132,13 +135,61 @@ async fn check_server_key_accepts_legacy_hex_and_upgrades_it() {
     };
     assert_eq!(upgraded, fp, "放行的同时应把记录升级为现行 base64 格式");
 
-    // 摘要真的不同 → 必须拒绝
+    // 摘要真的不同 → 必须拒绝,且把"哪台、新旧指纹"回填到 fp_mismatch,
+    // 供上层构造可一键恢复的错误(Handler 被 russh 消费后无处可取)。
     let other = russh::keys::key::KeyPair::generate_ed25519()
         .clone_public_key()
         .unwrap();
+    let other_fp = other.fingerprint();
     assert!(
         !handler.check_server_key(&other).await.unwrap(),
         "不同密钥必须拒绝"
     );
+    let recorded = handler.fp_mismatch.lock().unwrap().clone();
+    // stored 是"当时记录里的值":前一次调用已把 hex 自愈升级为 base64,故这里应是 fp。
+    assert_eq!(
+        recorded,
+        Some(("127.0.0.1:22".to_string(), fp.clone(), other_fp.clone())),
+        "拒绝时必须记录 主机键 + 本地旧指纹 + 服务器新指纹"
+    );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------- 指纹变更错误:可机读标记(前端据此提供一键重置信任) ----------
+
+/// 错误串必须带 `[NB-FP key|stored|current]`,且三段可原样取回。
+/// 前端靠它把"指纹变更"与普通连接失败区分开;分隔符 `|`/`]` 不能出现在指纹里。
+#[test]
+fn fp_mismatch_error_carries_machine_readable_marker() {
+    let msg = fp_mismatch_error("example.com:2222", "SHA256:oldAAA", "SHA256:newBBB");
+    assert!(msg.contains("[NB-FP example.com:2222|SHA256:oldAAA|SHA256:newBBB]"));
+    // 新指纹(base64-nopad)与 hex 两种编码都不含分隔符 —— 标记解析才有保证
+    assert!(!msg.contains('\n'), "错误文案应是单行,便于前端/toast 展示");
+}
+
+/// 指纹变更优先于通用 UnknownKey 文案:否则用户看到的只是
+/// "服务器主机指纹与已保存记录不一致",拿不到 host:port,无从恢复。
+#[test]
+fn connect_err_prefers_recorded_mismatch_over_generic_message() {
+    let slot: crate::ssh::FpMismatch = Default::default();
+    // 未回填时:退回通用人话(不泄露内部 Error 原文)
+    let plain = connect_err(
+        "h",
+        crate::ssh::HandlerError::russh(russh::Error::UnknownKey),
+        &slot,
+    );
+    assert!(plain.starts_with("h:"));
+    assert!(!plain.contains("NB-FP"), "无指纹详情时不应伪造标记");
+
+    // 回填后:必须带上标记,且主机名可取
+    *slot.lock().unwrap() = Some(("h:22".into(), "OLD".into(), "NEW".into()));
+    let tagged = connect_err(
+        "h",
+        crate::ssh::HandlerError::russh(russh::Error::UnknownKey),
+        &slot,
+    );
+    assert!(
+        tagged.contains("[NB-FP h:22|OLD|NEW]"),
+        "回填后应输出可机读标记,实际: {tagged}"
+    );
 }

@@ -92,7 +92,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .side-footer {
   border-top: 1px solid var(--border);
   padding: 8px 14px;
-  display: flex; justify-content: space-between;
+  display: flex; justify-content: flex-end; gap: 8px;
   color: var(--muted); font-size: 11px;
 }
 
@@ -104,6 +104,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
   padding: 6px 8px 0;
   gap: 8px;
+  /* 功能菜单(#more-menu)以本栏为定位父级:菜单因此永远落在"主区域"宽度内,
+     而主区域不含右侧的文件/AI 面板 —— 菜单不会越过面板边界去遮挡展示区。
+     此前 #more-menu 用 fixed/无定位祖先,直接以视口右上角定位,面板一开就压上去。 */
+  position: relative;
+  z-index: 64;
 }
 #tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
 .tab {
@@ -132,7 +137,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   font-size: 12px; line-height: 1; border-radius: 4px;
 }
 .tab-close:hover { color: var(--danger); background: rgba(255,107,107,0.12); }
-.ai-btn { margin-bottom: 6px; }
+/* 标签栏右侧的按钮统一由 #tabbar 的 align-items:center 对齐。
+   曾给 AI 按钮单独加 margin-bottom:6px,把它顶高了 6px,与相邻按钮不齐。 */
+.ai-btn { flex: 0 0 auto; }
 
 #term-stack { flex: 1; position: relative; background: var(--bg); min-height: 0; }
 .term-pane { position: absolute; inset: 0; padding: 6px 2px 2px 8px; display: none; }
@@ -162,7 +169,27 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   padding: 5px 12px;
   font-size: 12px; color: var(--muted);
   min-height: 30px;
+  flex-wrap: nowrap;
+  /* 最后的兜底:窄到连"按钮本身"都放不下时允许横向滚动,
+     而不是把按钮裁掉 —— 用户要求行尾按钮不能被遮挡。
+     (overflow-x:hidden 会直接裁掉按钮,这就是之前 155px 溢出的表现。)
+     scrollbar 宽度设为 0:否则滚动条会占 9px 高度,把状态栏撑高、
+     进而挤动终端区 —— 而状态栏高度本该恒定。 */
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+  /* 容器:给内嵌的 #monitor-bar 提供降级档位依据。宽度由 #main 决定、与内容无关,
+     因此档位不会随采样值跳动(挂在监控条自身会因尺寸隔离而塌成 0)。 */
+  container-type: inline-size;
 }
+#statusbar::-webkit-scrollbar { height: 0; }
+/* 收缩优先级(窄窗口下):状态文字(可省略号) → 监控块(可降级/收缩) → 按钮(永不收缩)。
+   "已连接 root@127.0.0.1:22" 实测占 160px 且原先是 flex-shrink:0,窄窗口下
+   会把行尾整排按钮推出状态栏 —— 这正是要避免的遮挡。min-width:0 是 flex 子项
+   真正能缩到 0 的前提(默认 min-width:auto 会拒绝收缩)。 */
+#statusbar > #status-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#statusbar > .dot, #statusbar > .ro-badge { flex: 0 0 auto; }
+#statusbar > .spacer { flex: 1 1 0; min-width: 0; }
+#statusbar > .btn { flex: 0 0 auto; }
 .dot { width: 8px; height: 8px; border-radius: 50%; }
 .dot.idle { background: var(--muted); }
 .dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
@@ -254,6 +281,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .model-row input { flex: 1; }
 .small-note { margin-top: 12px; line-height: 1.5; }
 
+/* 关于弹窗:版本号、平台、技术栈 */
+.about-card { width: 400px; text-align: center; }
+.about-logo { font-size: 40px; line-height: 1; color: var(--accent); margin-bottom: 6px; }
+.about-name { margin-bottom: 4px; }
+.about-tag { font-size: 12px; margin-bottom: 14px; }
+.about-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 14px;
+  text-align: left; font-size: 13px;
+  padding: 12px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+}
+.about-grid span:nth-child(odd) { white-space: nowrap; }
+
 /* 云导入 */
 .cloud-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
 /* 多账号云凭据 */
@@ -300,24 +339,70 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .help-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .help-link:hover { color: var(--accent2); }
 
-/* 监控条 */
+/* 资源监控(固定显示在状态栏,与"已连接 xxx@ip"同一行)
+   采样值长度会变(9.2% ↔ 100.0%、890B/s ↔ 12800.0MB/s、内存 (488/976MB) ↔ (131072/131072MB)),
+   每 3s 刷新一次;若按内容自然定宽,右侧按钮会被反复推动、数值够长时还会折行。
+   因此每个数值字段占定长槽位:tabular-nums 等宽 + 右对齐,值变化只改槽内字形。
+   容器查询的容器是 #statusbar(宽度由 #main 决定、与内容无关)——不能挂在 #monitor-bar
+   自身:container-type 的尺寸隔离会让它的宽度不再由内容决定,在 flex 行里直接塌成 0。 */
 #monitor-bar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 5px 12px; border-bottom: 1px solid var(--border);
-  background: var(--bg2); font-size: 12px; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted);
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
 }
 #monitor-bar.hidden { display: none; }
 #monitor-bar b { color: var(--text); font-weight: 600; }
-.mon-track { width: 90px; height: 6px; border-radius: 999px; background: rgba(128,140,160,0.2); overflow: hidden; }
+#monitor-bar .mon-item { flex: 0 0 auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+/* 定长数值槽:右对齐使小数位/单位不牵动左侧,tabular-nums 使同一槽内宽度恒定。
+   overflow:hidden 兜底 —— 极端值只在自己槽内被裁,绝不推动邻居;完整值放 title 悬停可读。 */
+.mon-val, .mon-det {
+  display: inline-block; font-variant-numeric: tabular-nums; white-space: nowrap;
+  overflow: hidden;
+}
+.mon-val { text-align: right; }
+/* 槽宽按"现实可达极值"加粗实测(#monitor-bar b 是 font-weight:600):
+   百分比 "100.0%"=47.5;速率 100GbE "12800.0MB/s"=80.8;内存 128GB
+   "(131072/131072MB)"=127.4;磁盘 10TB "(10240.0/10240.0GB)"=133.7。
+   再大(1TB 内存 / 100TB 盘)属极端机型,由 overflow:hidden + title 兜底。 */
+#mon-cpu, #mon-mem, #mon-disk { width: 48px; }
+#mon-rx, #mon-tx { width: 82px; }
+/* 括号详情(used/total)单独占槽,不再跟着百分号一起伸缩。
+   min-height:1lh 让"暂无数据"的空槽也保留一行高度,免得自身盒高在 0↔1 行之间跳。 */
+.mon-det { text-align: left; font-style: normal; color: var(--muted); min-height: 1lh; }
+#mon-mem-det { width: 130px; }
+#mon-disk-det { width: 136px; }
+/* 弹性只放在与采样数据无关的元素上:数值字段定宽、进度条吸收剩余空间。
+   若把弹性给数据字段,窗口稍窄就会让它们随数值互相挤压,又回到抖动。 */
+.mon-track { flex: 0 1 52px; min-width: 22px; height: 6px; border-radius: 999px; background: rgba(128,140,160,0.2); overflow: hidden; }
 .mon-track > span { display: block; height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.4s; }
+/* 主区变窄时按优先级收起次要项,而不是让定宽槽位互相挤压(那又会引入抖动)。
+   现实中会出现很窄的主区:AI 面板(360)+ 文件面板(340)同开时 1280 窗口下 #main 仅 ~316px。
+   最低档保留"内存 + 网速"——这两项最能说明机器死活。
+   选择器必须带 #monitor-bar:上面 `#monitor-bar .mon-item` 的 display 是 ID 级,
+   只用类名(如 .mon-disk-item)会被它压过,hide 掉不生效。 */
+@container (max-width: 980px) { #monitor-bar .mon-det { display: none; } }
+@container (max-width: 880px) { #monitor-bar .mon-spark { display: none; } }
+@container (max-width: 660px) { #monitor-bar .mon-disk-item { display: none; } }
+@container (max-width: 560px) { #monitor-bar .mon-track { display: none; } }
+@container (max-width: 470px) { #monitor-bar .mon-cpu-item { display: none; } }
+/* 极窄主区:整块监控收起,把空间让给行尾按钮。
+   现实中会出现:窗口 1280 + 侧栏 264 + AI 面板 360 + 文件面板 340 → #main 仅 ~316px。
+   此时监控块即使降到最低档(内存+网速 ≈ 258px)也放不下,而"按钮被推出状态栏"
+   是用户明确不能接受的 —— 宁可暂时不显示监控,也不能遮挡按钮。 */
+@container (max-width: 420px) { #statusbar #monitor-bar { display: none; } }
+/* "暂不支持"是终态而非数值状态:只留说明,与采样态的槽位互不干扰 */
+#monitor-bar.mon-unsupported .mon-item, #monitor-bar.mon-unsupported .mon-track, #monitor-bar.mon-unsupported .mon-spark { display: none; }
+#mon-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* 片段下拉 */
 #snippet-menu {
   position: absolute; z-index: 60; top: 44px; left: 12px; width: 380px; max-height: 320px;
-  overflow: auto; background: var(--panel, var(--bg2)); border: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow: hidden; background: var(--panel, var(--bg2)); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); padding: 8px;
 }
 #snippet-menu.hidden { display: none; }
+#snippet-list { overflow: auto; flex: 1; min-height: 0; }
 .snippet-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 .snippet-row:hover { background: rgba(91,140,255,0.12); }
 .snippet-row .s-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
@@ -327,13 +412,29 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .snippet-add { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .snippet-add input { flex: 1; font-size: 12px; }
 
+/* 可拖动浮层的公共标题栏:兼作拖拽把手(cursor:move),故不能选中文字 */
+.pop-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 2px 8px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  cursor: move; user-select: none;
+}
+.pop-head .pop-title { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.pop-head input { cursor: text; }
+#hist-search { width: 120px; font-size: 12px; padding: 4px 8px; }
+
 /* SFTP 文件面板 */
 #file-panel {
   width: 340px; border-left: 1px solid var(--border); background: var(--panel, var(--bg2));
   display: flex; flex-direction: column; min-height: 0;
 }
 #file-panel.hidden { display: none; }
-.file-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.file-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+/* 工具栏只留图标按钮(新建文件夹 / 上传 / 刷新):文字按钮太占地,
+   且"下载/重命名/权限/删除"这些针对具体文件的操作已挪进行的右键菜单。 */
+.file-toolbar .btn.icon { --ctl-h: 28px; width: 28px; font-size: 15px; }
+.file-toolbar .spacer { flex: 1; }
+.file-toolbar-hint { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #file-mkdir-row { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 #file-mkdir-row.hidden { display: none; }
 #file-mkdir-row input { flex: 1; font-size: 12px; }
@@ -426,8 +527,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 /* 只读徽标 */
 .ro-badge { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); padding: 0 6px; border-radius: 8px; }
 
-/* 监控 sparkline */
-.mon-spark { font-size: 12px; letter-spacing: -1px; color: var(--accent2); min-width: 80px; }
+/* 监控 sparkline:等宽字体 + 定宽容器。默认字体下 ▁ 12.9px 与 █ 14px 不等宽,
+   且方块数在上线后 48s 内从 1 增长到 16,容器不定宽就会持续变宽把右侧推走。 */
+.mon-spark {
+  font-family: Menlo, monospace;
+  font-size: 12px; letter-spacing: -1px; color: var(--accent2);
+  width: 100px; flex: 0 0 auto; white-space: nowrap; overflow: hidden; text-align: left;
+}
 
 /* AI 模型切换 */
 .ai-model-switch { max-width: 130px; font-size: 11px; padding: 2px 4px; background: var(--bg2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
@@ -450,8 +556,15 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 #batch-results td.out { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: Menlo, monospace; font-size: 11px; }
 
 /* 历史面板 */
-#history-panel { position: absolute; bottom: 40px; left: 12px; width: 420px; max-height: 320px; overflow: auto; z-index: 60; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); padding: 8px; }
+#history-panel {
+  position: absolute; bottom: 40px; left: 12px; width: 420px; max-height: 320px;
+  display: flex; flex-direction: column;
+  overflow: hidden; z-index: 60; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); padding: 8px;
+}
 #history-panel.hidden { display: none; }
+#history-panel .pop-head { padding-bottom: 6px; }
+#hist-list { overflow: auto; flex: 1; min-height: 0; }
 .hist-row { display: flex; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
 .hist-row:hover { background: rgba(91,140,255,0.12); }
 .hist-row .h-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Menlo, monospace; }
@@ -464,7 +577,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .badge-stop { color: var(--muted); }
 .mono { font-family: Menlo, monospace; font-size: 11px; }
 
-#layout-root { position: absolute; inset: 0; display: flex; }
+/* 分屏容器可滚动:窗格有最小尺寸(.term-pane 的 min-width/min-height),
+   分到 6 个以上时总尺寸会超出终端区。若容器裁剪掉溢出部分,超出的窗格就
+   既看不到也点不到(既不能聚焦也不能关)。这里允许滚动,保证每个窗格都可达。 */
+#layout-root { position: absolute; inset: 0; display: flex; overflow: auto; }
 #layout-root:empty { display: none; }
 
 /* ===== tab 栏优化:tab 第一要素 ===== */
@@ -474,17 +590,26 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .icon-tb { --ctl-h: 28px; width: var(--ctl-h); padding: 0; font-size: 15px; flex: 0 0 auto; }
 .icon-tb.active { border-color: var(--accent); color: var(--accent); }
 #more-menu {
-  position: absolute; top: 40px; right: 10px; z-index: 65;
-  display: flex; flex-direction: column; gap: 2px; padding: 8px;
+  /* 锚在标签栏正下方、right 贴标签栏右缘(不是视口右缘):整条菜单的右边界
+     就是主区域右边界,因此绝不会盖到右侧的文件管理/AI 面板上。
+     改为横向排列的一行工具条 —— 竖排下拉列表又高又窄,正好插在面板列上。 */
+  position: absolute; top: 100%; right: 8px; z-index: 64;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.45); min-width: 150px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+  max-width: calc(100% - 16px);
 }
 #more-menu.hidden { display: none; }
 #more-menu .btn {
-  --ctl-h: 30px; width: 100%; justify-content: flex-start;
+  --ctl-h: 30px; width: auto; justify-content: flex-start;
   border: 0; background: none; padding: 0 10px; border-radius: 6px;
+  white-space: nowrap;
 }
 #more-menu .btn:hover { background: rgba(91,140,255,0.12); }
+/* 图标占固定宽度的独立列:图标字形宽度不一(📁/⚙️/◫ 互不相同,emoji 还常带
+   不可见的变体选择符),直接"图标+空格+文字"会让每行文字起点错开。
+   这里把图标放进等宽盒子并居中,各行文字起点就对齐了。 */
+#more-menu .mi { display: inline-block; width: 18px; text-align: center; flex: 0 0 auto; }
 
 /* 终端右键菜单(替代 WebView 原生菜单) */
 #ctx-menu {
@@ -503,6 +628,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 #ctx-menu .ctx-item:hover { background: rgba(91,140,255,0.12); }
 #ctx-menu .ctx-item:disabled { opacity: 0.4; cursor: default; background: none; }
 #ctx-menu .ctx-item .ctx-key { margin-left: auto; color: var(--muted); font-size: 11px; }
+/* 破坏性操作(删除)在菜单里标红,避免与"下载/重命名"混在一起误点 */
+#ctx-menu .ctx-item.danger .ctx-label { color: var(--danger, #ff6b6b); }
 #ctx-menu .ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* 窗格放大模式 */
@@ -521,13 +648,74 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
   border-radius: 6px; padding: 0 8px; background: var(--bg2);
 }
-#monitor-bar { transition: opacity 0.2s; }
-#monitor-bar.auto-hidden { display: none; }
-
 /* 应用内确认对话框 */
 .confirm-card { max-width: 400px; }
-.confirm-message { color: var(--text); font-size: 13px; line-height: 1.7; margin: 4px 0 8px; word-break: break-word; }
+/* pre-wrap:确认文案可含换行(如指纹变更时的新旧指纹对照) */
+.confirm-message { color: var(--text); font-size: 13px; line-height: 1.7; margin: 4px 0 8px; word-break: break-word; white-space: pre-wrap; }
 #modal-prompt .inp { width: 100%; margin: 2px 0 6px; }
 #modal-prompt .small-note { display: block; margin-bottom: 4px; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.danger:hover { filter: brightness(1.1); }
+
+/* ===== 交互动效 =====
+   原则:只做"解释状态变化"的动效,不做装饰性动画。
+   - 只动 transform / opacity(合成层属性):不触发布局重排,终端滚动与
+     fit() 重算不会被拖慢;宽高/位置类动效在终端区是性能雷区。
+   - 时长 0.12–0.2s:超过 0.2s 就成了"等动画",反而拖慢连续操作
+     (如连点分屏、连续切标签)。
+   - 尊重 prefers-reduced-motion:系统开了"减弱动态效果"就全部关掉。 */
+:root {
+  --dur-fast: 0.12s;
+  --dur: 0.18s;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+/* 浮动面板/菜单:淡入 + 轻微上浮,提示"从哪冒出来的" */
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+#more-menu:not(.hidden),
+#snippet-menu:not(.hidden),
+#ctx-menu:not(.hidden) { animation: pop-in var(--dur) var(--ease); }
+
+/* 模态框:遮罩淡入 + 卡片轻微放大,把注意力引到卡片上 */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.modal:not(.hidden) { animation: fade-in var(--dur-fast) ease-out; }
+.modal:not(.hidden) .modal-card { animation: card-in var(--dur) var(--ease); }
+
+/* 侧边面板(文件/AI):滑入。用 transform 而非改宽度 —— 宽度动画每帧都要
+   重排终端区并触发 fit(),代价高且画面发抖。 */
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: none; }
+}
+#file-panel:not(.hidden), #ai-panel:not(.hidden) { animation: slide-in-right var(--dur) var(--ease); }
+
+/* 可拖动浮层:拖动中提升层级并给出"抓住"的光标 */
+body.dragging { cursor: move; user-select: none; }
+body.dragging #snippet-menu,
+body.dragging #history-panel { z-index: 90; box-shadow: 0 16px 44px rgba(0,0,0,0.55); }
+
+/* 标签页:新建/切换时轻微反馈,让"切到哪一个"更明确 */
+.tab { transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.tab:active { transform: translateY(1px); }
+
+/* 窗格:聚焦描边淡入,减少分屏时焦点跳变的突兀感 */
+.term-pane { transition: outline-color var(--dur-fast) var(--ease); }
+
+/* 终端设置等表单控件与按钮的过渡已在 .btn 上;这里补齐输入控件的焦点反馈 */
+input, select, textarea { transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
+
+/* 系统开启"减弱动态效果"时全部关闭(无障碍要求,不是可选项) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
