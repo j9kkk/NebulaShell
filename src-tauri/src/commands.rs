@@ -398,11 +398,40 @@ pub async fn nebula_invoke(
                         sid,
                         p["remotePath"].as_str().unwrap_or(""),
                         p["localPath"].as_str().unwrap_or(""),
+                        "download",
                     )
                     .await
                 },
             )
             .await
+        }
+        // 右键「打开」:下载到临时目录后交系统默认程序(test_mode 只落盘不拉起)
+        "sftp:openRemote" => {
+            let test_mode = state.test_mode;
+            sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                move |sftp, app, sid, p| async move {
+                    crate::sftp::open_remote(
+                        &sftp,
+                        app,
+                        sid,
+                        p["remotePath"].as_str().unwrap_or(""),
+                        test_mode,
+                    )
+                    .await
+                },
+            )
+            .await
+        }
+        // 文件面板首次打开的初始目录:探测交互 shell 的实时 cwd(见 ssh.rs probe_cwd)
+        "ssh:probeCwd" => {
+            let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
+            match state.ssh.probe_cwd(&sid).await {
+                Ok(cwd) => ok(json!({ "cwd": cwd })),
+                Err(e) => err_msg(e),
+            }
         }
 
         "forwards:list" => {
@@ -787,15 +816,38 @@ pub async fn nebula_invoke(
         }
         "ai:chat" => {
             let request_id = payload["requestId"].as_str().unwrap_or("").to_string();
+            // 弹窗里"测试连接"先于"保存":payload.ai 携带表单当前值时以其为准,
+            // 留空的字段回落到已保存配置 —— 否则"填完就测"会误报未配置。
+            let ov = payload["ai"].clone();
             let ai = {
                 let data = state.store.data.lock().unwrap();
-                data["settings"]["ai"].clone()
+                let mut ai = data["settings"]["ai"].clone();
+                if ov.is_object() {
+                    for k in ["protocol", "baseUrl", "model"] {
+                        let v = ov[k].as_str().unwrap_or("");
+                        if !v.is_empty() {
+                            ai[k] = json!(v);
+                        }
+                    }
+                }
+                ai
             };
             let base = ai["baseUrl"].as_str().unwrap_or("").to_string();
             if base.is_empty() {
-                return err_msg("请先在 AI 设置中配置供应商");
+                return err_msg("未配置 API Base URL,请先在 AI 设置中填写");
             }
-            let key = state.store.dec(ai["apiKeyEnc"].as_str().unwrap_or(""));
+            // 表单里现填的密钥优先;留空表示沿用已保存密钥
+            let key = {
+                let form_key = ov["apiKey"].as_str().unwrap_or("");
+                if form_key.is_empty() {
+                    let data = state.store.data.lock().unwrap();
+                    state
+                        .store
+                        .dec(data["settings"]["ai"]["apiKeyEnc"].as_str().unwrap_or(""))
+                } else {
+                    form_key.to_string()
+                }
+            };
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             state
                 .ai_aborts
@@ -804,8 +856,11 @@ pub async fn nebula_invoke(
                 .insert(request_id.clone(), flag.clone());
             let aborts = state.ai_aborts.clone();
             let request_id2 = request_id.clone();
+            let app_err = app.clone();
             tokio::spawn(async move {
-                let _ = crate::ai::chat_stream(
+                // 流式任务与前端之间只有事件一条通道:Err 若在这里被吞掉,
+                // 前端会永远停在"生成中…"(表现为"配置后对话无响应"),必须转成 ai:error。
+                if let Err(e) = crate::ai::chat_stream(
                     app.clone(),
                     request_id2.clone(),
                     ai["protocol"].as_str().unwrap_or("openai").to_string(),
@@ -816,7 +871,14 @@ pub async fn nebula_invoke(
                     payload["messages"].clone(),
                     flag,
                 )
-                .await;
+                .await
+                {
+                    crate::ai::emit_evt(
+                        &app_err,
+                        "ai:error",
+                        json!({ "requestId": request_id2.clone(), "message": e }),
+                    );
+                }
                 aborts.lock().unwrap().remove(&request_id2);
             });
             ok(json!({ "requestId": request_id }))

@@ -1,5 +1,5 @@
 // SFTP 文件面板:列目录、上传下载、权限、书签
-import { $, api, askConfirm, showCtxMenu, state, toast } from './core.js';
+import { $, api, askConfirm, copyText, showCtxMenu, state, toast } from './core.js';
 
 export function fileParent(p) {
   const trimmed = String(p || '/').replace(/\/+$/, '');
@@ -25,9 +25,13 @@ export function renderFileList() {
   const box = $('#file-list');
   box.innerHTML = '';
   const { cwd, entries } = state.file;
-  $('#file-path').textContent = cwd || '';
-  // 路径栏右键可收藏当前目录(原工具栏的「书签」按钮已移除);title 里点出这个入口
-  $('#file-path').title = cwd ? `${cwd}\n右键:收藏此目录 / 复制路径` : '';
+  // 路径栏是输入框(#file-path):回车跳转、Esc/失焦还原(绑定见 entry.js)。
+  // 右键仍可收藏当前目录(原工具栏的「书签」按钮已移除),title 里点出这些入口。
+  const pathEl = $('#file-path');
+  pathEl.value = cwd || '';
+  pathEl.disabled = !cwd;
+  pathEl.title = cwd ? `${cwd}\n可直接改路径后回车跳转;右键:收藏此目录 / 复制路径` : '';
+  renderFileNav();
   if (cwd && fileParent(cwd) !== cwd) {
     const up = document.createElement('div');
     up.className = 'file-row';
@@ -61,6 +65,51 @@ export function renderFileList() {
   if (!entries.length) box.innerHTML = '<div class="file-empty">目录为空</div>';
 }
 
+/* ---------------- 目录导航:后退 / 前进 / 上一级 ----------------
+   浏览器式单数组历史:state.file.hist + histIdx 游标。成功列目录才入栈
+   (失败的路径没"去过"),入栈时截断游标之后的"未来"(与浏览器一致);
+   后退/前进只是移动游标。上限 50 条防内存无界增长。 */
+
+/// 后退/前进/上一级按钮的可用态与悬停提示。提示里写明"会去哪",
+/// 与资源管理器一致;上一级在根目录禁用。
+function renderFileNav() {
+  const f = state.file;
+  const back = $('#btn-file-back');
+  const fwd = $('#btn-file-forward');
+  const up = $('#btn-file-up');
+  if (!back || !fwd || !up) return;
+  back.disabled = f.histIdx <= 0;
+  fwd.disabled = f.histIdx < 0 || f.histIdx >= f.hist.length - 1;
+  up.disabled = !f.cwd || fileParent(f.cwd) === f.cwd;
+  back.title = f.histIdx > 0 ? `后退到 ${f.hist[f.histIdx - 1]}` : '后退(没有更早的目录)';
+  fwd.title = f.histIdx >= 0 && f.histIdx < f.hist.length - 1 ? `前进到 ${f.hist[f.histIdx + 1]}` : '前进(没有更晚的目录)';
+  up.title = f.cwd ? `上一级:${fileParent(f.cwd)}` : '上一级';
+}
+
+/// 后退:只在历史数组里移动游标,不再入栈(record=false)。
+export function fileNavBack() {
+  const f = state.file;
+  if (f.histIdx <= 0) return;
+  f.histIdx -= 1;
+  loadFileDir(f.hist[f.histIdx], { record: false });
+}
+
+export function fileNavForward() {
+  const f = state.file;
+  if (f.histIdx < 0 || f.histIdx >= f.hist.length - 1) return;
+  f.histIdx += 1;
+  loadFileDir(f.hist[f.histIdx], { record: false });
+}
+
+/// 上一级:与列表里的「..」行同源(fileParent);已在根目录时无事发生。
+export function fileNavUp() {
+  const f = state.file;
+  if (!f.cwd) return toast('请先打开一个远程目录', 'error');
+  const up = fileParent(f.cwd);
+  if (up === f.cwd) return;
+  loadFileDir(up);
+}
+
 /// 文件/目录行的右键菜单。命令里的目标一律是"这一行",不再依赖全局选中态
 /// (工具栏的按钮已移除,选中态不再有"先选再点"的用途)。
 export function openFileCtxMenu(x, y, en) {
@@ -68,14 +117,16 @@ export function openFileCtxMenu(x, y, en) {
   const connected = !!s;
   const full = (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name;
   showCtxMenu(x, y, [
+    // 首项 = 打开:目录进面板;文件下载临时副本后交系统默认程序(见 openRemoteEntry)
     en.dir
       ? { label: '打开目录', disabled: !connected, run: () => loadFileDir(full) }
-      : { label: '下载…', disabled: !connected, run: () => downloadEntry(en) },
+      : { label: '打开(临时副本)', disabled: !connected, run: () => openRemoteEntry(en) },
+    ...(en.dir ? [] : [{ label: '下载…', disabled: !connected, run: () => downloadEntry(en) }]),
     { label: '重命名…', disabled: !connected, run: () => startRename(en) },
     { label: '权限…', disabled: !connected, run: () => startChmod(en) },
     '-',
-    { label: '复制名称', run: () => { navigator.clipboard.writeText(en.name).catch(() => {}); toast('已复制名称', 'success'); } },
-    { label: '复制完整路径', run: () => { navigator.clipboard.writeText(full).catch(() => {}); toast('已复制路径', 'success'); } },
+    { label: '复制名称', run: () => { copyText(en.name).then((ok) => toast(ok ? '已复制名称' : '复制失败', ok ? 'success' : 'error')); } },
+    { label: '复制完整路径', run: () => { copyText(full).then((ok) => toast(ok ? '已复制路径' : '复制失败', ok ? 'success' : 'error')); } },
     '-',
     { label: en.dir ? '删除目录' : '删除文件', danger: true, disabled: !connected, run: () => removeEntry(en) },
   ]);
@@ -105,6 +156,28 @@ export async function downloadEntry(en) {
 
 export async function fileDownload() {
   return downloadEntry(null);
+}
+
+/// 右键「打开」:把远端文件下载到本机临时目录后交给系统默认程序打开。
+/// 临时副本落在独立的 NebulaShell-open/<时间戳>/ 子目录里 —— 同名文件反复
+/// 打开互不覆盖,旧副本被本地程序占用(如 Excel 锁定)也不影响再次打开。
+export async function openRemoteEntry(en) {
+  const s = filePanelSession();
+  if (!s) return toast('请先连接主机', 'error');
+  if (!en) en = state.file.entries.find((x) => x.name === state.file.selected);
+  if (!en) return toast('请先选择要打开的文件', 'error');
+  if (en.dir) return toast('目录请双击进入,不支持直接打开', 'error');
+  const full = (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name;
+  $('#file-status').textContent = `打开 ${en.name}:下载临时副本…`;
+  try {
+    const r = await api('sftp:openRemote', { sessionId: s.sessionId, remotePath: full });
+    state.file.lastOpen = r || null; // e2e 断言用:临时副本的实际落盘路径
+    if (state.file.sessionId === s.sessionId) $('#file-status').textContent = `已用本地程序打开 ${en.name}`;
+    toast(`已用本地程序打开 ${en.name}`, 'success');
+  } catch (e) {
+    $('#file-status').textContent = `打开失败：${e.message}`;
+    toast('打开失败：' + e.message, 'error');
+  }
 }
 
 /// 进入"重命名"态:复用新建文件夹那一行的输入框,由 renameMode 区分语义
@@ -249,18 +322,29 @@ export function renderFileTarget() {
   el.title = `当前文件操作目标：${s.host.name}（${s.host.username}@${s.host.host}:${s.host.port}）`;
 }
 
-export async function loadFileDir(dir) {
+export async function loadFileDir(dir, opts = {}) {
   const s = activeConnectedSession();
   if (!s) {
     state.file.sessionId = null;
     state.file.cwd = null;
     state.file.entries = [];
     $('#file-list').innerHTML = '<div class="file-empty">请先连接主机</div>';
+    const pathEl = $('#file-path');
+    pathEl.value = '';
+    pathEl.disabled = true;
     renderFileTarget();
+    renderFileNav();
     return;
   }
   // 记录本次列表属于哪个会话:操作时以此为准,避免切标签后张冠李戴
   state.file.sessionId = s.sessionId;
+  // 换了目标会话:导航历史整体作废 —— 历史里是另一台机器的路径,
+  // 后退过去只会张冠李戴。
+  if (state.file.histSid !== s.sessionId) {
+    state.file.histSid = s.sessionId;
+    state.file.hist = [];
+    state.file.histIdx = -1;
+  }
   renderFileTarget();
   $('#file-status').textContent = '加载中…';
   try {
@@ -271,6 +355,14 @@ export async function loadFileDir(dir) {
     state.file.entries = r.entries;
     state.file.selected = null;
     s.lastFileDir = r.path; // 记住各会话的最后目录,切回时恢复到原处
+    // 导航历史:只记成功列出的目录;record=false 表示本次是后退/前进在移动
+    // 游标,不能截断"未来"。刷新/重复进入同一目录不产生新条目。
+    if (opts.record !== false && state.file.hist[state.file.histIdx] !== r.path) {
+      state.file.hist = state.file.hist.slice(0, state.file.histIdx + 1);
+      state.file.hist.push(r.path);
+      if (state.file.hist.length > 50) state.file.hist = state.file.hist.slice(-50);
+      state.file.histIdx = state.file.hist.length - 1;
+    }
     renderFileList();
     renderFileTarget();
     // 书签按主机过滤渲染:换主机后必须重画,否则会拿 A 的路径跳到 B
@@ -279,7 +371,22 @@ export async function loadFileDir(dir) {
   } catch (e) {
     if (state.file.sessionId !== s.sessionId) return;
     $('#file-status').textContent = '加载失败：' + e.message;
+    // 失败不入历史(游标没动),但按钮态要回到与当前目录一致
+    renderFileNav();
   }
+}
+
+/// 面板目标会话的初始目录:「首次打开默认为当前主机命令执行路径」。
+/// 优先探测交互 shell 的实时 cwd(ssh:probeCwd —— exec 与 shell 通道同为
+/// sshd 会话进程的子进程,可经 tty/ppid 关联);探测失败退回 OSC7 记录
+/// (部分 shell 每次提示符前上报);都拿不到返回 null,由 sftp:list 回落
+/// 家目录。探测只是一次 exec 往返,任何失败都不阻断面板打开。
+export async function initialFileDir(s) {
+  try {
+    const r = await api('ssh:probeCwd', { sessionId: s.sessionId });
+    if (r && r.cwd) return r.cwd;
+  } catch { /* 探测失败不阻断打开 */ }
+  return s.remoteCwd || null;
 }
 
 /* ---------------- 终端搜索 ---------------- */

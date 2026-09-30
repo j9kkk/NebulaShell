@@ -42,7 +42,9 @@ export const state = {
   metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
   // 文件面板:显示的是"哪个会话"的目录必须显式记录 —— 面板是全局单例,
   // 若只靠 activeId,切标签后会出现"显示 A 的目录、操作落到 B"的误删风险。
-  file: { sessionId: null, cwd: null, entries: [], selected: null, chmodTarget: null, renameMode: null },
+  // hist/histIdx 是浏览器式导航历史(后退/前进),histSid 标记历史属于哪个
+  // 会话 —— 换目标会话时历史必须作废,否则会后退到另一台机器的路径上。
+  file: { sessionId: null, cwd: null, entries: [], selected: null, chmodTarget: null, renameMode: null, hist: [], histIdx: -1, histSid: null, lastOpen: null },
   // 标签页(E1)与窗格(E3):每个标签页持有独立的布局树与窗格集合,
   // 切换标签只渲染该标签的窗格;其余标签的终端对象保留在内存中(不销毁),
   // 切回时重新挂载并 refresh。state.layout/panes/zoomPaneId/activePaneId
@@ -139,6 +141,35 @@ export function toast(msg, type = '') {
   el.textContent = msg;
   $('#toasts').appendChild(el);
   setTimeout(() => el.remove(), 4000);
+}
+
+/// 复制文本到剪贴板:优先 async Clipboard API,被拒时退回 execCommand('copy')。
+/// WebView2 下 writeText 会因 webview 失焦/激活态丢失抛 NotAllowedError ——
+/// 此前各调用点 .catch(() => {}) 把失败静默吞掉,剪贴板残留旧内容,
+/// 用户视角就是"复制无效/复制出来的不是选中的内容"。execCommand 虽已废弃,
+/// 却是 WebView2 里不依赖 document.focus() 的唯一兜底通道。返回是否成功,
+/// 失败必须由调用方可见(toast),不再静默。
+export async function copyText(text) {
+  const s = String(text ?? '');
+  if (!s) return false;
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch { /* 失焦/权限拒绝:走 execCommand 兜底 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, s.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 /// 应用内输入对话框:返回 Promise<string|null>(null = 取消)。

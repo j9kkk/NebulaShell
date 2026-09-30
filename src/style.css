@@ -190,6 +190,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 #statusbar > .dot, #statusbar > .ro-badge { flex: 0 0 auto; }
 #statusbar > .spacer { flex: 1 1 0; min-width: 0; }
 #statusbar > .btn { flex: 0 0 auto; }
+/* 会话日志录制中:状态点脉动的同款语言,图标变红呼吸 */
+#btn-log-toggle.recording { color: var(--danger, #ff6b6b); animation: pulse 1s infinite; }
 .dot { width: 8px; height: 8px; border-radius: 50%; }
 .dot.idle { background: var(--muted); }
 .dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
@@ -340,37 +342,49 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .help-link:hover { color: var(--accent2); }
 
 /* 资源监控(固定显示在状态栏,与"已连接 xxx@ip"同一行)
-   采样值长度会变(9.2% ↔ 100.0%、890B/s ↔ 12800.0MB/s、内存 (488/976MB) ↔ (131072/131072MB)),
+   采样值长度会变(9.2% ↔ 100%、890B/s ↔ 12.5GB/s、内存 (488/976MB) ↔ (128/128GB)),
    每 3s 刷新一次;若按内容自然定宽,右侧按钮会被反复推动、数值够长时还会折行。
-   因此每个数值字段占定长槽位:tabular-nums 等宽 + 右对齐,值变化只改槽内字形。
+   因此每个数值字段占定长槽位:tabular-nums 等宽 + 左对齐 —— 标签与数值的间距
+   恒定,位数增减只吃槽内右侧空白(右对齐会让"标签↔数值"的间隙忽大忽小,正是
+   间距混乱的来源);值变化只改槽内字形。
    容器查询的容器是 #statusbar(宽度由 #main 决定、与内容无关)——不能挂在 #monitor-bar
    自身:container-type 的尺寸隔离会让它的宽度不再由内容决定,在 flex 行里直接塌成 0。 */
 #monitor-bar {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 14px;
   font-size: 12px; color: var(--muted);
   flex: 0 1 auto; min-width: 0; overflow: hidden;
 }
 #monitor-bar.hidden { display: none; }
+/* 分组:组间 14px 大间距、组内 4px 紧凑间距,配合"标签+数值"让每项含义可速读。
+   组可收缩(min-width:0),收缩压力由组内的 .mon-track 先吸收;overflow:hidden
+   保证组被压到内容以下时只裁自己,不会溢出压到相邻组。 */
+.mon-group { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
 #monitor-bar b { color: var(--text); font-weight: 600; }
-#monitor-bar .mon-item { flex: 0 0 auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
-/* 定长数值槽:右对齐使小数位/单位不牵动左侧,tabular-nums 使同一槽内宽度恒定。
+#monitor-bar .mon-item { flex: 0 0 auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+/* 定长数值槽:tabular-nums 使同一槽内宽度恒定。
    overflow:hidden 兜底 —— 极端值只在自己槽内被裁,绝不推动邻居;完整值放 title 悬停可读。 */
 .mon-val, .mon-det {
   display: inline-block; font-variant-numeric: tabular-nums; white-space: nowrap;
   overflow: hidden;
 }
-.mon-val { text-align: right; }
-/* 槽宽按"现实可达极值"加粗实测(#monitor-bar b 是 font-weight:600):
-   百分比 "100.0%"=47.5;速率 100GbE "12800.0MB/s"=80.8;内存 128GB
-   "(131072/131072MB)"=127.4;磁盘 10TB "(10240.0/10240.0GB)"=133.7。
-   再大(1TB 内存 / 100TB 盘)属极端机型,由 overflow:hidden + title 兜底。 */
-#mon-cpu, #mon-mem, #mon-disk { width: 48px; }
-#mon-rx, #mon-tx { width: 82px; }
+.mon-val { text-align: left; }
+/* 槽宽按"现实可达极值"加粗实测(#monitor-bar b 是 font-weight:600,约 7.4px/字符):
+   百分比 "99.9%"=39.5;速率 100GbE "12.5GB/s"=59;内存/磁盘详情 "(10240/10240GB)"=112;
+   延迟 "999ms"=39.5。再大(1TB 内存 / 100TB 盘)属极端机型,已由 TB 换算兜住一层,
+   仍超出的由 overflow:hidden + title 兜底。 */
+#mon-cpu, #mon-mem, #mon-disk, #mon-lat { width: 42px; }
+#mon-rx, #mon-tx { width: 68px; }
 /* 括号详情(used/total)单独占槽,不再跟着百分号一起伸缩。
    min-height:1lh 让"暂无数据"的空槽也保留一行高度,免得自身盒高在 0↔1 行之间跳。 */
 .mon-det { text-align: left; font-style: normal; color: var(--muted); min-height: 1lh; }
-#mon-mem-det { width: 130px; }
-#mon-disk-det { width: 136px; }
+#mon-mem-det, #mon-disk-det { width: 116px; }
+/* 网络 ↑↓ 方向符:弱化成标签色,让数值本身(前景亮色)成为视觉主体 */
+.mon-dir { font-style: normal; color: var(--muted); }
+/* 连接延迟按阈值着色(阈值同 monitor.js setLat):#monitor-bar b 的颜色是 ID 级,
+   这里用 ID+类 压过它。 */
+#mon-lat.lat-ok { color: var(--accent2); }
+#mon-lat.lat-mid { color: var(--warn); }
+#mon-lat.lat-bad { color: var(--danger); }
 /* 弹性只放在与采样数据无关的元素上:数值字段定宽、进度条吸收剩余空间。
    若把弹性给数据字段,窗口稍窄就会让它们随数值互相挤压,又回到抖动。 */
 .mon-track { flex: 0 1 52px; min-width: 22px; height: 6px; border-radius: 999px; background: rgba(128,140,160,0.2); overflow: hidden; }
@@ -378,8 +392,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 /* 主区变窄时按优先级收起次要项,而不是让定宽槽位互相挤压(那又会引入抖动)。
    现实中会出现很窄的主区:AI 面板(360)+ 文件面板(340)同开时 1280 窗口下 #main 仅 ~316px。
    最低档保留"内存 + 网速"——这两项最能说明机器死活。
-   选择器必须带 #monitor-bar:上面 `#monitor-bar .mon-item` 的 display 是 ID 级,
-   只用类名(如 .mon-disk-item)会被它压过,hide 掉不生效。 */
+   选择器必须带 #monitor-bar:上面 `.mon-group`/`.mon-item` 的 display 是类级组合,
+   只用单项类名(如 .mon-disk-item)会被组合选择器压过,hide 掉不生效。 */
 @container (max-width: 980px) { #monitor-bar .mon-det { display: none; } }
 @container (max-width: 880px) { #monitor-bar .mon-spark { display: none; } }
 @container (max-width: 660px) { #monitor-bar .mon-disk-item { display: none; } }
@@ -387,11 +401,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 @container (max-width: 470px) { #monitor-bar .mon-cpu-item { display: none; } }
 /* 极窄主区:整块监控收起,把空间让给行尾按钮。
    现实中会出现:窗口 1280 + 侧栏 264 + AI 面板 360 + 文件面板 340 → #main 仅 ~316px。
-   此时监控块即使降到最低档(内存+网速 ≈ 258px)也放不下,而"按钮被推出状态栏"
+   此时监控块即使降到最低档(内存+网速+延迟)也放不下,而"按钮被推出状态栏"
    是用户明确不能接受的 —— 宁可暂时不显示监控,也不能遮挡按钮。 */
 @container (max-width: 420px) { #statusbar #monitor-bar { display: none; } }
-/* "暂不支持"是终态而非数值状态:只留说明,与采样态的槽位互不干扰 */
-#monitor-bar.mon-unsupported .mon-item, #monitor-bar.mon-unsupported .mon-track, #monitor-bar.mon-unsupported .mon-spark { display: none; }
+/* "暂不支持"是终态而非数值状态:整组隐藏(空组也会贡献 flex gap,不能只藏组内项),
+   只留说明与延迟(延迟是连接属性,不依赖 /proc),与采样态的槽位互不干扰 */
+#monitor-bar.mon-unsupported .mon-group { display: none; }
+#monitor-bar.mon-unsupported .mon-lat-item { display: inline-flex; }
+#monitor-bar.mon-unsupported .mon-spark { display: none; }
 #mon-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* 片段下拉 */
@@ -438,7 +455,15 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 #file-mkdir-row { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 #file-mkdir-row.hidden { display: none; }
 #file-mkdir-row input { flex: 1; font-size: 12px; }
-.file-path { padding: 6px 10px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border); }
+/* 路径栏是输入框:回车跳转、Esc/失焦还原。默认弱化边框融入工具条,
+   聚焦时亮起 —— 暗示"这里可以点进去改路径"(此前是只读 div,看不出能改)。 */
+.file-path {
+  margin: 6px 10px; padding: 5px 8px; font-size: 11px; font-family: inherit;
+  color: var(--muted); background: transparent;
+  border: 1px solid transparent; border-radius: 6px; min-width: 0;
+}
+.file-path:focus { outline: none; border-color: var(--border); color: var(--text); background: var(--bg, #0d1117); }
+.file-path:disabled { opacity: 0.55; }
 /* 文件面板的目标服务器标识:面板是全局的,必须能一眼看出操作的是哪台 */
 .fp-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .fp-target {
@@ -590,22 +615,35 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .icon-tb { --ctl-h: 28px; width: var(--ctl-h); padding: 0; font-size: 15px; flex: 0 0 auto; }
 .icon-tb.active { border-color: var(--accent); color: var(--accent); }
 #more-menu {
-  /* 锚在标签栏正下方、right 贴标签栏右缘(不是视口右缘):整条菜单的右边界
-     就是主区域右边界,因此绝不会盖到右侧的文件管理/AI 面板上。
-     改为横向排列的一行工具条 —— 竖排下拉列表又高又窄,正好插在面板列上。 */
+  /* 分组下拉(布局/面板/会话/配置):锚在标签栏正下方、right 贴标签栏右缘
+     (不是视口右缘)—— 菜单右边界就是主区域右边界,绝不会盖到右侧的
+     文件管理/AI 面板上。竖排 + 组头替代原先的横向工具条:十几个动作平铺一行
+     扫描成本高也无从记忆,按任务分组后才找得到"家"。 */
   position: absolute; top: 100%; right: 8px; z-index: 64;
-  display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px;
+  display: flex; flex-direction: column; gap: 1px; padding: 6px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.45);
-  max-width: calc(100% - 16px);
+  width: 216px;
+  max-height: calc(100vh - 120px); overflow-y: auto;
 }
 #more-menu.hidden { display: none; }
 #more-menu .btn {
-  --ctl-h: 30px; width: auto; justify-content: flex-start;
+  --ctl-h: 28px; width: auto; height: var(--ctl-h);
+  display: flex; align-items: center; justify-content: flex-start;
   border: 0; background: none; padding: 0 10px; border-radius: 6px;
   white-space: nowrap;
 }
 #more-menu .btn:hover { background: rgba(91,140,255,0.12); }
+/* 组头:纯视觉分组,不可点击 */
+#more-menu .mm-head {
+  padding: 7px 10px 3px; font-size: 11px; color: var(--muted);
+  letter-spacing: 0.05em; user-select: none;
+}
+#more-menu .mm-head:first-child { padding-top: 4px; }
+/* 快捷键列:由 entry.js 的 fillMenuKeys() 按运行平台(accel())渲染;
+   没有快捷键的项保持空 -> :empty 隐藏,列只在有值时出现 */
+#more-menu .mm-key { margin-left: auto; padding-left: 16px; color: var(--muted); font-size: 11px; }
+#more-menu .mm-key:empty { display: none; }
 /* 图标占固定宽度的独立列:图标字形宽度不一(📁/⚙️/◫ 互不相同,emoji 还常带
    不可见的变体选择符),直接"图标+空格+文字"会让每行文字起点错开。
    这里把图标放进等宽盒子并居中,各行文字起点就对齐了。 */

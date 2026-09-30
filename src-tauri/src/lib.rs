@@ -138,8 +138,25 @@ impl AppState {
         let sid = session_id.to_string();
         let handle = tauri::async_runtime::spawn(async move {
             let mut prev: Option<serde_json::Value> = None;
+            // 速率差分的真实窗口:上次探针执行 → 本次探针执行(sleep/ping/exec 全在其中)。
+            // 按固定 3.0s 算会在高 RTT 链路上把网速/磁盘速率系统性高估,这里按实测计时。
+            let mut last_probe = std::time::Instant::now();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                // 连接延迟:单独对一次最小 exec(echo)计时 —— 通道建立 + 命令往返,
+                // 高 RTT 链路上这就是用户敲命令感知到的延迟下界。不与资源探针混测:
+                // cat/df 的执行时长随机器负载波动,混进去测的就不是"延迟"了。
+                let t0 = std::time::Instant::now();
+                let latency_ms = match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ssh.exec(&sid, "echo __NB_PING__"),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => t0.elapsed().as_millis() as u64,
+                    _ => break,
+                };
+                let interval_sec = last_probe.elapsed().as_secs_f64().clamp(1.0, 60.0);
                 let r = match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     ssh.exec(&sid, monitor::PROBE),
@@ -149,20 +166,24 @@ impl AppState {
                     Ok(Ok((_, out))) => out,
                     _ => break,
                 };
-                let parsed = monitor::parse_proc(&r, prev.as_ref(), 3.0);
+                last_probe = std::time::Instant::now();
+                let parsed = monitor::parse_proc(&r, prev.as_ref(), interval_sec);
                 if parsed["supported"] == json!(false) {
+                    // 非 Linux 主机没有 /proc:资源面板切"不支持"终态,但连接是通的,
+                    // 循环继续跑 —— 延迟(echo 往返)对任何 shell 都有意义。
+                    // exec 失败(超时/断开)仍走上面分支退出。
                     ai::emit_evt(
                         &app,
                         "ssh:metrics",
-                        json!({ "sessionId": sid, "supported": false }),
+                        json!({ "sessionId": sid, "supported": false, "latencyMs": latency_ms }),
                     );
-                    break;
+                    continue;
                 }
                 prev = Some(parsed["raw"].clone());
                 ai::emit_evt(
                     &app,
                     "ssh:metrics",
-                    json!({ "sessionId": sid, "supported": true, "cpuPct": parsed["cpuPct"], "memPct": parsed["memPct"], "memUsedMB": parsed["memUsedMB"], "memTotalMB": parsed["memTotalMB"], "rxBps": parsed["rxBps"], "txBps": parsed["txBps"], "diskPct": parsed["diskPct"], "diskUsedGB": parsed["diskUsedGB"], "diskTotalGB": parsed["diskTotalGB"], "diskReadBps": parsed["diskReadBps"], "diskWriteBps": parsed["diskWriteBps"] }),
+                    json!({ "sessionId": sid, "supported": true, "cpuPct": parsed["cpuPct"], "memPct": parsed["memPct"], "memUsedMB": parsed["memUsedMB"], "memTotalMB": parsed["memTotalMB"], "rxBps": parsed["rxBps"], "txBps": parsed["txBps"], "diskPct": parsed["diskPct"], "diskUsedGB": parsed["diskUsedGB"], "diskTotalGB": parsed["diskTotalGB"], "diskReadBps": parsed["diskReadBps"], "diskWriteBps": parsed["diskWriteBps"], "latencyMs": latency_ms }),
                 );
             }
         });

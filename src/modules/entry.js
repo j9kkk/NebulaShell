@@ -1,11 +1,11 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, accel, api, applyAccelTitles, askPrompt, bindCtxMenuDismiss, closeCtxMenu, closeModal, openModal, PLATFORM, showCtxMenu, state, toast } from './core.js';
-import { activateSession, activateTab, autoLayoutTab, clearActiveTerm, closeActivePane, closeSession, closeTab, closeTermSearch, connectHost, createTab, doTermSearch, firstPaint, fitActive, fitAllVisible, followFilePanel, leaf, leafCount, makePaneEl, newPaneId, openBroadcastPicker, openTermSearch, parseQuickTarget, quickConnect, renderLayout, scheduleResizeSync, splitActive, togglePaneZoom, toggleReadonly, toggleSessionLog, updateStatusbar, updateTab, updateWelcome } from './terminal.js';
+import { $, activeTab, accel, api, applyAccelTitles, askPrompt, bindCtxMenuDismiss, closeCtxMenu, closeModal, copyText, openModal, PLATFORM, showCtxMenu, state, toast } from './core.js';
+import { activateSession, activateTab, autoLayoutTab, clearActiveTerm, closeActivePane, closeSession, closeTab, closeTermSearch, connectHost, doTermSearch, firstPaint, fitActive, fitAllVisible, followFilePanel, leafCount, newTabWithPicker, openBroadcastPicker, openTermSearch, parseQuickTarget, quickConnect, renderLayout, scheduleResizeSync, splitActive, togglePaneZoom, toggleReadonly, toggleSessionLog, updateStatusbar, updateTab, updateWelcome } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { aiDiagnose, aiFinishHolder, aiSend, aiTestConnection, fetchAiModels, fillPreset, openAiSettings, renderAiMessage, renderModelSwitch, saveAiSettings, switchModel, updateGenChip } from './ai.js';
+import { aiDiagnose, aiFinishHolder, aiSend, aiTestConnection, fetchAiModels, fillPreset, openAiSettings, refreshAiModels, renderAiMessage, renderModelSwitch, saveAiSettings, switchModel, updateGenChip } from './ai.js';
 import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
-import { activeConnectedSession, addBookmark, filePanelSession, fileUpload, loadFileDir, renderFileTarget, uploadLocalPaths } from './sftp.js';
+import { activeConnectedSession, addBookmark, fileNavBack, fileNavForward, fileNavUp, filePanelSession, fileUpload, initialFileDir, loadFileDir, renderFileTarget, uploadLocalPaths } from './sftp.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
 import { openBatchModal, openForwardModal, renderBatchHosts, runBatch, saveForwardRule, toggleHistory } from './tools.js';
 
@@ -19,9 +19,14 @@ export function termFromEvent(e) {
 /// 终端右键菜单:复制/粘贴/全选 + 清屏/搜索/只读。快捷键提示按平台渲染。
 export function openTermCtxMenu(e, session) {
   const term = session.term;
-  const hasSel = (() => { try { return term.hasSelection(); } catch { return false; } })();
+  // 选区文本在"菜单打开时"快照:若等点击菜单项时再读 getSelection,
+  // 选区可能已被右键/焦点变化清掉,复制到的就是空串或别的内容
+  // (用户视角的"复制无效/复制错内容")。
+  const selText = (() => { try { return term.getSelection() || ''; } catch { return ''; } })();
   showCtxMenu(e.clientX, e.clientY, [
-    { label: '复制', key: accel('mod+C'), disabled: !hasSel, run: () => { try { navigator.clipboard.writeText(term.getSelection()).catch(() => {}); } catch { /* ignore */ } } },
+    { label: '复制', key: accel('mod+C'), disabled: !selText, run: () => {
+      copyText(selText).then((ok) => toast(ok ? `已复制 ${selText.length} 个字符` : '复制失败：剪贴板不可用', ok ? 'success' : 'error'));
+    } },
     { label: '粘贴', key: accel('mod+V'), run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
     { label: '全选', key: accel('mod+A'), run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
     '-',
@@ -29,7 +34,7 @@ export function openTermCtxMenu(e, session) {
     { label: '清屏', run: () => { activateSession(session.sessionId); clearActiveTerm(); } },
     { label: session.readOnly ? '关闭只读' : '设为只读', run: () => { activateSession(session.sessionId); toggleReadonly(); } },
     '-',
-    { label: '复制会话 ID', run: () => { navigator.clipboard.writeText(session.sessionId).catch(() => {}); toast('已复制会话 ID', 'success'); } },
+    { label: '复制会话 ID', run: () => { copyText(session.sessionId).then((ok) => toast(ok ? '已复制会话 ID' : '复制失败', ok ? 'success' : 'error')); } },
   ]);
 }
 
@@ -106,6 +111,19 @@ export async function openAbout() {
 /// 后端 app:info 用 std::env::consts::OS(→ "macos"/"windows"/"linux"),
 /// shim 的 window.nebula.platform 由 UA 推导(→ "darwin")。
 const PLATFORM_LABEL = { darwin: 'macOS', macos: 'macOS', windows: 'Windows', linux: 'Linux' };
+
+/// 路径栏回车:跳到输入的绝对路径。加载失败时 loadFileDir 不改 cwd,
+/// 输入框随之回落显示当前目录(用户立刻知道"没跳过去");
+/// ~ 与相对路径不做展开(保持简单,失败在状态栏可见)。
+async function commitFilePath() {
+  const p = $('#file-path').value.trim();
+  if (!p || p === state.file.cwd) {
+    $('#file-path').value = state.file.cwd || '';
+    return;
+  }
+  await loadFileDir(p);
+  $('#file-path').value = state.file.cwd || '';
+}
 
 export function bindEvents() {
   $('#btn-add-host').addEventListener('click', () => openHostModal(null));
@@ -186,18 +204,8 @@ export function bindEvents() {
   $('#ai-model-switch').addEventListener('change', (e) => switchModel(e.target.value).then(renderModelSwitch).catch(() => {}));
   $('#btn-ai-diagnose').addEventListener('click', aiDiagnose);
 
-  // ＋ 新建标签页:空标签,等待用户在窗格选择器里选主机
-  $('#btn-newtab').addEventListener('click', () => {
-    const tab = createTab();
-    activateTab(tab.id);
-    // 空标签给一个空窗格,渲染窗格选择器
-    const paneId = newPaneId();
-    tab.layout = leaf(paneId);
-    tab.panes.set(paneId, { id: paneId, el: makePaneEl(paneId), sessionId: null });
-    tab.el.querySelector('.tab-title').textContent = '新标签';
-    renderLayout();
-    updateWelcome();
-  });
+  // ＋ 新建标签页:空标签,等待用户在窗格选择器里选主机(⌘T / 标签右键同源)
+  $('#btn-newtab').addEventListener('click', () => newTabWithPicker());
 
   // ⋯ 更多菜单
   const moreMenu = $('#more-menu');
@@ -214,8 +222,15 @@ export function bindEvents() {
     }
   });
 
-  // 分屏 / 广播 / 历史 / 转发 / 批量 / 指纹 / 快速连接
-  $('#btn-split').addEventListener('click', () => splitActive('h'));
+  // 分屏:⛶ 点击弹出方向选择(左右/上下),与按钮 title 声明一致 ——
+  // 此前点击只会左右分屏,tooltip 却写着两个方向,想上下只能去菜单或记快捷键。
+  $('#btn-split').addEventListener('click', (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    showCtxMenu(r.left, r.bottom + 6, [
+      { label: '左右分屏', key: accel('mod+D'), run: () => splitActive('h') },
+      { label: '上下分屏', key: accel('mod+shift+D'), run: () => splitActive('v') },
+    ]);
+  });
   $('#btn-broadcast').addEventListener('click', openBroadcastPicker);
   $('#btn-history').addEventListener('click', toggleHistory);
   $('#btn-forwards').addEventListener('click', openForwardModal);
@@ -238,9 +253,13 @@ export function bindEvents() {
   $('#btn-clear').addEventListener('click', clearActiveTerm);
   $('#btn-log-toggle').addEventListener('click', toggleSessionLog);
 
-  // 文件面板扩展:重命名 / 权限 / 书签 / 拖拽上传。
-  // 工具栏只留"新建文件夹 / 上传 / 刷新"这三个全局动作;针对具体文件的
-  // 下载·重命名·权限·删除一律走该行的右键菜单(见 sftp.js openFileCtxMenu)。
+  // 文件面板扩展:导航 / 重命名 / 权限 / 书签 / 拖拽上传。
+  // 工具栏是"导航三连(后退/前进/上一级)+ 新建文件夹 / 上传 / 刷新";
+  // 针对具体文件的打开·下载·重命名·权限·删除一律走该行的右键菜单
+  // (见 sftp.js openFileCtxMenu)。
+  $('#btn-file-back').addEventListener('click', fileNavBack);
+  $('#btn-file-forward').addEventListener('click', fileNavForward);
+  $('#btn-file-up').addEventListener('click', fileNavUp);
   $('#btn-file-refresh').addEventListener('click', () => loadFileDir(state.file.cwd));
   $('#btn-file-mkdir').addEventListener('click', () => {
     state.file.renameMode = null; // 从"新建"进入,别把上次的重命名态带过来
@@ -295,8 +314,24 @@ export function bindEvents() {
     e.stopPropagation();
     showCtxMenu(e.clientX, e.clientY, [
       { label: '收藏当前目录', disabled: !state.file.cwd, run: () => addBookmark() },
-      { label: '复制当前路径', disabled: !state.file.cwd, run: () => { navigator.clipboard.writeText(state.file.cwd).catch(() => {}); toast('已复制路径', 'success'); } },
+      { label: '复制当前路径', disabled: !state.file.cwd, run: () => { copyText(state.file.cwd).then((ok) => toast(ok ? '已复制路径' : '复制失败', ok ? 'success' : 'error')); } },
     ]);
+  });
+  // 路径栏可直接编辑:回车跳转,Esc/失焦还原为当前目录。
+  // stopPropagation 别让全局按键(如 Esc 收菜单)在编辑路径时插一手。
+  $('#file-path').addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      $('#file-path').value = state.file.cwd || '';
+      $('#file-path').blur();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      commitFilePath();
+    }
+  });
+  $('#file-path').addEventListener('blur', () => {
+    $('#file-path').value = state.file.cwd || '';
   });
 
   // 拖拽上传。Tauri 会**关闭** webview 的 HTML5 拖放(dataTransfer 里拿不到
@@ -412,6 +447,18 @@ export function bindEvents() {
   $('#btn-split-top-bottom').addEventListener('click', () => splitActive('v'));
   $('#btn-auto-layout').addEventListener('click', () => autoLayoutTab());
   $('#btn-close-pane').addEventListener('click', closeActivePane);
+  // 功能菜单新增入口:放大当前窗格 / AI 助手 / 会话日志 ——
+  // 此前放大只有窗格悬停按钮与 ⌘⇧↵,AI 只有标签栏 ✨,日志只有状态栏小按钮,
+  // 菜单里找不到它们(每个功能都该在菜单里有稳定的"家")。
+  $('#btn-zoom-pane').addEventListener('click', () => {
+    const pid = state.zoomPaneId || (state.sessions.get(state.activeId) || {}).paneId;
+    if (pid) togglePaneZoom(pid);
+  });
+  $('#btn-ai-menu').addEventListener('click', () => {
+    $('#ai-panel').classList.toggle('hidden');
+    fitActive();
+  });
+  $('#btn-log-menu').addEventListener('click', toggleSessionLog);
   $('#btn-files').addEventListener('click', async () => {
     const panel = $('#file-panel');
     if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); fitActive(); return; }
@@ -421,8 +468,11 @@ export function bindEvents() {
     fitActive();
     // 用"当前会话自己"记住的目录打开,而不是全局 cwd ——
     // 后者可能属于另一台服务器,拿它的路径去 list 会张冠李戴。
+    // 该会话还没浏览过目录(首次打开)时,默认落到 shell 当前执行路径。
     const s = activeConnectedSession();
-    await loadFileDir(s ? (s.lastFileDir || null) : null);
+    if (!s) await loadFileDir(null);
+    else if (s.lastFileDir) await loadFileDir(s.lastFileDir);
+    else await loadFileDir(await initialFileDir(s));
   });
   $('#btn-file-close').addEventListener('click', () => { $('#file-panel').classList.add('hidden'); fitActive(); });
   $('#btn-term-settings').addEventListener('click', openTermSettings);
@@ -459,13 +509,7 @@ export function bindEvents() {
     }
     if (mod && !e.shiftKey && (e.key === 't' || e.key === 'T')) {
       e.preventDefault();
-      const tab = createTab();
-      activateTab(tab.id);
-      const paneId = newPaneId();
-      tab.layout = leaf(paneId);
-      tab.panes.set(paneId, { id: paneId, el: makePaneEl(paneId), sessionId: null });
-      renderLayout();
-      updateWelcome();
+      newTabWithPicker();
       return;
     }
     if (mod && e.key === 'd') { e.preventDefault(); splitActive(e.shiftKey ? 'v' : 'h'); return; }
@@ -479,6 +523,7 @@ export function bindEvents() {
       return;
     }
     if (e.key === 'Escape' && !$('#term-search').classList.contains('hidden')) { closeTermSearch(); return; }
+    if (e.key === 'Escape' && !$('#ctx-menu').classList.contains('hidden')) { closeCtxMenu(); return; }
     if (e.key === 'Escape' && !$('#snippet-menu').classList.contains('hidden')) closeSnippetMenu();
     if (e.key === 'Escape' && state.historyOpen) toggleHistory();
     if (e.key === 'Escape' && !$('#more-menu').classList.contains('hidden')) $('#more-menu').classList.add('hidden');
@@ -564,21 +609,31 @@ export function bindEvents() {
     const h = state.aiReq;
     if (h && h.id === requestId) {
       if (h.bubble) h.bubble.textContent = (h.acc ? h.acc + '\n' : '') + '⚠️ ' + message;
-      h.acc = h.acc || '';
+      h.failed = message;
       aiFinishHolder();
     }
   });
 }
 
+/// 功能菜单的快捷键列:HTML 只声明 data-accel,这里按运行平台渲染成 ⌘D / Ctrl+D。
+/// 与 tooltip(applyAccelTitles)同一份数据源 —— 加菜单项时两处一起生效,
+/// 菜单因此成为快捷键的"教育层"(此前更多菜单不带任何快捷键提示)。
+function fillMenuKeys() {
+  for (const btn of document.querySelectorAll('#more-menu [data-accel]')) {
+    const keyEl = btn.querySelector('.mm-key');
+    if (keyEl) keyEl.textContent = accel(String(btn.dataset.accel).split('|')[0]);
+  }
+}
+
 export async function boot() {
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
   applyAccelTitles();
+  fillMenuKeys();
   bindEvents();
   bindContextMenu();
   state.settings = await api('settings:get');
   await refreshHosts();
-  try { state.aiModels = await api('ai:models', { protocol: state.settings.ai.protocol, baseUrl: state.settings.ai.baseUrl }).catch(() => []); } catch { /* ignore */ }
-  renderModelSwitch();
+  await refreshAiModels();
   renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨\n可以直接提问，或使用上方快捷操作：\n· 解释选中内容：选中终端输出后点击\n· 生成命令：描述需求，AI 给出命令');
 }
 
@@ -603,6 +658,76 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     write: (d) => {
       const s = state.sessions.get(state.activeId);
       if (s && s.status === 'connected' && !s.readOnly) s.term.input(d);
+    },
+    /// 终端复制链路探针(T61):向活动会话缓冲写一行标记并选中,再派发真实的
+    /// Ctrl+C / Ctrl+Shift+C keydown(完整走 attachCustomKeyEventHandler 判定),
+    /// 用临时 term.onData 监听捕获 xterm 实际发出的数据 —— 回报是否把
+    /// \x03(SIGINT)发给了 shell。观测点选在 onData 而非 ssh:write:后者要求
+    /// 会话已连接(受其它测试的连接状态影响),而本修复的契约就是
+    /// "有选区 = 不向 shell 发任何数据,无选区 = 放行 \x03"。
+    /// select=false 时先清掉选区(无选区探针)。
+    termCopyProbe: async (opts) => {
+      const o = opts || {};
+      const s = state.sessions.get(state.activeId);
+      if (!s) return { ok: false, why: 'no-session' };
+      const term = s.term;
+      await new Promise((r) => term.write('\r\nPROBE-COPY-MARK-9137\r\n', r));
+      const buf = term.buffer.active;
+      let row = -1;
+      for (let i = buf.length - 1; i >= 0; i--) {
+        const l = buf.getLine(i);
+        if (l && l.translateToString(true).includes('PROBE-COPY-MARK-9137')) { row = i; break; }
+      }
+      if (row < 0) return { ok: false, why: 'mark-not-found' };
+      if (o.select === false) { try { term.clearSelection(); } catch { /* ignore */ } }
+      else term.select(0, row, 'PROBE-COPY-MARK-9137'.length);
+      const emitted = [];
+      const disp = term.onData((d) => emitted.push(d));
+      let err = '';
+      let kbd = null;
+      try {
+        kbd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: o.key || 'c', ctrlKey: true, shiftKey: !!o.shift });
+        // new KeyboardEvent 的 keyCode 恒为 0,而 xterm 的 evaluateKeyboardEvent
+        // 按 keyCode 求值(ctrl+c → \x03 依赖 keyCode 67),必须补上真实键值,
+        // 否则无选区分支"放行后 xterm 什么都不发"是合成事件的假象。
+        Object.defineProperty(kbd, 'keyCode', { get: () => 67 });
+        term.textarea.dispatchEvent(kbd);
+      } catch (e) { err = e.message; }
+      disp.dispose();
+      const all = emitted.join('');
+      // prevented = 自定义处理器介入(分流/prefentDefault)的证据:
+      // 旧实现从不 preventDefault,可据此区分新旧行为。
+      return { ok: !err, err, prevented: !!(kbd && kbd.defaultPrevented), hadSelection: !!term.hasSelection(), selection: term.getSelection(), sigintSent: all.includes('\x03'), emitted: all };
+    },
+    /// 终端粘贴探针(T62):派发真实 Ctrl+V keydown,统计"插入次数"(stub
+    /// term.paste)与"原生 paste 事件数" —— 修复前手动 readText 链路 + 浏览器
+    /// 默认粘贴(→ xterm 的 paste 监听器)各插一次,粘贴内容翻倍。
+    /// stub 不真正粘贴,避免把测试机剪贴板内容打进会话;readOnly 期间 onData
+    /// 也不落盘,双保险。
+    termPasteProbe: async () => {
+      const s = state.sessions.get(state.activeId);
+      if (!s) return { ok: false, why: 'no-session' };
+      const term = s.term;
+      const origPaste = term.paste;
+      let pasteCalls = 0;
+      term.paste = () => { pasteCalls++; };
+      let pasteEvents = 0;
+      const onPaste = () => { pasteEvents++; };
+      term.textarea.addEventListener('paste', onPaste);
+      const prevRo = s.readOnly;
+      s.readOnly = true;
+      let kbd = null;
+      let err = '';
+      try {
+        kbd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'v', ctrlKey: true });
+        Object.defineProperty(kbd, 'keyCode', { get: () => 86 });
+        term.textarea.dispatchEvent(kbd);
+      } catch (e) { err = e.message; }
+      await new Promise((r) => setTimeout(r, 150)); // 手动 readText 与原生 paste 事件都在此窗口内到达
+      s.readOnly = prevRo;
+      term.textarea.removeEventListener('paste', onPaste);
+      term.paste = origPaste;
+      return { ok: !err, err, prevented: !!(kbd && kbd.defaultPrevented), pasteEvents, pasteCalls };
     },
     paneCount: () => state.panes.size,
     // 标签/窗格状态:供 e2e 断言"同主机可多开标签且互不干扰"
@@ -659,6 +784,15 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
         targetId: s ? s.sessionId : null,
         activeId: active ? active.sessionId : null,
         cwd: state.file.cwd,
+        // 路径栏是输入框:textContent 恒空,断言读 value;nav 是导航三连的可用态
+        pathValue: $('#file-path').value,
+        nav: {
+          back: !$('#btn-file-back').disabled,
+          forward: !$('#btn-file-forward').disabled,
+          up: !$('#btn-file-up').disabled,
+        },
+        status: $('#file-status').textContent,
+        lastOpen: state.file.lastOpen,
         rows: document.querySelectorAll('#file-list .file-row').length,
         names: [...document.querySelectorAll('#file-list .file-row .f-name')].map((e) => e.textContent),
         // 工具栏只剩图标按钮(不再有"新建文件夹/上传/下载/重命名/权限/删除/书签"文字按钮)
@@ -787,7 +921,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     monitorProbe: (samples) => {
       const s = state.sessions.get(state.activeId);
       if (!s) return null;
-      const ids = ['#mon-cpu', '#mon-mem-det', '#mon-disk-det', '#mon-rx', '#mon-tx', '#mon-spark-cpu', '#mon-note', '#mon-cpu-bar', '#mon-mem-bar'];
+      const ids = ['#mon-lat', '#mon-cpu', '#mon-mem-det', '#mon-disk-det', '#mon-rx', '#mon-tx', '#mon-spark-cpu', '#mon-note', '#mon-cpu-bar', '#mon-mem-bar'];
       const prev = state.metrics.get(state.activeId);
       const history = state.metricHistory.get(state.activeId);
       const out = [];
@@ -819,7 +953,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
           btns,
         ];
         // 渲染文本:证明这次采样真的反映到了界面上
-        geo.__text = { cpu: $('#mon-cpu').textContent, mem: $('#mon-mem-det').textContent, disk: $('#mon-disk-det').textContent, rx: $('#mon-rx').textContent, tx: $('#mon-tx').textContent, note: $('#mon-note').textContent };
+        geo.__text = { cpu: $('#mon-cpu').textContent, mem: $('#mon-mem-det').textContent, disk: $('#mon-disk-det').textContent, rx: $('#mon-rx').textContent, tx: $('#mon-tx').textContent, lat: $('#mon-lat').textContent, note: $('#mon-note').textContent };
         out.push(geo);
       }
       if (prev === undefined) state.metrics.delete(state.activeId); else state.metrics.set(state.activeId, prev);

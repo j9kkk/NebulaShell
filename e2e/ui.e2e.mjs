@@ -15,7 +15,12 @@ import { startMockSshd } from './helpers/ssh-server.mjs';
 import { startMockCloudServer, startMockAiServer } from './helpers/mock-servers.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BIN = path.join(root, 'src-tauri/target/debug/nebulashell');
+// Windows 的 cargo 产物带 .exe 后缀,按平台补齐。
+// 可用 NEBULA_E2E_BIN 指定被测二进制(例如直接回归已安装版本:
+//   NEBULA_E2E_BIN="C:\Users\user\AppData\Local\NebulaShell\nebulashell.exe" node e2e/ui.e2e.mjs
+// ),用户数据仍走本套件自建的临时目录,不触碰真实配置。
+const BIN = process.env.NEBULA_E2E_BIN
+  || path.join(root, 'src-tauri/target/debug/nebulashell' + (process.platform === 'win32' ? '.exe' : ''));
 const PASSWORD = 'ui-e2e-pass';
 // 版本号从配置读,避免每发一版都要改测试(T2 断言用)
 const APP_VERSION = JSON.parse(
@@ -238,7 +243,10 @@ async function main() {
   // 用 textContent 而非 innerText:后者依赖 CSS 布局与可见性计算,
   // xterm 尚未完成首帧渲染时会返回空串,造成偶发超时(约 1/12);
   // textContent 直接读 DOM 文本,更贴合"输出是否已到达终端"的语义。
-  await waitEval(`return (document.querySelector('.term-pane.focused .xterm-rows')||{}).textContent||''`, 'Welcome to NebulaShell mock sshd', 25000);
+  // 终端输出走 __NB_TERM_TEXT__ 钩子(buffer API,渲染无关):
+  // WebGL 渲染器下文本画在 canvas 上,.xterm-rows 的 DOM 文本恒为空;
+  // 且 buffer 不依赖首帧绘制,顺带消除了旧 DOM 断言的偶发首帧超时。
+  await waitEval(`return window.__NB_TERM_TEXT__ ? window.__NB_TERM_TEXT__() : (document.querySelector('.term-pane.focused .xterm-rows')||{}).textContent||''`, 'Welcome to NebulaShell mock sshd', 25000);
   check('T5 SSH 连接 + 终端输出', true);
 
   // legacy hex 指纹被兼容(连接已成功)后,记录必须被自愈升级为现行 base64 格式
@@ -250,9 +258,17 @@ async function main() {
     `got=${String(upgradedFp).slice(0, 20)}… want=${sshd.hostFingerprintB64.slice(0, 20)}…`,
   );
 
+  // WebGL 渲染器激活:canvas 由 addon 创建,GL 上下文创建失败会抛错走 DOM 回退,
+  // 此时 canvas 不存在 —— 该断言防止渲染器被静默降级而不自知。
+  const glCanvas = await evalJs(`return String(!!document.querySelector('.term-pane.focused canvas'))`);
+  check('T5c WebGL 渲染器激活(canvas 已挂载)', glCanvas === 'true', glCanvas);
+
   // 分屏
   // 分屏:同一标签内并排两个终端(标签数不变,窗格数 +1)
+  // ⛶ 按钮现在弹出方向选择(与 title 声明一致),走真实路径选"左右分屏"。
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  await sleep(200);
+  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.textContent.includes('左右分屏')).click(); return 1`);
   await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
   await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
   const splitState = await evalJs(`return JSON.stringify({ tabs: document.querySelectorAll('.tab').length, panes: document.querySelectorAll('.term-pane').length })`);
@@ -294,16 +310,90 @@ async function main() {
     document.querySelector('#btn-ai-fetch-models').click(); return 1`);
   await waitEval(`return document.querySelector('#toasts').textContent`, '获取到 3 个模型', 15000);
   await evalJs(`document.querySelector('#btn-ai-save').click(); return 1`);
+  // 保存后"模型切换"下拉立即反映新配置(曾停在启动时的空状态,直到重启才恢复)
+  await waitEval(`return document.querySelector('#ai-model-switch').innerHTML`, 'mock-model-1', 15000);
   await evalJs(`document.querySelector('#ai-input').value = '你好'; document.querySelector('#ai-send').click(); return 1`);
   await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY:', 20000);
-  check('T9 AI 配置 / 模型发现 / 流式对话', true);
+  check('T9 AI 配置 / 模型发现 / 流式对话 / 保存后下拉即时刷新', true);
 
-  // SFTP
+  // T9b:未保存的表单值可直接"测试连接"(曾误报"未配置");后端流式任务的 HTTP 错误
+  // 必须经 ai:error 透出 —— 曾被吞掉,前端永远停在"生成中…"。
+  // 用 /err 前缀 base:mock 对该路径的 chat 请求返回 401,若仍走已保存配置则会成功。
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-provider').value = 'custom';
+    document.querySelector('#ai-protocol').value = 'openai';
+    document.querySelector('#ai-baseurl').value = '${ai.base}/err';
+    document.querySelector('#ai-model').value = 'err-model';
+    document.querySelector('#ai-apikey').value = 'sk-err';
+    document.querySelector('#btn-ai-test').click(); return 1`);
+  const t9bToast = await waitEval(`return document.querySelector('#toasts').textContent`, '测试失败', 20000);
+  check('T9b 未保存表单直测连接 + HTTP 错误透出(不卡生成中)', t9bToast.includes('HTTP 401'), t9bToast);
+
+  // T9c:失败的测试不占用请求槽位,正常对话立即可用
+  await evalJs(`document.querySelector('#btn-ai-cancel').click(); return 1`);
+  await evalJs(`document.querySelector('#ai-input').value = 'T9b-ok'; document.querySelector('#ai-send').click(); return 1`);
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'T9b-ok', 20000);
+  check('T9c 测试失败后请求槽位已释放(可继续对话)', true);
+
+  // SFTP:首次打开默认落在「当前主机命令执行路径」(mock exec 探针返回 ~/data),
+  // 路径栏是输入框,断言读 value(textContent 恒空)
   await evalJs(`document.querySelector('#btn-more').click(); return 1`);
   await evalJs(`document.querySelector('#btn-files').click(); return 1`);
-  await waitEval(`return document.querySelector('#file-path').textContent`, '/home/user', 25000);
+  await waitEval(`return window.__nbTest.filePanel().pathValue`, '/home/user/data', 25000);
   const filesOk = await evalJs(`return document.querySelector('#file-list').textContent`);
-  check('T10 SFTP 列目录', String(filesOk).includes('README.md'));
+  check('T10 SFTP 首次打开默认 shell 当前 cwd(~/data)', String(filesOk).includes('app.log'), filesOk.slice(0, 60));
+
+  // —— 文件导航:上一级 / 后退 / 前进(资源管理器逻辑)+ 路径栏编辑 ——
+  await evalJs(`document.querySelector('#btn-file-up').click(); return 1`);
+  await waitEval(`return document.querySelector('#file-list').textContent`, 'README.md', 20000);
+  let nav = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel().nav)`));
+  check('T10b 上一级到 ~(后退可用/前进禁用)', nav.back === true && nav.forward === false && nav.up === true, JSON.stringify(nav));
+
+  await evalJs(`document.querySelector('#btn-file-back').click(); return 1`);
+  await waitEval(`return document.querySelector('#file-list').textContent`, 'app.log', 20000);
+  nav = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel().nav)`));
+  check('T10c 后退回 ~/data(前进恢复可用)', nav.back === false && nav.forward === true && nav.up === true, JSON.stringify(nav));
+
+  await evalJs(`document.querySelector('#btn-file-forward').click(); return 1`);
+  await waitEval(`return document.querySelector('#file-list').textContent`, 'README.md', 20000);
+  check('T10d 前进到 ~', true);
+
+  // 路径栏输入绝对路径回车跳转(派发真实 keydown,走与用户相同的监听器)
+  const setPath = (v) => `
+    const el = document.querySelector('#file-path');
+    el.value = ${JSON.stringify(v)};
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1`;
+  await evalJs(setPath('/home/user/data'));
+  await waitEval(`return document.querySelector('#file-list').textContent`, 'app.log', 20000);
+  check('T10e 路径栏回车跳转到 ~/data', true);
+
+  // `~` / `~/x` 是路径栏手输的高频写法:SFTP 协议不认波浪号,
+  // 客户端要展开成家目录绝对路径(mock REALPATH '.' → /home/user)
+  await evalJs(setPath('~/data'));
+  await waitEval(`return document.querySelector('#file-list').textContent`, 'app.log', 20000);
+  const tilde = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`));
+  check('T10e2 路径栏支持 ~ 展开(~/data → /home/user/data)', tilde.cwd === '/home/user/data', tilde.cwd);
+
+  await evalJs(setPath('/no-such-dir-e2e'));
+  await waitEval(`return window.__nbTest.filePanel().status`, '加载失败', 20000);
+  const badPath = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`));
+  check(
+    'T10f 路径栏无效路径:报错并回落当前目录',
+    badPath.cwd === '/home/user/data' && badPath.pathValue === '/home/user/data',
+    JSON.stringify({ cwd: badPath.cwd, pathValue: badPath.pathValue }),
+  );
+
+  // 根目录已是顶层:上一级禁用
+  await evalJs(setPath('/'));
+  await waitEval(`return JSON.stringify(window.__nbTest.filePanel().cwd)`, '"/"', 20000);
+  nav = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel().nav)`));
+  check('T10g 根目录的上一级禁用', nav.up === false, JSON.stringify(nav));
+
+  // 回到 ~:后续用例(T54 右键 README.md 等)依赖当前目录里有它
+  await evalJs(setPath('/home/user'));
+  await waitEval(`return document.querySelector('#file-list').textContent`, 'README.md', 20000);
+  check('T10h 路径栏跳转恢复,回到 ~', true);
 
   // 文件面板必须标明"操作的是哪台服务器",且在切换会话后跟随
   // (回归:面板原先只写"文件管理",切标签后仍显示上一台的目录,
@@ -315,12 +405,12 @@ async function main() {
     JSON.stringify(fp0),
   );
 
-  // —— 4 文件工具栏:图标化 + 下载/重命名/删除移入右键菜单 ——
+  // —— 4 文件工具栏:导航三连 + 图标化,下载/重命名/删除移入右键菜单 ——
   const tb = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel().toolbar)`));
   const tbIds = tb.map((b) => b.id);
   check(
-    'T52 文件工具栏仅剩刷新/新建文件夹/上传(图标按钮)',
-    JSON.stringify(tbIds) === JSON.stringify(['btn-file-refresh', 'btn-file-mkdir', 'btn-file-upload'])
+    'T52 文件工具栏 = 导航三连+刷新/新建/上传(图标按钮)',
+    JSON.stringify(tbIds) === JSON.stringify(['btn-file-back', 'btn-file-forward', 'btn-file-up', 'btn-file-refresh', 'btn-file-mkdir', 'btn-file-upload'])
       // 文字按钮已去除:按钮文案应是图标字形,不是"新建文件夹/上传/下载"这类词
       && tb.every((b) => !/新建文件夹|上传|下载|重命名|权限|删除|书签/.test(b.text)),
     JSON.stringify(tb),
@@ -344,6 +434,21 @@ async function main() {
   const delMsg = String(await evalJs(`return window.__nbTest.confirmText()`));
   check('T54b 右键删除的确认框指向右键的那一行', delMsg.includes('README.md'), delMsg);
   await evalJs(`window.__nbTest.confirmClickCancel(); return 1`); // 不真删(后面用例还要用)
+
+  // —— 右键「打开」:下载临时副本 + 交系统默认程序(test_mode 只落盘不拉起,
+  //    否则会在测试机上真的弹开一个编辑器窗口) ——
+  const openMenu = asObj(await evalJs(`return JSON.stringify(window.__nbTest.fileCtxMenu('README.md'))`));
+  check(
+    'T54c 右键文件菜单含「打开(临时副本)」',
+    openMenu.some((i) => i.label === '打开(临时副本)') && openMenu.some((i) => i.label === '下载…'),
+    JSON.stringify(openMenu.map((i) => i.label)),
+  );
+  await evalJs(`window.__nbTest.ctxItemClick('打开(临时副本)'); return 1`);
+  await waitEval(`return window.__nbTest.filePanel().status`, '已用本地程序打开', 25000);
+  const openInfo = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel().lastOpen)`));
+  const tmpOk = !!(openInfo && openInfo.localPath && fs.existsSync(openInfo.localPath))
+    && fs.readFileSync(openInfo.localPath, 'utf8') === 'hello from nebula sftp\n';
+  check('T54d 打开 = 远端文件落临时目录(内容一致,未拉起系统程序)', tmpOk, JSON.stringify(openInfo));
 
   // —— 3 拖拽上传(走 Tauri onDragDropEvent 真实通道) ——
   // 造一个真实本地文件,注入 drag-enter/drop 事件(带面板内的物理坐标)。
@@ -553,6 +658,8 @@ async function main() {
 
   // 分屏 → 放大 → 窗格占满;还原后窗格数恢复
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  await sleep(200);
+  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.textContent.includes('左右分屏')).click(); return 1`);
   await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
   await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
   await evalJs(`document.querySelector('.term-pane.focused .pane-zoom-btn').click(); return 1`);
@@ -571,16 +678,16 @@ async function main() {
   const panesRestored = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
   check('T22 还原后恢复分屏布局', panesRestored === 2, `panes=${panesRestored}`);
 
-  // 资源监控:固定显示在状态栏,采样值长度会变(9.2% ↔ 100.0%、890B/s ↔ 12800.0MB/s、
-  // 内存 (488/976MB) ↔ (131072/131072MB)),每 3s 刷新一次。
+  // 资源监控:固定显示在状态栏,采样值长度会变(9.2% ↔ 100%、890B/s ↔ 12.5GB/s、
+  // 内存 (488/976MB) ↔ (128/128GB)),每 3s 刷新一次。
   // 回归两件事:①数值变化不得推动同一行里的行尾按钮;②状态栏不得因此折行(折行会占终端高度)。
   const monSamples = [
     // 首个采样到达前:所有字段都是占位符("…"/"")——占位与实数之间的切换正是抖动高发区
-    { cpuPct: null, memPct: null, memUsedMB: null, memTotalMB: null, diskPct: null, diskUsedGB: null, diskTotalGB: null, rxBps: null, txBps: null },
-    { cpuPct: 5, memPct: 9.7, memUsedMB: 46, memTotalMB: 976, diskPct: 4, diskUsedGB: 4, diskTotalGB: 100, rxBps: 0, txBps: 0 },
-    { cpuPct: 9.2, memPct: 50, memUsedMB: 488, memTotalMB: 976, diskPct: 40, diskUsedGB: 400, diskTotalGB: 1000, rxBps: 890, txBps: 1536 },
-    { cpuPct: 12.5, memPct: 33.3, memUsedMB: 8192, memTotalMB: 24576, diskPct: 55.5, diskUsedGB: 102.4, diskTotalGB: 200, rxBps: 1048576, txBps: 524288 },
-    { cpuPct: 100, memPct: 100, memUsedMB: 131072, memTotalMB: 131072, diskPct: 99.9, diskUsedGB: 10240, diskTotalGB: 10240, rxBps: 1073741824, txBps: 1073741824 },
+    { cpuPct: null, memPct: null, memUsedMB: null, memTotalMB: null, diskPct: null, diskUsedGB: null, diskTotalGB: null, rxBps: null, txBps: null, latencyMs: null },
+    { cpuPct: 5, memPct: 9.7, memUsedMB: 46, memTotalMB: 976, diskPct: 4, diskUsedGB: 4, diskTotalGB: 100, rxBps: 0, txBps: 0, latencyMs: 45 },
+    { cpuPct: 9.2, memPct: 50, memUsedMB: 488, memTotalMB: 976, diskPct: 40, diskUsedGB: 400, diskTotalGB: 1000, rxBps: 890, txBps: 1536, latencyMs: 123 },
+    { cpuPct: 12.5, memPct: 33.3, memUsedMB: 8192, memTotalMB: 24576, diskPct: 55.5, diskUsedGB: 102.4, diskTotalGB: 200, rxBps: 1048576, txBps: 524288, latencyMs: 999 },
+    { cpuPct: 100, memPct: 100, memUsedMB: 131072, memTotalMB: 131072, diskPct: 99.9, diskUsedGB: 10240, diskTotalGB: 10240, rxBps: 1073741824, txBps: 1073741824, latencyMs: 1500 },
   ];
   const monRows = asObj(await evalJs(`return JSON.stringify(window.__nbTest.monitorProbe(${JSON.stringify(monSamples)}))`));
   const monDrift = (() => {
@@ -601,16 +708,21 @@ async function main() {
     return { maxLeft, maxWidth, heights, overflow, btnStable, btns: btnRights[0] };
   })();
   // 先确认值真的变了(否则"几何不变"可能只是没渲染):覆盖 占位 → 小值 → 常规 → 极值
+  // 同时锁定新格式契约:≤1 位小数、去尾 .0、内存/磁盘详情自动换 GB/TB、延迟自适应单位
   const monTexts = Array.isArray(monRows) ? monRows.map((r) => r.__text) : [];
   check(
-    'T34 监控数值随采样更新(非空转)',
+    'T34 监控数值随采样更新(非空转,格式收口)',
     monTexts.length === monSamples.length
       && monTexts[0].cpu === '…'
       && monTexts[2].cpu === '9.2%'
       && monTexts[4].cpu === '100%'
-      && monTexts[4].mem.includes('131072/131072MB')
-      && monTexts[2].rx !== monTexts[4].rx,
-    JSON.stringify(monTexts.map((t) => t.cpu + '/' + t.rx)).slice(0, 200),
+      && monTexts[2].mem === '(488/976MB)' && monTexts[4].mem === '(128/128GB)'
+      && monTexts[3].mem === '(8/24GB)'
+      && monTexts[3].disk === '(102.4/200GB)' && monTexts[4].disk === '(10/10TB)'
+      && monTexts[2].rx === '890B/s' && monTexts[4].rx === '1GB/s'
+      && monTexts[0].lat === '–' && monTexts[1].lat === '45ms'
+      && monTexts[3].lat === '999ms' && monTexts[4].lat === '1.5s',
+    JSON.stringify(monTexts).slice(0, 300),
   );
   check(
     'T35 监控布局不随数据长度抖动,且不推动行尾按钮',
@@ -1067,6 +1179,118 @@ async function main() {
     await evalJs(`document.querySelector('#btn-close-pane').click(); return 1`);
     await sleep(400);
   }
+
+  /* ===== 菜单重构(P0)的回归:标签/主机右键菜单、功能菜单分组与快捷键列 ===== */
+
+  // —— 标签右键:关闭/关闭其他/关闭右侧/重命名 ——
+  const tabCtx = asObj(await evalJs(`return JSON.stringify((() => {
+    const tab = document.querySelector('.tab.active') || document.querySelector('.tab');
+    const r = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8 }));
+    return [...document.querySelectorAll('#ctx-menu .ctx-item')].map((b) => ({ label: b.querySelector('.ctx-label').textContent, disabled: b.disabled }));
+  })())`));
+  const tabHas = (l) => tabCtx.find((i) => i.label === l);
+  check(
+    'T58 标签右键菜单:关闭/关闭其他/关闭右侧/重命名/复制地址/新建',
+    !!tabHas('关闭标签') && !!tabHas('关闭其他标签') && !!tabHas('关闭右侧标签') && !!tabHas('重命名…') && !!tabHas('复制主机地址') && !!tabHas('新建标签'),
+    JSON.stringify(tabCtx),
+  );
+  // 重命名走应用内输入框(prompt 在 WKWebView 下不返回),留空可恢复默认
+  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === '重命名…').click(); return 1`);
+  await sleep(200);
+  const renameOpen = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.promptOpen(), title: window.__nbTest.promptTitle() })`));
+  await evalJs(`window.__nbTest.promptFill('生产机'); window.__nbTest.promptClickOk(); return 1`);
+  await sleep(200);
+  const renamed = await evalJs(`return document.querySelector('.tab.active .tab-title').textContent`);
+  check(
+    'T58b 重命名标签生效',
+    renameOpen.open === true && renamed === '生产机',
+    JSON.stringify({ renameOpen, renamed }),
+  );
+  await evalJs(`
+    const tab = document.querySelector('.tab.active');
+    const r = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8 }));
+    return 1`);
+  await sleep(150);
+  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === '重命名…').click(); return 1`);
+  await sleep(150);
+  await evalJs(`window.__nbTest.promptFill(''); window.__nbTest.promptClickOk(); return 1`);
+  await sleep(150);
+  const restoredTitle = await evalJs(`return document.querySelector('.tab.active .tab-title').textContent`);
+  check('T58c 清空重命名恢复默认(跟随主机名)', restoredTitle !== '生产机', `title=${restoredTitle}`);
+
+  // —— 主机右键:连接/新标签连接/编辑/克隆/复制/删除,与悬停图标同源 ——
+  const hostCtx = asObj(await evalJs(`return JSON.stringify((() => {
+    const it = [...document.querySelectorAll('.host-item')][0];
+    const r = it.getBoundingClientRect();
+    it.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 10 }));
+    return [...document.querySelectorAll('#ctx-menu .ctx-item')].map((b) => b.querySelector('.ctx-label').textContent);
+  })())`));
+  check(
+    'T59 主机右键菜单:连接/新标签连接/编辑/克隆/复制/删除',
+    hostCtx.includes('连接') && hostCtx.includes('在新标签连接') && hostCtx.includes('编辑…') && hostCtx.includes('克隆') && hostCtx.includes('复制 user@host') && hostCtx.includes('删除…'),
+    JSON.stringify(hostCtx),
+  );
+  // 收起右键菜单,避免影响后续
+  await evalJs(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return 1`);
+
+  // —— 功能菜单:四组(布局/面板/会话/配置)+ 快捷键列按平台渲染 ——
+  const menuStruct = asObj(await evalJs(`return JSON.stringify((() => {
+    document.querySelector('#btn-more').click();
+    const heads = [...document.querySelectorAll('#more-menu .mm-head')].map((h) => h.textContent.trim());
+    const keys = [...document.querySelectorAll('#more-menu .mm-key')].filter((k) => k.textContent.trim()).map((k) => k.textContent.trim());
+    const isMac = window.nebula.platform === 'darwin';
+    document.querySelector('#btn-more').click();
+    return { heads, keys, isMac };
+  })())`));
+  check(
+    'T60 功能菜单按任务分组(布局/面板/会话/配置)',
+    JSON.stringify(menuStruct.heads) === JSON.stringify(['布局', '面板', '会话', '配置']),
+    JSON.stringify(menuStruct.heads),
+  );
+  check(
+    'T60b 菜单行快捷键列按平台渲染(mac ⌘ / 其它 Ctrl)',
+    menuStruct.keys.length > 0 && menuStruct.keys.some((k) => (menuStruct.isMac ? k.includes('⌘') : k.includes('Ctrl'))),
+    JSON.stringify(menuStruct.keys),
+  );
+
+  /* ===== 终端复制三连修(T61):Ctrl+C 按选区分流 / 失败可见 ===== */
+
+  // 有选区:Ctrl+C 必须是复制,不能把 \x03 发给 shell(否则正在跑的命令被误杀);
+  // prevented = 自定义处理器介入的证据(旧实现从不 preventDefault)
+  const withSel = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: true }))`));
+  check(
+    'T61 有选区时 Ctrl+C 复制而不中断(不给 shell 发 \\x03)',
+    withSel.ok === true && withSel.prevented === true && withSel.hadSelection === true && String(withSel.selection).includes('PROBE-COPY-MARK-9137') && withSel.sigintSent === false && withSel.emitted === '',
+    JSON.stringify(withSel),
+  );
+
+  // Shift 变形键:Ctrl+Shift+C 的 ev.key 是 'C',旧判定只认小写 'c' —— 此前是死键
+  const shiftC = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: true, key: 'C', shift: true }))`));
+  check(
+    'T61b Ctrl+Shift+C(键面 C)同样复制而不发 \\x03',
+    shiftC.ok === true && shiftC.prevented === true && shiftC.hadSelection === true && shiftC.sigintSent === false && shiftC.emitted === '',
+    JSON.stringify(shiftC),
+  );
+
+  // 无选区:Ctrl+C 维持标准终端行为 —— 放行 \x03(SIGINT)发给 shell,
+  // 同时 preventDefault 拦掉浏览器默认复制(别处 UI 的 DOM 选区)
+  const noSel = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: false }))`));
+  check(
+    'T61c 无选区时 Ctrl+C 仍发送 SIGINT,且拦截浏览器默认复制',
+    noSel.ok === true && noSel.prevented === true && noSel.hadSelection === false && noSel.sigintSent === true,
+    JSON.stringify(noSel),
+  );
+
+  // Ctrl+V 粘贴必须只插一次:浏览器默认粘贴事件被拦截(prevented/pasteEvents=0),
+  // 手动链路至多插一次(pasteCalls≤1)—— 修复前两条链路各插一次,内容翻倍
+  const paste = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termPasteProbe())`));
+  check(
+    'T62 Ctrl+V 只粘贴一次(不触发原生 paste 事件,不重复插入)',
+    paste.ok === true && paste.prevented === true && paste.pasteEvents === 0 && paste.pasteCalls <= 1,
+    JSON.stringify(paste),
+  );
 
   // 无未捕获异常
   const errs = await evalJs(`return JSON.stringify(window.__errs)`);

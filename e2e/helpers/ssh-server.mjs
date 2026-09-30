@@ -252,6 +252,15 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
             stream.end();
             return;
           }
+          // 文件面板 cwd 探针(ssh::CWD_PROBE 含 NB_CWD 标记):模拟
+          // "交互 shell 已 cd 到 ~/data" —— 用于回归"文件面板首次打开
+          // 默认落在当前主机命令执行路径"。
+          if (String(info.command).includes('NB_CWD')) {
+            stream.write('NB_CWD /home/user/data\n');
+            stream.exit(0);
+            stream.end();
+            return;
+          }
           stream.write(`EXEC-OK:${info.command}\n`);
           stream.exit(0);
           stream.end();

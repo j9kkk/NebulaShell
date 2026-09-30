@@ -2,6 +2,7 @@
 use russh::client::{self, Handle};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
@@ -188,6 +189,7 @@ impl client::Handler for SshHandler {
                         .await
                     {
                         Ok(sock) => {
+                            let _ = sock.set_nodelay(true); // 同 connect_one:转发的交互流量也不该吃 Nagle
                             let (mut ra, mut wa) = tokio::io::split(sock);
                             let (mut rb, mut wb) = tokio::io::split(stream);
                             let t1 = tokio::spawn(async move {
@@ -266,20 +268,19 @@ pub(crate) fn take_utf8(pending: &mut Vec<u8>) -> String {
     String::from_utf8(head).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).to_string())
 }
 
-/// 判断 token 是否仍是该 sessionId 的当前连接(用于旧泵退出时避免误动新会话)。
-async fn is_owner(svc: &SshService, session_id: &str, token: &Arc<()>) -> bool {
-    let sessions = svc.sessions.lock().await;
-    sessions
-        .get(session_id)
-        .map(|s| Arc::ptr_eq(&s.token, token))
-        .unwrap_or(false)
+/// 判断会话是否仍是当前代(旧泵退出前避免误动新会话)。
+/// 只读会话自持的 alive 标记,不锁全局会话表 —— 这张表同时被 exec(监控探针
+/// 全程持有)、write、resize 抢占,数据泵热路径上再排一次队会把高 RTT 链路上
+/// 每 3 秒一次的探针放大成"输入/输出周期性冻结"。
+fn is_alive(session: &Session) -> bool {
+    session.alive.load(Ordering::Relaxed)
 }
 
 /// 彻底关闭一个会话:断开跳板链与主连接。
 ///
 /// 必须显式调用:russh 的 `Handle::drop` 只打一条 debug 日志,**不会**关闭连接。
 /// 被替换或被遗弃的会话若只靠 drop,会一直占着 TCP 连接与通道接收窗口。
-async fn shut_down_session(session: Session) {
+async fn shut_down_session(session: Arc<Session>) {
     for j in &session.jump_handles {
         let _ = j
             .disconnect(russh::Disconnect::ByApplication, "", "en")
@@ -287,23 +288,32 @@ async fn shut_down_session(session: Session) {
     }
     let _ = session
         .handle
+        .lock()
+        .await
         .disconnect(russh::Disconnect::ByApplication, "", "en")
         .await;
 }
 
 pub struct Session {
-    pub handle: Handle<SshHandler>,
+    /// Handle 不可 Clone(内含 receiver),tcpip_forward 需要 &mut 而其余方法
+    /// 只要 &self,故以 Arc<tokio::Mutex<_>> 共享:exec/open_sftp/转发只在
+    /// "开通道/子系统/转发请求"这一个往返期间持互斥,数据读写不经过它,
+    /// 不会阻塞终端热路径。
+    pub handle: Arc<tokio::sync::Mutex<Handle<SshHandler>>>,
     pub writer: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     pub resize_tx: tokio::sync::mpsc::UnboundedSender<(u32, u32)>,
     pub host: Value,
     pub jump_handles: Vec<Handle<SshHandler>>,
-    /// 连接代际标识。同一 sessionId 重连时旧会话会被新会话替换,旧数据泵退出后
-    /// 只能回收"自己那一代",否则会误删正在使用的新会话。
-    pub token: Arc<()>,
+    /// 存活标记(代际身份)。数据泵靠它判断"自己是否仍是该会话的主人",
+    /// 置 false 的时机:被新会话替换(connect)、主动断开(disconnect)、
+    /// 远端关闭后的自回收(数据泵收尾)。热路径上只做原子读。
+    pub alive: AtomicBool,
 }
 
 pub struct SshService {
-    pub sessions: AsyncMutex<std::collections::HashMap<String, Session>>,
+    /// 值为 Arc<Session>:write/resize/exec 等热路径只从表里克隆句柄副本即放锁,
+    /// 数据泵持有同代 Arc 做存活判断,均不长期占用这张表。
+    pub sessions: AsyncMutex<std::collections::HashMap<String, Arc<Session>>>,
     /// 按 sessionId 缓存的 SFTP 会话。
     ///
     /// 每次 SFTP 操作都新开一条通道要付"channel_open_session + sftp 子系统协商"
@@ -439,7 +449,15 @@ impl SshService {
                 .map_err(|e| connect_err(host_addr, e, &fp_mismatch))?,
             None => {
                 let addr = format!("{}:{}", host_addr, port);
-                client::connect(Self::make_config(), addr, handler)
+                // 不用 client::connect:russh 不代设 socket 选项,默认 Nagle 会把
+                // 快速打字的小包扣到上一个包 ACK(≈1 个 RTT)之后才发出,高延迟
+                // 国际链路上回显明显成坨。OpenSSH/MobaXterm 均在认证后关 Nagle,
+                // 这里自建 socket 补齐(TCP_NODELAY 在已连接的 TCP 上不会失败,尽力而为)。
+                let sock = tokio::net::TcpStream::connect(&addr)
+                    .await
+                    .map_err(|e| format!("{}:连接失败: {}", host_addr, e))?;
+                let _ = sock.set_nodelay(true);
+                client::connect_stream(Self::make_config(), sock, handler)
                     .await
                     .map_err(|e| connect_err(host_addr, e, &fp_mismatch))?
             }
@@ -506,7 +524,7 @@ impl SshService {
             jump_handles.push(jh);
         }
 
-        let mut handle = self
+        let handle = self
             .connect_one(self.store.clone(), &host_full, prev_sock)
             .await
             .map_err(|e| {
@@ -533,39 +551,38 @@ impl SshService {
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let (resize_tx, mut resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, u32)>();
 
-        // 先登记会话再启动数据泵:数据泵会用 token 判断自己是否仍是该会话的主人,
-        // 若此时会话尚未登记,首批终端输出会被判定为"非主人"而丢弃。
+        // 先登记会话再启动数据泵:数据泵靠 session.alive 判断自己是否仍是该
+        // 会话的主人,登记与否不影响首批输出(Arc 克隆自持),但保持先登记的
+        // 顺序能让"会话不存在"类查询(write/resize)在泵启动前就拿到正确结果。
         //
         // 原子替换:若该 sessionId 已有旧会话(自动重连走的就是这条路径),
         // 必须先显式断开,否则旧 TCP 连接与 shell 通道会永久泄漏
         // (russh 的 Handle::drop 不做任何关闭动作)。
-        let token: Arc<()> = Arc::new(());
-        let pump_token = token.clone();
+        let session = Arc::new(Session {
+            handle: Arc::new(tokio::sync::Mutex::new(handle)),
+            writer: writer_tx,
+            resize_tx,
+            host: host_full,
+            jump_handles,
+            alive: AtomicBool::new(true),
+        });
         let replaced = {
             let mut sessions = self.sessions.lock().await;
-            sessions.insert(
-                session_id.clone(),
-                Session {
-                    handle,
-                    writer: writer_tx,
-                    resize_tx,
-                    host: host_full,
-                    jump_handles,
-                    token,
-                },
-            )
+            sessions.insert(session_id.clone(), session.clone())
         };
         if let Some(old) = replaced {
+            old.alive.store(false, Ordering::Relaxed); // 旧泵据此停止发射并退出
             self.forget_sftp(&session_id).await; // 旧连接的 SFTP 缓存必须作废
             shut_down_session(old).await;
         }
 
         // 数据泵:channel → ssh:data / ssh:status 事件。
-        // token 用于标识"这一代"连接:同一 sessionId 重连时旧泵可能还在退出途中,
-        // 靠它区分自己是否仍是该会话的主人(否则会误删/误报新会话)。
+        // session.alive 标识"这一代"连接:同一 sessionId 重连时旧泵可能还在
+        // 退出途中,靠它区分自己是否仍是该会话的主人(否则会误删/误报新会话)。
         let pump_app = app.clone();
         let pump_sid = session_id.clone();
         let pump_svc = Arc::clone(self);
+        let pump_session = session.clone();
         tokio::spawn(async move {
             let mut pending: Vec<u8> = Vec::new(); // 跨消息未拼完的多字节序列
             let mut batch: Vec<u8> = Vec::new(); // 本轮累积的数据(合帧)
@@ -645,7 +662,7 @@ impl SshService {
                 if !batch.is_empty() {
                     pending.extend_from_slice(&batch);
                     let text = take_utf8(&mut pending);
-                    if !text.is_empty() && is_owner(&pump_svc, &pump_sid, &pump_token).await {
+                    if !text.is_empty() && is_alive(&pump_session) {
                         crate::ai::emit_evt(
                             &pump_app,
                             "ssh:data",
@@ -656,7 +673,7 @@ impl SshService {
 
                 // 4) 通道结束:发退出状态后退出泵
                 if let Some(st) = exit {
-                    if is_owner(&pump_svc, &pump_sid, &pump_token).await {
+                    if is_alive(&pump_session) {
                         crate::ai::emit_evt(&pump_app, "ssh:status", st);
                     }
                     break 'pump;
@@ -665,14 +682,15 @@ impl SshService {
 
             // 5) 自回收:远端主动断开时,会话必须从 sessions 移除,
             //    否则连接(含跳板链)与通道会一直留在 map 里。
-            //    token 不匹配说明本会话已被重连替换,不能动新会话。
+            //    Arc 指针不一致说明本会话已被重连替换,不能动新会话。
             let mut sessions = pump_svc.sessions.lock().await;
             let is_current = sessions
                 .get(&pump_sid)
-                .map(|s| Arc::ptr_eq(&s.token, &pump_token))
+                .map(|s| Arc::ptr_eq(s, &pump_session))
                 .unwrap_or(false);
             if is_current {
                 if let Some(s) = sessions.remove(&pump_sid) {
+                    s.alive.store(false, Ordering::Relaxed);
                     drop(sessions);
                     pump_svc.forget_sftp(&pump_sid).await;
                     shut_down_session(s).await;
@@ -687,30 +705,53 @@ impl SshService {
         Ok(chain_len)
     }
 
+    // write/resize 是按键与窗口变化的热路径:锁只用来查表取句柄副本,
+    // 发送在锁外完成 —— 否则监控探针(3s 一次,高 RTT 下全程持锁)会把
+    // 每次敲键卡出可感知的停顿。
     pub async fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let sessions = self.sessions.lock().await;
-        let s = sessions.get(session_id).ok_or("会话不存在或已断开")?;
-        s.writer
+        let writer = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .ok_or("会话不存在或已断开")?
+                .writer
+                .clone()
+        };
+        writer
             .send(data.as_bytes().to_vec())
             .map_err(|_| "会话已断开".to_string())
     }
 
     pub async fn resize(&self, session_id: &str, cols: u32, rows: u32) -> Result<(), String> {
-        let sessions = self.sessions.lock().await;
-        let s = sessions.get(session_id).ok_or("会话不存在或已断开")?;
-        s.resize_tx
+        let resize_tx = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .ok_or("会话不存在或已断开")?
+                .resize_tx
+                .clone()
+        };
+        resize_tx
             .send((cols, rows))
             .map_err(|_| "会话已断开".to_string())
     }
 
     pub async fn exec(&self, session_id: &str, command: &str) -> Result<(i64, String), String> {
-        let mut sessions = self.sessions.lock().await;
-        let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-        let mut channel = s
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| e.to_string())?;
+        // exec 的执行期(开通道 + 远端跑完 + 读到 Close)在高 RTT 链路上可达
+        // 数秒,旧实现全程持有全局会话锁,期间所有会话的输入/输出一并冻结。
+        // 这里只克隆句柄指针,通道打开即放锁,读输出期间不占任何锁。
+        let handle = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .ok_or("会话不存在或已断开")?
+                .handle
+                .clone()
+        };
+        let mut channel = {
+            let mut h = handle.lock().await;
+            h.channel_open_session().await.map_err(|e| e.to_string())?
+        };
         channel
             .exec(true, command)
             .await
@@ -751,14 +792,21 @@ impl SshService {
                 return Ok(s.clone());
             }
         }
-        let sftp = {
-            let mut sessions = self.sessions.lock().await;
-            let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-            let mut channel = s
+        // 通道协商(channel_open + 子系统 + SFTP 握手)在高 RTT 下要好几个往返,
+        // 与 exec 同理:取 Handle 副本后立刻放锁,不阻塞终端输入/输出。
+        let handle = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .ok_or("会话不存在或已断开")?
                 .handle
-                .channel_open_session()
-                .await
-                .map_err(|e| e.to_string())?;
+                .clone()
+        };
+        let sftp = {
+            let channel = {
+                let mut h = handle.lock().await;
+                h.channel_open_session().await.map_err(|e| e.to_string())?
+            };
             channel
                 .request_subsystem(true, "sftp")
                 .await
@@ -770,11 +818,13 @@ impl SshService {
                     .map_err(|e| format!("打开 SFTP 通道失败: {}", e))?,
             )
         };
-        self.sftp_sessions
-            .lock()
-            .await
-            .insert(session_id.to_string(), sftp.clone());
-        Ok(sftp)
+        // entry().or_insert:并发首次调用时双方都会建通道,后完成者复用先完成者
+        // 的缓存,避免重复通道挂在连接上。
+        let mut cache = self.sftp_sessions.lock().await;
+        Ok(cache
+            .entry(session_id.to_string())
+            .or_insert(sftp)
+            .clone())
     }
 
     pub async fn direct_tcpip(
@@ -785,13 +835,20 @@ impl SshService {
         src_ip: &str,
         src_port: u32,
     ) -> Result<BoxStream, String> {
-        let mut sessions = self.sessions.lock().await;
-        let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-        let ch = s
-            .handle
-            .channel_open_direct_tcpip(dest_host, dest_port, src_ip, src_port)
-            .await
-            .map_err(|e| e.to_string())?;
+        let handle = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .ok_or("会话不存在或已断开")?
+                .handle
+                .clone()
+        };
+        let ch = {
+            let mut h = handle.lock().await;
+            h.channel_open_direct_tcpip(dest_host, dest_port, src_ip, src_port)
+                .await
+                .map_err(|e| e.to_string())?
+        };
         Ok(Box::new(ch.into_stream()) as BoxStream)
     }
 
@@ -801,24 +858,36 @@ impl SshService {
         bind_host: &str,
         bind_port: u32,
     ) -> Result<u32, String> {
-        let mut sessions = self.sessions.lock().await;
-        let s = sessions.get_mut(session_id).ok_or("会话不存在或已断开")?;
-        s.handle
-            .tcpip_forward(bind_host, bind_port)
+        let handle = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .ok_or("会话不存在或已断开")?
+                .handle
+                .clone()
+        };
+        let mut h = handle.lock().await;
+        h.tcpip_forward(bind_host, bind_port)
             .await
             .map_err(|e| e.to_string())
     }
 
     pub async fn remote_forward_cancel(&self, session_id: &str, bind_host: &str, bind_port: u32) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(s) = sessions.get_mut(session_id) {
-            let _ = s.handle.cancel_tcpip_forward(bind_host, bind_port).await;
-        }
+        let handle = {
+            let sessions = self.sessions.lock().await;
+            match sessions.get(session_id) {
+                Some(s) => s.handle.clone(),
+                None => return,
+            }
+        };
+        let mut h = handle.lock().await;
+        let _ = h.cancel_tcpip_forward(bind_host, bind_port).await;
     }
 
     pub async fn disconnect(&self, session_id: &str) {
         let mut sessions = self.sessions.lock().await;
         if let Some(s) = sessions.remove(session_id) {
+            s.alive.store(false, Ordering::Relaxed);
             drop(sessions);
             self.forget_sftp(session_id).await;
             shut_down_session(s).await;
@@ -830,6 +899,46 @@ impl SshService {
         sessions
             .get(session_id)
             .map(|s| s.host["id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// 探测交互 shell 的当前工作目录(文件面板首次打开的默认路径)。
+    ///
+    /// exec 通道的命令与交互 shell 同为本连接 sshd 会话进程的子进程:在 exec 里
+    /// 用 $PPID 找到 sshd 会话进程,再取其下**持有 tty** 的那个子进程 —— 即交互
+    /// shell(exec 型子进程没有 pty,监控探针/sftp-server 都会被 tty 条件排除),
+    /// 读它的 cwd:
+    /// - Linux:/proc/<pid>/cwd 符号链接;
+    /// - macOS/BSD:无 /proc,退回 lsof 读 cwd。
+    /// ps 的过滤不用 GNU 专属的 `--ppid`,而是 `ps axo pid,ppid,tty` + awk
+    /// (procps 与 BSD/macOS 通用);tty 列排除空与 `?`(macOS 无 tty 显示 `??`)。
+    /// 输出用 `NB_CWD ` 前缀标记,避免与登录脚本的无关回显混淆。
+    pub const CWD_PROBE: &'static str = "for p in $(ps axo pid=,ppid=,tty= 2>/dev/null | awk -v pp=\"$PPID\" '$2==pp && $3!=\"\" && $3!~/^\\?/{print $1}'); do [ \"$p\" = \"$$\" ] && continue; d=$(readlink /proc/$p/cwd 2>/dev/null); if [ -z \"$d\" ]; then d=$(lsof -a -p $p -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1); fi; if [ -n \"$d\" ]; then echo \"NB_CWD $d\"; fi; break; done";
+
+    /// 返回 None 表示探测不可用(非类 Unix/受限环境),由前端回落到
+    /// OSC7 记录或家目录;这里不把"探测不出"当错误。
+    pub async fn probe_cwd(&self, session_id: &str) -> Result<Option<String>, String> {
+        if let Ok((_, out)) = self.exec(session_id, Self::CWD_PROBE).await {
+            for line in out.lines().rev() {
+                if let Some(rest) = line.trim_start().strip_prefix("NB_CWD ") {
+                    let p = rest.trim();
+                    if p.starts_with('/') {
+                        return Ok(Some(p.to_string()));
+                    }
+                }
+            }
+        }
+        // 兜底:exec 通道里 pwd = 登录家目录(shell 实时 cwd 拿不到时的下限)
+        if let Ok((code, out)) = self.exec(session_id, "pwd").await {
+            if code == 0 {
+                for line in out.lines().rev() {
+                    let l = line.trim();
+                    if l.starts_with('/') {
+                        return Ok(Some(l.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub async fn find_by_host(&self, host_id: &str) -> Option<String> {

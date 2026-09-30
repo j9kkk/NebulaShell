@@ -43,20 +43,29 @@
         <button id="btn-split" class="btn icon-tb" data-title="在当前标签内分屏(%1 左右 / %2 上下)" data-accel="mod+D|mod+shift+D">⛶</button>
         <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
         <button id="btn-more" class="btn icon-tb" title="更多工具">⋯</button>
-        <!-- 功能菜单:横向工具条,锚定在标签栏正下方、宽度即标签栏宽度
-             (绝不越过右侧的文件/AI 面板),因此不会再遮挡文件管理展示区。 -->
+        <!-- 功能菜单:按用户任务分四组(布局 / 面板 / 会话 / 配置)的下拉,
+             锚定在标签栏正下方、右缘即主区域右缘(不越过右侧的文件/AI 面板)。
+             组头只作视觉分组、不可点击;行尾快捷键由 entry.js 的 fillMenuKeys()
+             按运行平台渲染(声明在 data-accel,与 tooltip 同源)。 -->
         <div id="more-menu" class="hidden">
-          <button id="btn-broadcast" class="btn small"><span class="mi">📢</span>广播输入</button>
-          <button id="btn-files" class="btn small"><span class="mi">📁</span>文件管理</button>
-          <button id="btn-split-left-right" class="btn small" data-title="左右分屏(%1)" data-accel="mod+D"><span class="mi">◫</span>左右分屏</button>
-          <button id="btn-split-top-bottom" class="btn small" data-title="上下分屏(%1)" data-accel="mod+shift+D"><span class="mi">⬓</span>上下分屏</button>
+          <div class="mm-head">布局</div>
+          <button id="btn-split-left-right" class="btn small" data-title="左右分屏(%1)" data-accel="mod+D"><span class="mi">◫</span>左右分屏<span class="mm-key"></span></button>
+          <button id="btn-split-top-bottom" class="btn small" data-title="上下分屏(%1)" data-accel="mod+shift+D"><span class="mi">⬓</span>上下分屏<span class="mm-key"></span></button>
           <button id="btn-auto-layout" class="btn small" title="把当前标签的窗格重新排成等分网格"><span class="mi">▦</span>自动整理布局</button>
-          <button id="btn-close-pane" class="btn small" data-title="关闭当前窗格(%1)" data-accel="mod+W"><span class="mi">✕</span>关闭当前窗格</button>
+          <button id="btn-zoom-pane" class="btn small" data-title="放大/还原当前窗格(%1)" data-accel="mod+shift+Enter"><span class="mi">⤢</span>放大当前窗格<span class="mm-key"></span></button>
+          <button id="btn-close-pane" class="btn small" data-title="关闭当前窗格(%1)" data-accel="mod+W"><span class="mi">✕</span>关闭当前窗格<span class="mm-key"></span></button>
+          <div class="mm-head">面板</div>
+          <button id="btn-files" class="btn small"><span class="mi">📁</span>文件管理</button>
           <button id="btn-snippets" class="btn small"><span class="mi">⚡</span>常用片段</button>
           <button id="btn-history" class="btn small"><span class="mi">🕘</span>命令历史</button>
+          <button id="btn-ai-menu" class="btn small" title="打开/收起 AI 助手面板"><span class="mi">✨</span>AI 助手</button>
+          <div class="mm-head">会话</div>
+          <button id="btn-broadcast" class="btn small"><span class="mi">📢</span>广播输入</button>
           <button id="btn-forwards" class="btn small"><span class="mi">🔀</span>端口转发</button>
-          <button id="btn-fingerprints" class="btn small" title="已知主机指纹管理(TOFU 信任记录)"><span class="mi">🔑</span>主机指纹</button>
+          <button id="btn-log-menu" class="btn small" title="记录/停止记录当前会话日志"><span class="mi">⏺</span>会话日志</button>
+          <div class="mm-head">配置</div>
           <button id="btn-term-settings" class="btn small"><span class="mi">⚙</span>终端设置</button>
+          <button id="btn-fingerprints" class="btn small" title="已知主机指纹管理(TOFU 信任记录)"><span class="mi">🔑</span>主机指纹</button>
           <button id="btn-about" class="btn small" title="关于 NebulaShell"><span class="mi">ℹ</span>关于</button>
         </div>
       </div>
@@ -90,23 +99,37 @@
         <span id="status-text">就绪 — 尚未建立连接</span>
         <span id="ro-badge" class="ro-badge hidden">只读</span>
         <!-- 资源监控固定显示在状态栏:跟着"已连接 xxx@ip"一行。
+             每个指标一个 mon-group(组间距大、组内紧凑),数值槽定宽左对齐 ——
+             标签与数值的间距恒定,数据含义靠标签+分组区分。
              自身可收缩(min-width:0),行尾按钮不可压缩,窄窗口下先裁监控而非挤掉按钮。 -->
         <span id="monitor-bar" class="hidden">
-          <span class="mon-item mon-cpu-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
-          <span class="mon-track"><span id="mon-cpu-bar"></span></span>
-          <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
-          <span class="mon-track"><span id="mon-mem-bar"></span></span>
-          <span class="mon-item mon-disk-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
-          <span class="mon-item">↑<b id="mon-rx" class="mon-val">–</b> ↓<b id="mon-tx" class="mon-val">–</b></span>
+          <span class="mon-group mon-lat-item"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
+          <span class="mon-group mon-cpu-item">
+            <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
+            <span class="mon-track"><span id="mon-cpu-bar"></span></span>
+          </span>
+          <span class="mon-group">
+            <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
+            <span class="mon-track"><span id="mon-mem-bar"></span></span>
+          </span>
+          <span class="mon-group mon-disk-item">
+            <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
+          </span>
+          <span class="mon-group">
+            <span class="mon-item">网络 <i class="mon-dir">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir">↓</i><b id="mon-tx" class="mon-val">–</b></span>
+          </span>
           <span class="mon-spark" id="mon-spark-cpu"></span>
           <span id="mon-note" class="muted"></span>
         </span>
         <span class="spacer"></span>
-        <button id="btn-log-toggle" class="btn small hidden" title="记录会话日志到文件">⏺ 日志</button>
-        <button id="btn-clear" class="btn small hidden" title="清屏并清空回滚">🧹 清屏</button>
-        <button id="btn-readonly" class="btn small hidden" title="只读模式,防止误触">🔒 只读</button>
-        <button id="btn-reconnect" class="btn small hidden">↻ 重连</button>
-        <button id="btn-disconnect" class="btn small hidden">断开</button>
+        <!-- 状态栏按钮一律常驻(禁用态表达可用性,禁用原因写进 title),
+              不再随连接状态显隐 —— 此前"断开↔重连"互换会让整排按钮跳动。
+              图标化 + tooltip,给监控和状态文字让出宽度(收缩契约见 style.css)。 -->
+        <button id="btn-log-toggle" class="btn small icon-tb" disabled title="记录会话日志到文件">⏺</button>
+        <button id="btn-clear" class="btn small icon-tb" disabled title="清屏并清空回滚">🧹</button>
+        <button id="btn-readonly" class="btn small icon-tb" disabled title="只读模式,防止误触">🔒</button>
+        <button id="btn-reconnect" class="btn small icon-tb" disabled title="重连">↻</button>
+        <button id="btn-disconnect" class="btn small icon-tb" disabled title="断开连接">⏻</button>
       </div>
     </main>
 
@@ -142,11 +165,17 @@
         <button id="btn-file-close" class="btn icon" title="收起">✕</button>
       </div>
       <div class="file-toolbar">
+        <!-- 导航三连:后退 / 前进 / 上一级(资源管理器同款逻辑,历史记录在 sftp.js 维护,
+             可用态与悬停提示由 renderFileNav 刷新) -->
+        <button id="btn-file-back" class="btn icon" title="后退">←</button>
+        <button id="btn-file-forward" class="btn icon" title="前进">→</button>
+        <button id="btn-file-up" class="btn icon" title="上一级">↑</button>
         <button id="btn-file-refresh" class="btn icon" title="刷新当前目录">↻</button>
         <button id="btn-file-mkdir" class="btn icon" title="新建文件夹">＋</button>
-        <button id="btn-file-upload" class="btn icon" title="上传文件(也可直接把文件拖进本面板)">⬆</button>
+        <!-- 上传图标用「📤」:此前是「⬆」,和「↑ 上一级」几乎一样,极易误触 -->
+        <button id="btn-file-upload" class="btn icon" title="上传文件(也可直接把文件拖进本面板)">📤</button>
         <span class="spacer"></span>
-        <span class="file-toolbar-hint muted">右键文件可下载 / 重命名 / 删除</span>
+        <span class="file-toolbar-hint muted">右键文件可打开 / 下载 / 重命名 / 删除</span>
       </div>
       <div id="file-bookmarks" class="file-bookmarks"></div>
       <div id="file-mkdir-row" class="hidden">
@@ -160,7 +189,8 @@
         <button id="btn-file-chmod-ok" class="btn small primary">应用</button>
         <button id="btn-file-chmod-cancel" class="btn small">取消</button>
       </div>
-      <div id="file-path" class="file-path muted"></div>
+      <!-- 路径栏是输入框:回车跳转、Esc/失焦还原(绑定见 entry.js);右键可收藏当前目录 -->
+      <input id="file-path" class="file-path" type="text" spellcheck="false" autocomplete="off" />
       <div id="file-list"></div>
       <div id="file-status" class="muted"></div>
       <div id="file-drop-hint" class="file-drop-hint hidden">⬇ 松开即上传到当前目录</div>

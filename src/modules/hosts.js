@@ -1,5 +1,5 @@
 // 主机列表、主机编辑弹窗、指纹管理
-import { $, PROVIDER_LABEL, api, askConfirm, closeModal, openModal, state, toast } from './core.js';
+import { $, PROVIDER_LABEL, api, askConfirm, closeModal, copyText, openModal, showCtxMenu, state, toast } from './core.js';
 import { connectHost } from './terminal.js';
 
 export function groupOf(h) {
@@ -55,8 +55,10 @@ export function renderHosts() {
       item.addEventListener('auxclick', (e) => {
         if (e.button === 1) { e.preventDefault(); connectHost(h.id, null, { newTab: true }); }
       });
-      item.querySelector('.hi-clone').addEventListener('click', async (e) => {
-        e.stopPropagation();
+      // 悬停图标与右键菜单共用同一组动作(菜单多出"新标签连接/复制地址")。
+      // 图标保留给习惯鼠标悬停的人;右键兜底 —— 此前主机是全应用唯一
+      // 没有右键菜单的列表对象,终端、文件行都能右键,这里却毫无反应。
+      const cloneThis = async () => {
         try {
           await api('hosts:clone', { id: h.id });
           toast('已克隆主机', 'success');
@@ -64,14 +66,31 @@ export function renderHosts() {
         } catch (err) {
           toast('克隆失败：' + err.message, 'error');
         }
-      });
-      item.querySelector('.hi-edit').addEventListener('click', (e) => { e.stopPropagation(); openHostModal(h); });
-      item.querySelector('.hi-del').addEventListener('click', async (e) => {
-        e.stopPropagation();
+      };
+      const delThis = async () => {
         if (!(await askConfirm(`确定删除主机「${h.name}」吗？此操作不可撤销。`, { title: '删除主机', okText: '删除' }))) return;
         await api('hosts:delete', { id: h.id });
         toast('已删除', 'success');
         refreshHosts();
+      };
+      item.querySelector('.hi-clone').addEventListener('click', (e) => { e.stopPropagation(); cloneThis(); });
+      item.querySelector('.hi-edit').addEventListener('click', (e) => { e.stopPropagation(); openHostModal(h); });
+      item.querySelector('.hi-del').addEventListener('click', (e) => { e.stopPropagation(); delThis(); });
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
+        showCtxMenu(e.clientX, e.clientY, [
+          { label: '连接', run: () => connectHost(h.id) },
+          { label: '在新标签连接', run: () => connectHost(h.id, null, { newTab: true }) },
+          '-',
+          { label: '编辑…', run: () => openHostModal(h) },
+          { label: '克隆', run: () => cloneThis() },
+          { label: '复制 user@host', run: () => {
+            copyText(`${h.username}@${h.host}:${h.port}`).then((ok) => toast(ok ? '已复制' : '复制失败', ok ? 'success' : 'error'));
+          } },
+          '-',
+          { label: '删除…', danger: true, run: () => delThis() },
+        ]);
       });
       nav.appendChild(item);
     }

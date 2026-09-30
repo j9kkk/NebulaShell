@@ -29,7 +29,7 @@ export function setAiBusy(busy) {
   $('#ai-send').textContent = busy ? '生成中…' : '发送';
 }
 
-export function aiRequest(messages, bubble) {
+export function aiRequest(messages, bubble, override) {
   return new Promise((resolve) => {
     if (state.aiReq) {
       resolve({ error: '已有请求进行中，请稍候' });
@@ -39,7 +39,9 @@ export function aiRequest(messages, bubble) {
     const holder = { id: requestId, acc: '', bubble, resolve, messages };
     state.aiReq = holder;
     setAiBusy(true);
-    api('ai:chat', { requestId, messages }).catch((e) => {
+    // override:弹窗"测试连接"携带表单当前值,后端以其为准 —— 不要求先保存
+    const payload = override ? { requestId, messages, ai: override } : { requestId, messages };
+    api('ai:chat', payload).catch((e) => {
       if (state.aiReq === holder) {
         state.aiReq = null;
         setAiBusy(false);
@@ -55,13 +57,14 @@ export function aiFinishHolder() {
   state.aiReq = null;
   setAiBusy(false);
   if (h.bubble) {
-    if (!h.acc && !h.bubble.textContent) h.bubble.textContent = '（AI 未返回内容）';
+    if (!h.acc && !h.failed && !h.bubble.textContent) h.bubble.textContent = '（AI 未返回内容）';
   }
   if (h.acc) {
     state.aiHistory.push({ role: 'assistant', content: h.acc });
     trimAiHistory();
   }
-  h.resolve({ ok: true, text: h.acc });
+  // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
+  h.resolve(h.failed ? { error: h.failed, text: h.acc } : { ok: true, text: h.acc });
 }
 
 export async function aiSend(rawText, mode) {
@@ -89,13 +92,21 @@ export async function aiSend(rawText, mode) {
   const bubble = renderAiMessage('assistant', '');
 
   const r = await aiRequest(messages, bubble);
-  if (r && r.error) {
+  // ai:error 已把(部分回复+错误)写进气泡,这里只在气泡还空着(同步失败)时补写
+  if (r && r.error && !bubble.textContent) {
     bubble.textContent = '⚠️ ' + r.error;
   }
 }
 
 export async function aiTestConnection() {
-  const r = await aiRequest([{ role: 'user', content: '请只回复两个字母：OK' }], null);
+  // 用弹窗表单当前值直连测试:填完即可测,不必先保存(密钥留空则沿用已保存密钥)
+  const override = {
+    protocol: $('#ai-protocol').value,
+    baseUrl: $('#ai-baseurl').value.trim(),
+    model: $('#ai-model').value.trim(),
+    apiKey: $('#ai-apikey').value,
+  };
+  const r = await aiRequest([{ role: 'user', content: '请只回复两个字母：OK' }], null, override);
   if (r && r.error) toast('测试失败：' + r.error, 'error');
   else toast('连接成功，AI 已响应', 'success');
 }
@@ -162,6 +173,20 @@ export async function switchModel(model) {
   if (!model) return;
   state.settings = await api('settings:save', { ai: { model } });
   toast('模型已切换:' + model, 'success');
+}
+
+// 按已保存配置拉取可用模型并刷新"模型切换"下拉。boot 与保存设置后共用:
+// 保存后不刷新的话,下拉会停在启动时的旧状态(空/未配置),直到重启才恢复。
+export async function refreshAiModels() {
+  const s = (state.settings && state.settings.ai) || {};
+  try {
+    state.aiModels = s.baseUrl
+      ? await api('ai:models', { protocol: s.protocol, baseUrl: s.baseUrl })
+      : [];
+  } catch {
+    state.aiModels = [];
+  }
+  renderModelSwitch();
 }
 
 export async function aiDiagnose() {
@@ -236,6 +261,7 @@ export async function saveAiSettings() {
   try {
     state.settings = await api('settings:save', payload);
     closeModal('#modal-ai');
+    refreshAiModels(); // 后台刷新,不阻塞保存提示;失败时下拉仍会显示已保存模型
     toast('AI 设置已保存', 'success');
   } catch (e) {
     toast('保存失败：' + e.message, 'error');

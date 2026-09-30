@@ -1,12 +1,13 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, accel, activeTab, api, askConfirm, closeCtxMenu, parseFpError, state, toast } from './core.js';
+import { $, accel, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, parseFpError, showCtxMenu, state, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
 import { closeSnippetMenu, renderMonitorBar } from './monitor.js';
-import { activeConnectedSession, loadFileDir, renderFileTarget } from './sftp.js';
+import { activeConnectedSession, initialFileDir, loadFileDir, renderFileTarget } from './sftp.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 
 export const v = (n, f) => (getComputedStyle(document.documentElement).getPropertyValue(n) || '').trim() || f;
 
@@ -67,6 +68,17 @@ export function makeTab(tabId) {
     e.stopPropagation();
     closeTab(tabId);
   });
+  // 中键直接关闭(浏览器标签惯例);右键弹标签菜单。
+  // 标签是多会话终端里除主机外最高频的操作对象,此前它没有任何右键动作,
+  // 只有悬停才看得到的 ✕ —— 与终端/文件行已有右键菜单形成不对称。
+  el.addEventListener('auxclick', (e) => {
+    if (e.button === 1) { e.preventDefault(); closeTab(tabId); }
+  });
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
+    openTabCtxMenu(e.clientX, e.clientY, tabId);
+  });
   $('#tabs').appendChild(el);
   return el;
 }
@@ -81,9 +93,65 @@ export function createTab() {
     zoomPaneId: null,
     activePaneId: null,
     sessionId: null, // 该标签当前挂载的会话(标签与窗格一一对应,分屏时取主窗格)
+    customTitle: null, // 手动重命名的标签名;null = 跟随主会话主机名
   };
   state.tabs.set(id, tab);
   return tab;
+}
+
+/// 新建一个空标签并给出窗格选择器。标签栏 ＋ / ⌘T / 标签右键菜单共用同一入口,
+/// 此前这三处的逻辑在 entry.js 里抄了两遍。
+export function newTabWithPicker() {
+  const tab = createTab();
+  activateTab(tab.id);
+  const paneId = newPaneId();
+  tab.layout = leaf(paneId);
+  tab.panes.set(paneId, { id: paneId, el: makePaneEl(paneId), sessionId: null });
+  renderLayout();
+  updateWelcome();
+  return tab;
+}
+
+/// 标签右键菜单:关闭类动作 + 重命名 + 复制地址 + 新建。
+/// "关闭其他/右侧"按标签位置给出禁用态(已是唯一/最右时无意义),而不是藏起来 ——
+/// 菜单项位置固定,才不会每次弹出都变一串。
+export function openTabCtxMenu(x, y, tabId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab) return;
+  const ids = [...state.tabs.keys()];
+  const idx = ids.indexOf(tabId);
+  const firstSession = [...state.sessions.values()].find((s) => s.tabId === tabId);
+  showCtxMenu(x, y, [
+    { label: '关闭标签', key: accel('mod+W'), run: () => closeTab(tabId) },
+    { label: '关闭其他标签', disabled: ids.length <= 1, run: () => { for (const id of ids) if (id !== tabId) closeTab(id); } },
+    { label: '关闭右侧标签', disabled: idx >= ids.length - 1, run: () => { for (const id of ids.slice(idx + 1)) closeTab(id); } },
+    '-',
+    { label: '重命名…', run: () => renameTab(tabId) },
+    {
+      label: '复制主机地址', disabled: !firstSession, run: () => {
+        const h = firstSession.host;
+        copyText(`${h.username}@${h.host}:${h.port}`).then((ok) => toast(ok ? '已复制主机地址' : '复制失败', ok ? 'success' : 'error'));
+      },
+    },
+    '-',
+    { label: '新建标签', run: () => newTabWithPicker() },
+  ]);
+}
+
+/// 重命名标签:走应用内输入框(原生 prompt 在 WKWebView 下不返回)。
+/// 留空 = 清除自定义名,恢复"跟随主会话主机名"的默认行为。
+export async function renameTab(tabId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab) return;
+  const name = await askPrompt('输入新的标签名;留空则恢复默认(跟随主机名)。', {
+    title: '重命名标签',
+    password: false,
+    okText: '重命名',
+    placeholder: tab.customTitle || '新标签',
+  });
+  if (name === null) return;
+  tab.customTitle = name.trim();
+  syncTabChrome();
 }
 
 /// 仅切换"活动标签"的标识与高亮,不触碰 DOM。
@@ -169,8 +237,14 @@ export function followFilePanel() {
   $('#file-chmod-row').classList.add('hidden');
   $('#file-mkdir-row').classList.add('hidden');
   $('#file-list').innerHTML = '<div class="file-empty">加载中…</div>';
-  const remembered = s.lastFileDir || null;
-  loadFileDir(remembered).catch(() => {});
+  const remembered = s.lastFileDir;
+  if (remembered) {
+    loadFileDir(remembered).catch(() => {});
+    return;
+  }
+  // 首次浏览该会话:默认落到「当前主机命令执行路径」(shell 实时 cwd,
+  // 见 sftp.js initialFileDir),而不是家目录/根目录。
+  initialFileDir(s).then((dir) => loadFileDir(dir).catch(() => {}));
 }
 
 /// 关闭标签:释放该标签下所有会话
@@ -194,17 +268,17 @@ export function closeTab(tabId) {
   }
 }
 
-/// 同步标签标题/状态点(取该标签主会话)
+/// 同步标签标题/状态点(取该标签主会话;手动重命名的标签优先显示自定义名)
 export function syncTabChrome() {
   for (const [tabId, tab] of state.tabs) {
     const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
     const title = tab.el.querySelector('.tab-title');
     const dot = tab.el.querySelector('.tab-dot');
     if (s) {
-      title.textContent = s.host.name;
+      title.textContent = tab.customTitle || s.host.name;
       dot.className = 'tab-dot ' + s.status;
     } else {
-      title.textContent = '新标签';
+      title.textContent = tab.customTitle || '新标签';
       dot.className = 'tab-dot';
     }
   }
@@ -442,6 +516,14 @@ export function renderPickers() {
 
 // 在活动窗格旁分出新窗格(空,显示选择器)
 export function splitActive(dir) {
+  // 无活动标签时(欢迎页,还没连接过任何主机)先建标签再返回:
+  // state.layout 是"当前标签"的访问器,没有标签时赋值会被静默丢弃,
+  // 表现为"点了 ⛶ / 按 ⌘D 毫无反应"。新标签自带首个空窗格与选择器,
+  // 对空应用而言"分屏"的正确结果就是开出第一块终端。
+  if (!activeTab()) {
+    newTabWithPicker();
+    return;
+  }
   if (!state.sessions.size && !state.layout) {
     state.layout = leaf(newPaneId());
     state.panes.set(state.layout.paneId, { id: state.layout.paneId, el: makePaneEl(state.layout.paneId), sessionId: null });
@@ -725,6 +807,14 @@ export function createSession(host, paneId, tabId) {
   term.loadAddon(new WebLinksAddon()); // D7:链接识别,点击经主进程开系统浏览器
   term.open(pane);
   fit.fit();
+  // WebGL 渲染器:DOM 渲染器逐字符建 span,大批量输出(构建日志/vim/htop)时
+  // 主线程掉帧,是终端输出流畅度的主要瓶颈。上下文丢失(GPU 重置/驱动切换、
+  // GL 上下文数超限)时 dispose 自己,xterm 自动退回 DOM 渲染器,可用性不受影响。
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* ignore */ } });
+    term.loadAddon(webgl);
+  } catch { /* WebGL 不可用:保持 DOM 渲染器 */ }
   // innerHTML 清空会抹掉放大按钮,重新挂回
   const zb = document.createElement('button');
   zb.className = 'pane-zoom-btn';
@@ -758,12 +848,27 @@ export function createSession(host, paneId, tabId) {
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
     const mod = ev.metaKey || ev.ctrlKey;
-    if (mod && ev.key === 'c' && (ev.shiftKey || (ev.metaKey && term.hasSelection()))) {
-      const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
-      return false;
+    // Ctrl/Cmd+C 按"是否存在选区"分流(Windows Terminal 同款规则):
+    // 有选区 = 复制意图,绝不把 \x03 发给 shell —— 否则正在跑的命令立即被终止;
+    // 无选区 = 中断意图,放行给 xterm 发 \x03(SIGINT),维持标准终端行为。
+    // Shift/CapsLock 会把 ev.key 变成 'C',两种都要认,否则 Ctrl+Shift+C 是死键。
+    // preventDefault 拦掉浏览器默认复制:终端选区是 xterm 内部状态(WebGL 渲染下
+    // DOM 里没有选中文本),默认行为只会把别处 UI(AI 面板/主机列表)的 DOM 选区
+    // 塞进剪贴板 —— 表现为"复制的不是选中的内容"。
+    if (mod && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
+      ev.preventDefault();
+      if (ev.shiftKey || term.hasSelection()) {
+        const sel = term.getSelection();
+        if (sel) copyText(sel).then((ok) => { if (!ok) toast('复制失败：剪贴板不可用', 'error'); });
+        return false;
+      }
+      return true;
     }
     if (mod && ev.key === 'v' && !ev.shiftKey) {
+      // preventDefault 拦掉浏览器默认粘贴:否则 keydown 的默认动作会在 textarea
+      // 上再触发一次原生 paste 事件,xterm 的粘贴监听器插入一次、下面的手动
+      // readText 链路又插入一次 —— 粘贴内容出现两遍。
+      ev.preventDefault();
       navigator.clipboard.readText().then((t) => { if (t) term.paste(t); }).catch(() => {});
       return false;
     }
@@ -773,8 +878,40 @@ export function createSession(host, paneId, tabId) {
 
   // 标签元素由标签模型持有(不再每个会话建一个标签):
   // 一个标签可在其内部承载多个分屏窗格。
-  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0 };
+  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0, remoteCwd: null };
+  // OSC 7(shell 集成):部分 shell 配置后会在每个提示符前上报当前目录
+  // (\x1b]7;file://host/path\x07)。顺路记录到 remoteCwd,文件面板首次打开时
+  // 若 exec 探测不可用,可作为初始目录的兜底。格式不符一律忽略,不吃掉事件。
+  try {
+    term.parser.registerOscHandler(7, (data) => {
+      let p = String(data || '');
+      if (p.startsWith('file://')) {
+        const i = p.indexOf('/', 'file://'.length);
+        if (i < 0) return false;
+        p = p.slice(i);
+      }
+      if (!p.startsWith('/')) return false;
+      try { p = decodeURIComponent(p); } catch { /* 编码异常按原文处理 */ }
+      session.remoteCwd = p;
+      return false; // 不吞事件:其它观察者(如有)仍可见
+    });
+  } catch { /* 老版本 xterm 无 parser API:跳过 */ }
   state.sessions.set(sessionId, session);
+  // e2e 钩子:WebGL 渲染下终端文本不再出现在 .xterm-rows 的 DOM 里,
+  // 测试统一从这里读(基于 buffer API,渲染无关)。
+  if (window.__NB_E2E__) {
+    window.__NB_TERM_TEXT__ = () => {
+      const s = state.sessions.get(state.activeId);
+      if (!s) return '';
+      const buf = s.term.buffer.active;
+      const lines = [];
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        lines.push(line ? line.translateToString(true) : '');
+      }
+      return lines.join('\n');
+    };
+  }
   tab.sessionId = sessionId;
   syncTabChrome();
   // 走统一的激活路径:打上 .focused、刷新状态栏、fit 并聚焦。
@@ -800,10 +937,15 @@ export function firstPaint(session) {
   const { term, pane, fit } = session;
   if (!term || !pane || session._paintTimer) return;
 
-  const domHasText = () => {
-    const rows = pane.querySelector('.xterm-rows');
-    if (!rows) return false;
-    for (const d of rows.children) if ((d.textContent || '').trim()) return true;
+  // 可见性判定读 buffer 而非 DOM:WebGL 渲染下文本画在 canvas 上,
+  // .xterm-rows 恒为空,DOM 判定会让下面的有界轮询空转满 1.5 秒(反复 resize 抖动)。
+  // buffer 是两种渲染器共用的数据源,"内容已到达"即可停轮询。
+  const hasText = () => {
+    const buf = term.buffer.active;
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (line && line.translateToString(true).trim()) return true;
+    }
     return false;
   };
   const repaint = () => {
@@ -819,8 +961,8 @@ export function firstPaint(session) {
     scheduleResizeSync();
   };
 
-  if (!domHasText()) repaint();
-  if (domHasText()) return;
+  if (!hasText()) repaint();
+  if (hasText()) return;
 
   let elapsed = 0;
   const STEP = 60;
@@ -832,8 +974,8 @@ export function firstPaint(session) {
       session._paintTimer = null;
       return;
     }
-    if (!domHasText()) repaint();
-    if (domHasText() || elapsed >= LIMIT) {
+    if (!hasText()) repaint();
+    if (hasText() || elapsed >= LIMIT) {
       clearInterval(session._paintTimer);
       session._paintTimer = null;
     }
@@ -925,35 +1067,43 @@ export function updateStatusbar(session, error) {
   const btnClear = $('#btn-clear');
   const btnLog = $('#btn-log-toggle');
   const roBadge = $('#ro-badge');
+  // 按钮一律常驻、用禁用态表达可用性,不再随状态显隐 —— 此前"断开↔重连"互换、
+  // 三个会话按钮随状态出现/消失,都会让整排按钮左右跳动,热区不固定。
+  // 禁用原因写进 title,而不是让用户点了才知道为什么没反应。
+  // 处理函数里的状态防御保持不变(禁用按钮本就点不动)。
+  const setBtn = (btn, enabled, why) => { btn.disabled = !enabled; if (why) btn.title = why; };
   if (!session) {
     dot.className = 'dot idle';
     text.textContent = '就绪 — 尚未建立连接';
-    for (const b of [btnRe, btnDis, btnRo, btnClear, btnLog]) b.classList.add('hidden');
+    for (const b of [btnRe, btnDis, btnRo, btnClear, btnLog]) setBtn(b, false, '未建立连接');
     roBadge.classList.add('hidden');
     return;
   }
   const label = `${session.host.username}@${session.host.host}:${session.host.port}`;
+  const connected = session.status === 'connected';
+  const connecting = session.status === 'connecting';
   roBadge.classList.toggle('hidden', !session.readOnly);
-  btnRo.classList.toggle('hidden', session.status !== 'connected');
-  btnClear.classList.toggle('hidden', session.status !== 'connected');
-  btnLog.classList.toggle('hidden', session.status !== 'connected');
-  btnLog.textContent = session.logActive ? '⏺ 记录中' : '⏺ 日志';
-  if (session.status === 'connected') {
+  setBtn(btnRo, connected, connected ? (session.readOnly ? '关闭只读模式' : '只读模式,防止误触') : '连接后才可切换只读');
+  setBtn(btnClear, connected, connected ? '清屏并清空回滚' : '连接后才可清屏');
+  setBtn(btnLog, connected, connected ? (session.logActive ? '停止记录会话日志' : '记录会话日志到文件') : '连接后才可记录日志');
+  // 录制中用红色呼吸点表达(此前靠文字"⏺ 记录中"切换,图标化后移到颜色与 title 上)
+  btnLog.classList.toggle('recording', connected && !!session.logActive);
+  if (connected) {
     dot.className = 'dot connected';
     text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 📢广播中' : '');
-    btnRe.classList.add('hidden');
-    btnDis.classList.remove('hidden');
-  } else if (session.status === 'connecting') {
+    setBtn(btnRe, false, '已连接');
+    setBtn(btnDis, true, '断开连接');
+  } else if (connecting) {
     dot.className = 'dot connecting';
     text.textContent = `正在连接 ${label}…`;
-    btnRe.classList.add('hidden');
-    btnDis.classList.remove('hidden');
+    setBtn(btnRe, false, '正在连接');
+    setBtn(btnDis, true, '取消连接');
   } else {
     dot.className = 'dot ' + session.status;
     const retry = session.reconnectScheduled ? `(自动重连 ${session.reconnectAttempt}/3)` : '';
     text.textContent = `已断开 ${label}` + (error ? `（${error}）` : '') + retry;
-    btnRe.classList.remove('hidden');
-    btnDis.classList.add('hidden');
+    setBtn(btnRe, true, '重连');
+    setBtn(btnDis, false, '连接已断开');
   }
 }
 
