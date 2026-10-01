@@ -284,7 +284,12 @@ fn done_payload(
 }
 
 /// 从一帧 SSE 里提取 token 用量,其余字段忽略
-fn collect_usage(protocol: &str, evt: &Value, usage_in: &mut Option<i64>, usage_out: &mut Option<i64>) {
+fn collect_usage(
+    protocol: &str,
+    evt: &Value,
+    usage_in: &mut Option<i64>,
+    usage_out: &mut Option<i64>,
+) {
     let u = if protocol == "anthropic" {
         match evt["type"].as_str().unwrap_or("") {
             // message_start 的 message.usage 只有输入;输出计数后续由 message_delta 累加
@@ -296,10 +301,16 @@ fn collect_usage(protocol: &str, evt: &Value, usage_in: &mut Option<i64>, usage_
         evt["usage"].as_object().map(|_| evt["usage"].clone())
     };
     let Some(u) = u else { return };
-    if let Some(v) = u["prompt_tokens"].as_i64().or_else(|| u["input_tokens"].as_i64()) {
+    if let Some(v) = u["prompt_tokens"]
+        .as_i64()
+        .or_else(|| u["input_tokens"].as_i64())
+    {
         *usage_in = Some(v);
     }
-    if let Some(v) = u["completion_tokens"].as_i64().or_else(|| u["output_tokens"].as_i64()) {
+    if let Some(v) = u["completion_tokens"]
+        .as_i64()
+        .or_else(|| u["output_tokens"].as_i64())
+    {
         *usage_out = Some(v);
     }
 }
