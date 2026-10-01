@@ -171,6 +171,7 @@ async fn ssh_connect_exec_roundtrip() {
         sid.into(),
         "/home/user/up.bin",
         dl.to_str().unwrap(),
+        "download",
     )
     .await
     .expect("下载");
