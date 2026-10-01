@@ -202,9 +202,14 @@ pub async fn chat_stream<
             );
             return Ok(());
         }
-        let chunk = tokio::select! {
-            c = stream.next() => c,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => continue,
+        // timeout 而非 select!:select 公平调度会在数据与 sleep 同时就绪时
+        // 随机选 sleep,让每个 chunk 平白多等一帧 200ms,拖慢整体耗时;
+        // timeout 只在流真正停顿 200ms 时才超时,超时仅用于醒来检查取消。
+        let chunk = match tokio::time::timeout(std::time::Duration::from_millis(200), stream.next())
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => continue,
         };
         let bytes = match chunk {
             Some(b) => b.map_err(|e| e.to_string())?,
