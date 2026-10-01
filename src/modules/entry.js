@@ -634,9 +634,9 @@ export function bindEvents() {
       });
     }
   });
-  window.nebula.on('ai:done', ({ requestId }) => {
+  window.nebula.on('ai:done', (done) => {
     const h = state.aiReq;
-    if (h && h.id === requestId) aiFinishHolder();
+    if (h && h.id === done.requestId) aiFinishHolder(done);
   });
   window.nebula.on('ai:error', ({ requestId, message }) => {
     const h = state.aiReq;

@@ -22,21 +22,42 @@ function aiBodyOf(bubble) {
   return bubble ? bubble.querySelector('.ai-body') : null;
 }
 
-export function setAiBody(bubble, text) {
+export function setAiBody(bubble, text, { md = false } = {}) {
   const body = aiBodyOf(bubble);
   if (!body) return;
   bubble.__raw = String(text ?? '');
-  if (bubble.dataset.role === 'assistant') body.innerHTML = mdToHtml(text);
+  // 默认只有助手侧渲染 Markdown;用户输入不当 Markdown 解析,原样展示。
+  // 程序构造的 prompt(诊断/解释)本身含围栏代码块,走 md 分支。
+  if (bubble.dataset.role === 'assistant' || md) body.innerHTML = mdToHtml(text);
   else body.textContent = text;
 }
 
-export function renderAiMessage(role, text) {
+// 头像与发送时间:头像标来源(🧑 用户 / ✨ AI),时间用 HH:MM。
+// meta 行用 .ai-meta,低对比度、不随气泡 padding 走,见 style.css。
+export function renderAiMessage(role, text, opts) {
   const el = document.createElement('div');
   el.className = 'ai-msg ' + role;
   el.dataset.role = role;
+  const row = document.createElement('div');
+  row.className = 'ai-row';
+  const avatar = document.createElement('span');
+  avatar.className = 'ai-avatar';
+  avatar.setAttribute('aria-hidden', 'true');
+  avatar.textContent = role === 'user' ? '🧑' : '✨';
+  row.appendChild(avatar);
+  const col = document.createElement('div');
+  col.className = 'ai-col';
+  const time = new Date();
+  const stamp = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
+  const meta = document.createElement('div');
+  meta.className = 'ai-meta';
+  meta.textContent = stamp;
+  col.appendChild(meta);
   const body = document.createElement('div');
   body.className = 'ai-body';
-  el.appendChild(body);
+  col.appendChild(body);
+  row.appendChild(col);
+  el.appendChild(row);
   const copy = document.createElement('button');
   copy.type = 'button';
   copy.className = 'ai-copy';
@@ -49,12 +70,32 @@ export function renderAiMessage(role, text) {
     toast(ok ? '已复制' : '复制失败：剪贴板不可用', ok ? 'success' : 'error');
   });
   el.appendChild(copy);
-  setAiBody(el, text);
+  setAiBody(el, text, opts);
   const box = $('#ai-messages');
   box.appendChild(el);
   while (box.children.length > AI_DOM_LIMIT) box.removeChild(box.firstChild);
   box.scrollTop = box.scrollHeight;
   return el;
+}
+
+/// AI 响应结束后的元信息行:模型、输入/输出 token、耗时。
+/// 传入 null 值的项跳过;整行更新到气泡顶部的 .ai-meta(时间戳扩展成完整元信息)。
+export function setAiMeta(bubble, { model, usage, elapsedMs } = {}) {
+  if (!bubble) return;
+  const meta = bubble.querySelector('.ai-meta');
+  if (!meta) return;
+  const parts = [];
+  const t = meta.textContent;
+  if (t) parts.push(t);
+  if (model) parts.push(model);
+  if (usage) {
+    const tok = [];
+    if (usage.promptTokens != null) tok.push(`${usage.promptTokens}入`);
+    if (usage.completionTokens != null) tok.push(`${usage.completionTokens}出`);
+    if (tok.length) parts.push('tokens ' + tok.join('/'));
+  }
+  if (elapsedMs != null) parts.push((elapsedMs / 1000).toFixed(1) + 's');
+  meta.textContent = parts.join(' · ');
 }
 
 /// 等待首个 token 期间的气泡形态:转圈 + "正在思考…"。
@@ -69,7 +110,11 @@ export function markBubblePending(bubble) {
   const sp = document.createElement('span');
   sp.className = 'ai-spinner';
   sp.setAttribute('aria-hidden', 'true');
-  bubble.insertBefore(sp, body);
+  // spinner 挂在正文列里 meta 之前(body 不再是气泡直接子节点,不能用 bubble.insertBefore)
+  const col = body.parentElement;
+  const meta = col.querySelector('.ai-meta');
+  if (meta) col.insertBefore(sp, meta);
+  else col.appendChild(sp);
   body.textContent = '正在思考…';
 }
 
@@ -109,7 +154,12 @@ export function aiRequest(messages, bubble, override) {
       return;
     }
     const requestId = crypto.randomUUID();
-    const holder = { id: requestId, acc: '', bubble, resolve, messages };
+    const holder = {
+      id: requestId, acc: '', bubble, resolve, messages,
+      // 当前生效模型 + 起始时间:气泡元信息(模型/耗时)与用户侧时间戳的数据源
+      model: (override && override.model) || $('#ai-model').value.trim() || '',
+      started: Date.now(),
+    };
     state.aiReq = holder;
     setAiBusy(true);
     // override:弹窗"测试连接"携带表单当前值,后端以其为准 —— 不要求先保存
@@ -124,7 +174,7 @@ export function aiRequest(messages, bubble, override) {
   });
 }
 
-export function aiFinishHolder() {
+export function aiFinishHolder(done) {
   const h = state.aiReq;
   if (!h) return;
   state.aiReq = null;
@@ -140,16 +190,22 @@ export function aiFinishHolder() {
     if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {
       aiBodyOf(h.bubble).textContent = '（AI 未返回内容）';
     }
+    // 响应元信息(模型/token/耗时):有内容才挂,没有就不占视觉
+    if (!h.failed && (done && (done.usage || done.elapsedMs != null))) {
+      setAiMeta(h.bubble, { model: h.model, usage: done.usage, elapsedMs: done.elapsedMs });
+    }
   }
   if (h.acc) {
     state.aiHistory.push({ role: 'assistant', content: h.acc });
     trimAiHistory();
   }
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
-  h.resolve(h.failed ? { error: h.failed, text: h.acc } : { ok: true, text: h.acc });
+  h.resolve(h.failed
+    ? { error: h.failed, text: h.acc }
+    : { ok: true, text: h.acc, usage: done && done.usage, elapsedMs: done && done.elapsedMs });
 }
 
-export async function aiSend(rawText, mode) {
+export async function aiSend(rawText, mode, opts) {
   if (state.aiReq) return toast('AI 正在回复中，请稍候', 'error');
   let text = (rawText || '').trim();
   if (!text) text = $('#ai-input').value.trim();
@@ -157,15 +213,17 @@ export async function aiSend(rawText, mode) {
   $('#ai-input').value = '';
 
   let content = text;
+  let userMd = !!(opts && opts.md); // 程序构造的 prompt 含围栏代码块,气泡按 Markdown 渲染
   if (mode === 'explain') {
     content = `请解释以下终端输出，指出关键信息、潜在问题与建议：\n\`\`\`\n${text}\n\`\`\``;
+    userMd = true;
   }
 
   const userMsg = { role: 'user', content };
   const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...state.aiHistory, userMsg];
   state.aiHistory.push(userMsg);
   trimAiHistory();
-  renderAiMessage('user', text);
+  renderAiMessage('user', text, { md: userMd });
   const bubble = renderAiMessage('assistant', '');
   markBubblePending(bubble);
 
@@ -187,9 +245,25 @@ export async function aiTestConnection() {
     apiKey: $('#ai-apikey').value,
   };
   if (!override.model) return toast('请先选择模型', 'error');
-  const r = await aiRequest([{ role: 'user', content: '请只回复两个字母：OK' }], null, override);
-  if (r && r.error) toast('测试失败：' + r.error, 'error');
-  else toast('连接成功，AI 已响应', 'success');
+  const btn = $('#btn-ai-test');
+  const t0 = performance.now();
+  btn.disabled = true;
+  btn.textContent = '测试中…';
+  try {
+    const r = await aiRequest([{ role: 'user', content: '请只回复两个字母：OK' }], null, override);
+    const sec = ((performance.now() - t0) / 1000).toFixed(1);
+    if (r && r.error) {
+      toast(`测试失败（${sec}s）：${r.error}`, 'error');
+    } else {
+      const u = r && r.usage;
+      const tok = u && (u.promptTokens != null || u.completionTokens != null)
+        ? `，tokens ${u.promptTokens ?? '?'}入/${u.completionTokens ?? '?'}出` : '';
+      toast(`连接成功：${override.model}，延迟 ${sec}s${tok}`, 'success');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '测试连接';
+  }
 }
 
 // dsh 式快速配置:按当前协议请求 /models,结果填入弹框供勾选
@@ -225,12 +299,14 @@ export async function fetchAiModels() {
 
 /// 后端已归一化,但历史配置里可能残留纯字符串形式(旧版只存 id),统一收敛成对象
 function normModel(m) {
-  if (typeof m === 'string') return { id: m, name: m, ownedBy: '', created: null };
+  if (typeof m === 'string') return { id: m, name: m, ownedBy: '', created: null, context: null, vision: false };
   return {
     id: String(m.id || m.name || ''),
     name: String(m.name || m.id || ''),
     ownedBy: String(m.ownedBy || ''),
     created: m.created == null ? null : m.created,
+    context: m.context == null ? null : Number(m.context) || null,
+    vision: !!m.vision,
   };
 }
 
@@ -259,6 +335,9 @@ function modelMeta(m) {
   if (m.ownedBy) parts.push(m.ownedBy);
   const c = modelCreated(m);
   if (c) parts.push(c);
+  // 上下文窗口/视觉能力是供应商可选字段,拿不到就不展示
+  if (m.context) parts.push(`上下文 ${m.context >= 1000 ? Math.round(m.context / 1000) + 'K' : m.context} tokens`);
+  if (m.vision) parts.push('支持图片');
   return parts.join(' · ');
 }
 
@@ -458,16 +537,28 @@ export async function refreshAiModels() {
   syncSelectedModelsFromSettings();
 }
 
+// 终端原始字节流里的 ANSI/OSC 控制序列(括号粘贴 \x1b[?2004h、OSC 标题
+// \x1b]0;...\x07、光标/颜色等)对 AI 是纯噪声,拼进诊断 prompt 会显示为乱码。
+// 按 VT 解析规则剥离:CSI 以 ESC[ 开头到 0x40-0x7E 结束;OSC 以 ESC] 开头到
+// BEL 或 ESC\ 结束;其余单个 ESC 序列一并去掉。
+export function stripTerminalNoise(s) {
+  return String(s ?? '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b[@-_]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+}
+
 export async function aiDiagnose() {
   const s = state.sessions.get(state.activeId);
   if (!s) return toast('请先连接主机', 'error');
   // 只取最后一次输入的命令 + 它提交之后的控制台输出(terminal.js 在 onData/
   // ssh:data 里跟踪),不再扫整屏 —— 全屏里早前的无关输出会稀释诊断焦点。
-  const cmd = String(s.lastCmd || '').trim();
-  const output = String(s.lastOutput || '').trim();
+  const cmd = stripTerminalNoise(String(s.lastCmd || '')).trim();
+  const output = stripTerminalNoise(String(s.lastOutput || '')).trim();
   if (!cmd && !output) return toast('还没有执行过命令,无诊断依据', 'error');
   const recent = `最后一次输入的命令：\n${cmd || '(未捕获)'}\n\n该命令的控制台输出：\n${output || '(无输出)'}`.slice(-3000);
-  aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```');
+  aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```', undefined, { md: true });
   $('#ai-panel').classList.remove('hidden');
 }
 

@@ -74,11 +74,26 @@ pub async fn list_models(
         } else {
             m["created"].clone()
         };
+        // 上下文窗口 / 视觉能力不是所有供应商都返回:OpenRouter 用
+        // context_length + architecture.input_modalities,其余字段是各家常见
+        // 别名。拿不到就传 null,前端对 null 一律不展示。
+        let context = m["context_length"]
+            .as_i64()
+            .or_else(|| m["context_window"].as_i64())
+            .or_else(|| m["max_input_tokens"].as_i64())
+            .or_else(|| m["max_model_len"].as_i64())
+            .or_else(|| m["top_provider"]["context_length"].as_i64());
+        let vision = m["architecture"]["input_modalities"]
+            .as_array()
+            .map(|a| a.iter().any(|v| v.as_str() == Some("image")))
+            .unwrap_or(false);
         out.push(json!({
             "id": id,
             "name": name,
             "ownedBy": owned_by,
             "created": created,
+            "context": context,
+            "vision": vision,
         }));
     }
     if out.is_empty() {
@@ -141,7 +156,11 @@ pub async fn chat_stream<
         (url, body, r)
     } else {
         let url = format!("{}/chat/completions", base_url.trim().trim_end_matches('/'));
-        let body = json!({ "model": model, "messages": messages, "stream": true });
+        // include_usage:OpenAI 兼容流式默认不带 usage,显式请求后最后一帧会附带
+        let body = json!({
+            "model": model, "messages": messages, "stream": true,
+            "stream_options": { "include_usage": true }
+        });
         let mut r = client.post(&url).json(&body);
         if !api_key.is_empty() {
             r = r.header("authorization", format!("Bearer {}", api_key));
@@ -169,6 +188,11 @@ pub async fn chat_stream<
     // 未消费的 SSE 字节(以行为单位攒);用字节缓冲是为了让跨 chunk 的
     // 多字节字符在被解码前保持完整,见下方 decode 处的注释
     let mut buffer: Vec<u8> = Vec::new();
+    // token 用量:OpenAI 兼容在最后一帧带 usage;Anthropic 分散在 message_start
+    // (输入)与 message_delta(输出)里。拿不到就留 null,前端不展示。
+    let mut usage_in: Option<i64> = None;
+    let mut usage_out: Option<i64> = None;
+    let started = std::time::Instant::now();
     loop {
         if abort_flag.load(std::sync::atomic::Ordering::Relaxed) {
             emit_evt(
@@ -207,7 +231,7 @@ pub async fn chat_stream<
                 emit_evt(
                     &app,
                     "ai:done",
-                    json!({ "requestId": request_id, "finishReason": "stop" }),
+                    done_payload(&request_id, "stop", usage_in, usage_out, started),
                 );
                 return Ok(());
             }
@@ -215,6 +239,7 @@ pub async fn chat_stream<
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            collect_usage(protocol.as_str(), &evt, &mut usage_in, &mut usage_out);
             match emit_deltas(&app, &request_id, protocol.as_str(), &evt) {
                 Ok(FrameOutcome::Continue) => {}
                 // Anthropic 用 message_stop 收尾,语义与 [DONE] 相同
@@ -222,7 +247,7 @@ pub async fn chat_stream<
                     emit_evt(
                         &app,
                         "ai:done",
-                        json!({ "requestId": request_id, "finishReason": "stop" }),
+                        done_payload(&request_id, "stop", usage_in, usage_out, started),
                     );
                     return Ok(());
                 }
@@ -234,9 +259,49 @@ pub async fn chat_stream<
     emit_evt(
         &app,
         "ai:done",
-        json!({ "requestId": request_id, "finishReason": "end" }),
+        done_payload(&request_id, "end", usage_in, usage_out, started),
     );
     Ok(())
+}
+
+/// 结束事件附带耗时(毫秒)与 token 用量,缺省字段以 null 透传
+fn done_payload(
+    request_id: &str,
+    finish: &str,
+    usage_in: Option<i64>,
+    usage_out: Option<i64>,
+    started: std::time::Instant,
+) -> Value {
+    json!({
+        "requestId": request_id,
+        "finishReason": finish,
+        "elapsedMs": started.elapsed().as_millis() as u64,
+        "usage": {
+            "promptTokens": usage_in,
+            "completionTokens": usage_out,
+        },
+    })
+}
+
+/// 从一帧 SSE 里提取 token 用量,其余字段忽略
+fn collect_usage(protocol: &str, evt: &Value, usage_in: &mut Option<i64>, usage_out: &mut Option<i64>) {
+    let u = if protocol == "anthropic" {
+        match evt["type"].as_str().unwrap_or("") {
+            // message_start 的 message.usage 只有输入;输出计数后续由 message_delta 累加
+            "message_start" => Some(evt["message"]["usage"].clone()),
+            "message_delta" => Some(evt["usage"].clone()),
+            _ => None,
+        }
+    } else {
+        evt["usage"].as_object().map(|_| evt["usage"].clone())
+    };
+    let Some(u) = u else { return };
+    if let Some(v) = u["prompt_tokens"].as_i64().or_else(|| u["input_tokens"].as_i64()) {
+        *usage_in = Some(v);
+    }
+    if let Some(v) = u["completion_tokens"].as_i64().or_else(|| u["output_tokens"].as_i64()) {
+        *usage_out = Some(v);
+    }
 }
 
 /// 一帧 SSE 事件的解析结果

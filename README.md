@@ -66,12 +66,12 @@
 
 | 平台 | 文件 | 大小 |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `NebulaShell_0.1.0_aarch64.dmg` | 5.4 MB |
-| macOS (Intel) | `NebulaShell_0.1.0_x64.dmg` | 5.7 MB |
-| Windows (64 位) | `NebulaShell_0.1.0_x64-setup.exe` | 3.6 MB |
-| Windows (MSI) | `NebulaShell_0.1.0_x64_en-US.msi` | 5.1 MB |
-| Linux (AppImage) | `NebulaShell_0.1.0_amd64.AppImage` | 79.7 MB |
-| Linux (deb / rpm) | `NebulaShell_0.1.0_amd64.deb` / `-1.x86_64.rpm` | 5.4 MB |
+| macOS (Apple Silicon) | `NebulaShell_0.1.1_aarch64.dmg` | 5.4 MB |
+| macOS (Intel) | `NebulaShell_0.1.1_x64.dmg` | 5.7 MB |
+| Windows (64 位) | `NebulaShell_0.1.1_x64-setup.exe` | 3.6 MB |
+| Windows (MSI) | `NebulaShell_0.1.1_x64_en-US.msi` | 5.1 MB |
+| Linux (AppImage) | `NebulaShell_0.1.1_amd64.AppImage` | 79.7 MB |
+| Linux (deb / rpm) | `NebulaShell_0.1.1_amd64.deb` / `-1.x86_64.rpm` | 5.4 MB |
 
 > 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
 > [.github/workflows/release.yml](.github/workflows/release.yml)。

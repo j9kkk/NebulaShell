@@ -241,13 +241,30 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 .ai-quick { display: flex; gap: 8px; padding: 10px 12px 0; }
 #ai-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .ai-msg { position: relative; max-width: 92%; padding: 8px 11px; border-radius: 12px; font-size: 13px; line-height: 1.55; word-break: break-word; }
+/* 气泡内布局:头像在左,右侧一列(元信息行 + 正文)。
+   .ai-col 的 min-width:0 是关键 —— 没有 it,长模型名/长 URL 会把列撑破、
+   头像被挤变形;meta 行自己再 ellipsis 兜底。 */
+.ai-row { display: flex; gap: 8px; align-items: flex-start; }
+.ai-avatar { flex: 0 0 auto; font-size: 13px; line-height: 1.4; user-select: none; }
+.ai-col { flex: 1 1 auto; min-width: 0; }
+/* 元信息:发送时间 / 模型 / token / 耗时。刻意低对比度(muted 再压一档),
+   字号 11px,不抢正文视觉;换行场景(模型名很长)用 overflow-wrap 顺断,
+   不用 nowrap,避免撑出横向滚动。 */
+.ai-meta {
+  color: var(--muted); opacity: 0.75;
+  font-size: 11px; line-height: 1.5; margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
+.ai-msg.user .ai-meta { text-align: right; }
 .ai-msg.user { align-self: flex-end; background: #23407e; border-bottom-right-radius: 3px; }
 /* 用户消息不走 Markdown,靠 pre-wrap 保留换行 */
 .ai-msg.user .ai-body { white-space: pre-wrap; }
 .ai-msg.assistant { align-self: flex-start; background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
 
-/* 等待首个 token:气泡内转圈 + 文案,让"正在执行"这件事可见 */
-.ai-msg.pending { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+/* 等待首个 token:转圈 + 文案,让"正在执行"这件事可见(spinner 在 .ai-col 内) */
+.ai-msg.pending { color: var(--muted); }
+.ai-msg.pending .ai-row { align-items: center; }
+.ai-msg.pending .ai-spinner { margin-right: 8px; }
 .ai-msg.pending .ai-copy { display: none; }
 .ai-pending-text { font-size: 12px; }
 .ai-spinner {
