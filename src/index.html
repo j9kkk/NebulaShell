@@ -8,6 +8,8 @@
 </head>
 <body>
   <div id="app">
+    <!-- 面板拖拽调宽把手:sidebar / ai-panel / file-panel 三处边界可拖动调整 -->
+    <div id="sidebar-resizer" class="resizer" title="拖动调整侧边栏宽度"></div>
     <!-- 侧边栏：主机列表 -->
     <aside id="sidebar">
       <div class="side-header">
@@ -134,6 +136,7 @@
     </main>
 
     <!-- AI 面板 -->
+    <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手面板宽度"></div>
     <aside id="ai-panel" class="hidden">
       <div class="ai-header">
         <span class="ai-title">✨ AI 助手</span>
@@ -154,6 +157,7 @@
     </aside>
 
     <!-- SFTP 文件面板 -->
+    <div id="file-resizer" class="resizer hidden" title="拖动调整文件管理面板宽度"></div>
     <aside id="file-panel" class="hidden">
       <div class="ai-header">
         <div class="fp-head">

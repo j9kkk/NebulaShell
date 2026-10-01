@@ -68,10 +68,23 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 #app { display: flex; height: 100vh; }
 
+/* 面板边界拖拽把手:1px 视觉边界 + 6px 可命中热区(透明),
+   悬停/拖动时亮起。夹在 #app 的 flex 序列里,不占布局宽度。 */
+.resizer {
+  flex: 0 0 auto; width: 0; position: relative; z-index: 5;
+  cursor: col-resize; touch-action: none; user-select: none;
+}
+.resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -3px; width: 6px;
+}
+.resizer:hover::after, .resizer.dragging::after { background: rgba(91, 140, 255, 0.35); }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing iframe, body.resizing xterm { pointer-events: none; }
+
 /* 侧边栏 */
 #sidebar {
   width: 264px;
-  min-width: 264px;
+  min-width: 180px; max-width: 50vw;
   background: var(--panel);
   border-right: 1px solid var(--border);
   display: flex;
@@ -229,7 +242,7 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* AI 面板 */
 #ai-panel {
-  width: 360px; min-width: 360px;
+  width: 360px; min-width: 260px; max-width: 60vw;
   border-left: 1px solid var(--border);
   background: var(--panel);
   display: flex; flex-direction: column;
@@ -261,7 +274,7 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 .ai-msg.user .ai-body { white-space: pre-wrap; }
 .ai-msg.assistant { align-self: flex-start; background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
 
-/* 等待首个 token:转圈 + 文案,让"正在执行"这件事可见(spinner 在 .ai-col 内) */
+/* 等待首个 token:转圈 + 文案,让"正在执行"这件事可见(spinner 在 .ai-row 内、正文列左侧) */
 .ai-msg.pending { color: var(--muted); }
 .ai-msg.pending .ai-row { align-items: center; }
 .ai-msg.pending .ai-spinner { margin-right: 8px; }
@@ -621,7 +634,8 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* SFTP 文件面板 */
 #file-panel {
-  width: 340px; border-left: 1px solid var(--border); background: var(--panel, var(--bg2));
+  width: 340px; min-width: 260px; max-width: 60vw;
+  border-left: 1px solid var(--border); background: var(--panel, var(--bg2));
   display: flex; flex-direction: column; min-height: 0;
 }
 #file-panel.hidden { display: none; }

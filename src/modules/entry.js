@@ -189,10 +189,12 @@ export function bindEvents() {
 
   $('#btn-ai-toggle').addEventListener('click', () => {
     $('#ai-panel').classList.toggle('hidden');
+    $('#ai-resizer').classList.toggle('hidden', $('#ai-panel').classList.contains('hidden'));
     fitActive();
   });
   $('#btn-ai-close').addEventListener('click', () => {
     $('#ai-panel').classList.add('hidden');
+    $('#ai-resizer').classList.add('hidden');
     fitActive();
   });
   $('#ai-settings-open').addEventListener('click', openAiSettings);
@@ -463,13 +465,15 @@ export function bindEvents() {
   });
   $('#btn-ai-menu').addEventListener('click', () => {
     $('#ai-panel').classList.toggle('hidden');
+    $('#ai-resizer').classList.toggle('hidden', $('#ai-panel').classList.contains('hidden'));
     fitActive();
   });
   $('#btn-log-menu').addEventListener('click', toggleSessionLog);
   $('#btn-files').addEventListener('click', async () => {
     const panel = $('#file-panel');
-    if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); fitActive(); return; }
+    if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); $('#file-resizer').classList.add('hidden'); fitActive(); return; }
     panel.classList.remove('hidden');
+    $('#file-resizer').classList.remove('hidden');
     $('#file-list').innerHTML = '<div class="file-empty">加载中…</div>';
     renderFileTarget();
     fitActive();
@@ -481,7 +485,7 @@ export function bindEvents() {
     else if (s.lastFileDir) await loadFileDir(s.lastFileDir);
     else await loadFileDir(await initialFileDir(s));
   });
-  $('#btn-file-close').addEventListener('click', () => { $('#file-panel').classList.add('hidden'); fitActive(); });
+  $('#btn-file-close').addEventListener('click', () => { $('#file-panel').classList.add('hidden'); $('#file-resizer').classList.add('hidden'); fitActive(); });
   $('#btn-term-settings').addEventListener('click', openTermSettings);
   $('#btn-term-cancel').addEventListener('click', () => closeModal('#modal-term'));
   $('#btn-term-save').addEventListener('click', saveTermSettings);
@@ -663,11 +667,57 @@ function fillMenuKeys() {
   }
 }
 
+/// 面板边界拖拽调宽:sidebar(左边界)、ai-panel / file-panel(右边界各一条)。
+/// 拖动时直接写面板的 width,上下限交给面板自己的 min/max-width 兜底;
+/// 结束后 fitActive() 让 xterm 按新宽度重新排字。
+function setupResizers() {
+  const panels = {
+    'sidebar-resizer': { el: () => $('#sidebar'), side: 'left' },
+    'ai-resizer': { el: () => $('#ai-panel'), side: 'right' },
+    'file-resizer': { el: () => $('#file-panel'), side: 'right' },
+  };
+  for (const [id, { el, side }] of Object.entries(panels)) {
+    const grip = document.getElementById(id);
+    if (!grip) continue;
+    grip.addEventListener('pointerdown', (ev) => {
+      const panel = el();
+      if (!panel || panel.classList.contains('hidden')) return;
+      ev.preventDefault();
+      grip.setPointerCapture(ev.pointerId);
+      grip.classList.add('dragging');
+      document.body.classList.add('resizing');
+      const startX = ev.clientX;
+      const startW = panel.getBoundingClientRect().width;
+      let lastFit = 0;
+      const move = (e) => {
+        const dx = e.clientX - startX;
+        panel.style.width = Math.round(side === 'left' ? startW + dx : startW - dx) + 'px';
+        // 拖动过程中节流重排终端,松手后再精排一次
+        const now = performance.now();
+        if (now - lastFit > 100) { lastFit = now; fitActive(); }
+      };
+      const up = (e) => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        grip.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        move(e);
+        fitActive();
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+    });
+    // 双击把手恢复默认宽度
+    grip.addEventListener('dblclick', () => { el().style.width = ''; fitActive(); });
+  }
+}
+
 export async function boot() {
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
   applyAccelTitles();
   fillMenuKeys();
   bindEvents();
+  setupResizers();
   bindContextMenu();
   state.settings = await api('settings:get');
   await refreshHosts();

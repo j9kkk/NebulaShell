@@ -40,11 +40,15 @@ export function renderAiMessage(role, text, opts) {
   el.dataset.role = role;
   const row = document.createElement('div');
   row.className = 'ai-row';
-  const avatar = document.createElement('span');
-  avatar.className = 'ai-avatar';
-  avatar.setAttribute('aria-hidden', 'true');
-  avatar.textContent = role === 'user' ? '🧑' : '✨';
-  row.appendChild(avatar);
+  // 只有助手侧带头像(✨):用户自己一眼就能认出右侧蓝色气泡,
+  // 头像纯属重复,还占掉窄面板里的正文宽度。
+  if (role === 'assistant') {
+    const avatar = document.createElement('span');
+    avatar.className = 'ai-avatar';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = '✨';
+    row.appendChild(avatar);
+  }
   const col = document.createElement('div');
   col.className = 'ai-col';
   const time = new Date();
@@ -110,10 +114,11 @@ export function markBubblePending(bubble) {
   const sp = document.createElement('span');
   sp.className = 'ai-spinner';
   sp.setAttribute('aria-hidden', 'true');
-  // spinner 挂在正文列里 meta 之前(body 不再是气泡直接子节点,不能用 bubble.insertBefore)
+  // spinner 挂在 .ai-row 里、正文列之前:转圈和"正在思考…"同行,
+  // 插进 .ai-col 会落到时间戳上方,成了一颗无意义的空心椭圆。
+  const row = body.closest('.ai-row');
   const col = body.parentElement;
-  const meta = col.querySelector('.ai-meta');
-  if (meta) col.insertBefore(sp, meta);
+  if (row) row.insertBefore(sp, col);
   else col.appendChild(sp);
   body.textContent = '正在思考…';
 }
@@ -224,6 +229,8 @@ export async function aiSend(rawText, mode, opts) {
   state.aiHistory.push(userMsg);
   trimAiHistory();
   renderAiMessage('user', text, { md: userMd });
+  // 占位在创建气泡的同一帧挂上(spinner + "正在思考…"):
+  // 若先 append 空气泡再补等待态,失败路径会把一颗空壳气泡留在对话里。
   const bubble = renderAiMessage('assistant', '');
   markBubblePending(bubble);
 
@@ -233,6 +240,10 @@ export async function aiSend(rawText, mode, opts) {
   const body = aiBodyOf(bubble);
   if (r && r.error && body && !body.textContent) {
     body.textContent = '⚠️ ' + r.error;
+  }
+  // 彻底无内容的气泡(请求被拒/空响应)直接移除:留着就是一颗空心扁气泡
+  if (body && !body.textContent && !body.querySelector('img,pre,table')) {
+    bubble.remove();
   }
 }
 
@@ -560,6 +571,7 @@ export async function aiDiagnose() {
   const recent = `最后一次输入的命令：\n${cmd || '(未捕获)'}\n\n该命令的控制台输出：\n${output || '(无输出)'}`.slice(-3000);
   aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```', undefined, { md: true });
   $('#ai-panel').classList.remove('hidden');
+  $('#ai-resizer').classList.remove('hidden');
 }
 
 /* ---------------- 监控条增强(H1/H2):磁盘 + sparkline ---------------- */
