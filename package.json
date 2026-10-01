@@ -1,7 +1,7 @@
 {
   "name": "nebulashell",
   "productName": "NebulaShell",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NebulaShell 星云终端 — 基于 Tauri 2 + Rust 的跨平台 SSH 客户端（macOS / Windows / Linux），内置 AI 助手与腾讯云/阿里云主机自动发现",
   "type": "module",
   "license": "MIT",
