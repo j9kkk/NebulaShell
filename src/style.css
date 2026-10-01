@@ -11,6 +11,10 @@
   --danger: #ff6b6b;
   --warn: #ffc24b;
   --radius: 10px;
+  /* 控件高度刻度:按钮默认 30px,小号/图标 26px(在各自类里覆盖)。
+     这里给一个全局默认,让"非按钮但需与按钮等高"的元素
+     (模型 chip 容器、模型下拉)也能引用同一把尺子。 */
+  --ctl-h: 30px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -33,6 +37,31 @@ input, select, textarea {
   outline: none;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+
+/* 下拉框:原生外观在深色主题下是浅色系统控件,且各平台箭头/内距不一致。
+   统一改为自定义外观 + 内联 SVG 箭头,并用 color-scheme 让系统弹出的
+   选项列表也走深色(否则 macOS 上展开是一片白色,与界面割裂)。
+   multiple 的列表控件(跳板机)不是下拉语义,保持原生。 */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: dark;
+  padding-right: 30px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%238b96a8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 12px;
+}
+select:not([multiple]):hover { border-color: #33405a; }
+select:not([multiple]):focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.16);
+}
+/* 展开后的选项列表(能自定义的浏览器生效) */
+select option { background: var(--panel); color: var(--text); }
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .hidden { display: none !important; }
 .muted { color: var(--muted); font-size: 12px; }
 .spacer { flex: 1; }
@@ -205,20 +234,86 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   background: var(--panel);
   display: flex; flex-direction: column;
 }
-.ai-header { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+/* 头部:标题 / 模型下拉 / 设置 / 关闭 之间留出统一间距。
+   原先只有 .spacer 撑开,设置与关闭按钮贴在一起(第 6 条)。 */
+.ai-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .ai-title { font-weight: 600; }
 .ai-quick { display: flex; gap: 8px; padding: 10px 12px 0; }
 #ai-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.ai-msg { max-width: 92%; padding: 8px 11px; border-radius: 12px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.ai-msg { position: relative; max-width: 92%; padding: 8px 11px; border-radius: 12px; font-size: 13px; line-height: 1.55; word-break: break-word; }
 .ai-msg.user { align-self: flex-end; background: #23407e; border-bottom-right-radius: 3px; }
+/* 用户消息不走 Markdown,靠 pre-wrap 保留换行 */
+.ai-msg.user .ai-body { white-space: pre-wrap; }
 .ai-msg.assistant { align-self: flex-start; background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
-.ai-hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 30px; padding: 0 20px; line-height: 1.6; }
-.ai-input-row { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
-#ai-input { flex: 1; resize: none; }
-.gen-chip {
-  font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
-  padding: 1px 8px; border-radius: 999px; cursor: pointer; align-self: center;
+
+/* 等待首个 token:气泡内转圈 + 文案,让"正在执行"这件事可见 */
+.ai-msg.pending { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.ai-msg.pending .ai-copy { display: none; }
+.ai-pending-text { font-size: 12px; }
+.ai-spinner {
+  flex: 0 0 auto; width: 12px; height: 12px;
+  border: 2px solid rgba(139, 150, 168, 0.3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ai-spin 0.7s linear infinite;
 }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+/* 流式输出中:气泡末尾跟一个闪烁光标,表示"还在继续写" */
+.ai-msg.streaming { border-color: rgba(91, 140, 255, 0.45); }
+.ai-msg.streaming::after {
+  content: '▌'; margin-left: 1px; color: var(--accent);
+  animation: ai-caret 1s step-end infinite;
+}
+@keyframes ai-caret { 50% { opacity: 0; } }
+
+/* 每条消息的复制按钮:悬停气泡时浮现,点一下复制原文。
+   高度对齐既有最小档 18px(12px 字号 + 2px 内距 + 1px 描边),
+   不给按钮高度刻度新增档位。 */
+.ai-copy {
+  position: absolute; top: 4px; right: 4px;
+  font-family: inherit; font-size: 12px; line-height: 1;
+  color: var(--muted); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 5px; cursor: pointer;
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.ai-msg:hover .ai-copy, .ai-copy:focus-visible { opacity: 1; }
+.ai-copy:hover { color: var(--text); border-color: var(--accent); }
+
+/* 助手消息的 Markdown 排版:代码块是 SSH 场景的主体,给足对比度 */
+.ai-body > *:first-child { margin-top: 0; }
+.ai-body > *:last-child { margin-bottom: 0; }
+.ai-body p { margin: 4px 0; }
+.ai-body h3, .ai-body h4, .ai-body h5, .ai-body h6 { margin: 8px 0 4px; font-size: 13px; }
+.ai-body ul, .ai-body ol { margin: 4px 0; padding-left: 18px; }
+.ai-body blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--accent); color: var(--muted); }
+.ai-body pre {
+  margin: 6px 0; padding: 8px 10px; overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.ai-body pre code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent2); }
+.ai-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px;
+}
+.ai-body pre code { border: none; padding: 0; background: none; }
+.ai-body a { color: var(--accent); }
+/* GFM 表格:AI 回复里的"报错-原因"对照常见,要能读;
+   气泡只有 92% 宽,宽表横向滚动而不是撑破布局 */
+.md-table-wrap { margin: 6px 0; overflow-x: auto; }
+.ai-body table { border-collapse: collapse; font-size: 12px; }
+.ai-body th, .ai-body td {
+  border: 1px solid var(--border);
+  padding: 4px 8px; text-align: left; white-space: nowrap;
+}
+.ai-body th { background: var(--bg); color: var(--muted); font-weight: 600; }
+.ai-body td:first-child code { color: var(--danger); }
+
+.ai-hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 30px; padding: 0 20px; line-height: 1.6; }
+/* 发送按钮与输入框等高:textarea 是两行,按钮沿用 30px 刻度会矮一截 */
+.ai-input-row { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); align-items: stretch; }
+#ai-input { flex: 1; resize: none; }
+.ai-input-row .btn { height: auto; min-height: var(--ctl-h); }
 
 /* 按钮
    尺寸统一走一套刻度:所有按钮高度由 --ctl-h 决定,字号/内距只调水平方向。
@@ -279,9 +374,76 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .key-row { display: flex; align-items: center; gap: 8px; }
 .key-path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; align-items: center; }
-.model-row { display: flex; gap: 8px; align-items: center; }
-.model-row input { flex: 1; }
+/* "模型"一栏:chip 列表 + 拉取按钮。两者等高 —— 按钮沿用 .btn 的 30px,
+   chip 容器以同一刻度设 min-height,否则并排时高矮不一(第 4 条)。 */
+.model-row { display: flex; gap: 8px; align-items: stretch; }
+.model-chips {
+  flex: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  align-items: center; align-content: center;
+  min-height: var(--ctl-h);
+  padding: 4px 6px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+}
+.model-chips-empty { color: var(--muted); font-size: 12px; padding: 0 2px; }
+.model-chip {
+  font-family: inherit; font-size: 12px; line-height: 1;
+  color: var(--muted);
+  background: transparent; border: 1px solid var(--border);
+  /* 3px 内距 + 12px 行高 + 1px 描边 = 20px;容器 4px 内距 + 1px 描边后
+     整体恰好 30px,与 .btn 同高(第 4 条:两边不一致) */
+  border-radius: 999px; padding: 3px 9px;
+  cursor: pointer; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.model-chip:hover { color: var(--text); border-color: var(--accent); }
+/* 当前生效模型:实心高亮,和"已勾选但未启用"区分开 */
+.model-chip.active {
+  color: #fff; background: linear-gradient(135deg, #4f7dff, #3a5fd9);
+  border-color: transparent;
+}
+.model-row > .btn { flex: 0 0 auto; }
 .small-note { margin-top: 12px; line-height: 1.5; }
+
+/* 模型选择弹框:叠在 AI 设置之上,所以抬高 z-index(普通弹窗是 50) */
+.modal.modal-stack { z-index: 60; background: rgba(4, 8, 16, 0.5); }
+.picker-card { width: 500px; display: flex; flex-direction: column; }
+.picker-sub { margin: -6px 0 4px; }
+.picker-count { margin-top: 0; }
+/* 搜索框 + 全选/清空同一行;输入框吃掉剩余宽度 */
+.picker-toolbar { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.picker-toolbar .inp { flex: 1; min-width: 0; margin: 0; }
+.picker-list {
+  height: 280px; overflow-y: auto; margin: 10px 0 0;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg2); padding: 4px;
+}
+/* 多选行:左侧方框 + 右侧"名称 / 属性"两行 */
+.picker-item {
+  display: flex; gap: 9px; align-items: center; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; color: var(--text);
+  border-radius: 6px; padding: 7px 9px; font-size: 13px;
+  font-family: inherit; cursor: pointer;
+}
+.picker-item:hover { background: rgba(91, 140, 255, 0.10); }
+.picker-item.focus { border-color: rgba(91, 140, 255, 0.55); }
+.picker-item.active { background: rgba(91, 140, 255, 0.18); }
+.picker-box {
+  flex: 0 0 auto; width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 4px;
+  font-size: 11px; color: transparent; background: var(--panel);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.picker-item.active .picker-box {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.picker-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* 名称允许换行截断,不让长 id 把行撑破 */
+.picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-meta { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 30px 0; }
 
 /* 关于弹窗:版本号、平台、技术栈 */
 .about-card { width: 400px; text-align: center; }
@@ -561,7 +723,24 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 }
 
 /* AI 模型切换 */
-.ai-model-switch { max-width: 130px; font-size: 11px; padding: 2px 4px; background: var(--bg2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
+/* 内距单独给右侧留箭头位:上面的 padding 简写若原样保留会盖掉 select 的
+   padding-right,自定义箭头会压在文字上。箭头也更小,和 11px 字号相称。 */
+/* 选择器需带上 :not([multiple]) 才能盖过上面 select:not([multiple]) 的内距与箭头尺寸 */
+/* 与头部图标按钮同高(第 7 条):原先靠 padding+11px 字号自成一套高度,
+   和旁边 26px 的 .btn.icon 并排时明显不齐。这里显式写 26px —— 它要和
+   那两个图标按钮对齐,而不是和默认 30px 的普通按钮对齐。 */
+select.ai-model-switch:not([multiple]) {
+  max-width: 160px; font-size: 12px;
+  height: 26px;
+  padding: 0 22px 0 8px;
+  background-color: var(--bg2);
+  background-size: 10px;
+  background-position: right 6px center;
+  color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  text-overflow: ellipsis;
+}
+select.ai-model-switch:not([multiple]):hover { border-color: var(--accent); }
+select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* 文件面板扩展 */
 .file-bookmarks { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 10px 0; }

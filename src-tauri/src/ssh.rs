@@ -821,10 +821,7 @@ impl SshService {
         // entry().or_insert:并发首次调用时双方都会建通道,后完成者复用先完成者
         // 的缓存,避免重复通道挂在连接上。
         let mut cache = self.sftp_sessions.lock().await;
-        Ok(cache
-            .entry(session_id.to_string())
-            .or_insert(sftp)
-            .clone())
+        Ok(cache.entry(session_id.to_string()).or_insert(sftp).clone())
     }
 
     pub async fn direct_tcpip(

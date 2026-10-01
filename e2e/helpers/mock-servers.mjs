@@ -186,9 +186,51 @@ export async function startMockAiServer() {
       }
       calls.models++;
       res.writeHead(200, { 'content-type': 'application/json' });
+      // 带属性:前端要展示"名称 + 属性(归属方/日期)",给齐以便断言
       res.end(JSON.stringify({ object: 'list', data: [
-        { id: 'mock-model-1' }, { id: 'mock-model-2' }, { id: 'mock-model-3' },
+        { id: 'mock-model-1', owned_by: 'mock-provider', created: 1767312000 },
+        { id: 'mock-model-2', owned_by: 'mock-provider', created: 1767312000 },
+        { id: 'mock-model-3', owned_by: 'mock-provider', created: 1767312000 },
       ] }));
+      return;
+    }
+    // 挂起端点:收了请求就只发响应头、永不吐数据,把"等待首个 token"固定住
+    if (req.method === 'POST' && url.pathname.includes('/hold')) {
+      calls.openai++;
+      await readBody(req);
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      return;
+    }
+    // 慢速端点:先压 1.5s 再吐首个 token,此后按 300ms 间隔分段吐完
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/slow')) {
+      calls.openai++;
+      await readBody(req);
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      await sleep(1500);
+      for (const p of ['SLOW-REPLY:', ' 首段', ' 次段']) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+        await sleep(300);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+    // 逐字节发送含中文的 SSE 回复:强制多字节字符跨 chunk 边界,
+    // 回归"from_utf8_lossy 逐 chunk 转换把汉字切坏"(表现为回答里出现 �)
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/utf8split')) {
+      calls.openai++;
+      await readBody(req);
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: '中文测试-要知' } }] })}\n\n`;
+      const bytes = Buffer.from(sse, 'utf8');
+      let bi = 0;
+      const step = () => {
+        if (bi >= bytes.length) { res.write('data: [DONE]\n\n'); res.end(); return; }
+        res.write(bytes.subarray(bi, bi + 1));
+        bi += 1;
+        setTimeout(step, 5);
+      };
+      step();
       return;
     }
     if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && !url.pathname.startsWith('/err')) {

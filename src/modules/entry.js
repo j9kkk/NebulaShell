@@ -3,7 +3,7 @@ import { $, activeTab, accel, api, applyAccelTitles, askPrompt, bindCtxMenuDismi
 import { activateSession, activateTab, autoLayoutTab, clearActiveTerm, closeActivePane, closeSession, closeTab, closeTermSearch, connectHost, doTermSearch, firstPaint, fitActive, fitAllVisible, followFilePanel, leafCount, newTabWithPicker, openBroadcastPicker, openTermSearch, parseQuickTarget, quickConnect, renderLayout, scheduleResizeSync, splitActive, togglePaneZoom, toggleReadonly, toggleSessionLog, updateStatusbar, updateTab, updateWelcome } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { aiDiagnose, aiFinishHolder, aiSend, aiTestConnection, fetchAiModels, fillPreset, openAiSettings, refreshAiModels, renderAiMessage, renderModelSwitch, saveAiSettings, switchModel, updateGenChip } from './ai.js';
+import { aiDiagnose, aiFinishHolder, aiSend, aiTestConnection, clearBubbleState, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, openAiSettings, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, saveAiSettings, setAiBody, switchModel, togglePickerFocus } from './ai.js';
 import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
 import { activeConnectedSession, addBookmark, fileNavBack, fileNavForward, fileNavUp, filePanelSession, fileUpload, initialFileDir, loadFileDir, renderFileTarget, uploadLocalPaths } from './sftp.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
@@ -201,6 +201,18 @@ export function bindEvents() {
   $('#btn-ai-test').addEventListener('click', aiTestConnection);
   $('#ai-provider').addEventListener('change', () => fillPreset($('#ai-provider').value));
   $('#btn-ai-fetch-models').addEventListener('click', fetchAiModels);
+  $('#btn-model-picker-ok').addEventListener('click', confirmModelPicker);
+  $('#btn-model-picker-cancel').addEventListener('click', closeModelPicker);
+  $('#btn-model-picker-all').addEventListener('click', () => pickerSelectAll(true));
+  $('#btn-model-picker-none').addEventListener('click', () => pickerSelectAll(false));
+  $('#model-picker-search').addEventListener('input', (e) => filterModelPicker(e.target.value));
+  $('#model-picker-search').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); movePickerSelection(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); movePickerSelection(-1); }
+    // 空格切换勾选:多选列表的常规操作,不能像单选那样回车即关闭
+    else if (e.key === ' ') { e.preventDefault(); togglePickerFocus(); }
+    else if (e.key === 'Enter') { e.preventDefault(); confirmModelPicker(); }
+  });
   $('#ai-model-switch').addEventListener('change', (e) => switchModel(e.target.value).then(renderModelSwitch).catch(() => {}));
   $('#btn-ai-diagnose').addEventListener('click', aiDiagnose);
 
@@ -344,11 +356,6 @@ export function bindEvents() {
     const sel = s && s.term.getSelection();
     if (!sel) return toast('请先在终端中选中要解释的内容', 'error');
     aiSend(sel, 'explain');
-  });
-  $('#btn-ai-gen').addEventListener('click', () => {
-    state.genMode = !state.genMode;
-    updateGenChip();
-    $('#ai-input').focus();
   });
   $('#ai-send').addEventListener('click', () => aiSend());
   $('#ai-input').addEventListener('keydown', (e) => {
@@ -538,10 +545,16 @@ export function bindEvents() {
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     // 确认对话框有专属按键处理(必须经 resolve 关闭,否则 Promise 悬挂)
-    document.querySelectorAll('.modal:not(.hidden)').forEach((m) => {
-      if (m.id === 'modal-confirm') return;
-      m.classList.add('hidden');
-    });
+    // 只关最上层那一个:模型选择弹框叠在 AI 设置之上,一次 Esc 若把两层都关掉,
+    // 用户回不到还在编辑的表单。z-index 高者在上,同值时 DOM 靠后者在上。
+    const open = [...document.querySelectorAll('.modal:not(.hidden)')].filter((m) => m.id !== 'modal-confirm');
+    if (!open.length) return;
+    let top = open[0];
+    for (const m of open.slice(1)) {
+      const z = (el) => Number(getComputedStyle(el).zIndex) || 0;
+      if (z(m) >= z(top)) top = m;
+    }
+    top.classList.add('hidden');
   });
 
   const ro = new ResizeObserver(() => { fitAllVisible(); scheduleResizeSync(); });
@@ -557,6 +570,11 @@ export function bindEvents() {
     if (s.pendingFirstPaint) {
       s.pendingFirstPaint = false;
       firstPaint(s);
+    }
+    // AI 诊断素材:只累积"最后一次命令提交之后"的输出,留尾部(报错通常在末尾)。
+    // 采集窗口由 terminal.js 的 onData 在每次回车提交时重开。
+    if (s.collectOutput) {
+      s.lastOutput = ((s.lastOutput || '') + data).slice(-6000);
     }
   });
   window.nebula.on('ssh:status', ({ sessionId, state: st, error, label }) => {
@@ -596,9 +614,24 @@ export function bindEvents() {
     const h = state.aiReq;
     if (!h || h.id !== requestId) return;
     h.acc += text;
-    if (h.bubble) {
-      h.bubble.textContent = h.acc;
-      $('#ai-messages').scrollTop = $('#ai-messages').scrollHeight;
+    if (!h.bubble) return;
+    // 首个 token:撤掉"正在思考…"占位,转入流式态
+    markBubbleStreaming(h.bubble);
+    // 同一帧内的多个 delta 合并成一次 DOM 写入:逐 token 直接写会让长回复
+    // 每帧重排几十次(气泡在滚动容器里,每次都要重算 scrollHeight),
+    // 表现为卡顿。用 rAF 合帧后视觉上仍是逐字出现。
+    h.bubble.dataset.text = h.acc;
+    if (!h.raf) {
+      h.raf = requestAnimationFrame(() => {
+        h.raf = 0;
+        const cur = state.aiReq;
+        if (!cur || cur !== h || !h.bubble) return;
+        // 必须经 setAiBody 写进 .ai-body:直接改 textContent 会把
+        // 复制按钮和内容容器一起抹掉,气泡从此渲染成空壳。
+        setAiBody(h.bubble, h.bubble.dataset.text || h.acc);
+        const box = $('#ai-messages');
+        box.scrollTop = box.scrollHeight;
+      });
     }
   });
   window.nebula.on('ai:done', ({ requestId }) => {
@@ -608,7 +641,12 @@ export function bindEvents() {
   window.nebula.on('ai:error', ({ requestId, message }) => {
     const h = state.aiReq;
     if (h && h.id === requestId) {
-      if (h.bubble) h.bubble.textContent = (h.acc ? h.acc + '\n' : '') + '⚠️ ' + message;
+      // 先撤等待态再写错误文案:clearBubbleState 会清掉"正在思考…"占位,
+      // 反过来的话首 token 前报错会把刚写好的错误提示一起抹掉。
+      if (h.bubble) {
+        clearBubbleState(h.bubble);
+        setAiBody(h.bubble, (h.acc ? h.acc + '\n' : '') + '⚠️ ' + message);
+      }
       h.failed = message;
       aiFinishHolder();
     }
@@ -634,7 +672,7 @@ export async function boot() {
   state.settings = await api('settings:get');
   await refreshHosts();
   await refreshAiModels();
-  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨\n可以直接提问，或使用上方快捷操作：\n· 解释选中内容：选中终端输出后点击\n· 生成命令：描述需求，AI 给出命令');
+  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨\n可以直接提问，或使用上方快捷操作：\n· **解释选中内容**：选中终端输出后点击\n· **诊断报错**：把最后一次输入的命令及其控制台输出发给 AI 分析\n\n回复支持 Markdown 展示，每条消息可一键复制。');
 }
 
 boot();
@@ -655,6 +693,87 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     promptFill: (v) => { $('#prompt-input').value = v; },
     promptClickOk: () => $('#btn-prompt-ok').click(),
     promptClickCancel: () => $('#btn-prompt-cancel').click(),
+    // 模型选择弹框:候选列表来自真实拉取结果,断言用
+    modelPickerOpen: () => !$('#modal-model-picker').classList.contains('hidden'),
+    // 候选项文本(名称 + 属性分行渲染,这里合并成一行便于断言)
+    modelPickerItems: () => [...document.querySelectorAll('#model-picker-list .picker-item')].map((b) => b.textContent.replace(/\s+/g, ' ').trim()),
+    modelPickerIds: () => [...document.querySelectorAll('#model-picker-list .picker-item')].map((b) => b.dataset.model),
+    // 已勾选的模型 id —— "只有勾中的才能用"这条契约的观测点
+    modelPickerChecked: () => [...document.querySelectorAll('#model-picker-list .picker-item.active')].map((b) => b.dataset.model),
+    modelPickerToggle: (id) => {
+      const el = document.querySelector(`#model-picker-list .picker-item[data-model="${CSS.escape(id)}"]`);
+      if (!el) return false;
+      el.click();
+      return true;
+    },
+    modelPickerSelectAll: () => $('#btn-model-picker-all').click(),
+    modelPickerSelectNone: () => $('#btn-model-picker-none').click(),
+    modelPickerCount: () => $('#model-picker-count').textContent,
+    modelPickerFilter: (kw) => { $('#model-picker-search').value = kw; $('#model-picker-search').dispatchEvent(new Event('input', { bubbles: true })); },
+    modelPickerKey: (key) => $('#model-picker-search').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })),
+    modelPickerValue: () => $('#ai-model').value,
+    // "模型"一栏展示的 chip(选中的模型必须都在这里)
+    modelChips: () => [...document.querySelectorAll('#ai-model-chips .model-chip')].map((b) => b.textContent),
+    modelChipActive: () => (($('#ai-model-chips .model-chip.active') || {}).textContent) || '',
+    modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-switch option')].map((o) => o.value),
+    // 设置弹窗里"拉取模型"按钮与模型栏的高度(第 4 条:两者必须等高)
+    aiRowHeights: () => {
+      const b = $('#btn-ai-fetch-models').getBoundingClientRect();
+      const c = $('#ai-model-chips').getBoundingClientRect();
+      return { btn: Math.round(b.height), chips: Math.round(c.height) };
+    },
+    // AI 头部两个按钮的间距(第 6 条)
+    aiHeaderGap: () => {
+      const a = $('#ai-settings-open').getBoundingClientRect();
+      const b = $('#btn-ai-close').getBoundingClientRect();
+      return Math.round(b.left - a.right);
+    },
+    // 头部控件与发送按钮的高度对比(第 7 条)
+    aiHeaderHeights: () => {
+      const s = $('#ai-model-switch').getBoundingClientRect();
+      const g = $('#ai-settings-open').getBoundingClientRect();
+      const x = $('#btn-ai-close').getBoundingClientRect();
+      return { select: Math.round(s.height), settings: Math.round(g.height), close: Math.round(x.height) };
+    },
+    // 对话气泡的状态类与文本:等待态/流式态渲染的观测点
+    aiBubbles: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
+      role: b.className.replace(/ai-msg\s*/, '').trim(),
+      text: b.textContent,
+      pending: b.classList.contains('pending'),
+      streaming: b.classList.contains('streaming'),
+      hasSpinner: !!b.querySelector('.ai-spinner'),
+    })),
+    // AI 设置弹窗是否还开着(验证 Esc 只关最上层)
+    aiSettingsOpen: () => !$('#modal-ai').classList.contains('hidden'),
+    // 温度设置是否已移除
+    hasTempField: () => !!$('#ai-temp'),
+    // AI 输入行:发送按钮与输入框是否等高
+    aiInputHeights: () => {
+      const i = $('#ai-input').getBoundingClientRect();
+      const b = $('#ai-send').getBoundingClientRect();
+      return { input: Math.round(i.height), send: Math.round(b.height) };
+    },
+    // 生成命令是否已移除(按钮 + 快捷按钮行内都不该再有)
+    genButtonGone: () => !$('#btn-ai-gen') && !String(document.querySelector('.ai-quick')?.textContent || '').includes('生成命令'),
+    // 助手消息的渲染形态:Markdown 结构 / 复制按钮 / 诊断素材
+    aiMsgDetail: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
+      role: b.dataset.role,
+      text: b.querySelector('.ai-body')?.textContent || '',
+      hasCopy: !!b.querySelector('.ai-copy'),
+      hasCode: !!b.querySelector('.ai-body pre code'),
+      mdBlocks: b.querySelectorAll('.ai-body > p, .ai-body > pre, .ai-body > ul, .ai-body > ol, .ai-body > h3').length,
+    })),
+    aiCopyClick: (idx) => {
+      const b = document.querySelectorAll('#ai-messages .ai-msg')[idx];
+      if (!b) return false;
+      b.querySelector('.ai-copy')?.click();
+      return true;
+    },
+    // 诊断素材:最后一次命令 + 输出采集(直接断言采集层,不经过 AI 请求)
+    diagSource: () => {
+      const s = state.sessions.get(state.activeId);
+      return s ? { cmd: s.lastCmd || '', output: (s.lastOutput || '').slice(0, 300), collecting: !!s.collectOutput } : null;
+    },
     write: (d) => {
       const s = state.sessions.get(state.activeId);
       if (s && s.status === 'connected' && !s.readOnly) s.term.input(d);

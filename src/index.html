@@ -144,8 +144,7 @@
       </div>
       <div class="ai-quick">
         <button id="btn-ai-explain" class="btn small">🔍 解释选中内容</button>
-        <button id="btn-ai-gen" class="btn small">⌨ 生成命令</button>
-        <button id="btn-ai-diagnose" class="btn small" title="抓取最近输出,让 AI 诊断">🩺 诊断报错</button>
+        <button id="btn-ai-diagnose" class="btn small" title="只取最后一次输入的命令及其控制台输出,让 AI 诊断">🩺 诊断报错</button>
       </div>
       <div id="ai-messages"></div>
       <div class="ai-input-row">
@@ -307,18 +306,39 @@
         <label>Base URL</label><input id="ai-baseurl" type="text" placeholder="https://api.example.com/v1" />
         <label>模型</label>
         <div class="model-row">
-          <input id="ai-model" type="text" list="ai-model-list" placeholder="例如 gpt-4o-mini / deepseek-chat / glm-4-flash" />
-          <button id="btn-ai-fetch-models" class="btn small" title="从供应商拉取可用模型列表">拉取模型</button>
-          <datalist id="ai-model-list"></datalist>
+          <div id="ai-model-chips" class="model-chips"></div>
+          <button id="btn-ai-fetch-models" class="btn" title="从供应商拉取可用模型列表,并在弹框中勾选要启用的模型">拉取模型</button>
         </div>
         <label>API Key</label><input id="ai-apikey" type="password" placeholder="密钥" autocomplete="off" />
-        <label>温度</label><input id="ai-temp" type="number" step="0.1" min="0" max="2" value="0.3" />
+        <!-- 生效模型:由"模型"一栏里点选的芯片决定,不再直接编辑 -->
+        <input id="ai-model" type="hidden" />
       </div>
       <p class="muted small-note">支持 OpenAI / DeepSeek / 智谱 / Kimi / Claude / Ollama 等主流厂商，任意 OpenAI 兼容或 Anthropic 协议的自定义供应商。密钥加密存储在本地。</p>
       <div class="modal-actions">
         <button id="btn-ai-cancel" class="btn">取消</button>
         <button id="btn-ai-test" class="btn">测试连接</button>
         <button id="btn-ai-save" class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模型选择弹框:拉取到的可选模型在此搜索/勾选,勾中的才进入"模型"一栏并可被使用。
+       以 modal-stack 叠在 AI 设置弹窗之上,取消不影响表单已填内容。 -->
+  <div id="modal-model-picker" class="modal modal-stack hidden">
+    <div class="modal-card picker-card">
+      <h3>选择模型</h3>
+      <p id="model-picker-sub" class="muted small-note picker-sub">勾选要启用的模型,仅勾选中的模型可在对话里切换使用。</p>
+      <div class="picker-toolbar">
+        <input id="model-picker-search" class="inp" type="text" placeholder="搜索模型…" autocomplete="off" />
+        <button id="btn-model-picker-all" class="btn small" type="button">全选</button>
+        <button id="btn-model-picker-none" class="btn small" type="button">清空</button>
+      </div>
+      <div id="model-picker-list" class="picker-list" role="listbox" aria-multiselectable="true" aria-label="可选模型"></div>
+      <div class="modal-actions">
+        <span id="model-picker-count" class="muted small-note picker-count"></span>
+        <span class="spacer"></span>
+        <button id="btn-model-picker-cancel" class="btn">取消</button>
+        <button id="btn-model-picker-ok" class="btn primary">确定</button>
       </div>
     </div>
   </div>

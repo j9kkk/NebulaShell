@@ -28,6 +28,11 @@
     </linearGradient>
   </defs>
 
+  <!-- macOS 图标网格:内容缩到 824/1024(约 80%),四周各留 100px 透明边距。
+       原先满画布绘制会让图标在 Dock/启动台里比系统图标大出约 21%。
+       圆角随内容等比缩放:232 * 0.8047 ≈ 186.7,与 824 网格的推荐半径一致。 -->
+  <g transform="translate(100 100) scale(0.8046875)">
+
   <!-- 背景与内描边 -->
   <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#bg)"/>
   <rect x="6" y="6" width="1012" height="1012" rx="226" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="10"/>
@@ -54,4 +59,6 @@
   <path d="M300 402 L512 584 L300 766" stroke="url(#prompt)" stroke-width="84" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
   <!-- 光标 -->
   <rect x="596" y="712" width="196" height="72" rx="34" fill="url(#prompt)"/>
+
+  </g>
 </svg>

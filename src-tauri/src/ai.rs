@@ -8,11 +8,15 @@ pub fn emit_evt<R: tauri::Runtime, E: tauri::Emitter<R>>(app: &E, evt: &str, pay
     app.emit(&name, payload).ok();
 }
 
+/// 拉取可用模型。返回归一化后的对象数组,而非纯 id:
+/// 不同协议的属性名不同(OpenAI 用 id/owned_by/created,Anthropic 用
+/// display_name/type/created_at),前端要展示"名称 + 属性"就必须在这里统一成
+/// 一套字段,否则选择框只能显示一串 id,用户无从判断该勾哪个。
 pub async fn list_models(
     protocol: &str,
     base_url: &str,
     api_key: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<Value>, String> {
     if base_url.trim().is_empty() {
         return Err("未配置 API Base URL,请先填写".into());
     }
@@ -41,24 +45,46 @@ pub async fn list_models(
     }
     let j: Value = res.json().await.map_err(|e| e.to_string())?;
     let list = j["data"].as_array().cloned().unwrap_or_default();
-    let ids: Vec<String> = list
-        .iter()
-        .filter_map(|m| {
-            let id = m["id"]
-                .as_str()
-                .or_else(|| m["name"].as_str())
-                .unwrap_or("");
-            if id.is_empty() {
-                None
-            } else {
-                Some(id.to_string())
-            }
-        })
-        .collect();
-    if ids.is_empty() {
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for m in &list {
+        let id = m["id"]
+            .as_str()
+            .or_else(|| m["name"].as_str())
+            .unwrap_or("")
+            .to_string();
+        if id.is_empty() || !seen.insert(id.clone()) {
+            continue;
+        }
+        // display_name(Anthropic)优先于 name;两者都缺时回落 id
+        let name = m["display_name"]
+            .as_str()
+            .or_else(|| m["name"].as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&id)
+            .to_string();
+        let owned_by = m["owned_by"]
+            .as_str()
+            .or_else(|| m["type"].as_str())
+            .unwrap_or("")
+            .to_string();
+        // created 是 unix 秒(OpenAI)或 RFC3339 串(Anthropic),原样透传给前端格式化
+        let created = if m["created"].is_null() {
+            m["created_at"].clone()
+        } else {
+            m["created"].clone()
+        };
+        out.push(json!({
+            "id": id,
+            "name": name,
+            "ownedBy": owned_by,
+            "created": created,
+        }));
+    }
+    if out.is_empty() {
         return Err("端点未返回任何模型,请确认 Base URL 是否到 /v1 级别".into());
     }
-    Ok(ids)
+    Ok(out)
 }
 
 /// 流式对话;每 250ms 一帧,SSE 逐行解析(与 Electron 版 ai.js 语义一致)
@@ -72,7 +98,6 @@ pub async fn chat_stream<
     base_url: String,
     api_key: String,
     model: String,
-    temperature: f64,
     messages: Value,
     abort_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
@@ -116,7 +141,7 @@ pub async fn chat_stream<
         (url, body, r)
     } else {
         let url = format!("{}/chat/completions", base_url.trim().trim_end_matches('/'));
-        let body = json!({ "model": model, "messages": messages, "stream": true, "temperature": temperature });
+        let body = json!({ "model": model, "messages": messages, "stream": true });
         let mut r = client.post(&url).json(&body);
         if !api_key.is_empty() {
             r = r.header("authorization", format!("Bearer {}", api_key));
@@ -141,7 +166,9 @@ pub async fn chat_stream<
     }
 
     let mut stream = res.bytes_stream();
-    let mut buffer = String::new();
+    // 未消费的 SSE 字节(以行为单位攒);用字节缓冲是为了让跨 chunk 的
+    // 多字节字符在被解码前保持完整,见下方 decode 处的注释
+    let mut buffer: Vec<u8> = Vec::new();
     loop {
         if abort_flag.load(std::sync::atomic::Ordering::Relaxed) {
             emit_evt(
@@ -159,11 +186,15 @@ pub async fn chat_stream<
             Some(b) => b.map_err(|e| e.to_string())?,
             None => break,
         };
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-        let lines: Vec<String> = buffer.split('\n').map(String::from).collect();
-        let (last, done_lines) = lines.split_last().unwrap();
-        buffer = last.clone();
-        for line in done_lines {
+        // 字节级缓冲,不能按 chunk 逐个 from_utf8_lossy:TCP 分块边界会把
+        // 多字节汉字拦腰截断,两次"有损转换"正好把一个字变两个 �(乱码)。
+        // SSE 以 \n 分帧,攒到完整行再解码 —— 行内字符此时必然完整。
+        buffer.extend_from_slice(&bytes);
+        let mut start = 0usize;
+        while let Some(pos) = buffer[start..].iter().position(|&b| b == b'\n') {
+            let line_bytes = &buffer[start..start + pos];
+            start += pos + 1;
+            let line = String::from_utf8_lossy(line_bytes).to_string();
             let trimmed = line.trim();
             if !trimmed.starts_with("data:") {
                 continue;
@@ -184,55 +215,21 @@ pub async fn chat_stream<
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if protocol == "anthropic" {
-                match evt["type"].as_str().unwrap_or("") {
-                    "content_block_delta" => {
-                        if let Some(text) = evt["delta"]["text"].as_str() {
-                            emit_evt(
-                                &app,
-                                "ai:delta",
-                                json!({ "requestId": request_id, "text": text }),
-                            );
-                        }
-                    }
-                    "message_stop" => {
-                        emit_evt(
-                            &app,
-                            "ai:done",
-                            json!({ "requestId": request_id, "finishReason": "stop" }),
-                        );
-                        return Ok(());
-                    }
-                    "error" => {
-                        return Err(format!(
-                            "AI API 错误: {}",
-                            &evt.to_string()[..evt.to_string().len().min(300)]
-                        ));
-                    }
-                    _ => {}
-                }
-            } else {
-                if !evt["error"].is_null() {
-                    return Err(format!(
-                        "AI API 错误: {}",
-                        &evt["error"].to_string()[..evt["error"].to_string().len().min(300)]
-                    ));
-                }
-                let delta = &evt["choices"][0]["delta"];
-                let text = delta["content"]
-                    .as_str()
-                    .or_else(|| delta["text"].as_str())
-                    .or_else(|| evt["choices"][0]["message"]["content"].as_str())
-                    .unwrap_or("");
-                if !text.is_empty() {
+            match emit_deltas(&app, &request_id, protocol.as_str(), &evt) {
+                Ok(FrameOutcome::Continue) => {}
+                // Anthropic 用 message_stop 收尾,语义与 [DONE] 相同
+                Ok(FrameOutcome::Done) => {
                     emit_evt(
                         &app,
-                        "ai:delta",
-                        json!({ "requestId": request_id, "text": text }),
+                        "ai:done",
+                        json!({ "requestId": request_id, "finishReason": "stop" }),
                     );
+                    return Ok(());
                 }
+                Err(e) => return Err(e),
             }
         }
+        buffer.drain(..start);
     }
     emit_evt(
         &app,
@@ -240,6 +237,66 @@ pub async fn chat_stream<
         json!({ "requestId": request_id, "finishReason": "end" }),
     );
     Ok(())
+}
+
+/// 一帧 SSE 事件的解析结果
+enum FrameOutcome {
+    /// 普通增量,继续读流
+    Continue,
+    /// 流正常收尾(Anthropic 的 message_stop)
+    Done,
+}
+
+/// 解析一帧 SSE 事件并广播增量文本。OpenAI 与 Anthropic 的字段名不同,在这里
+/// 归一;两种协议的流式错误都转成 Err(与旧的逐帧返回语义一致)。
+fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
+    app: &E,
+    request_id: &str,
+    protocol: &str,
+    evt: &Value,
+) -> Result<FrameOutcome, String> {
+    if protocol == "anthropic" {
+        match evt["type"].as_str().unwrap_or("") {
+            "content_block_delta" => {
+                if let Some(text) = evt["delta"]["text"].as_str() {
+                    emit_evt(
+                        app,
+                        "ai:delta",
+                        json!({ "requestId": request_id, "text": text }),
+                    );
+                }
+            }
+            "message_stop" => return Ok(FrameOutcome::Done),
+            "error" => {
+                return Err(format!(
+                    "AI API 错误: {}",
+                    &evt.to_string()[..evt.to_string().len().min(300)]
+                ));
+            }
+            _ => {}
+        }
+        return Ok(FrameOutcome::Continue);
+    }
+    if !evt["error"].is_null() {
+        return Err(format!(
+            "AI API 错误: {}",
+            &evt["error"].to_string()[..evt["error"].to_string().len().min(300)]
+        ));
+    }
+    let delta = &evt["choices"][0]["delta"];
+    let text = delta["content"]
+        .as_str()
+        .or_else(|| delta["text"].as_str())
+        .or_else(|| evt["choices"][0]["message"]["content"].as_str())
+        .unwrap_or("");
+    if !text.is_empty() {
+        emit_evt(
+            app,
+            "ai:delta",
+            json!({ "requestId": request_id, "text": text }),
+        );
+    }
+    Ok(FrameOutcome::Continue)
 }
 
 fn void<T>(_: &T) {}

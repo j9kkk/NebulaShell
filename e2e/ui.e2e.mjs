@@ -305,26 +305,200 @@ async function main() {
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
     document.querySelector('#ai-baseurl').value = '${ai.base}';
-    document.querySelector('#ai-model').value = 'mock-model';
     document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-fetch-models').click(); return 1`);
   await waitEval(`return document.querySelector('#toasts').textContent`, '获取到 3 个模型', 15000);
+
+  // 拉取结果改为弹框多选:每个模型展示"名称 + 属性(归属方/日期)",勾中的才可用
+  await waitEval(`return JSON.stringify({ open: window.__nbTest.modelPickerOpen(), ids: window.__nbTest.modelPickerIds() })`, 'mock-model-1', 15000);
+  const picker = asObj(await evalJs(`return JSON.stringify({
+    open: window.__nbTest.modelPickerOpen(),
+    ids: window.__nbTest.modelPickerIds(),
+    items: window.__nbTest.modelPickerItems(),
+  })`));
+  const itemText = picker.items.join(' | ');
+  check('T9f 拉取模型弹出多选框，候选含名称与属性',
+    picker.open === true && picker.ids.length === 3
+    && itemText.includes('mock-model-1') && itemText.includes('mock-provider') && itemText.includes('2026-01-02'),
+    JSON.stringify(picker));
+
+  // 只有勾中的模型才可用:全新配置下弹框默认零勾选
+  const initial = asObj(await evalJs(`return JSON.stringify({
+    checked: window.__nbTest.modelPickerChecked(),
+    chips: window.__nbTest.modelChips(),
+  })`));
+  check('T9g 未勾选的模型不可用(初始零勾选，模型栏为空)',
+    initial.checked.length === 0 && initial.chips.length === 0, JSON.stringify(initial));
+
+  // 勾选两个 + 键盘操作:空格切换勾选、↓ 移动焦点
+  await evalJs(`window.__nbTest.modelPickerToggle('mock-model-1'); return 1`);
+  await evalJs(`window.__nbTest.modelPickerKey('ArrowDown'); return 1`);
+  await evalJs(`window.__nbTest.modelPickerKey(' '); return 1`);
+  const twoChecked = asObj(await evalJs(`return JSON.stringify({
+    checked: window.__nbTest.modelPickerChecked(),
+    count: window.__nbTest.modelPickerCount(),
+  })`));
+  check('T9h 多选:点击与空格都能勾选，计数同步',
+    twoChecked.checked.length === 2
+    && twoChecked.checked.includes('mock-model-1') && twoChecked.checked.includes('mock-model-2')
+    && twoChecked.count.includes('2'), JSON.stringify(twoChecked));
+
+  // 搜索过滤仍可用,且计数反映"命中/总数"
+  await evalJs(`window.__nbTest.modelPickerFilter('model-3'); return 1`);
+  const filtered = asObj(await evalJs(`return JSON.stringify({ ids: window.__nbTest.modelPickerIds(), count: window.__nbTest.modelPickerCount() })`));
+  check('T9i 模型弹框搜索过滤(已勾选不受过滤影响)',
+    filtered.ids.length === 1 && filtered.ids[0] === 'mock-model-3' && filtered.count.includes('2'), JSON.stringify(filtered));
+  await evalJs(`window.__nbTest.modelPickerFilter(''); return 1`);
+
+  // Esc 只关最上层:模型弹框关闭后,AI 设置必须还开着(否则用户的编辑内容凭空消失)
+  await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
+  await sleep(200);
+  const escState = asObj(await evalJs(`return JSON.stringify({ picker: window.__nbTest.modelPickerOpen(), settings: window.__nbTest.aiSettingsOpen() })`));
+  check('T9j Esc 只关最上层的模型弹框,AI 设置仍打开', escState.picker === false && escState.settings === true, JSON.stringify(escState));
+
+  // 重新勾选并确定:勾中的模型必须出现在"模型"一栏(chip)并成为生效模型
+  await evalJs(`document.querySelector('#btn-ai-fetch-models').click(); return 1`);
+  await sleep(400);
+  await evalJs(`window.__nbTest.modelPickerSelectNone(); return 1`);
+  await evalJs(`window.__nbTest.modelPickerToggle('mock-model-2'); return 1`);
+  await evalJs(`window.__nbTest.modelPickerToggle('mock-model-3'); return 1`);
+  await evalJs(`document.querySelector('#btn-model-picker-ok').click(); return 1`);
+  await sleep(200);
+  const applied = asObj(await evalJs(`return JSON.stringify({
+    chips: window.__nbTest.modelChips(),
+    active: window.__nbTest.modelChipActive(),
+    value: window.__nbTest.modelPickerValue(),
+    pickerOpen: window.__nbTest.modelPickerOpen(),
+    settingsOpen: window.__nbTest.aiSettingsOpen(),
+  })`));
+  check('T9k 勾选结果写入"模型"一栏，首个勾选项成为生效模型',
+    applied.chips.length === 2 && applied.chips.includes('mock-model-2') && applied.chips.includes('mock-model-3')
+    && applied.value === 'mock-model-2' && applied.active === 'mock-model-2'
+    && applied.pickerOpen === false && applied.settingsOpen === true,
+    JSON.stringify(applied));
+
   await evalJs(`document.querySelector('#btn-ai-save').click(); return 1`);
-  // 保存后"模型切换"下拉立即反映新配置(曾停在启动时的空状态,直到重启才恢复)
-  await waitEval(`return document.querySelector('#ai-model-switch').innerHTML`, 'mock-model-1', 15000);
-  await evalJs(`document.querySelector('#ai-input').value = '你好'; document.querySelector('#ai-send').click(); return 1`);
-  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY:', 20000);
+  // 保存后"模型切换"下拉只列已启用模型,且选中已保存的生效模型
+  await waitEval(`return document.querySelector('#ai-model-switch').value`, 'mock-model-2', 15000);
+  const switchState = asObj(await evalJs(`return JSON.stringify({
+    options: window.__nbTest.modelSwitchOptions(),
+    value: document.querySelector('#ai-model-switch').value,
+  })`));
+  check('T9l 对话页模型下拉只含已勾选模型',
+    switchState.options.length === 2
+    && switchState.options.includes('mock-model-2') && switchState.options.includes('mock-model-3')
+    && !switchState.options.includes('mock-model-1')
+    && switchState.value === 'mock-model-2',
+    JSON.stringify(switchState));
+
+  // 温度设置已移除
+  const tempGone = await evalJs(`return window.__nbTest.hasTempField() ? 1 : 0`);
+  check('T9m 温度设置已从 AI 设置移除', tempGone === 0, String(tempGone));
+
+  // 拉取按钮与"模型"一栏等高(第 4 条)
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await sleep(200);
+  const rowH = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiRowHeights())`));
+  check('T9n 模型栏与"拉取模型"按钮等高', Math.abs(rowH.btn - rowH.chips) <= 1, JSON.stringify(rowH));
+  await evalJs(`document.querySelector('#btn-ai-cancel').click(); return 1`);
+  await sleep(200);
+
+  // AI 头部:设置/关闭按钮有间距(第 6 条),模型下拉与按钮等高(第 7 条)
+  const headGeom = asObj(await evalJs(`return JSON.stringify({ gap: window.__nbTest.aiHeaderGap(), h: window.__nbTest.aiHeaderHeights() })`));
+  check('T9o AI 头部:设置与关闭按钮留间距，模型下拉与按钮等高',
+    headGeom.gap >= 6
+    && headGeom.h.select === headGeom.h.settings && headGeom.h.select === headGeom.h.close,
+    JSON.stringify(headGeom));
+
+  // 流式渲染:先出现"正在思考…"等待态,再逐段落地为正文。
+  // 必须走 /slow 端点 —— 正常端点几十毫秒就跑完,等待态一闪而过,断言不可靠。
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}/slow';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
+  await evalJs(`document.querySelector('#ai-input').value = '慢速测试'; document.querySelector('#ai-send').click(); return 1`);
+  const pendingSeen = await waitEval(
+    `return JSON.stringify(window.__nbTest.aiBubbles())`, '"pending":true', 10000,
+  ).then(() => true).catch(() => false);
+  const pendingShape = asObj(await evalJs(`return JSON.stringify((window.__nbTest.aiBubbles()||[]).slice(-1)[0] || {})`));
+  check('T9p 等待响应时显示"正在思考…"气泡(含转圈)',
+    pendingSeen && pendingShape.hasSpinner === true && pendingShape.text.includes('正在思考'),
+    JSON.stringify(pendingShape));
+
+  // 首个 token 到达后转入流式态(等待占位被清掉),结束后状态收敛
+  const streamingSeen = await waitEval(
+    `return JSON.stringify(window.__nbTest.aiBubbles())`, '"streaming":true', 15000,
+  ).then(() => true).catch(() => false);
+  // 先等正文收全,再等 ai:done 把流式标记撤掉 —— 只等正文会在最后一帧
+  // 尚未收尾时断言,拿到 streaming:true 的中间态。
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'SLOW-REPLY: 首段 次段', 20000);
+  await waitEval(`return JSON.stringify((window.__nbTest.aiBubbles()||[]).slice(-1)[0] || {})`, '"streaming":false', 15000);
+  const doneBubbles = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiBubbles())`));
+  const lastBubble = doneBubbles[doneBubbles.length - 1] || {};
+  check('T9q 流式态可见,结束后清除等待/流式标记并保留正文',
+    streamingSeen && lastBubble.pending === false && lastBubble.streaming === false
+    && lastBubble.text.includes('SLOW-REPLY: 首段 次段'),
+    JSON.stringify({ streamingSeen, lastBubble }));
+
+  // 还原 base,后续用例仍走正常端点
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await sleep(300);
+
+  // 「生成命令」按钮已移除(与"直接提问"重复,且输入框本身就能描述需求)
+  const genGone = asObj(await evalJs(`return JSON.stringify({ gone: window.__nbTest.genButtonGone(), noTemp: !window.__nbTest.hasTempField() })`));
+  check('T9s 生成命令按钮已移除', genGone.gone === true && genGone.noTemp === true, JSON.stringify(genGone));
+
+  // 发送按钮与输入框等高(用户第 2 条:此前按钮比两行的输入框矮一截)
+  const inRow = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiInputHeights())`));
+  check('T9t 发送按钮与输入框等高', Math.abs(inRow.input - inRow.send) <= 1, JSON.stringify(inRow));
+
+  // Markdown 渲染 + 每条消息一键复制
+  const bootMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
+  const greet = bootMsgs.find((m) => m.role === 'assistant');
+  check('T9u 助手消息按 Markdown 渲染,每条消息带复制按钮',
+    greet && greet.mdBlocks > 0 && bootMsgs.every((m) => m.hasCopy)
+    && String(await evalJs(`return document.querySelector('#ai-messages .ai-msg .ai-body').innerHTML`)).includes('<strong>'),
+    JSON.stringify(bootMsgs.slice(0, 1)));
+  await evalJs(`window.__nbTest.aiCopyClick(0); return 1`);
+  const copyToast = await waitEval(`return document.querySelector('#toasts').textContent`, '已复制', 10000);
+  check('T9v 一键复制消息内容', copyToast.includes('已复制'), copyToast.slice(-60));
+
+  // 中文跨 chunk 乱码回归:mock 逐字节发送含中文的 SSE,多字节字符被拦腰
+  // 切开时,按 chunk 做 from_utf8_lossy 会把一个字变两个 �。修复后按行攒字节。
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}/utf8split';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
+  await evalJs(`document.querySelector('#ai-input').value = 'utf8测试'; document.querySelector('#ai-send').click(); return 1`);
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, '中文测试-要知', 30000);
+  const utf8Text = String(await evalJs(`return document.querySelector('#ai-messages').textContent`));
+  check('T9w 中文跨 chunk 不乱码(按行攒字节解码)',
+    utf8Text.includes('中文测试-要知') && !utf8Text.includes('\uFFFD'),
+    utf8Text.slice(-120));
+  // 还原 base,后续用例仍走正常端点
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await sleep(300);
+
   check('T9 AI 配置 / 模型发现 / 流式对话 / 保存后下拉即时刷新', true);
 
   // T9b:未保存的表单值可直接"测试连接"(曾误报"未配置");后端流式任务的 HTTP 错误
   // 必须经 ai:error 透出 —— 曾被吞掉,前端永远停在"生成中…"。
   // 用 /err 前缀 base:mock 对该路径的 chat 请求返回 401,若仍走已保存配置则会成功。
+  // 模型栏现在是 chip(不可直接输入),先把已勾选的 mock-model-2 选为生效模型。
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`document.querySelectorAll('#ai-model-chips .model-chip')[0].click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
     document.querySelector('#ai-protocol').value = 'openai';
     document.querySelector('#ai-baseurl').value = '${ai.base}/err';
-    document.querySelector('#ai-model').value = 'err-model';
     document.querySelector('#ai-apikey').value = 'sk-err';
     document.querySelector('#btn-ai-test').click(); return 1`);
   const t9bToast = await waitEval(`return document.querySelector('#toasts').textContent`, '测试失败', 20000);
@@ -642,12 +816,36 @@ async function main() {
     JSON.stringify(fpFollow),
   );
 
+  // 诊断报错只取"最后一次输入的命令 + 其后的控制台输出",不再扫整屏:
+  // 整屏里早前的欢迎横幅等无关内容会稀释诊断焦点。
+  // 此刻 ui-a 会话已连接,直接敲一条带标记的命令。
+  await evalJs(`window.__nbTest.write('echo NB_DIAG_MARK_42\\r'); return 1`);
+  await sleep(900);
+  const diagSrc = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+  check('T9x 诊断素材 = 最后一次命令及其后的输出(不含更早的整屏)',
+    diagSrc.cmd.includes('NB_DIAG_MARK_42') && diagSrc.output.includes('NB_DIAG_MARK_42')
+    && !diagSrc.output.includes('Welcome to NebulaShell'),
+    JSON.stringify(diagSrc));
+
+  // 点「诊断报错」:AI 提问里应带上这条命令,而不带整屏历史
+  await evalJs(`
+    if (document.querySelector('#ai-panel').classList.contains('hidden')) document.querySelector('#btn-ai-toggle').click();
+    return 1`);
+  await evalJs(`document.querySelector('#btn-ai-diagnose').click(); return 1`);
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'NB_DIAG_MARK_42', 20000);
+  const diagMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
+  const diagUser = [...diagMsgs].reverse().find((m) => m.role === 'user');
+  check('T9y 诊断提问只含最后一次命令与输出',
+    diagUser && diagUser.text.includes('NB_DIAG_MARK_42')
+    && !diagUser.text.includes('Welcome to NebulaShell mock sshd'),
+    JSON.stringify(diagUser));
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+
   // 放大按钮回归:单窗格时不得进入"已放大"态(视觉无变化,角标让用户以为按钮失效)
   // 此时处于 T13 的新标签里(单窗格)
   await evalJs(`
     const pane = document.querySelector('.term-pane.focused') || document.querySelector('.term-pane');
-    (pane.querySelector('.pane-zoom-btn')||{}).click?.();
-    return 1`);
+    (pane.querySelector('.pane-zoom-btn')||{}).click?.();    return 1`);
   await sleep(1200);
   const noZoom = asObj(await evalJs(`return JSON.stringify({ chip: !!document.querySelector('.zoom-chip'), toast: document.querySelector('#toasts').textContent })`));
   check(
@@ -773,7 +971,9 @@ async function main() {
     return [...hs].sort((a, b) => a - b);
   })())`);
   const heights = asObj(btnHeights);
-  check('T15 按钮高度层级收敛(≤4 档)', Array.isArray(heights) && heights.length <= 4, JSON.stringify(heights));
+  // ≤5 档:AI 助手输入行的发送按钮按用户要求与两行输入框等高(50px),
+  // 是有意引入的第 5 档 —— 输入控件旁的按钮随输入框拉伸,不套通用刻度。
+  check('T15 按钮高度层级收敛(≤5 档)', Array.isArray(heights) && heights.length <= 5, JSON.stringify(heights));
 
   // 导出:走带口令的加密导出,随后直接检查落盘文件不含明文凭据
   const exportPath = path.join(work, 'hosts-export.json');
@@ -782,9 +982,12 @@ async function main() {
   await answerPrompt('e2e-passphrase-1', '导出主机');
   // 二次确认口令(标题不同,answerPrompt 靠标题区分两个框)
   await answerPrompt('e2e-passphrase-1', '确认口令');
-  // 等文件落盘(mock 保存路径由 NEBULA_TEST_SAVE_PATH 决定)
+  // 等文件落盘(mock 保存路径由 NEBULA_TEST_SAVE_PATH 决定)。
+  // 预算放宽到 60s:带口令导出要走 scrypt 派生(N=2^15),e2e 跑的是 **debug 构建**,
+  // 未优化下单次派生实测 ~2.9s,机器负载高(load avg 30+)时可达 20-48s ——
+  // 15s 的旧预算会间歇性超时。测的是导出正确性,不是加密耗时。
   let exportText = '';
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 240; i++) {
     await sleep(250);
     if (fs.existsSync(exportPath)) {
       const t = fs.readFileSync(exportPath, 'utf8');
@@ -815,7 +1018,8 @@ async function main() {
   await sleep(800);
   await evalJs(`document.querySelector('#btn-hosts-import').click(); return 1`);
   await answerPrompt('e2e-passphrase-1', '输入解密口令');
-  await waitEval(`document.querySelector('#toasts').textContent`, '导入完成', 20000);
+  // 导入同样要走 scrypt 派生(debug 构建下数秒,高负载时更久),预算放宽
+  await waitEval(`document.querySelector('#toasts').textContent`, '导入完成', 60000);
   const importToast = await evalJs(`return document.querySelector('#toasts').textContent`);
   // 恢复后的主机应带凭据(界面不再标记"待补全凭据")
   const restored = asObj(await evalJs(`return JSON.stringify((() => {

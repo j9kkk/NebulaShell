@@ -21,7 +21,7 @@ fn defaults() -> Value {
         "bookmarks": [],
         "history": [],
         "settings": {
-            "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "temperature": 0.3, "apiKey": "" },
+            "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "models": [], "apiKey": "" },
             "terminal": { "fontSize": 13, "theme": "nebula", "scrollback": 2000 },
             "clouds": {
                 "tencent": { "key": "", "secret": "", "endpoint": "" },
@@ -250,6 +250,15 @@ impl Store {
         }
         if data["settings"]["ai"].is_null() {
             data["settings"]["ai"] = defaults()["settings"]["ai"].clone();
+        }
+        // 老配置里没有 models 字段(2026-10-01 引入):补空数组。
+        // 旧的 temperature 字段一并清掉 —— 设置项已移除,留着只会让导出文件
+        // 带一个界面上再也改不了的死字段。
+        if data["settings"]["ai"]["models"].is_null() {
+            data["settings"]["ai"]["models"] = json!([]);
+        }
+        if let Some(obj) = data["settings"]["ai"].as_object_mut() {
+            obj.remove("temperature");
         }
         if data["settings"]["terminal"].is_null() {
             data["settings"]["terminal"] = defaults()["settings"]["terminal"].clone();
@@ -554,18 +563,39 @@ impl Store {
     /// 一旦落盘就很难收回。需要连同凭据迁移时,调用方必须提供口令,
     /// 此时凭据用 scrypt 派生密钥 + AES-256-GCM 加密后单独放在 credentials 里。
     pub fn export_hosts(&self, passphrase: Option<&str>) -> Result<Value, String> {
-        let data = self.data.lock().unwrap();
-        let hosts: Vec<Value> = data["hosts"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .map(|h| {
-                json!({
-                    "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
-                    "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
+        // 明文凭据先取出来,随即释放锁 —— 后面的 scrypt 派生是 CPU/内存密集操作
+        // (N=2^15,debug 构建下可达数秒),若继续持锁会把**所有**其它命令一起
+        // 卡住(实测并发 settings:get 被阻塞 3.1s)。锁只用来读数据,不用来算。
+        let (hosts, creds) = {
+            let data = self.data.lock().unwrap();
+            let hosts: Vec<Value> = data["hosts"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|h| {
+                    json!({
+                        "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
+                        "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
+                    })
                 })
-            })
-            .collect();
+                .collect();
+            let creds: Option<Vec<Value>> = passphrase.map(|_| {
+                data["hosts"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "host": h["host"], "port": h["port"], "username": h["username"],
+                            "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
+                            "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
+                            "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
+                        })
+                    })
+                    .collect()
+            });
+            (hosts, creds)
+        };
 
         let mut out = json!({
             "app": "nebulashell", "version": 2,
@@ -579,19 +609,7 @@ impl Store {
             if pass.trim().is_empty() {
                 return Err("口令不能为空".into());
             }
-            let creds: Vec<Value> = data["hosts"]
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .map(|h| {
-                    json!({
-                        "host": h["host"], "port": h["port"], "username": h["username"],
-                        "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
-                        "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
-                        "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
-                    })
-                })
-                .collect();
+            let creds = creds.unwrap_or_default();
             let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
             let blob = encrypt_with_passphrase(pass, plain.as_bytes())?;
             out["credentialsIncluded"] = json!(true);
@@ -703,7 +721,7 @@ impl Store {
         json!({
             "ai": {
                 "provider": ai["provider"], "protocol": ai["protocol"], "baseUrl": ai["baseUrl"],
-                "model": ai["model"], "temperature": ai["temperature"],
+                "model": ai["model"], "models": ai["models"],
                 "apiKeySet": !self.dec(ai["apiKeyEnc"].as_str().unwrap_or("")).is_empty()
             },
             "terminal": data["settings"]["terminal"].clone(),
@@ -859,9 +877,11 @@ impl Store {
                     }
                 }
             }
-            if let Some(v) = ai.get("temperature") {
-                if !v.is_null() {
-                    out["temperature"] = json!(v.as_f64().unwrap_or(0.3));
+            // 已勾选的可用模型(对象数组,含 name/ownedBy/created)。空数组是合法值,
+            // 表示"用户把勾选全取消了",不能用 is_null 判断后跳过。
+            if let Some(v) = ai.get("models") {
+                if let Some(arr) = v.as_array() {
+                    out["models"] = json!(arr);
                 }
             }
             if let Some(v) = ai.get("apiKey") {

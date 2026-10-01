@@ -37,7 +37,6 @@ export const state = {
   cloudResults: [],
   aiHistory: [],
   aiReq: null,
-  genMode: false,
   metrics: new Map(), // sessionId -> 最近一次 ssh:metrics
   metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
   // 文件面板:显示的是"哪个会话"的目录必须显式记录 —— 面板是全局单例,
@@ -55,7 +54,8 @@ export const state = {
   paneSeq: 0,
   broadcast: null,     // E5: Set(sessionId) 广播参与者
   historyOpen: false,
-  aiModels: [],        // 已拉取的模型候选(K6)
+  aiModels: [],        // 已拉取的模型候选(含 name/ownedBy/created)
+  aiSelected: [],      // 已勾选启用、可用于对话的模型(只读自 settings.ai.models)
 };
 
 /* ---------------- 标签/窗格访问器 ----------------

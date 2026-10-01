@@ -824,7 +824,7 @@ export function createSession(host, paneId, tabId) {
   zb.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(targetPaneId); });
   pane.appendChild(zb);
 
-  // 输入:只读拦截(D9) / 广播分发(E5) / 命令历史采集(F2)
+  // 输入:只读拦截(D9) / 广播分发(E5) / 命令历史采集(F2) / AI 诊断素材采集
   let histBuf = '';
   term.onData((d) => {
     const s = state.sessions.get(state.activeId);
@@ -837,6 +837,11 @@ export function createSession(host, paneId, tabId) {
       const cmd = histBuf.slice(0, idx).replace(/[\x08\x7f]/g, '').trim(); // 清理退格控制符
       histBuf = histBuf.slice(idx + 1);
       if (cmd) api('history:add', { hostId: s.host.id, host: `${s.host.username}@${s.host.host}`, cmd }).catch(() => {});
+      // AI 诊断素材:记住"最后一次提交的命令",并把输出采集窗口重开 ——
+      // 下一条命令提交前收到的输出都归这条命令所有。
+      s.lastCmd = cmd;
+      s.lastOutput = '';
+      s.collectOutput = true;
     }
     const targets = state.broadcast && state.broadcast.has(sessionId)
       ? [...state.broadcast].map((id) => state.sessions.get(id)).filter((x) => x && x.status === 'connected' && !x.readOnly)
@@ -878,7 +883,7 @@ export function createSession(host, paneId, tabId) {
 
   // 标签元素由标签模型持有(不再每个会话建一个标签):
   // 一个标签可在其内部承载多个分屏窗格。
-  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0, remoteCwd: null };
+  const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', reconnectAttempt: 0, remoteCwd: null, lastCmd: '', lastOutput: '', collectOutput: false };
   // OSC 7(shell 集成):部分 shell 配置后会在每个提示符前上报当前目录
   // (\x1b]7;file://host/path\x07)。顺路记录到 remoteCwd,文件面板首次打开时
   // 若 exec 探测不可用,可作为初始目录的兜底。格式不符一律忽略,不吃掉事件。

@@ -867,7 +867,6 @@ pub async fn nebula_invoke(
                     base,
                     key,
                     ai["model"].as_str().unwrap_or("").to_string(),
-                    ai["temperature"].as_f64().unwrap_or(0.3),
                     payload["messages"].clone(),
                     flag,
                 )

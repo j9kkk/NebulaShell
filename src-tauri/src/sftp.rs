@@ -213,7 +213,10 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
 /// 打开互不覆盖,旧副本被本地程序占用(如 Excel 锁定)也不影响新副本;
 /// 超过 24h 的旧目录在下次打开时顺手清理。test_mode 下不真正拉起系统程序
 /// (e2e 会在测试机上弹窗),只验证"下载落盘"这一段。
-pub async fn open_remote<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
+pub async fn open_remote<
+    R: tauri::Runtime,
+    E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+>(
     sftp: &russh_sftp::client::SftpSession,
     app: E,
     session_id: String,
@@ -258,7 +261,9 @@ pub async fn open_remote<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send 
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = std::process::Command::new("xdg-open").arg(&local_str).spawn();
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&local_str)
+            .spawn();
     }
     Ok(json!({ "localPath": local_str, "opened": true }))
 }
@@ -281,10 +286,15 @@ fn sanitize_local_name(raw: &str) -> String {
     } else {
         cleaned
     };
-    let stem = name.to_uppercase().split('.').next().unwrap_or("").to_string();
+    let stem = name
+        .to_uppercase()
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_string();
     const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     if RESERVED.contains(&stem.as_str()) {
         name = format!("_{}", name);

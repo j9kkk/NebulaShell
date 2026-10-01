@@ -47,8 +47,9 @@
 
 ### AI 助手
 - **双协议**：OpenAI 兼容 与 Anthropic
-- **模型发现**：一键拉取 `/v1/models` 列表
-- **能力**：对话、解释选中内容、生成命令、诊断终端报错（自动附带最近输出）
+- **模型管理**：一键拉取 `/v1/models`，候选含名称与属性（归属 / 创建时间），多选弹框勾选启用，支持搜索过滤
+- **流式对话**：等待态 / 流式光标，助手消息按 Markdown 渲染（安全转义），每条消息一键复制
+- **能力**：对话、解释选中内容、诊断终端报错（自动附带最后一次命令及其输出）
 
 ### 云主机导入
 - **腾讯云**：CVM 与轻量应用服务器（TC3-HMAC-SHA256 签名）
@@ -65,12 +66,12 @@
 
 | 平台 | 文件 | 大小 |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `NebulaShell_1.1.0_aarch64.dmg` | 5.4 MB |
-| macOS (Intel) | `NebulaShell_1.1.0_x64.dmg` | 5.7 MB |
-| Windows (64 位) | `NebulaShell_1.1.0_x64-setup.exe` | 3.6 MB |
-| Windows (MSI) | `NebulaShell_1.1.0_x64_en-US.msi` | 5.1 MB |
-| Linux (AppImage) | `NebulaShell_1.1.0_amd64.AppImage` | 79.7 MB |
-| Linux (deb / rpm) | `NebulaShell_1.1.0_amd64.deb` / `-1.x86_64.rpm` | 5.4 MB |
+| macOS (Apple Silicon) | `NebulaShell_0.1.0_aarch64.dmg` | 5.4 MB |
+| macOS (Intel) | `NebulaShell_0.1.0_x64.dmg` | 5.7 MB |
+| Windows (64 位) | `NebulaShell_0.1.0_x64-setup.exe` | 3.6 MB |
+| Windows (MSI) | `NebulaShell_0.1.0_x64_en-US.msi` | 5.1 MB |
+| Linux (AppImage) | `NebulaShell_0.1.0_amd64.AppImage` | 79.7 MB |
+| Linux (deb / rpm) | `NebulaShell_0.1.0_amd64.deb` / `-1.x86_64.rpm` | 5.4 MB |
 
 > 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
 > [.github/workflows/release.yml](.github/workflows/release.yml)。
@@ -202,10 +203,9 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 
 | 层次 | 覆盖内容 |
 | --- | --- |
-| Rust 单元测试(24) | 云厂商签名(官方文档测试向量)、云凭据校验前置守卫、主机指纹格式兼容、`/proc` 解析、配置存储 CRUD/克隆/幂等导入 |
-| Rust 回归测试(5) | 凭据往返、模拟重启持久化(捕获"密码保存后失效")、私钥/口令 |
+| Rust 单元 + 回归测试(47) | 云厂商签名(官方文档测试向量)、云凭据校验前置守卫、主机指纹格式兼容、`/proc` 解析、配置存储 CRUD/克隆/幂等导入、凭据往返与模拟重启持久化 |
 | Rust 集成测试(1) | 真实 SSH 协议:启动 mock sshd → 认证 → exec → resize → SFTP 全链路 |
-| UI e2e(33) | 应用启动、建主机、连接(含 legacy 指纹兼容)、分屏、删除确认、AI 对话、SFTP、云导入(凭据表单/测试连接/密钥帮助/拉取/编辑) |
+| UI e2e(88) | 应用启动、建主机、连接(含 legacy 指纹兼容)、分屏、删除确认、文件面板导航/路径栏/临时副本打开、AI(多选模型/Markdown 渲染/流式态/诊断素材)、云导入(凭据表单/测试连接/密钥帮助/拉取/编辑) |
 
 ---
 
@@ -219,7 +219,7 @@ npm run test:web         # UI 端到端测试(驱动真实窗口)
 发布新版本：
 
 ```bash
-git tag v1.3.0 && git push origin v1.3.0
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 ## 🤝 贡献
