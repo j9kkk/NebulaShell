@@ -67,6 +67,20 @@ jobs:
       - name: 构建前端
         run: npm run build:web
 
+      # tag 触发时从 CHANGELOG.md 提取该版本段落,内嵌进 Release 说明;
+      # 手动触发(无 tag)时为空,releaseBody 用下面的默认文案。
+      - name: 提取本版变更说明
+        if: github.ref_type == 'tag'
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          {
+            echo 'body<<CHANGELOG_EOF'
+            node scripts/extract-changelog.mjs "$VERSION" CHANGELOG.md
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       # tauri-action 负责:构建 -> 打包 -> 上传到 Release
       # tag 触发时发布到对应 Release;手动触发时仅构建(不发布)
       # 项目结构为 <root>/src-tauri，Tauri CLI 会从仓库根自动发现(已本地验证)，故不需 projectPath。
@@ -79,6 +93,10 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('NebulaShell {0}', github.ref_name) || '' }}
           releaseBody: |
+            ${{ github.ref_type == 'tag' && steps.changelog.outputs.body || '手动触发构建,未发布正式版本说明。' }}
+
+            ---
+
             下载对应平台的安装包：
 
             | 平台 | 文件 |
@@ -88,7 +106,7 @@ jobs:
             | Windows (64 位) | `*_x64-setup.exe` |
             | Linux (64 位) | `*_amd64.AppImage` / `*.deb` |
 
-            **本次变更**见 [CHANGELOG.md](https://github.com/j9kkk/NebulaShell/blob/main/CHANGELOG.md) 对应版本段。
+            完整变更历史见 [CHANGELOG.md](https://github.com/j9kkk/NebulaShell/blob/main/CHANGELOG.md)。
 
             首次运行提示：未签名的应用可能被系统拦截 ——
             macOS 需右键「打开」，Windows 需在 SmartScreen 提示中选「仍要运行」。
