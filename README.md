@@ -76,8 +76,11 @@
 > 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
 > [.github/workflows/release.yml](.github/workflows/release.yml)。
 >
-> **首次运行提示**：应用未做代码签名，系统可能拦截 ——
-> macOS 需右键「打开」；Windows 在 SmartScreen 提示中选「仍要运行」；
+> **首次运行提示**：应用未做代码签名与公证，系统可能拦截 ——
+> macOS：若提示"已损坏，无法打开"，先在终端执行
+> `sudo xattr -rd com.apple.quarantine /Applications/NebulaShell.app`
+> （或将 DMG 里的 .app 拖进"应用程序"后对该 .app 执行），再正常打开；
+> 也可右键 App 选「打开」（旧版 macOS）。Windows 在 SmartScreen 提示中选「仍要运行」；
 > Linux AppImage 需先 `chmod +x`。
 
 ### 从源码构建

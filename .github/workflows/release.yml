@@ -108,8 +108,10 @@ jobs:
 
             完整变更历史见 [CHANGELOG.md](https://github.com/j9kkk/NebulaShell/blob/main/CHANGELOG.md)。
 
-            首次运行提示：未签名的应用可能被系统拦截 ——
-            macOS 需右键「打开」，Windows 需在 SmartScreen 提示中选「仍要运行」。
+            首次运行提示：应用未做代码签名与公证，系统可能拦截 ——
+            macOS 提示"已损坏，无法打开"时，把 .app 拖进「应用程序」后执行
+            `sudo xattr -rd com.apple.quarantine /Applications/NebulaShell.app` 再打开；
+            Windows 在 SmartScreen 提示中选「仍要运行」；Linux AppImage 需先 `chmod +x`。
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
