@@ -13,11 +13,79 @@ pub struct RunningEntry {
     pub bind_host: String,
     pub bound_port: u32,
     pub task: tokio::task::JoinHandle<()>,
+    pub remote_forward: Option<crate::ssh::RemoteForward>,
+}
+
+fn entry_is_running(entry: &RunningEntry) -> bool {
+    // Remote forwarding is registered on the SSH channel, not the placeholder task.
+    entry.kind == 'R' || !entry.task.is_finished()
+}
+
+fn entry_runtime_state(entry: &RunningEntry) -> Value {
+    json!({
+        "running": entry_is_running(entry), "bindHost": entry.bind_host,
+        "port": entry.bound_port, "type": entry.kind.to_string(),
+        "sessionId": entry.session_id,
+    })
 }
 
 pub struct ForwardService {
     pub running: Mutex<HashMap<String, RunningEntry>>,
     pub remote_targets: crate::ssh::RemoteTargets, // "bindHost:port" -> (destHost, destPort, ruleId)
+}
+
+#[cfg(test)]
+mod runtime_state_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn runtime_state_reports_allocated_port_and_actual_bind_address() {
+        let service = ForwardService::new(Arc::new(Mutex::new(HashMap::new())));
+        service.running.lock().unwrap().insert(
+            "rule".into(),
+            RunningEntry {
+                session_id: "session".into(),
+                kind: 'L',
+                bind_host: "127.0.0.1".into(),
+                bound_port: 32145,
+                task: tokio::spawn(std::future::pending()),
+                remote_forward: None,
+            },
+        );
+        let value = service.runtime_state("rule");
+        assert_eq!(value["running"], true);
+        assert_eq!(value["port"], 32145);
+        assert_eq!(value["bindHost"], "127.0.0.1");
+        assert_eq!(service.runtime_states(&["rule".into()])["rule"], value);
+        assert_eq!(service.runtime_state("missing")["running"], false);
+        service
+            .running
+            .lock()
+            .unwrap()
+            .remove("rule")
+            .unwrap()
+            .task
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn finished_listener_is_stopped_but_remote_registration_is_running() {
+        let task = tokio::spawn(async {});
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let mut entry = RunningEntry {
+            session_id: "session".into(),
+            kind: 'D',
+            bind_host: "::1".into(),
+            bound_port: 12345,
+            task,
+            remote_forward: None,
+        };
+        assert!(!entry_is_running(&entry));
+        entry.kind = 'R';
+        assert!(entry_is_running(&entry));
+    }
 }
 
 pub fn emit_state(app: &tauri::AppHandle, rule_id: &str, running: bool, port: u32) {
@@ -69,16 +137,52 @@ impl ForwardService {
     }
 
     pub fn is_running(&self, rule_id: &str) -> bool {
-        self.running.lock().unwrap().contains_key(rule_id)
+        self.running
+            .lock()
+            .unwrap()
+            .get(rule_id)
+            .map_or(false, entry_is_running)
     }
 
     pub fn states(&self, ids: &[String]) -> Value {
         let running = self.running.lock().unwrap();
         let mut out = serde_json::Map::new();
         for id in ids {
-            out.insert(id.clone(), json!(running.contains_key(id)));
+            out.insert(
+                id.clone(),
+                json!(running.get(id).map_or(false, entry_is_running)),
+            );
         }
         Value::Object(out)
+    }
+
+    /// Rich state for commands/UI: configured port 0 is not the listening port.
+    pub fn runtime_states(&self, ids: &[String]) -> Value {
+        let running = self.running.lock().unwrap();
+        let mut out = serde_json::Map::new();
+        for id in ids {
+            out.insert(
+                id.clone(),
+                running
+                    .get(id)
+                    .map_or_else(|| json!({ "running": false }), entry_runtime_state),
+            );
+        }
+        Value::Object(out)
+    }
+
+    pub fn runtime_state(&self, id: &str) -> Value {
+        self.running
+            .lock()
+            .unwrap()
+            .get(id)
+            .map_or_else(|| json!({ "running": false }), entry_runtime_state)
+    }
+
+    fn emit_runtime_state(&self, app: &tauri::AppHandle, rule_id: &str) {
+        let mut value = self.runtime_state(rule_id);
+        value["ruleId"] = json!(rule_id);
+        crate::ai::emit_evt(app, "forward:state", value);
     }
 
     pub async fn start(
@@ -88,7 +192,7 @@ impl ForwardService {
         rule: &Value,
     ) -> Result<u32, String> {
         let rule_id = rule["id"].as_str().unwrap_or("").to_string();
-        if self.running.lock().unwrap().contains_key(&rule_id) {
+        if self.is_running(&rule_id) {
             return Err("规则已在运行".into());
         }
         let kind = rule["type"].as_str().unwrap_or("L").to_string();
@@ -106,7 +210,9 @@ impl ForwardService {
                 let listener = TcpListener::bind((bind_host.as_str(), bind_port as u16))
                     .await
                     .map_err(|e| format!("本地监听失败: {}", e))?;
-                let bound_port = listener.local_addr().map_err(|e| e.to_string())?.port() as u32;
+                let bound_addr = listener.local_addr().map_err(|e| e.to_string())?;
+                let bound_port = bound_addr.port() as u32;
+                let bind_host = bound_addr.ip().to_string();
                 let sid = session_id.clone();
                 let rid = rule_id.clone();
                 let task = tokio::spawn(async move {
@@ -134,16 +240,19 @@ impl ForwardService {
                         bind_host,
                         bound_port,
                         task,
+                        remote_forward: None,
                     },
                 );
-                emit_state(&app, &rule_id, true, bound_port);
+                self.emit_runtime_state(&app, &rule_id);
                 Ok(bound_port)
             }
             "D" => {
                 let listener = TcpListener::bind((bind_host.as_str(), bind_port as u16))
                     .await
                     .map_err(|e| format!("SOCKS 监听失败: {}", e))?;
-                let bound_port = listener.local_addr().map_err(|e| e.to_string())?.port() as u32;
+                let bound_addr = listener.local_addr().map_err(|e| e.to_string())?;
+                let bound_port = bound_addr.port() as u32;
+                let bind_host = bound_addr.ip().to_string();
                 let ssh2 = ssh.clone();
                 let sid = session_id.clone();
                 let rid = rule_id.clone();
@@ -231,15 +340,16 @@ impl ForwardService {
                         bind_host,
                         bound_port,
                         task,
+                        remote_forward: None,
                     },
                 );
-                emit_state(&app, &rule_id, true, bound_port);
+                self.emit_runtime_state(&app, &rule_id);
                 Ok(bound_port)
             }
             "R" => {
                 let dest_host = rule["destHost"].as_str().unwrap_or("").to_string();
                 let dest_port = rule["destPort"].as_u64().unwrap_or(0) as u32;
-                let bound_port = ssh
+                let (bound_port, remote_forward) = ssh
                     .remote_forward_listen(&session_id, &bind_host, bind_port)
                     .await?;
                 self.remote_targets.lock().unwrap().insert(
@@ -254,9 +364,10 @@ impl ForwardService {
                         bind_host,
                         bound_port,
                         task: tokio::spawn(async {}),
+                        remote_forward: Some(remote_forward),
                     },
                 );
-                emit_state(&app, &rule_id, true, bound_port);
+                self.emit_runtime_state(&app, &rule_id);
                 Ok(bound_port)
             }
             other => Err(format!("未知转发类型: {}", other)),
@@ -266,7 +377,7 @@ impl ForwardService {
     pub fn stop(
         &self,
         app: &tauri::AppHandle,
-        ssh: Arc<crate::ssh::SshService>,
+        _ssh: Arc<crate::ssh::SshService>,
         rule_id: &str,
     ) -> bool {
         let entry = self.running.lock().unwrap().remove(rule_id);
@@ -278,12 +389,9 @@ impl ForwardService {
                         .lock()
                         .unwrap()
                         .remove(&format!("{}:{}", e.bind_host, e.bound_port));
-                    let sid = e.session_id.clone();
-                    let bh = e.bind_host.clone();
-                    let bp = e.bound_port;
-                    tokio::spawn(async move {
-                        ssh.remote_forward_cancel(&sid, &bh, bp).await;
-                    });
+                    if let Some(remote_forward) = e.remote_forward {
+                        tokio::spawn(remote_forward.cancel());
+                    }
                 }
                 emit_state(app, rule_id, false, e.bound_port);
                 true

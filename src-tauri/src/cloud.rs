@@ -1,7 +1,9 @@
 // 云厂商实例查询:腾讯云 CVM/轻量(TC3 签名)+ 阿里云 ECS(RPC V1)
-// - 区域自动探测(DescribeRegions),不再要求用户逐个选择
+// - 区域自动探测(DescribeRegions),不再要求用户逐个选择;
+//   腾讯云 CVM 与轻量各自探测自己的地域表,防两表不一致漏地域
 // - 全区域并发分页拉取;单区域失败不阻断整体(结果里带 errors 供前端提示)
 // - 腾讯云一次拉取 CVM + 轻量两类实例(lighthouse 与 CVM 共用密钥)
+// - 凭据校验与"拉取全部"走同一条全量扫描路径,校验报出的数字即真实拉取结果
 use crate::signing::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -79,7 +81,8 @@ pub async fn tencent_call(
 }
 
 /// 腾讯云区域探测(DescribeRegions):返回 (region, name) 列表。
-/// CVM 与 Lighthouse 的区域表一致,用 CVM 的即可。
+/// CVM 与 Lighthouse 各有一张地域表且不保证一致,两侧必须分别探测
+/// (见 tencent_lighthouse_regions),不能只沿用其中一张。
 pub async fn tencent_regions(
     secret_id: &str,
     secret_key: &str,
@@ -96,15 +99,71 @@ pub async fn tencent_regions(
         endpoint,
     )
     .await?;
-    let mut out = Vec::new();
-    for r in resp["RegionSet"].as_array().cloned().unwrap_or_default() {
-        let region = r["Region"].as_str().unwrap_or("").to_string();
-        let name = r["RegionName"].as_str().unwrap_or("").to_string();
-        if !region.is_empty() {
-            out.push((region, name));
-        }
-    }
-    Ok(out)
+    Ok(parse_tencent_regions(&resp))
+}
+
+/// 轻量应用服务器自己的地域表(DescribeRegions)。与 CVM 的地域表不保证
+/// 一致 —— 只用 CVM 的列表可能漏掉仅轻量覆盖/售卖的地域(如部分海外地域)。
+pub async fn tencent_lighthouse_regions(
+    secret_id: &str,
+    secret_key: &str,
+    endpoint: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let resp = tencent_call(
+        secret_id,
+        secret_key,
+        "lighthouse",
+        "DescribeRegions",
+        "2020-03-24",
+        "ap-guangzhou",
+        json!({}),
+        endpoint,
+    )
+    .await?;
+    Ok(parse_tencent_regions(&resp))
+}
+
+/// 解析腾讯云 DescribeRegions 响应(CVM 与 Lighthouse 的响应同构:
+/// RegionSet[] 里 Region/RegionName),空 region 条目丢弃。
+pub(crate) fn parse_tencent_regions(resp: &Value) -> Vec<(String, String)> {
+    resp["RegionSet"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| {
+            let region = r["Region"].as_str().unwrap_or("").to_string();
+            let name = r["RegionName"].as_str().unwrap_or("").to_string();
+            if region.is_empty() {
+                None
+            } else {
+                Some((region, name))
+            }
+        })
+        .collect()
+}
+
+/// 两张地域表的并集大小(按 region id 去重),校验结果的地域数口径。
+pub(crate) fn union_region_count(cvm: &[(String, String)], lh: &[(String, String)]) -> usize {
+    cvm.iter()
+        .chain(lh.iter())
+        .map(|(r, _)| r.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// 探测两侧地域表。轻量表探测失败不阻断整体 —— 退回用 CVM 的表
+/// (与旧行为一致),轻量的逐区域调用会自行报错。
+async fn tencent_region_lists(
+    secret_id: &str,
+    secret_key: &str,
+    endpoint: &str,
+) -> Result<(Vec<(String, String)>, Vec<(String, String)>), String> {
+    let cvm = tencent_regions(secret_id, secret_key, endpoint).await?;
+    let lh = tencent_lighthouse_regions(secret_id, secret_key, endpoint)
+        .await
+        .unwrap_or_else(|_| cvm.clone());
+    Ok((cvm, lh))
 }
 
 /// 阿里云区域探测(DescribeRegions):返回 (region, name) 列表。
@@ -175,18 +234,19 @@ pub async fn tencent_describe_instances(
     Ok(all)
 }
 
-/// 腾讯云:全区域拉取 CVM + 轻量,结果带 provider/region。
-/// 单区域失败不阻断整体 —— 错误收集进 errors 由前端汇总提示。
-pub async fn tencent_fetch_all(
+/// 按服务各自的地域表并发分页拉取:返回 (实例, 错误, 至少一个区域成功过的服务)。
+/// 凭据校验与"拉取全部"共用本函数,保证两处范围、过滤与行为完全一致。
+async fn tencent_scan(
     secret_id: &str,
     secret_key: &str,
+    cvm_regions: &[(String, String)],
+    lh_regions: &[(String, String)],
     endpoint: &str,
-) -> Result<(Vec<Value>, Vec<String>), String> {
-    let regions = tencent_regions(secret_id, secret_key, endpoint).await?;
+) -> (Vec<Value>, Vec<String>, Vec<String>) {
     let sem = Arc::new(Semaphore::new(8)); // 并发限流,避免触发 API 限频
     let mut handles = Vec::new();
-    for (region, _) in &regions {
-        for svc in ["cvm", "lighthouse"] {
+    for (svc, regions) in [("cvm", cvm_regions), ("lighthouse", lh_regions)] {
+        for (region, _) in regions {
             let permit = sem.clone();
             let sid = secret_id.to_string();
             let skey = secret_key.to_string();
@@ -201,11 +261,17 @@ pub async fn tencent_fetch_all(
     }
     let mut instances = Vec::new();
     let mut errors = Vec::new();
+    let mut ok_services: Vec<String> = Vec::new();
     for h in handles {
         match h.await {
-            Ok((_, _, Ok(list))) => instances.extend(list),
+            Ok((svc, _, Ok(list))) => {
+                if !ok_services.iter().any(|s| s == svc) {
+                    ok_services.push(svc.to_string());
+                }
+                instances.extend(list);
+            }
             Ok((svc, region, Err(e))) => {
-                // 部分区域不支持轻量(如 ap-osaka/na-queretaro),属正常情况,
+                // 个别地域不支持对应服务(如 ap-osaka 无轻量)属正常情况,
                 // 不作为错误提示用户。
                 if e.contains("UnsupportedRegion") {
                     continue;
@@ -215,6 +281,20 @@ pub async fn tencent_fetch_all(
             Err(e) => errors.push(format!("任务失败: {}", e)),
         }
     }
+    (instances, errors, ok_services)
+}
+
+/// 腾讯云:全区域拉取 CVM + 轻量,结果带 provider/region。
+/// CVM 与轻量各自探测地域表后按表拉取;单区域失败不阻断整体 ——
+/// 错误收集进 errors 由前端汇总提示。
+pub async fn tencent_fetch_all(
+    secret_id: &str,
+    secret_key: &str,
+    endpoint: &str,
+) -> Result<(Vec<Value>, Vec<String>), String> {
+    let (cvm_regions, lh_regions) = tencent_region_lists(secret_id, secret_key, endpoint).await?;
+    let (instances, errors, _) =
+        tencent_scan(secret_id, secret_key, &cvm_regions, &lh_regions, endpoint).await;
     Ok((instances, errors))
 }
 
@@ -305,16 +385,17 @@ pub async fn aliyun_call(
     Ok(json)
 }
 
-/// 阿里云:全区域分页拉取 ECS 实例,结果带 region。
-pub async fn aliyun_fetch_all(
+/// 阿里云:给定地域表并发分页拉取 ECS 实例,结果带 region。
+/// 凭据校验与"拉取全部"共用本函数,保证两处行为一致。
+async fn aliyun_scan_regions(
     access_key_id: &str,
     access_key_secret: &str,
+    regions: &[(String, String)],
     endpoint: &str,
-) -> Result<(Vec<Value>, Vec<String>), String> {
-    let regions = aliyun_regions(access_key_id, access_key_secret, endpoint).await?;
+) -> (Vec<Value>, Vec<String>) {
     let sem = Arc::new(Semaphore::new(8));
     let mut handles = Vec::new();
-    for (region, _) in &regions {
+    for (region, _) in regions {
         let ak = access_key_id.to_string();
         let sk = access_key_secret.to_string();
         let ep = endpoint.to_string();
@@ -361,6 +442,18 @@ pub async fn aliyun_fetch_all(
             Err(e) => errors.push(format!("任务失败: {}", e)),
         }
     }
+    (instances, errors)
+}
+
+/// 阿里云:全区域分页拉取 ECS 实例,结果带 region。
+pub async fn aliyun_fetch_all(
+    access_key_id: &str,
+    access_key_secret: &str,
+    endpoint: &str,
+) -> Result<(Vec<Value>, Vec<String>), String> {
+    let regions = aliyun_regions(access_key_id, access_key_secret, endpoint).await?;
+    let (instances, errors) =
+        aliyun_scan_regions(access_key_id, access_key_secret, &regions, endpoint).await;
     Ok((instances, errors))
 }
 
@@ -388,48 +481,45 @@ fn map_aliyun_instances(resp: &Value, region: &str) -> Vec<Value> {
         .collect()
 }
 
-/// 凭据校验(腾讯云):探测地域 + 首个地域的实例,只读不落库。
-/// 返回 (地域数, 实例数, 探测地域, 可用的服务名列表)。
-/// 与"拉取全部"共用同一套签名/调用路径 —— 校验通过即代表后续拉取能成功。
+/// 凭据校验(腾讯云):与"拉取全部"完全同路径的全量只读扫描,不落库。
+/// 返回 (地域数(两表并集), 实例总数, 可用的服务名列表, 失败项数)。
+/// 报出的数字即真实拉取结果 —— 不再只抽样首个地域。
 pub async fn tencent_probe(
     secret_id: &str,
     secret_key: &str,
     endpoint: &str,
-) -> Result<(usize, usize, String, Vec<String>), String> {
+) -> Result<(usize, usize, Vec<String>, usize), String> {
     if secret_id.trim().is_empty() || secret_key.trim().is_empty() {
         return Err("请填写腾讯云 SecretId 与 SecretKey".into());
     }
-    let regions = tencent_regions(secret_id, secret_key, endpoint).await?;
-    if regions.is_empty() {
+    let (cvm_regions, lh_regions) = tencent_region_lists(secret_id, secret_key, endpoint).await?;
+    if cvm_regions.is_empty() && lh_regions.is_empty() {
         return Err("该密钥未返回任何可用地域".into());
     }
-    let region = regions[0].0.clone();
-    let mut count = 0usize;
-    let mut ok_services: Vec<String> = Vec::new();
-    let mut last_err: Option<String> = None;
-    for svc in ["cvm", "lighthouse"] {
-        match tencent_describe_instances(secret_id, secret_key, svc, &region, endpoint).await {
-            Ok(list) => {
-                count += list.len();
-                ok_services.push(svc.to_string());
-            }
-            // 个别地域不支持轻量属正常,不影响凭据有效性判定
-            Err(e) if e.contains("UnsupportedRegion") => {}
-            Err(e) => last_err = Some(e),
-        }
-    }
+    let (instances, errors, ok_services) =
+        tencent_scan(secret_id, secret_key, &cvm_regions, &lh_regions, endpoint).await;
     if ok_services.is_empty() {
-        return Err(last_err.unwrap_or_else(|| "两个服务均未返回实例".into()));
+        // 没有任何一次调用成功过,凭据无效;给最后一条真实错误
+        return Err(errors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "所有地域调用均失败".into()));
     }
-    Ok((regions.len(), count, region, ok_services))
+    Ok((
+        union_region_count(&cvm_regions, &lh_regions),
+        instances.len(),
+        ok_services,
+        errors.len(),
+    ))
 }
 
-/// 凭据校验(阿里云):探测地域 + 首个地域的实例,只读不落库。
+/// 凭据校验(阿里云):与"拉取全部"同路径的全量只读扫描,不落库。
+/// 返回 (地域数, 实例总数, 可用的服务名列表, 失败项数)。
 pub async fn aliyun_probe(
     access_key_id: &str,
     access_key_secret: &str,
     endpoint: &str,
-) -> Result<(usize, usize, String, Vec<String>), String> {
+) -> Result<(usize, usize, Vec<String>, usize), String> {
     if access_key_id.trim().is_empty() || access_key_secret.trim().is_empty() {
         return Err("请填写阿里云 AccessKeyId 与 AccessKeySecret".into());
     }
@@ -437,10 +527,21 @@ pub async fn aliyun_probe(
     if regions.is_empty() {
         return Err("该密钥未返回任何可用地域".into());
     }
-    let region = regions[0].0.clone();
-    let list =
-        aliyun_describe_instances(access_key_id, access_key_secret, &region, endpoint).await?;
-    Ok((regions.len(), list.len(), region, vec!["ecs".into()]))
+    let (instances, errors) =
+        aliyun_scan_regions(access_key_id, access_key_secret, &regions, endpoint).await;
+    // 每个区域一个任务:全部失败即凭据无效;个别区域失败不影响校验结论
+    if errors.len() >= regions.len() {
+        return Err(errors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "所有地域调用均失败".into()));
+    }
+    Ok((
+        regions.len(),
+        instances.len(),
+        vec!["ecs".into()],
+        errors.len(),
+    ))
 }
 
 // 保留单区域调用(旧签名兼容;mock 测试与既有调用方使用)

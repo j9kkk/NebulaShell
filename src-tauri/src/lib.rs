@@ -5,6 +5,7 @@ pub mod commands;
 pub mod config;
 pub mod forward;
 pub mod monitor;
+mod session_log;
 pub mod sftp;
 pub mod signing;
 pub mod ssh;
@@ -49,6 +50,7 @@ pub fn run() {
         monitors: Mutex::new(HashMap::new()),
         logs: Mutex::new(HashMap::new()),
         ai_aborts: Arc::new(Mutex::new(HashMap::new())),
+        batch_aborts: Arc::new(Mutex::new(HashMap::new())),
         test_results: test_results.clone(),
         test_mode,
     };
@@ -95,6 +97,18 @@ pub fn run() {
             // 退出前把未落盘的配置写回,避免去抖窗口内的最后一次变更丢失
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<AppState>() {
+                    let logs: Vec<_> = state
+                        .logs
+                        .lock()
+                        .unwrap()
+                        .drain()
+                        .map(|(_, log)| log)
+                        .collect();
+                    for log in logs {
+                        if let Err(error) = log.stop() {
+                            eprintln!("[log] {}: {}", log.file.display(), error);
+                        }
+                    }
                     state.store.flush_now();
                 }
             }

@@ -15,6 +15,7 @@
      这里给一个全局默认,让"非按钮但需与按钮等高"的元素
      (模型 chip 容器、模型下拉)也能引用同一把尺子。 */
   --ctl-h: 30px;
+  --footer-h: 45px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -26,6 +27,12 @@ body {
   overflow: hidden;
 }
 button { font-family: inherit; }
+/* 键盘焦点与悬停同样可见;不干扰终端自身的输入焦点。 */
+:where(button, [role="menuitem"], [tabindex]):focus-visible,
+:where(input, select, textarea):not(.xterm-helper-textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 input, select, textarea {
   font-family: inherit;
   background: var(--bg2);
@@ -36,7 +43,8 @@ input, select, textarea {
   font-size: 13px;
   outline: none;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+/* 聚焦指示统一走 :focus-visible 外圈(见上),输入框不再叠加内圈变色 ——
+   文本框鼠标点击也命中 :focus-visible,两种指示同时生效会呈现双重边框 */
 
 /* 下拉框:原生外观在深色主题下是浅色系统控件,且各平台箭头/内距不一致。
    统一改为自定义外观 + 内联 SVG 箭头,并用 color-scheme 让系统弹出的
@@ -54,10 +62,8 @@ select:not([multiple]) {
   background-size: 12px;
 }
 select:not([multiple]):hover { border-color: #33405a; }
-select:not([multiple]):focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.16);
-}
+/* 聚焦指示与 input 一致:只走 :focus-visible 外圈。此前的"变色+光晕"与外圈
+   叠成三层,是表单里所见多重边框的来源(文本框同款问题已先行清理)。 */
 /* 展开后的选项列表(能自定义的浏览器生效) */
 select option { background: var(--panel); color: var(--text); }
 select:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -84,13 +90,14 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 /* 侧边栏 */
 #sidebar {
   width: 264px;
+  flex-shrink: 0; min-height: 0;
   min-width: 180px; max-width: 50vw;
   background: var(--panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
 }
-.side-header { padding: 16px 14px 10px; border-bottom: 1px solid var(--border); }
+.side-header { flex: none; padding: 16px 14px 10px; border-bottom: 1px solid var(--border); }
 .logo { font-size: 18px; font-weight: 700; }
 .logo-text {
   background: linear-gradient(90deg, var(--accent), var(--accent2));
@@ -99,14 +106,11 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   color: transparent;
 }
 .logo-sub { color: var(--muted); font-size: 11px; margin: 2px 0 12px; }
-.side-actions { display: flex; gap: 8px; margin-bottom: 10px; }
-/* 等宽分配(flex-basis 归零),但保留内容不被裁切:
-   纯 flex:1 会按内容宽度分配导致参差,纯等宽又会裁掉较长标签。
-   这里等宽 + 允许文字收缩(box 不裁切时由 padding 兜底)。 */
-.side-actions .btn { flex: 1 1 0; min-width: 0; padding: 0 6px; font-size: 12px; }
+.side-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.side-actions .btn { min-width: 0; padding: 0 6px; font-size: 12px; }
 #host-search { width: 100%; }
 
-#host-list { flex: 1; overflow-y: auto; padding: 8px; }
+#host-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
 .host-group-title {
   color: var(--muted); font-size: 11px; text-transform: none;
   padding: 10px 6px 4px; letter-spacing: 0.4px;
@@ -130,28 +134,22 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .host-actions button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px; border-radius: 6px; }
 .host-actions button:hover { color: var(--text); background: var(--border); }
 .host-empty { color: var(--muted); text-align: center; padding: 30px 10px; font-size: 12px; }
-
-.side-footer {
-  border-top: 1px solid var(--border);
-  padding: 8px 14px;
-  display: flex; justify-content: flex-end; gap: 8px;
-  color: var(--muted); font-size: 11px;
-}
+/* .side-footer 已移除:导入/导出移入功能菜单「配置」组,底部只留快捷连接框 */
 
 /* 主区域 */
-#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 #tabbar {
-  display: flex; align-items: center;
+  display: flex; flex: none; align-items: center;
+  overflow-x: auto; scrollbar-width: none;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   padding: 6px 8px 0;
   gap: 8px;
-  /* 功能菜单(#more-menu)以本栏为定位父级:菜单因此永远落在"主区域"宽度内,
-     而主区域不含右侧的文件/AI 面板 —— 菜单不会越过面板边界去遮挡展示区。
-     此前 #more-menu 用 fixed/无定位祖先,直接以视口右上角定位,面板一开就压上去。 */
+  /* 工具栏保留自己的层级;功能菜单由 menu.js 移到 body 并按按钮位置锚定。 */
   position: relative;
   z-index: 64;
 }
+#tabbar::-webkit-scrollbar { height: 0; }
 #tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
 .tab {
   display: flex; align-items: center; gap: 6px;
@@ -186,7 +184,9 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 #term-stack { flex: 1; position: relative; background: var(--bg); min-height: 0; }
 .term-pane { position: absolute; inset: 0; padding: 6px 2px 2px 8px; display: none; }
 .term-pane.active { display: block; }
-.term-pane .xterm { height: 100%; }
+/* FitAddon measures its immediate parent without subtracting that parent's padding. */
+.term-surface { position: absolute; inset: 6px 2px 2px 8px; min-width: 0; min-height: 0; }
+.term-surface .xterm { height: 100%; }
 
 #welcome {
   position: absolute; inset: 0;
@@ -208,9 +208,9 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   display: flex; align-items: center; gap: 8px;
   border-top: 1px solid var(--border);
   background: var(--panel);
-  padding: 5px 12px;
+  padding: 8px 12px;
   font-size: 12px; color: var(--muted);
-  min-height: 30px;
+  height: var(--footer-h); min-height: var(--footer-h); flex: none;
   flex-wrap: nowrap;
   /* 最后的兜底:窄到连"按钮本身"都放不下时允许横向滚动,
      而不是把按钮裁掉 —— 用户要求行尾按钮不能被遮挡。
@@ -242,37 +242,77 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 
 /* AI 面板 */
 #ai-panel {
-  width: 360px; min-width: 260px; max-width: 60vw;
+  width: 360px; min-width: 260px; max-width: 60vw; flex-shrink: 0; min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--panel);
   display: flex; flex-direction: column;
 }
 /* 头部:标题 / 模型下拉 / 设置 / 关闭 之间留出统一间距。
    原先只有 .spacer 撑开,设置与关闭按钮贴在一起(第 6 条)。 */
-.ai-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-.ai-title { font-weight: 600; }
-.ai-quick { display: flex; gap: 8px; padding: 10px 12px 0; }
-#ai-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.ai-msg { position: relative; max-width: 92%; padding: 8px 11px; border-radius: 12px; font-size: 13px; line-height: 1.55; word-break: break-word; }
-/* 气泡内布局:头像在左,右侧一列(元信息行 + 正文)。
-   .ai-col 的 min-width:0 是关键 —— 没有 it,长模型名/长 URL 会把列撑破、
-   头像被挤变形;meta 行自己再 ellipsis 兜底。 */
-.ai-row { display: flex; gap: 8px; align-items: flex-start; }
-.ai-avatar { flex: 0 0 auto; font-size: 13px; line-height: 1.4; user-select: none; }
-.ai-col { flex: 1 1 auto; min-width: 0; }
-/* 元信息:发送时间 / 模型 / token / 耗时。刻意低对比度(muted 再压一档),
-   字号 11px,不抢正文视觉;换行场景(模型名很长)用 overflow-wrap 顺断,
-   不用 nowrap,避免撑出横向滚动。 */
-.ai-meta {
-  color: var(--muted); opacity: 0.75;
-  font-size: 11px; line-height: 1.5; margin-bottom: 2px;
-  overflow-wrap: anywhere;
+.ai-header { display: flex; flex: none; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.ai-header .btn { flex: none; }
+.ai-header .spacer { flex: 1 1 0; min-width: 0; }
+.ai-title { font-weight: 600; white-space: nowrap; flex: none; }
+.ai-quick { display: grid; flex: none; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; padding: 10px 12px 0; }
+/* 消息区外壳:承载"回到底部"浮动按钮的定位上下文;flex:1/min-height:0 的
+   尺寸职责从 #ai-messages 上移到这一层,滚动容器本身规则不变。 */
+.ai-messages-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+/* overflow-anchor:none:滚动位置由 ai.js 滚动控制器全权管理。关掉浏览器滚动
+   锚定,否则流式收尾的全量 DOM 重写会触发锚定补偿把视图拽离底部(实测上跳
+   上千 px);旧引擎不认识该属性时自动忽略,无副作用。 */
+#ai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-anchor: none; }
+/* "回到底部"按钮:仅当阅读位置离开底部时浮现(显隐由 ai.js 同步)。
+   局部浮层,z-index 与 .ai-code-menu-items 同档,远低于弹窗(50+)。 */
+.ai-scroll-bottom {
+  position: absolute; right: 14px; bottom: 14px; z-index: 10;
+  width: 28px; height: 28px; padding: 0;
+  font-family: inherit; font-size: 14px; line-height: 1;
+  color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), visibility var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
-.ai-msg.user .ai-meta { text-align: right; }
-.ai-msg.user { align-self: flex-end; background: #23407e; border-bottom-right-radius: 3px; }
+.ai-scroll-bottom.show { opacity: 1; visibility: visible; pointer-events: auto; }
+.ai-scroll-bottom:hover { color: var(--accent); border-color: var(--accent); }
+.ai-scroll-bottom:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ai-msg { flex-shrink: 0; display: flex; flex-direction: column; }
+.ai-msg { position: relative; max-width: 92%; font-size: 13px; line-height: 1.55; word-break: break-word; }
+/* 气泡行:.ai-row 现在只包气泡本体(头像已上移到元信息行,pending 态的
+   spinner 仍插在这一行、气泡左侧)。行内 32px 缩进(24px 头像列 + 8px 间距)
+   让气泡保持头像列让位的几何,并与时间文字对齐缘吻合。.ai-col 的
+   min-width:0 是关键 —— 没有 it,长模型名/长 URL 会把列撑破。 */
+.ai-row { display: flex; gap: 8px; align-items: flex-start; }
+.ai-msg.assistant .ai-row { padding-left: 32px; }
+.ai-msg.user .ai-row { padding-right: 32px; }
+.ai-avatar { flex: 0 0 auto; width: 24px; text-align: center; font-size: 13px; line-height: 1.4; user-select: none; }
+/* 应用图标与文字头像同占 24px 列,块级显示避免基线空隙;logo 16px 时细节糊 */
+.ai-avatar img { display: block; width: 24px; height: 24px; }
+.ai-msg.user .ai-avatar { color: var(--muted); font-weight: 600; }
+/* 气泡本体是 .ai-col。position:relative 是复制按钮(.ai-copy)的锚定上下文。
+   圆角规则:直角在头像一侧 —— 用户气泡右上角直角(头像在元信息行尾),
+   助手气泡左上角直角(头像在行首),其余三角 12px 圆角。 */
+.ai-col { flex: 1 1 auto; min-width: 0; position: relative; padding: 8px 11px; border-radius: 12px; }
+.ai-msg.user { align-self: flex-end; }
+.ai-msg.user .ai-col { background: #23407e; border-top-right-radius: 0; }
+/* 元信息行(气泡外、气泡正上方):头像与时间同行 —— 助手应用图标在行首,
+   用户"我"经 row-reverse 渲染到行尾。16px 头像列 + 8px 行内间距正好让时间
+   文字落在气泡的对齐缘(助手=左缘、用户=右缘),无需额外 padding。
+   刻意低对比度(muted 再压一档),字号 11px,不抢正文视觉;
+   换行场景(模型名很长)用 overflow-wrap 顺断,不用 nowrap,避免撑出横向滚动。 */
+.ai-meta {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--muted); opacity: 0.75;
+  font-size: 11px; line-height: 1.5; margin-bottom: 4px;
+}
+.ai-meta-text { overflow-wrap: anywhere; min-width: 0; }
+.ai-msg.user .ai-meta { flex-direction: row-reverse; }
 /* 用户消息不走 Markdown,靠 pre-wrap 保留换行 */
 .ai-msg.user .ai-body { white-space: pre-wrap; }
-.ai-msg.assistant { align-self: flex-start; background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+.ai-msg.assistant { align-self: flex-start; }
+.ai-msg.assistant .ai-col { background: var(--bg2); border: 1px solid var(--border); border-top-left-radius: 0; }
 
 /* 等待首个 token:转圈 + 文案,让"正在执行"这件事可见(spinner 在 .ai-row 内、正文列左侧) */
 .ai-msg.pending { color: var(--muted); }
@@ -288,16 +328,17 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   animation: ai-spin 0.7s linear infinite;
 }
 @keyframes ai-spin { to { transform: rotate(360deg); } }
-/* 流式输出中:气泡末尾跟一个闪烁光标,表示"还在继续写" */
-.ai-msg.streaming { border-color: rgba(91, 140, 255, 0.45); }
-.ai-msg.streaming::after {
+/* 流式输出中:气泡末尾跟一个闪烁光标,表示"还在继续写"(光标随气泡本体 .ai-col 走) */
+.ai-msg.streaming .ai-col { border-color: rgba(91, 140, 255, 0.45); }
+.ai-msg.streaming .ai-col::after {
   content: '▌'; margin-left: 1px; color: var(--accent);
   animation: ai-caret 1s step-end infinite;
 }
 @keyframes ai-caret { 50% { opacity: 0; } }
 
-/* 每条消息的复制按钮:悬停气泡时浮现,点一下复制原文。
-   高度对齐既有最小档 18px(12px 字号 + 2px 内距 + 1px 描边),
+/* 每条消息的复制按钮:悬停气泡时浮现,点一下复制原文。锚定在气泡本体
+   (.ai-col,position:relative)右上角 —— 元信息行移出气泡后按钮仍贴着气泡,
+   不随元信息行走。高度对齐既有最小档 18px(12px 字号 + 2px 内距 + 1px 描边),
    不给按钮高度刻度新增档位。 */
 .ai-copy {
   position: absolute; top: 4px; right: 4px;
@@ -327,6 +368,25 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px;
 }
 .ai-body pre code { border: none; padding: 0; background: none; }
+.ai-code-block { min-width: 0; margin: 6px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.ai-code-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.ai-code-language { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+.ai-code-warning { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--warn); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-code-actions { display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto; }
+.ai-code-actions button, .ai-code-menu summary {
+  box-sizing: border-box; font: inherit; font-size: 11px; line-height: 18px; padding: 0 5px;
+  color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.ai-code-actions button:hover:not(:disabled), .ai-code-menu summary:hover { border-color: var(--accent); }
+.ai-code-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
+.ai-code-actions button:focus-visible, .ai-code-menu summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ai-code-actions .ai-code-execute { color: var(--accent); }
+.ai-code-menu { position: relative; }
+.ai-code-menu summary { list-style: none; }
+.ai-code-menu summary::-webkit-details-marker { display: none; }
+.ai-code-menu-items { position: absolute; top: calc(100% + 4px); right: 0; z-index: 10; padding: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+.ai-code-menu-items button { display: block; width: 100%; padding: 3px 8px; }
+.ai-body .ai-code-block pre { margin: 0; border: none; border-radius: 0 0 8px 8px; white-space: pre; word-break: normal; }
 .ai-body a { color: var(--accent); }
 /* GFM 表格:AI 回复里的"报错-原因"对照常见,要能读;
    气泡只有 92% 宽,宽表横向滚动而不是撑破布局 */
@@ -341,9 +401,12 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 
 .ai-hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 30px; padding: 0 20px; line-height: 1.6; }
 /* 发送按钮与输入框等高:textarea 是两行,按钮沿用 30px 刻度会矮一截 */
-.ai-input-row { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); align-items: stretch; }
-#ai-input { flex: 1; resize: none; }
-.ai-input-row .btn { height: auto; min-height: var(--ctl-h); }
+.ai-input-row { display: flex; flex: none; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); align-items: stretch; }
+#ai-input { flex: 1 1 0; min-width: 0; width: 0; resize: none; }
+.ai-input-row .btn { flex: none; height: auto; min-height: var(--ctl-h); }
+/* 发送/停止同钮:流式期间加 .stop 切为危险色(此时按钮职责是中止生成) */
+#ai-send.stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+#ai-send.stop:hover { filter: brightness(1.1); }
 
 /* 按钮
    尺寸统一走一套刻度:所有按钮高度由 --ctl-h 决定,字号/内距只调水平方向。
@@ -375,6 +438,16 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .btn.primary:hover { filter: brightness(1.1); }
 /* 小号:侧边栏/状态栏/表格内操作 */
 .btn.small, .btn.sm { --ctl-h: 26px; padding: 0 10px; font-size: 12px; }
+/* 同排的文本输入框跟随所在行的按钮档位:显式取当前作用域 --ctl-h,
+   抵消全局 input 纵向内距带来的"输入框比按钮高"。哪一行整体要 26px 档,
+   就在行容器上覆写 --ctl-h —— 输入框与行内按钮同时生效(picker 工具行
+   按钮已是 30px 档,输入框直接取默认;mkdir/chmod/片段行是 small 档)。 */
+.picker-toolbar .inp, #file-mkdir-row input, #file-chmod-row input, .snippet-add input {
+  height: var(--ctl-h);
+  padding: 0 10px;
+  line-height: 1;
+}
+#file-mkdir-row, #file-chmod-row, .snippet-add { --ctl-h: 26px; }
 /* 图标按钮:正方形,仅靠内距控制 */
 .btn.icon { --ctl-h: 26px; width: var(--ctl-h); padding: 0; font-size: 13px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -389,7 +462,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .modal-card {
   width: 520px; max-width: calc(100vw - 40px);
   max-height: calc(100vh - 60px);
-  overflow-y: auto;
+  max-height: calc(100dvh - 60px);
+  min-width: 0; min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -398,41 +474,86 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 }
 .modal-card.wide { width: 780px; }
 .modal-card h3 { margin-bottom: 14px; }
-.form-grid { display: grid; grid-template-columns: 110px 1fr; gap: 10px 12px; align-items: center; }
+.form-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 12px; align-items: center; }
+.form-grid > *, .form-row > * { min-width: 0; }
+.form-grid :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea) {
+  width: 100%; min-width: 0; max-width: 100%;
+}
+.form-grid input:is([type="checkbox"], [type="radio"]) { justify-self: start; accent-color: var(--accent); }
 .form-grid label { color: var(--muted); font-size: 13px; }
 .form-row { display: contents; }
-.key-row { display: flex; align-items: center; gap: 8px; }
+.key-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.key-row > .btn { flex: none; }
+.key-row .key-path { flex: 1 1 120px; min-width: 0; }
+/* 已保存密钥提示与显隐/清除按钮共用可收缩的控件行。 */
+.secret-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.secret-control { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.secret-control > input:not([type="checkbox"]):not([type="radio"]) { flex: 1 1 120px; min-width: 0; }
+.secret-control > input:is([type="checkbox"], [type="radio"]) { flex: none; }
+.secret-control > .btn { flex: none; }
+.key-status { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.key-status:empty { display: none; }
 .key-path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; align-items: center; }
+.modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 18px; align-items: center; }
+.modal-actions > .btn { flex: none; }
 /* "模型"一栏:chip 列表 + 拉取按钮。两者等高 —— 按钮沿用 .btn 的 30px,
    chip 容器以同一刻度设 min-height,否则并排时高矮不一(第 4 条)。 */
 .model-row { display: flex; gap: 8px; align-items: stretch; }
 .model-chips {
   flex: 1; min-width: 0;
-  display: flex; flex-wrap: wrap; gap: 6px;
-  align-items: center; align-content: center;
+  /* 单行不换行,超宽在框内横向滚动:一旦换行,框高就不再与按钮等高(第 4 条) */
+  display: flex; flex-wrap: nowrap; gap: 6px;
+  align-items: center;
   min-height: var(--ctl-h);
   padding: 4px 6px;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
-.model-chips-empty { color: var(--muted); font-size: 12px; padding: 0 2px; }
+/* 滚动条不占布局空间(WebKit 下横向滚动条会把 30px 的框撑到 44,第 4 条);
+   横向查看仍可用滚轮/触控板 */
+.model-chips::-webkit-scrollbar { display: none; }
+/* 输入光标即指示:聚焦时高亮容器边框,输入框自身不再套 outline(避免框内双框) */
+.model-chips:focus-within { border-color: var(--accent); }
+/* chip 与输入框都渲染进这层,display:contents 让它们直接参与容器的 flex 排版 */
+.model-chips-list { display: contents; }
+.model-chips-empty { color: var(--muted); font-size: 12px; padding: 0 2px; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-chips-input {
+  flex: 1 1 80px; min-width: 80px;
+  background: transparent; border: none; outline: none;
+  color: var(--text); font-family: inherit; font-size: 12px;
+  padding: 3px 4px; border-radius: 0;
+}
+.model-chips-input:focus-visible { outline: none; }
+.model-chips-input::placeholder { color: var(--muted); }
 .model-chip {
-  font-family: inherit; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; line-height: 1;
   color: var(--muted);
   background: transparent; border: 1px solid var(--border);
   /* 3px 内距 + 12px 行高 + 1px 描边 = 20px;容器 4px 内距 + 1px 描边后
      整体恰好 30px,与 .btn 同高(第 4 条:两边不一致) */
-  border-radius: 999px; padding: 3px 9px;
+  border-radius: 999px; padding: 3px 5px 3px 9px;
   cursor: pointer; max-width: 100%;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
+.model-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-chip:hover { color: var(--text); border-color: var(--accent); }
+.model-chip-del {
+  flex: none;
+  font-family: inherit; font-size: 12px; line-height: 1;
+  color: inherit; background: transparent; border: none;
+  /* 垂直不加内距:chip 总高须保持 20px(容器 30px 与按钮等高,第 4 条) */
+  padding: 0 3px; border-radius: 999px;
+  cursor: pointer; opacity: 0.55;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.model-chip-del:hover { opacity: 1; background: rgba(255, 107, 107, 0.18); color: var(--danger); }
 /* 当前生效模型:实心高亮,和"已勾选但未启用"区分开 */
 .model-chip.active {
   color: #fff; background: linear-gradient(135deg, #4f7dff, #3a5fd9);
   border-color: transparent;
 }
+.model-chip.active .model-chip-del:hover { background: rgba(255, 255, 255, 0.25); color: #fff; }
 .model-row > .btn { flex: 0 0 auto; }
 .small-note { margin-top: 12px; line-height: 1.5; }
 
@@ -441,7 +562,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .picker-card { width: 500px; display: flex; flex-direction: column; }
 .picker-sub { margin: -6px 0 4px; }
 .picker-count { margin-top: 0; }
-/* 搜索框 + 全选/清空同一行;输入框吃掉剩余宽度 */
+/* 搜索框 + 全选/清空同一行;输入框吃掉剩余宽度,高度由上方统一刻度规则对齐 */
 .picker-toolbar { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
 .picker-toolbar .inp { flex: 1; min-width: 0; margin: 0; }
 .picker-list {
@@ -481,7 +602,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .about-name { margin-bottom: 4px; }
 .about-tag { font-size: 12px; margin-bottom: 14px; }
 .about-grid {
-  display: grid; grid-template-columns: auto 1fr; gap: 6px 14px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px;
   text-align: left; font-size: 13px;
   padding: 12px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
 }
@@ -544,7 +665,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 #monitor-bar {
   display: flex; align-items: center; gap: 14px;
   font-size: 12px; color: var(--muted);
-  flex: 0 1 auto; min-width: 0; overflow: hidden;
+  /* flex: 0 0 auto:监控条绝不收缩 —— 收缩压力若与状态文字按 flex 比例分摊,
+     文字(短)几乎不缩、监控条先被裁(实测 1300px 处文字 158px 未缩、监控组已裁 9px)。
+     所有宽度适配交给下面的 @container 档位;状态文字独自作缓冲(缩到省略号)。 */
+  flex: 0 0 auto; min-width: 0; overflow: hidden;
 }
 #monitor-bar.hidden { display: none; }
 /* 分组:组间 14px 大间距、组内 4px 紧凑间距,配合"标签+数值"让每项含义可速读。
@@ -586,16 +710,25 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
    最低档保留"内存 + 网速"——这两项最能说明机器死活。
    选择器必须带 #monitor-bar:上面 `.mon-group`/`.mon-item` 的 display 是类级组合,
    只用单项类名(如 .mon-disk-item)会被组合选择器压过,hide 掉不生效。 */
-@container (max-width: 980px) { #monitor-bar .mon-det { display: none; } }
-@container (max-width: 880px) { #monitor-bar .mon-spark { display: none; } }
-@container (max-width: 660px) { #monitor-bar .mon-disk-item { display: none; } }
-@container (max-width: 560px) { #monitor-bar .mon-track { display: none; } }
-@container (max-width: 470px) { #monitor-bar .mon-cpu-item { display: none; } }
-/* 极窄主区:整块监控收起,把空间让给行尾按钮。
-   现实中会出现:窗口 1280 + 侧栏 264 + AI 面板 360 + 文件面板 340 → #main 仅 ~316px。
-   此时监控块即使降到最低档(内存+网速+延迟)也放不下,而"按钮被推出状态栏"
-   是用户明确不能接受的 —— 宁可暂时不显示监控,也不能遮挡按钮。 */
-@container (max-width: 420px) { #statusbar #monitor-bar { display: none; } }
+/* 档位阈值 = 监控条该档净宽 + 状态栏固定开销。开销实测(1300px 诊断):
+   状态文字 158 + 行尾 5 按钮 130 + 状态点 8 + padding 24 + flex 间隙 ~64 ≈ 384,
+   再留 ~10px 余量。状态文字最宽 158px 是"已连接 user@host:端口"的常规形态,
+   超长的主机名由省略号兜底,不参与档位计算。
+   实测教训(三次):①旧档按裸容器宽拍没扣按钮区;②档间过渡带里 flex 比例收缩
+   把压力平摊给组内容 —— 监控条 flex:0 1 auto 时,文字不缩、监控先裁(连续扫描
+   1300→300 全带宽 9 处裁切带);③监控条改 0 0 auto 后,档位阈值必须 ≥ 净宽+开销,
+   否则监控条挤不下时裁的是自己的组,而 overflow 只会让它"看起来没了"。
+   各档净宽实测:满配 1004 → 隐详情 764 → 隐 spark 650 → 隐磁盘组 564
+   → 隐进度条 452 → 隐 CPU 组 362。 */
+@container (max-width: 1400px) { #monitor-bar .mon-det { display: none; } }
+@container (max-width: 1160px) { #monitor-bar .mon-spark { display: none; } }
+@container (max-width: 1046px) { #monitor-bar .mon-disk-item { display: none; } }
+@container (max-width: 960px) { #monitor-bar .mon-track { display: none; } }
+@container (max-width: 848px) { #monitor-bar .mon-cpu-item { display: none; } }
+/* 极窄主区:整块监控收起,把空间让给行尾按钮(384 开销 + 362 最低档 ≈ 746 之下
+   档位放不下;但现实场景 1280 窗口 + AI/文件面板同开 → #main 仅 ~316px,必须
+   整块隐藏。"按钮被推出状态栏"是用户明确不能接受的 —— 宁可暂时不显示监控)。 */
+@container (max-width: 756px) { #statusbar #monitor-bar { display: none; } }
 /* "暂不支持"是终态而非数值状态:整组隐藏(空组也会贡献 flex gap,不能只藏组内项),
    只留说明与延迟(延迟是连接属性,不依赖 /proc),与采样态的槽位互不干扰 */
 #monitor-bar.mon-unsupported .mon-group { display: none; }
@@ -634,20 +767,23 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 
 /* SFTP 文件面板 */
 #file-panel {
-  width: 340px; min-width: 260px; max-width: 60vw;
+  width: 340px; min-width: 260px; max-width: 60vw; flex-shrink: 0;
   border-left: 1px solid var(--border); background: var(--panel, var(--bg2));
   display: flex; flex-direction: column; min-height: 0;
 }
 #file-panel.hidden { display: none; }
-.file-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.file-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 /* 工具栏只留图标按钮(新建文件夹 / 上传 / 刷新):文字按钮太占地,
    且"下载/重命名/权限/删除"这些针对具体文件的操作已挪进行的右键菜单。 */
-.file-toolbar .btn.icon { --ctl-h: 28px; width: 28px; font-size: 15px; }
-.file-toolbar .spacer { flex: 1; }
-.file-toolbar-hint { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#file-mkdir-row { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.file-toolbar .btn.icon { --ctl-h: 28px; width: 28px; flex: none; font-size: 15px; }
+.file-toolbar .spacer { display: none; }
+.file-toolbar-hint { flex: 1 1 180px; min-width: 0; font-size: 11px; overflow-wrap: anywhere; }
+#file-mkdir-row, #file-chmod-row { display: flex; flex: none; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 #file-mkdir-row.hidden { display: none; }
-#file-mkdir-row input { flex: 1; font-size: 12px; }
+#file-mkdir-row input { flex: 1 1 0; min-width: 0; width: 0; font-size: 12px; }
+#file-mkdir-row .btn, #file-chmod-row .btn { flex: none; }
+#file-chmod-row { flex-wrap: wrap; }
+#file-chmod-row > .muted { flex-basis: 100%; overflow-wrap: anywhere; }
 /* 路径栏是输入框:回车跳转、Esc/失焦还原。默认弱化边框融入工具条,
    聚焦时亮起 —— 暗示"这里可以点进去改路径"(此前是只读 div,看不出能改)。 */
 .file-path {
@@ -670,7 +806,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .file-row.selected { background: rgba(91,140,255,0.22); }
 .file-row .f-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-row .f-size, .file-row .f-mtime { color: var(--muted); font-size: 11px; white-space: nowrap; }
-#file-status { padding: 6px 10px; font-size: 11px; min-height: 24px; border-top: 1px solid var(--border); }
+#file-status { flex: none; height: var(--footer-h); padding: 6px 10px; font-size: 11px; overflow: auto; overflow-wrap: anywhere; border-top: 1px solid var(--border); }
 .file-empty { color: var(--muted); text-align: center; padding: 24px 10px; font-size: 12px; }
 
 /* 终端搜索条 */
@@ -702,7 +838,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .badge.other { color: var(--muted); border-color: var(--muted); }
 
 /* Toast */
-#toasts { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 99; display: flex; flex-direction: column; gap: 8px; }
+/* z-index 必须始终高于一切操作层:弹窗打开时 syncModalScope 会内联设
+   z-index 200+ 且随打开次数递增(core.js),菜单也是 modal+1 ——
+   通知曾停在 99,云主机"测试连接"失败的提示被弹窗整个盖住。 */
+#toasts { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
 .toast {
   background: var(--bg2); border: 1px solid var(--border); color: var(--text);
   padding: 9px 16px; border-radius: 10px; font-size: 13px;
@@ -720,8 +859,29 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ===== P1 批次新增 ===== */
-.side-quick { padding: 8px 12px; border-top: 1px solid var(--border); }
-.side-quick input { width: 100%; font-size: 12px; }
+/* 侧栏底部:收起/展开按钮(原快速连接输入框已移除,快速连接走空窗格选择器) */
+.side-foot { margin-top: auto; flex: none; height: var(--footer-h); padding: 8px 12px; border-top: 1px solid var(--border); }
+.side-foot-toggle {
+  width: 100%; height: 28px; display: flex; align-items: center; justify-content: center;
+  gap: 6px; font-size: 12px;
+}
+.side-foot-toggle .mi { font-size: 13px; line-height: 1; }
+/* 收起态:侧栏塌缩为窄条。主机列表/搜索框/logo 隐藏,头部只留
+   新建主机/云导入/批量 三个图标按钮纵向排列,尺寸与底部收起按钮一致
+   (28×28,窄条 40px 减去两侧 6px 内距);文字标签隐藏,靠 title 提示。 */
+#sidebar.collapsed { flex: 0 0 40px; width: 40px; min-width: 40px; max-width: 40px; }
+#sidebar.collapsed .side-header { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 6px; border-bottom: none; }
+#sidebar.collapsed .logo,
+#sidebar.collapsed .logo-sub,
+#sidebar.collapsed #host-search { display: none; }
+#sidebar.collapsed .side-actions { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 0; }
+#sidebar.collapsed .side-actions .btn { width: 28px; height: 28px; padding: 0; font-size: 15px; }
+#sidebar.collapsed .side-actions .btn .lbl { display: none; }
+#sidebar.collapsed #host-list { display: none; }
+#sidebar.collapsed .side-foot { padding: 8px 6px; }
+#sidebar.collapsed .side-foot-toggle { padding: 0; }
+#sidebar.collapsed #sidebar-toggle-text { display: none; }
+#sidebar.collapsed .side-foot-toggle .mi { font-size: 15px; }
 #host-jump { height: 52px; font-size: 12px; }
 
 /* 分屏布局 */
@@ -729,13 +889,19 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .split-root, .split-node { display: flex; width: 100%; height: 100%; min-height: 0; }
 .split-node { position: relative; }
 .split-node > .term-pane { flex: 1 1 0; } /* 只作用于窗格;分隔条保持 0 0 5px,不得被拉伸 */
-.split-divider { flex: 0 0 5px; background: var(--border); cursor: col-resize; z-index: 5; }
+.split-divider { flex: 0 0 5px; background: var(--border); cursor: col-resize; z-index: 5; touch-action: none; user-select: none; }
 .split-node.v { flex-direction: column; }
 .split-node.v > .split-divider { cursor: row-resize; flex: 0 0 5px; width: 100%; }
-.term-pane { position: relative; inset: auto; display: block; flex: 1 1 0; min-width: 120px; min-height: 100px; overflow: hidden; }
+.term-pane { position: relative; inset: auto; display: block; flex: 1 1 0; min-width: 320px; min-height: 180px; overflow: hidden; }
 .term-pane.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
-.pane-picker { display: flex; flex-direction: column; padding: 16px; gap: 8px; overflow: auto; }
-.pane-picker .pp-item { cursor: pointer; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.pane-picker { display: flex; flex-direction: column; padding: 16px; gap: 8px; overflow: auto; min-width: 0; max-width: 100%; position: relative; }
+/* 空窗格自带的关闭按钮(右上角):分屏数量限制收紧后,空窗格必须能随手关掉 */
+.pane-picker .pane-picker-close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; line-height: 1; font-size: 12px; padding: 0; }
+.pane-picker .pane-picker-close:hover { border-color: var(--danger); color: var(--danger); }
+/* 主机名+地址一行显示:超出窗格宽就省略号(多窗格把窗格压得很窄,长主机名
+   曾直接顶破 pp-item 的圆角边框)。min-width:0 是 flex 子项能缩的前提;
+   overflow:hidden 裁掉文字但保住边框 —— 边框比文字重要。 */
+.pane-picker .pp-item { cursor: pointer; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; max-width: 100%; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pane-picker .pp-item:hover { border-color: var(--accent); background: rgba(91,140,255,0.08); }
 
 /* 广播条 */
@@ -761,7 +927,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
    和旁边 26px 的 .btn.icon 并排时明显不齐。这里显式写 26px —— 它要和
    那两个图标按钮对齐,而不是和默认 30px 的普通按钮对齐。 */
 select.ai-model-switch:not([multiple]) {
-  max-width: 160px; font-size: 12px;
+  flex: 0 1 160px; min-width: 0; max-width: 160px; font-size: 12px;
   height: 26px;
   padding: 0 22px 0 8px;
   background-color: var(--bg2);
@@ -774,21 +940,82 @@ select.ai-model-switch:not([multiple]):hover { border-color: var(--accent); }
 select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* 文件面板扩展 */
-.file-bookmarks { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 10px 0; }
+.file-bookmarks { display: flex; flex: none; flex-wrap: wrap; gap: 4px; padding: 6px 10px 0; }
 .file-bookmarks:empty { display: none; }
-.file-bookmarks .bm-chip { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; cursor: pointer; color: var(--muted); }
+.file-bookmarks .bm-chip { min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; cursor: pointer; color: var(--muted); }
 .file-bookmarks .bm-chip:hover { color: var(--text); border-color: var(--accent); }
 .file-drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(91,140,255,0.15); border: 2px dashed var(--accent); z-index: 10; font-size: 14px; color: var(--text); }
 #file-panel { position: relative; }
 
-/* 批量执行 */
-.batch-grid { display: grid; grid-template-columns: 240px 1fr; gap: 14px; }
-.batch-hosts { height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
-.batch-hosts label { display: flex; gap: 6px; align-items: center; padding: 3px 6px; font-size: 13px; cursor: pointer; border-radius: 5px; }
+/* 批量执行:卡片 900px,标题/底栏固定,中部滚动,结果区横跨整卡。
+   只覆盖 #modal-batch 自己的卡片,不影响其他弹窗的 .modal-card 行为。 */
+.modal-card.batch-card { width: 900px; display: flex; flex-direction: column; overflow: hidden; }
+.batch-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.batch-grid { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.batch-grid > * { min-width: 0; }
+.batch-pane-head { margin-bottom: 8px; }
+.batch-pane-title { font-size: 12px; color: var(--muted); }
+/* 左列:过滤输入框必须与下方主机列表框等宽对齐(左右缘一致)。
+   input 默认按内容宽渲染(size 属性),不会自动撑满 grid 列 —— 显式 100%;
+   与列表框之间留 8px,旧版 0 间距会让两个圆角边框贴成双线。 */
+#batch-search { width: 100%; margin-bottom: 8px; }
+.batch-host-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.batch-host-tools .btn { flex: none; }
+/* 计数独占一行:260px 列宽里与两个按钮同行会被挤到折行 */
+#batch-sel-summary { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+.batch-hosts { height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+.batch-hosts-empty { color: var(--muted); font-size: 12px; padding: 10px 6px; line-height: 1.6; }
+/* 主机条目两层信息:名称 + 连接串,各自单行省略;复选框对齐首行而非整块垂直居中。 */
+.batch-hosts label { display: flex; gap: 8px; align-items: flex-start; padding: 4px 6px; font-size: 13px; cursor: pointer; border-radius: 5px; }
 .batch-hosts label:hover { background: rgba(91,140,255,0.08); }
-#batch-results { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
-#batch-results th, #batch-results td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; }
-#batch-results td.out { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: Menlo, monospace; font-size: 11px; }
+.batch-hosts label input { flex: none; margin-top: 2px; }
+.batch-hosts .bh-main { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-hosts .bh-sub { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.batch-hosts.locked label { cursor: default; }
+.batch-hosts.locked label:hover { background: transparent; }
+/* 右列:执行配置。命令用多行文本域;并行/超时并列,标签在控件上方。 */
+.batch-field-label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+#batch-cmd { width: 100%; resize: vertical; font-family: Menlo, monospace; }
+.batch-params { display: flex; gap: 12px; margin-top: 10px; }
+.batch-param { flex: 1; min-width: 0; }
+.batch-param input { width: 100%; }
+.batch-param-err { color: var(--danger); font-size: 11px; line-height: 1.4; min-height: 15px; margin-top: 4px; }
+.batch-param-hint { font-size: 11px; line-height: 1.5; margin: 2px 0 0; }
+/* 结果区:横跨整卡,不再挤在右列。表格自带滚动区与吸顶表头,
+   避免结果增多把标题/表单/操作栏推出视野。 */
+.batch-results-section { margin-top: 16px; }
+.batch-results-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.batch-results-head .batch-pane-title { flex: none; }
+#batch-summary { flex: 1; min-width: 0; font-size: 11px; overflow-wrap: anywhere; }
+.batch-results-actions { display: flex; gap: 8px; flex: none; }
+.batch-table-wrap { max-height: 40vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; overscroll-behavior: contain; }
+#batch-empty { padding: 14px 10px; font-size: 12px; }
+#batch-results { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+#batch-results th, #batch-results td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; overflow-wrap: anywhere; vertical-align: top; }
+#batch-results thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+/* 容器自带边框,末行下边框会叠出双线 */
+#batch-results tbody tr:last-child td { border-bottom: none; }
+#batch-results th:nth-child(1) { width: 26%; }
+#batch-results th:nth-child(2) { width: 17%; }
+#batch-results th:nth-child(3) { width: 11%; }
+#batch-results th:nth-child(5) { width: 88px; }
+#batch-results td.out { overflow: hidden; color: var(--muted); font-family: Menlo, monospace; font-size: 11px; }
+#batch-results td.out > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#batch-results td.op { white-space: nowrap; overflow: hidden; }
+#batch-results .tag { display: inline-block; font-size: 11px; margin-right: 4px; }
+#batch-results .tag.ok { color: var(--accent2); }
+#batch-results .tag.p1 { color: var(--warn); }
+#batch-results .tag.wait { color: var(--muted); }
+/* 单主机详情:全宽放在表格之后;输出框高度随内容伸缩,封顶 40vh 内部滚动 */
+#batch-result-detail { margin-top: 12px; padding: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
+#batch-detail-title { margin-bottom: 6px; overflow-wrap: anywhere; }
+#batch-detail-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 8px; }
+#batch-detail-output { display: block; width: 100%; min-width: 0; max-width: 100%; max-height: 40vh; overflow: auto; resize: vertical; line-height: 1.5; margin-bottom: 8px; }
+.batch-detail-foot { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 底部固定操作栏:状态在左,执行/取消/关闭在右,不随中部内容滚动 */
+.batch-foot { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+#batch-status { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.batch-foot-btns { display: flex; gap: 10px; flex: none; }
 
 /* 历史面板 */
 #history-panel {
@@ -818,6 +1045,25 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 #layout-root { position: absolute; inset: 0; display: flex; overflow: auto; }
 #layout-root:empty { display: none; }
 
+/* 标签平铺是外层布局,不改变标签内分屏的最小尺寸或拖动行为。 */
+.workspace-split-node { display: flex; position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; cursor: default; }
+.workspace-split-node.v { flex-direction: column; }
+.workspace-split-node > .workspace-divider { flex: 0 0 5px; background: var(--border); cursor: default; }
+.workspace-split-node.v > .workspace-divider { width: 100%; }
+.workspace-tile { display: flex; flex: 1 1 0; flex-direction: column; position: relative; min-width: 0; min-height: 0; border: 1px solid var(--border); box-sizing: border-box; overflow: hidden; background: var(--bg); }
+.workspace-tile.active { outline: 1px solid var(--accent); outline-offset: -1px; }
+.workspace-tile-header { display: flex; align-items: center; gap: 6px; height: 28px; min-height: 28px; flex: none; padding: 0 6px; box-sizing: border-box; background: var(--bg2); color: var(--muted); overflow: hidden; }
+.workspace-tile.active > .workspace-tile-header { color: var(--text); }
+.workspace-tile-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.workspace-tile-header button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.workspace-tile-header button:is(:hover, :focus-visible) { color: var(--text); background: rgba(91,140,255,0.12); }
+.workspace-tile-header button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.workspace-tile-content { flex: 1 1 0; min-width: 0; min-height: 0; position: relative; display: flex; overflow: auto; }
+/* Global overflow notice is a sibling of layout-root, never part of tile geometry.
+   The renderer reserves this strip above the root when the notice is visible. */
+.workspace-layout-hint { position: absolute; top: 0; left: 0; right: 0; z-index: 6; height: 28px; box-sizing: border-box; display: flex; align-items: center; padding: 0 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--warn); background: var(--bg2); pointer-events: none; }
+.workspace-layout-hint.hidden { display: none; }
+
 /* ===== tab 栏优化:tab 第一要素 ===== */
 #tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .tab { flex: 0 0 auto; max-width: 190px; }
@@ -825,35 +1071,42 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 .icon-tb { --ctl-h: 28px; width: var(--ctl-h); padding: 0; font-size: 15px; flex: 0 0 auto; }
 .icon-tb.active { border-color: var(--accent); color: var(--accent); }
 #more-menu {
-  /* 分组下拉(布局/面板/会话/配置):锚在标签栏正下方、right 贴标签栏右缘
-     (不是视口右缘)—— 菜单右边界就是主区域右边界,绝不会盖到右侧的
-     文件管理/AI 面板上。竖排 + 组头替代原先的横向工具条:十几个动作平铺一行
-     扫描成本高也无从记忆,按任务分组后才找得到"家"。 */
-  position: absolute; top: 100%; right: 8px; z-index: 64;
-  display: flex; flex-direction: column; gap: 1px; padding: 6px;
+  /* menu.js 将菜单移到 body;仅 left/top 由锚点计算,不保留工具栏的 right 约束。 */
+  position: fixed; top: 8px; left: 8px; right: auto; z-index: 64;
+  display: flex; flex-direction: column; padding: 6px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.45);
-  width: 216px;
-  max-height: calc(100vh - 120px); overflow-y: auto;
+  width: 300px; max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
 }
-#more-menu.hidden { display: none; }
+#more-menu.hidden, #more-menu .mm-page.hidden { display: none; }
+#more-menu .mm-page { display: flex; flex: none; flex-direction: column; gap: 1px; min-width: 0; }
 #more-menu .btn {
-  --ctl-h: 28px; width: auto; height: var(--ctl-h);
-  display: flex; align-items: center; justify-content: flex-start;
+  --ctl-h: 36px; width: 100%; height: var(--ctl-h); min-height: 34px; flex: none;
+  display: flex; align-items: center; justify-content: flex-start; gap: 8px;
   border: 0; background: none; padding: 0 10px; border-radius: 6px;
-  white-space: nowrap;
+  white-space: nowrap; text-align: left;
 }
-#more-menu .btn:hover { background: rgba(91,140,255,0.12); }
-/* 组头:纯视觉分组,不可点击 */
+#more-menu .btn:not(:disabled):is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
+#more-menu .btn:focus-visible { outline-offset: -2px; }
+#more-menu .btn.danger { color: var(--danger); }
+#more-menu .btn.danger:not(:disabled):is(:hover, :focus-visible) { background: rgba(255,107,107,0.12); }
+/* 组头和分隔线保持自己的高度,菜单过矮时整页滚动而不是压缩按钮。 */
 #more-menu .mm-head {
-  padding: 7px 10px 3px; font-size: 11px; color: var(--muted);
+  flex: none; padding: 7px 10px 3px; font-size: 11px; color: var(--muted);
   letter-spacing: 0.05em; user-select: none;
 }
 #more-menu .mm-head:first-child { padding-top: 4px; }
-/* 快捷键列:由 entry.js 的 fillMenuKeys() 按运行平台(accel())渲染;
-   没有快捷键的项保持空 -> :empty 隐藏,列只在有值时出现 */
-#more-menu .mm-key { margin-left: auto; padding-left: 16px; color: var(--muted); font-size: 11px; }
-#more-menu .mm-key:empty { display: none; }
+#more-menu .mm-head:not(:first-child) { border-top: 1px solid var(--border); margin-top: 5px; }
+#more-menu .mm-sep { flex: none; height: 1px; margin: 5px 6px; background: var(--border); }
+#more-menu .mm-back { color: var(--muted); }
+#more-menu .mm-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 标签吸收收缩压力,快捷键/状态在独立的行尾列保持可读。 */
+#more-menu .mm-key, #more-menu .mm-state { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+#more-menu .mm-state { color: var(--accent2); }
+#more-menu .mm-key:empty, #more-menu .mm-state:empty { display: none; }
 /* 图标占固定宽度的独立列:图标字形宽度不一(📁/⚙️/◫ 互不相同,emoji 还常带
    不可见的变体选择符),直接"图标+空格+文字"会让每行文字起点错开。
    这里把图标放进等宽盒子并居中,各行文字起点就对齐了。 */
@@ -861,7 +1114,10 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 
 /* 终端右键菜单(替代 WebView 原生菜单) */
 #ctx-menu {
-  position: fixed; z-index: 80; min-width: 168px;
+  position: fixed; z-index: 80; min-width: min(168px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px);
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 1px; padding: 6px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.5);
@@ -869,41 +1125,86 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 #ctx-menu.hidden { display: none; }
 #ctx-menu .ctx-item {
   display: flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 10px; border: 0; border-radius: 6px;
+  flex: none; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 6px;
   background: none; color: var(--text); font-size: 12px; text-align: left;
   cursor: pointer;
 }
-#ctx-menu .ctx-item:hover { background: rgba(91,140,255,0.12); }
+#ctx-menu .ctx-item:is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
+#ctx-menu .ctx-item:focus-visible { outline-offset: -2px; }
+#ctx-menu .ctx-label { min-width: 0; overflow-wrap: anywhere; }
 #ctx-menu .ctx-item:disabled { opacity: 0.4; cursor: default; background: none; }
-#ctx-menu .ctx-item .ctx-key { margin-left: auto; color: var(--muted); font-size: 11px; }
+#ctx-menu .ctx-item .ctx-key { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
 /* 破坏性操作(删除)在菜单里标红,避免与"下载/重命名"混在一起误点 */
 #ctx-menu .ctx-item.danger .ctx-label { color: var(--danger, #ff6b6b); }
-#ctx-menu .ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+#ctx-menu .ctx-sep { flex: none; height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* 窗格放大模式 */
 .pane-zoom-btn {
   position: absolute; top: 4px; right: 8px; z-index: 8;
-  display: none; align-items: center; justify-content: center;
-  width: 22px; height: 22px; padding: 0; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  width: 28px; height: 28px; padding: 0; font-size: 13px; line-height: 1;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   color: var(--muted); cursor: pointer;
 }
-.term-pane:hover .pane-zoom-btn { display: flex; }
+.term-pane:is(:hover, .focused, :focus-within) .pane-zoom-btn { opacity: 1; pointer-events: auto; }
 .pane-zoom-btn:hover { color: var(--accent); border-color: var(--accent); }
+/* 窗格关闭按钮:与放大按钮并排(放大让位到其左侧) */
+.pane-close-btn {
+  position: absolute; top: 4px; right: 42px; z-index: 8;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  width: 28px; height: 28px; padding: 0; font-size: 12px; line-height: 1;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--muted); cursor: pointer;
+}
+.term-pane:is(:hover, .focused, :focus-within) .pane-close-btn { opacity: 1; pointer-events: auto; }
+/* 保留可聚焦的按钮;触摸设备没有 hover,操作入口始终可见。 */
+@media (hover: none), (any-pointer: coarse) {
+  .term-pane .pane-zoom-btn, .term-pane .pane-close-btn { opacity: 1; pointer-events: auto; }
+}
+.pane-close-btn:hover { color: var(--danger); border-color: var(--danger); }
 .zoom-chip {
-  position: absolute; top: 4px; right: 8px; z-index: 9;
-  display: inline-flex; align-items: center; height: 22px;
+  position: absolute; top: 4px; right: 76px; z-index: 9;
+  display: inline-flex; align-items: center; height: 28px; cursor: pointer;
   font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
   border-radius: 6px; padding: 0 8px; background: var(--bg2);
 }
 /* 应用内确认对话框 */
 .confirm-card { max-width: 400px; }
 /* pre-wrap:确认文案可含换行(如指纹变更时的新旧指纹对照) */
-.confirm-message { color: var(--text); font-size: 13px; line-height: 1.7; margin: 4px 0 8px; word-break: break-word; white-space: pre-wrap; }
+.confirm-message { color: var(--text); font-size: 13px; line-height: 1.7; margin: 4px 0 8px; word-break: break-word; white-space: pre-wrap; max-height: 52vh; overflow-y: auto; }
 #modal-prompt .inp { width: 100%; margin: 2px 0 6px; }
 #modal-prompt .small-note { display: block; margin-bottom: 4px; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.danger:hover { filter: brightness(1.1); }
+
+/* 窄窗口先叠放批量执行两列,再将表单标签改成单列;终端仍按最小尺寸滚动。 */
+@media (max-width: 700px) {
+  .batch-grid { grid-template-columns: minmax(0, 1fr); }
+  .batch-hosts { height: 180px; max-height: 30vh; }
+}
+@media (max-width: 480px) {
+  .form-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .form-grid label { margin-top: 4px; }
+  .model-row { flex-wrap: wrap; }
+  .model-row .model-chips { flex-basis: 100%; }
+  .picker-toolbar { flex-wrap: wrap; }
+  .picker-toolbar .inp { flex-basis: 100%; }
+  .cloud-accounts-head, .cloud-account-row, .cloud-form-actions, .cloud-fetch-row { flex-wrap: wrap; }
+  .cloud-account-form { padding: 10px; }
+  .cloud-account-row .ca-key { min-width: 0; max-width: 100%; }
+  .modal-actions { gap: 8px; }
+  .batch-params { flex-wrap: wrap; }
+  .batch-param { flex: 1 1 100%; }
+  #batch-results th, #batch-results td { padding: 5px 4px; }
+  #batch-detail-output { max-height: 35vh; }
+  .batch-foot-btns { flex-wrap: wrap; }
+}
+@media (max-width: 700px), (max-height: 500px) {
+  .modal { padding: 8px; }
+  .modal-card { max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); padding: 14px; }
+}
 
 /* ===== 交互动效 =====
    原则:只做"解释状态变化"的动效,不做装饰性动画。
@@ -923,7 +1224,8 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
   from { opacity: 0; transform: translateY(-6px) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
-#more-menu:not(.hidden),
+/* Fixed anchored menus must keep their hitbox and anchor stable during entry. */
+#more-menu:not(.hidden) { animation: fade-in var(--dur) var(--ease); }
 #snippet-menu:not(.hidden),
 #ctx-menu:not(.hidden) { animation: pop-in var(--dur) var(--ease); }
 

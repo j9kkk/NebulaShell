@@ -39,6 +39,8 @@ pub async fn list(
         }
         _ => sftp.canonicalize(".").await.map_err(|e| e.to_string())?,
     };
+    // Commit a canonical absolute cwd to the panel, including relative path input.
+    let base = sftp.canonicalize(&base).await.map_err(|e| e.to_string())?;
     let entries = sftp.read_dir(&base).await.map_err(|e| e.to_string())?;
     let mut list: Vec<Value> = entries
         .into_iter()
@@ -102,6 +104,7 @@ pub async fn chmod(
         .map_err(|e| e.to_string())
 }
 
+/// Backwards-compatible entry point: existing callers must never silently truncate.
 pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
     sftp: &russh_sftp::client::SftpSession,
     app: E,
@@ -109,24 +112,101 @@ pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Syn
     local_path: &str,
     remote_dir: &str,
 ) -> Result<Value, String> {
+    upload_with_policy(sftp, app, session_id, local_path, remote_dir, None, "error").await
+}
+
+fn upload_flags(policy: &str) -> Result<russh_sftp::protocol::OpenFlags, String> {
     use russh_sftp::protocol::OpenFlags;
-    let name = PathBuf::from(local_path)
+    match policy {
+        "error" | "skip" | "rename" => {
+            Ok(OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE)
+        }
+        "overwrite" => Ok(OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE),
+        _ => Err("未知上传冲突策略".into()),
+    }
+}
+
+fn valid_remote_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
+fn renamed_upload_name(name: &str, index: usize) -> String {
+    match name.rfind('.').filter(|i| *i > 0) {
+        Some(i) => format!("{} ({}){}", &name[..i], index, &name[i..]),
+        None => format!("{} ({})", name, index),
+    }
+}
+
+/// Exclusive CREATE is the backend guard, including a race after a frontend list.
+/// Only the explicitly selected overwrite policy can ever request TRUNCATE.
+pub async fn upload_with_policy<
+    R: tauri::Runtime,
+    E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+>(
+    sftp: &russh_sftp::client::SftpSession,
+    app: E,
+    session_id: String,
+    local_path: &str,
+    remote_dir: &str,
+    remote_name: Option<&str>,
+    conflict_policy: &str,
+) -> Result<Value, String> {
+    let flags = upload_flags(conflict_policy)?;
+    let default_name = PathBuf::from(local_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "upload.bin".into());
-    let remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
+        .ok_or("本地文件名无效")?;
+    let name = remote_name.unwrap_or(&default_name);
+    if !valid_remote_name(name) || !remote_dir.starts_with('/') || remote_dir.contains('\0') {
+        return Err("上传目标必须是绝对目录与单个文件名".into());
+    }
     let mut local = tokio::fs::File::open(local_path)
         .await
         .map_err(|e| e.to_string())?;
-    let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
-    let remote = sftp
-        .open_with_flags(
-            &remote_path,
-            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut remote = remote;
+    let metadata = local.metadata().await.map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("仅支持上传普通文件".into());
+    }
+    let total = metadata.len();
+    let mut chosen_name = name.to_string();
+    let mut remote_path;
+    let mut attempt = 0;
+    let mut remote = loop {
+        remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), chosen_name);
+        if conflict_policy == "overwrite" {
+            // Do not intentionally truncate a directory or follow an existing symlink.
+            if let Ok(meta) = sftp.symlink_metadata(&remote_path).await {
+                if meta.is_dir() || meta.is_symlink() {
+                    return Err("不能覆盖目录或符号链接".into());
+                }
+            }
+        }
+        match sftp.open_with_flags(&remote_path, flags).await {
+            Ok(file) => break file,
+            Err(e) if conflict_policy != "overwrite" => {
+                // SFTP v3 servers commonly report generic Failure for EEXIST.
+                // lstat distinguishes a collision from permissions/transport failures.
+                if sftp.symlink_metadata(&remote_path).await.is_err() {
+                    return Err(e.to_string());
+                }
+                match conflict_policy {
+                    "skip" => return Ok(json!({ "remotePath": remote_path, "skipped": true })),
+                    "rename" if attempt < 1000 => {
+                        attempt += 1;
+                        chosen_name = renamed_upload_name(name, attempt);
+                    }
+                    "rename" => return Err("找不到可用的上传文件名(已尝试 1000 个)".into()),
+                    _ => return Ok(json!({ "remotePath": remote_path, "conflict": true })),
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
     let mut buf = vec![0u8; 64 * 1024];
     let mut sent: u64 = 0;
     let mut last_pct = -1;
@@ -147,13 +227,13 @@ pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Syn
                 crate::ai::emit_evt(
                     &app,
                     "sftp:progress",
-                    json!({ "sessionId": session_id, "op": "upload", "name": name, "pct": pct }),
+                    json!({ "sessionId": session_id, "op": "upload", "name": chosen_name, "remoteDir": remote_dir, "remotePath": remote_path, "pct": pct }),
                 );
             }
         }
     }
-    remote.shutdown().await.ok();
-    Ok(json!({ "remotePath": remote_path }))
+    remote.shutdown().await.map_err(|e| e.to_string())?;
+    Ok(json!({ "remotePath": remote_path, "renamed": chosen_name != name, "skipped": false }))
 }
 
 /// op 用于进度事件的文案(前端按 op 显示「下载/打开 x 42%」);普通下载传 "download"。
@@ -308,6 +388,43 @@ fn sanitize_local_name(raw: &str) -> String {
         name = format!("{}{}", head, ext);
     }
     name
+}
+
+#[cfg(test)]
+mod upload_policy_tests {
+    use super::*;
+    use russh_sftp::protocol::OpenFlags;
+
+    #[test]
+    fn upload_default_and_collision_policies_are_exclusive_not_truncating() {
+        for policy in ["error", "skip", "rename"] {
+            let flags = upload_flags(policy).unwrap();
+            assert!(flags.contains(OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE));
+            assert!(!flags.contains(OpenFlags::TRUNCATE));
+        }
+        assert!(upload_flags("overwrite")
+            .unwrap()
+            .contains(OpenFlags::TRUNCATE));
+        assert!(upload_flags("unknown").is_err());
+    }
+
+    #[test]
+    fn upload_names_cannot_escape_the_snapshot_directory() {
+        for name in ["", ".", "..", "../a", "a/b", "a\\b", "a\0b"] {
+            assert!(!valid_remote_name(name), "{name:?}");
+        }
+        assert!(valid_remote_name("文档.txt"));
+    }
+
+    #[test]
+    fn automatic_upload_rename_preserves_extension_and_dotfiles() {
+        assert_eq!(renamed_upload_name("文档.txt", 2), "文档 (2).txt");
+        assert_eq!(renamed_upload_name(".env", 1), ".env (1)");
+        assert_eq!(
+            renamed_upload_name("archive.tar.gz", 1),
+            "archive.tar (1).gz"
+        );
+    }
 }
 
 /// 清理 open 目录下超过 24h 的旧副本(尽力而为,失败忽略;

@@ -1,12 +1,93 @@
 // AI 助手:流式对话、模型切换、设置弹窗、诊断
-import { $, api, closeModal, copyText, openModal, state, toast } from './core.js';
+import { $, api, askConfirm, closeModal, copyText, openModal, state, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
-import { mdToHtml } from '../shared/markdown.js';
+import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
+import { renderMarkdown } from '../shared/markdown.js';
+import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
 
 export const AI_HISTORY_LIMIT = 20;
 // 消息区 DOM 上限:超出的旧气泡直接移除,避免长会话下无界增长。
 export const AI_DOM_LIMIT = 200;
+export const AI_IDLE_TIMEOUT_MS = 60_000;
+
+// 设置表单是草稿,对话只读已保存配置。候选列表也只属于当前端点的草稿。
+let aiDraft = null;
+let modelsFetchSeq = 0;
+
+export function aiEndpointIdentity(ai = {}) {
+  return `${ai.protocol || 'openai'}\n${String(ai.baseUrl || '').trim().replace(/\/+$/, '')}`;
+}
+
+function savedAi() { return (state.settings && state.settings.ai) || {}; }
+
+function savedModels() {
+  const s = savedAi();
+  const models = Array.isArray(s.models) ? s.models.map(normModel).filter((m) => m.id) : [];
+  if (s.model && !models.some((m) => m.id === s.model)) models.push(normModel(s.model));
+  return models;
+}
+
+function draftEndpoint() {
+  return { protocol: $('#ai-protocol').value, baseUrl: $('#ai-baseurl').value.trim() };
+}
+
+function resetModelFetchButton() {
+  const btn = $('#btn-ai-fetch-models');
+  if (btn) { btn.__aiFetchSeq = 0; btn.disabled = false; btn.textContent = '拉取模型'; }
+}
+
+export function onAiEndpointChange() {
+  const endpoint = aiEndpointIdentity(draftEndpoint());
+  if (!aiDraft) aiDraft = { endpoint };
+  if (aiDraft.endpoint !== endpoint) {
+    // 即使用户已输入新密钥,换端点后也不能悄悄把它发送给另一家。
+    $('#ai-apikey').value = '';
+    aiDraft.endpoint = endpoint;
+    state.aiModels = [];
+    modelsFetchSeq++;
+    resetModelFetchButton();
+    closeModelPicker();
+  }
+  const same = endpoint === aiEndpointIdentity(savedAi());
+  const usableSavedKey = same && savedAi().apiKeySet;
+  $('#ai-apikey').placeholder = usableSavedKey ? '已保存（留空保持不变）' : '密钥（此端点没有已保存密钥）';
+  const status = $('#ai-key-status');
+  if (status) status.textContent = usableSavedKey ? '' : '新端点需填写密钥（本地服务可留空）';
+}
+
+export function readAiDraft() {
+  // 除入口事件外再校验一次,避免脚本或预设更改绕过 input/change 事件。
+  onAiEndpointChange();
+  return {
+    ...draftEndpoint(), model: $('#ai-model').value.trim(),
+    apiKey: $('#ai-apikey').value.trim(),
+    // 留空保存 = 沿用已存密钥的前提是端点没变;换端点后旧密钥在保存时被清除。
+    useSavedApiKey: aiDraft.endpoint === aiEndpointIdentity(savedAi()),
+  };
+}
+
+export function addManualAiModel(id = $('#ai-model-inline')?.value) {
+  const model = String(id || '').trim();
+  if (!model) return toast('请填写模型 ID', 'error');
+  if (!state.aiSelected.some((m) => m.id === model)) state.aiSelected.push(normModel(model));
+  if (!state.aiModels.some((m) => m.id === model)) state.aiModels.push(normModel(model));
+  $('#ai-model').value = model;
+  const input = $('#ai-model-inline');
+  if (input) input.value = '';
+  renderModelChips();
+}
+
+export function closeAiSettings() {
+  aiDraft = null;
+  modelsFetchSeq++;
+  resetModelFetchButton();
+  state.aiModels = savedModels();
+  $('#ai-apikey').value = '';
+  closeModelPicker();
+  closeModal('#modal-ai');
+  syncSelectedModelsFromSettings();
+}
 
 export function trimAiHistory() {
   if (state.aiHistory.length > AI_HISTORY_LIMIT) {
@@ -14,10 +95,12 @@ export function trimAiHistory() {
   }
 }
 
-/// 气泡内部结构固定为:<div.ai-msg><div.ai-body>内容</div><button.ai-copy/></div>。
-/// 内容一律走 .ai-body —— 助手侧渲染 Markdown,用户侧纯文本(用户输入不当
-/// Markdown 解析,原样展示)。裸文本进 textContent 的旧写法会连复制按钮一起
-/// 被覆盖,所以所有写入都必须经过这里。
+/// 气泡内部结构固定为:<div.ai-msg><div.ai-meta><span.ai-avatar/><span.ai-meta-text>时间</span></div>
+/// <div.ai-row><div.ai-col><div.ai-body>内容</div><button.ai-copy/></div></div></div>。
+/// 头像("我"/应用图标)与时间同行,在气泡外、气泡正上方 —— 用户侧头像在行尾
+/// (row-reverse)。复制按钮锚定在气泡本体(.ai-col)右上角。内容一律走 .ai-body
+/// —— 助手侧渲染 Markdown,用户侧纯文本(用户输入不当 Markdown 解析,原样展示)。
+/// 裸文本进 textContent 的旧写法会连复制按钮一起被覆盖,所以所有写入都必须经过这里。
 function aiBodyOf(bubble) {
   return bubble ? bubble.querySelector('.ai-body') : null;
 }
@@ -28,38 +111,276 @@ export function setAiBody(bubble, text, { md = false } = {}) {
   bubble.__raw = String(text ?? '');
   // 默认只有助手侧渲染 Markdown;用户输入不当 Markdown 解析,原样展示。
   // 程序构造的 prompt(诊断/解释)本身含围栏代码块,走 md 分支。
-  if (bubble.dataset.role === 'assistant' || md) body.innerHTML = mdToHtml(text);
-  else body.textContent = text;
+  if (bubble.dataset.role === 'assistant' || md) {
+    const rendered = renderMarkdown(text, { renderCodeBlock: (block) => renderAiCodeBlock(bubble, block) });
+    bubble.__codeBlocks = rendered.codeBlocks;
+    body.innerHTML = rendered.html;
+  } else {
+    bubble.__codeBlocks = [];
+    body.textContent = text;
+  }
 }
 
-// 头像与发送时间:头像标来源(🧑 用户 / ✨ AI),时间用 HH:MM。
+const CODE_BLOCK_REASONS = {
+  unclosed: '代码块尚未闭合', empty: '代码块为空',
+  'control-character': '命令包含不允许的控制字符',
+  'shell-prompt': '此块包含终端提示符，请复制并手动处理',
+};
+const RESPONSE_REASONS = {
+  pending: '等待 AI 回复完成', streaming: '生成中，完成后才能执行',
+  aborted: '回复已中止，仅支持复制', failed: '回复失败，仅支持复制',
+  incomplete: '响应未正常结束，仅支持复制',
+};
+
+function aiCodeAvailability(bubble, block, captured = getCommandBlockTarget()) {
+  const classification = classifyCommandBlock(block);
+  if (bubble.dataset.role !== 'assistant') return { ok: false, reason: '用户消息仅支持复制' };
+  if (classification.blockedReasons.length) return { ok: false, reason: CODE_BLOCK_REASONS[classification.blockedReasons[0]] || '此代码块不是明确的 Shell 命令' };
+  if (bubble.dataset.responseState !== 'completed') return { ok: false, reason: RESPONSE_REASONS[bubble.dataset.responseState] || '等待 AI 回复正常结束' };
+  if (bubble.__codeActionPending) return { ok: false, reason: '正在处理命令，请勿重复提交' };
+  return captured.ok ? { ...commandBlockTargetStatus(captured.target, block.text), target: captured.target } : captured;
+}
+
+function aiCodeWarningText(classification) {
+  return classification.warnings.map((warning) => `疑似示例参数「${warning.token}」：${warning.message}`).join('\n');
+}
+
+function aiCodeActionTitle(status, classification, action) {
+  if (!status.ok) return status.reason;
+  const warning = aiCodeWarningText(classification);
+  return `${action === 'insert' ? '填入' : '执行'}到：${status.target.label}。请确保终端位于 Shell 提示符且没有未提交输入。` +
+    (warning ? `\n${warning}\n执行前需确认，也可仅填入终端修改。` : '');
+}
+
+function renderAiCodeBlock(bubble, block) {
+  const classification = classifyCommandBlock(block);
+  const executable = bubble.dataset.role === 'assistant' && classification.shell;
+  const status = executable ? aiCodeAvailability(bubble, block) : null;
+  const title = executable ? aiCodeActionTitle(status, classification, 'execute') : '';
+  const insertTitle = executable ? aiCodeActionTitle(status, classification, 'insert') : '';
+  const warning = executable ? aiCodeWarningText(classification) : '';
+  const notice = warning ? `<div class="ai-code-warning" role="note" aria-label="命令内容提醒">${escapeHtml(warning)}\n执行前需确认，也可仅填入终端修改。</div>` : '';
+  const disabled = status?.ok ? '' : ' disabled';
+  const actions = executable
+    ? `<button type="button" class="ai-code-execute" data-ai-code-action="execute" title="${escapeHtml(title)}"${disabled}>执行</button>` +
+      `<details class="ai-code-menu"><summary title="更多命令操作" aria-label="更多命令操作">▾</summary>` +
+      `<div class="ai-code-menu-items"><button type="button" data-ai-code-action="insert" title="${escapeHtml(insertTitle)}"${disabled}>仅填入终端</button></div></details>`
+    : '';
+  return `<div class="ai-code-block" data-code-index="${block.index}">` +
+    `<div class="ai-code-toolbar"><span class="ai-code-language">${escapeHtml(block.language || '代码')}</span>` +
+    `<div class="ai-code-actions"><button type="button" data-ai-code-action="copy" title="复制此代码块">复制</button>${actions}</div></div>` +
+    `${notice}<pre><code>${escapeHtml(block.text)}</code></pre></div>`;
+}
+
+export function refreshAiCodeActions(bubble) {
+  const bubbles = bubble ? [bubble] : document.querySelectorAll('#ai-messages .ai-msg');
+  const captured = getCommandBlockTarget();
+  for (const message of bubbles) {
+    for (const button of message.querySelectorAll('[data-ai-code-action="execute"], [data-ai-code-action="insert"]')) {
+      const index = Number(button.closest('.ai-code-block').dataset.codeIndex);
+      const block = message.__codeBlocks?.[index];
+      const status = aiCodeAvailability(message, block, captured);
+      button.disabled = !status.ok;
+      button.title = aiCodeActionTitle(status, classifyCommandBlock(block), button.dataset.aiCodeAction);
+    }
+  }
+}
+
+export async function handleAiCodeAction(bubble, index, action) {
+  const block = bubble.__codeBlocks?.[index];
+  if (!block || !['copy', 'execute', 'insert'].includes(action)) return;
+  const text = block.text;
+  if (action === 'copy') {
+    const ok = await copyText(text);
+    toast(ok ? '已复制代码块' : '复制失败：剪贴板不可用', ok ? 'success' : 'error');
+    return;
+  }
+  const status = aiCodeAvailability(bubble, block);
+  if (!status.ok) return toast(status.reason, 'error');
+  const target = status.target;
+  const classification = classifyCommandBlock(block);
+  bubble.__codeActionPending = true;
+  refreshAiCodeActions(bubble);
+  try {
+    if (action === 'execute' && (classification.multiline || classification.risk || classification.warnings.length)) {
+      const contentWarning = aiCodeWarningText(classification);
+      const warning = [
+        contentWarning ? `内容提醒：\n${contentWarning}\n请确认这些片段是有效参数，而非未填写的示例；也可取消后仅填入终端修改。` : '',
+        classification.risk ? `风险提示：${classification.risk}（不涵盖所有风险）。` : '',
+      ].filter(Boolean).join('\n');
+      const confirmed = await askConfirm(
+        `目标：${target.label}\n将整体发送以下 ${classification.lineCount} 行内容并提交回车：${warning ? '\n' + warning : ''}\n\n${text}\n\n请确认终端位于 Shell 提示符且没有未提交输入；内容可能改变远端系统。`,
+        { title: '确认执行 AI 命令', okText: '发送并执行', danger: true, defaultFocus: 'cancel' },
+      );
+      if (!confirmed) return;
+    }
+    // A confirmation can outlive its reply; never submit a replaced block.
+    if (bubble.dataset.responseState !== 'completed' || bubble.__codeBlocks?.[index] !== block || bubble.isConnected === false) {
+      return toast('回复内容已变化，请重新选择命令', 'error');
+    }
+    const result = await submitCommandBlock(target, text, { execute: action === 'execute' });
+    toast(result.ok ? `${action === 'execute' ? '已发送到' : '已填入（未提交回车）：'} ${target.label}` : result.reason, result.ok ? 'success' : 'error');
+  } catch (e) {
+    toast('命令发送失败：' + (e?.message || String(e)), 'error');
+  } finally {
+    bubble.__codeActionPending = false;
+    refreshAiCodeActions(bubble);
+  }
+}
+
+export function bindAiCodeActions() {
+  if (bindAiCodeActions._bound) return;
+  bindAiCodeActions._bound = true;
+  document.addEventListener('nebula:state-change', () => refreshAiCodeActions());
+  document.addEventListener('nebula:modal-scope', () => refreshAiCodeActions());
+  document.addEventListener('pointerover', (event) => {
+    const block = event.target.closest?.('.ai-code-block');
+    if (block && !block.contains(event.relatedTarget)) refreshAiCodeActions(block.closest('.ai-msg'));
+  });
+  document.addEventListener('focusin', (event) => {
+    const bubble = event.target.closest?.('.ai-msg');
+    if (bubble) refreshAiCodeActions(bubble);
+  });
+  document.addEventListener('click', (event) => {
+    for (const menu of document.querySelectorAll('.ai-code-menu[open]')) {
+      if (!menu.contains(event.target)) menu.open = false;
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const menu = event.target.closest?.('.ai-code-menu[open]');
+    if (menu) { event.preventDefault(); menu.open = false; menu.querySelector('summary').focus(); }
+  });
+}
+
+/* ---------------- 对话区滚动:贴底跟随 + "回到底部"按钮 ----------------
+   滚动模型:只有阅读位置在底部(贴底)时,内容增长才自动跟随;用户上滚
+   即停止打扰,靠浮动按钮一键回底。此前"每帧无条件 scrollTop=scrollHeight"
+   有三个实测问题:流式期间无法上滚阅读;回复收尾的全量 DOM 重写会触发
+   WebKit 滚动锚定把视图拽离底部(实测上跳上千 px);面板隐藏期间收到的
+   回复在重开面板后停在旧位置(display:none 下滚动全是空操作)。 */
+
+// 距底部多少像素内算"贴底":容纳小数高度与 macOS 橡皮筋回弹。
+const AI_STICK_THRESHOLD = 24;
+
+let aiPinned = true;
+// 平滑滚动进行中,途中位置不在底部属预期,scroll 事件不参与贴底判定;
+// 用户滚轮/按下/按键会清零该窗口,把滚动意图交还给用户。
+let aiSmoothUntil = 0;
+
+function aiAtBottom(box) {
+  return box.scrollHeight - box.scrollTop - box.clientHeight <= AI_STICK_THRESHOLD;
+}
+
+function aiSyncScrollButton(box = $('#ai-messages')) {
+  const btn = $('#ai-scroll-bottom');
+  if (!btn) return;
+  // display:none 面板里三个高度都是 0:视为贴底,按钮保持隐藏
+  btn.classList.toggle('show', box.clientHeight > 0 && !aiAtBottom(box));
+}
+
+/// 内容写入后的统一收口:贴底才跟随,不打扰上滚阅读的用户。
+/// 面板隐藏(clientHeight 0)时滚动无意义,跳过;重开面板时由
+/// toggleAiPanel/aiDiagnose 再调一次补齐。
+export function aiStickScroll() {
+  const box = $('#ai-messages');
+  if (!box || box.clientHeight === 0) return;
+  if (aiPinned && box.scrollHeight > box.scrollTop + box.clientHeight) {
+    // 即时跳转:平滑动画会被下一帧流式写入反复打断,反而卡顿
+    box.scrollTop = box.scrollHeight;
+  }
+  aiSyncScrollButton(box);
+}
+
+/// 用户明确想看最新(发送消息/点"回到底部")时的强制回底。
+export function aiForceStickScroll({ smooth = false } = {}) {
+  const box = $('#ai-messages');
+  if (!box) return;
+  aiPinned = true;
+  if (box.clientHeight === 0) return; // 隐藏面板:重开时 aiStickScroll 补齐
+  if (smooth && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    aiSmoothUntil = performance.now() + 450;
+    box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
+    // 动画末次的 scroll 事件仍落在抑制窗内(会被跳过):定时收尾补一次
+    // 贴底/按钮同步,否则按钮停在"显示"态。用户中途打断则由打断后的
+    // scroll 事件先行判定,这里按当时状态收敛即可。
+    setTimeout(aiStickScroll, 470);
+  } else {
+    aiSmoothUntil = 0;
+    box.scrollTop = box.scrollHeight;
+  }
+  aiSyncScrollButton(box);
+}
+
+export function bindAiScroll() {
+  if (bindAiScroll._bound) return;
+  bindAiScroll._bound = true;
+  const box = $('#ai-messages');
+  const btn = $('#ai-scroll-bottom');
+  if (!box || !btn) return;
+  box.addEventListener('scroll', () => {
+    if (performance.now() < aiSmoothUntil) return;
+    aiPinned = aiAtBottom(box);
+    aiSyncScrollButton(box);
+  }, { passive: true });
+  for (const type of ['wheel', 'pointerdown', 'keydown']) {
+    box.addEventListener(type, () => { aiSmoothUntil = 0; }, { passive: true, capture: true });
+  }
+  btn.addEventListener('click', () => aiForceStickScroll({ smooth: !state.aiReq }));
+  // 面板拖宽、窗口缩放、侧栏收起都改变可视高度:贴底时重新贴住
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => aiStickScroll()).observe(box);
+  }
+}
+
+// 头像与发送时间:头像标来源(用户"我" / 助手应用图标),时间用 HH:MM。
 // meta 行用 .ai-meta,低对比度、不随气泡 padding 走,见 style.css。
 export function renderAiMessage(role, text, opts) {
   const el = document.createElement('div');
   el.className = 'ai-msg ' + role;
   el.dataset.role = role;
-  const row = document.createElement('div');
-  row.className = 'ai-row';
-  // 只有助手侧带头像(✨):用户自己一眼就能认出右侧蓝色气泡,
-  // 头像纯属重复,还占掉窄面板里的正文宽度。
+  el.dataset.responseState = 'completed';
+  el.addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-ai-code-action]');
+    if (!button || !el.contains(button) || button.disabled) return;
+    event.stopPropagation();
+    const menu = button.closest('.ai-code-menu');
+    if (menu) menu.open = false;
+    const index = Number(button.closest('.ai-code-block').dataset.codeIndex);
+    handleAiCodeAction(el, index, button.dataset.aiCodeAction);
+  });
+  // 头像上移到元信息行(气泡外、气泡正上方)标来源:助手应用图标
+  // (dist/icon.svg,build.mjs 从 src-tauri/icons/icon.svg 复制)在行首,
+  // 用户"我"由 CSS row-reverse 渲染到行尾。图标 24px(16px 太小,logo 细节
+  // 糊在一起);时间文字从头像旁起到气泡边缘,24px 头像 + 8px 间距正好落在
+  // 气泡对齐缘(见 style.css .ai-meta / .ai-row 的 32px 缩进)。
+  const avatar = document.createElement('span');
+  avatar.className = 'ai-avatar';
+  avatar.setAttribute('aria-hidden', 'true');
   if (role === 'assistant') {
-    const avatar = document.createElement('span');
-    avatar.className = 'ai-avatar';
-    avatar.setAttribute('aria-hidden', 'true');
-    avatar.textContent = '✨';
-    row.appendChild(avatar);
+    avatar.innerHTML = '<img src="./icon.svg" alt="" width="24" height="24">';
+  } else {
+    avatar.textContent = '我';
   }
   const col = document.createElement('div');
   col.className = 'ai-col';
   const time = new Date();
   const stamp = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
+  // 时间戳单独放 .ai-meta-text:setAiMeta 只改这个节点的文字,
+  // 不能整体重写 .ai-meta 的 textContent,否则头像节点会被抹掉。
   const meta = document.createElement('div');
   meta.className = 'ai-meta';
-  meta.textContent = stamp;
-  col.appendChild(meta);
+  const metaText = document.createElement('span');
+  metaText.className = 'ai-meta-text';
+  metaText.textContent = stamp;
+  meta.appendChild(avatar);
+  meta.appendChild(metaText);
+  el.appendChild(meta);
   const body = document.createElement('div');
   body.className = 'ai-body';
   col.appendChild(body);
+  const row = document.createElement('div');
+  row.className = 'ai-row';
   row.appendChild(col);
   el.appendChild(row);
   const copy = document.createElement('button');
@@ -73,20 +394,38 @@ export function renderAiMessage(role, text, opts) {
     const ok = await copyText(el.__raw ?? '');
     toast(ok ? '已复制' : '复制失败：剪贴板不可用', ok ? 'success' : 'error');
   });
-  el.appendChild(copy);
+  // 复制按钮锚定气泡本体(.ai-col):悬停时贴气泡右上角,不随气泡外的元信息走
+  col.appendChild(copy);
   setAiBody(el, text, opts);
   const box = $('#ai-messages');
   box.appendChild(el);
-  while (box.children.length > AI_DOM_LIMIT) box.removeChild(box.firstChild);
-  box.scrollTop = box.scrollHeight;
+  // DOM 上限:裁掉最旧的气泡。用户在上方阅读(未贴底)时,裁剪会让内容整体
+  // 上移,按被裁高度补偿 scrollTop 保住阅读位置;贴底时反正要回底,无需补偿。
+  let trimmedHeight = 0;
+  if (box.children.length > AI_DOM_LIMIT) {
+    const gap = parseFloat(getComputedStyle(box).rowGap) || 0;
+    while (box.children.length > AI_DOM_LIMIT) {
+      const first = box.firstChild;
+      trimmedHeight += first.getBoundingClientRect().height + gap;
+      box.removeChild(first);
+    }
+  }
+  if (role === 'user') {
+    // 发送/提问本身就是"看最新"的明确意图:无条件回底
+    aiForceStickScroll();
+  } else {
+    if (trimmedHeight > 0 && !aiPinned) box.scrollTop += trimmedHeight;
+    aiStickScroll();
+  }
   return el;
 }
 
 /// AI 响应结束后的元信息行:模型、输入/输出 token、耗时。
-/// 传入 null 值的项跳过;整行更新到气泡顶部的 .ai-meta(时间戳扩展成完整元信息)。
+/// 传入 null 值的项跳过;整行更新到 .ai-meta-text(时间戳扩展成完整元信息)。
+/// 只改文字节点:.ai-meta 里还有头像,整体重写 textContent 会把它抹掉。
 export function setAiMeta(bubble, { model, usage, elapsedMs } = {}) {
   if (!bubble) return;
-  const meta = bubble.querySelector('.ai-meta');
+  const meta = bubble.querySelector('.ai-meta-text');
   if (!meta) return;
   const parts = [];
   const t = meta.textContent;
@@ -110,6 +449,7 @@ export function markBubblePending(bubble) {
   const body = aiBodyOf(bubble);
   if (!body || body.textContent) return;
   bubble.classList.add('pending');
+  bubble.dataset.responseState = 'pending';
   bubble.dataset.pending = '1';
   const sp = document.createElement('span');
   sp.className = 'ai-spinner';
@@ -126,6 +466,7 @@ export function markBubblePending(bubble) {
 /// 首个 token 到达:撤掉等待态、清空占位,转入流式态(光标闪烁由 CSS 画)
 export function markBubbleStreaming(bubble) {
   if (!bubble) return;
+  bubble.dataset.responseState = 'streaming';
   if (bubble.dataset.pending) {
     delete bubble.dataset.pending;
     const sp = bubble.querySelector('.ai-spinner');
@@ -148,8 +489,47 @@ export function clearBubbleState(bubble) {
 }
 
 export function setAiBusy(busy) {
-  $('#ai-send').disabled = busy;
-  $('#ai-send').textContent = busy ? '生成中…' : '发送';
+  // 单按钮双状态:空闲=发送(primary),流式=停止(危险色,可点击中止)。
+  // 忙时保持可点 —— 此时按钮的职责已从发送切换为停止。
+  const send = $('#ai-send');
+  send.classList.toggle('stop', busy);
+  send.textContent = busy ? '⏹ 停止' : '发送';
+  send.title = busy ? '停止生成' : '发送';
+  renderModelSwitch();
+}
+
+function failAiRequest(holder, message) {
+  if (state.aiReq !== holder) return;
+  holder.failed = message;
+  if (holder.bubble) {
+    clearBubbleState(holder.bubble);
+    setAiBody(holder.bubble, (holder.acc ? holder.acc + '\n' : '') + '⚠️ ' + message);
+  }
+  aiFinishHolder({ requestId: holder.id });
+}
+
+// 入口收到匹配 requestId 的 delta 时调用。过期事件不得重启计时器。
+export function aiTouchRequest(requestId) {
+  const h = state.aiReq;
+  if (!h || h.id !== requestId) return false;
+  clearTimeout(h.idleTimer);
+  h.idleTimer = setTimeout(() => {
+    if (state.aiReq !== h) return;
+    h.cancelled = true;
+    failAiRequest(h, 'AI 响应超时（60 秒未收到内容），请重试');
+    api('ai:abort', { requestId: h.id }).catch(() => {});
+  }, AI_IDLE_TIMEOUT_MS);
+  return true;
+}
+
+export function stopAiGeneration() {
+  const h = state.aiReq;
+  if (!h) return false;
+  h.cancelled = true;
+  // 先结束本地 holder 并保留已返回文本;晚到的 delta/done/error 不再匹配。
+  aiFinishHolder({ requestId: h.id, finishReason: 'aborted', elapsedMs: Date.now() - h.started });
+  api('ai:abort', { requestId: h.id }).catch((e) => toast('停止请求失败：' + e.message, 'error'));
+  return true;
 }
 
 export function aiRequest(messages, bubble, override) {
@@ -159,29 +539,35 @@ export function aiRequest(messages, bubble, override) {
       return;
     }
     const requestId = crypto.randomUUID();
+    const s = savedAi();
+    // 显式快照,保存/切模型/编辑草稿都不能改变已经提交的请求。
+    const config = override ? { ...override } : {
+      protocol: s.protocol || 'openai', baseUrl: s.baseUrl || '', model: s.model || '',
+      apiKey: '', useSavedApiKey: true,
+    };
+    const snapshot = messages.map((m) => ({ ...m }));
     const holder = {
-      id: requestId, acc: '', bubble, resolve, messages,
-      // 当前生效模型 + 起始时间:气泡元信息(模型/耗时)与用户侧时间戳的数据源
-      model: (override && override.model) || $('#ai-model').value.trim() || '',
-      started: Date.now(),
+      id: requestId, acc: '', bubble, resolve, messages: snapshot,
+      model: config.model || '', started: Date.now(), recordHistory: !!bubble,
     };
     state.aiReq = holder;
+    if (bubble) {
+      bubble.dataset.responseState = 'pending';
+      refreshAiCodeActions(bubble);
+    }
     setAiBusy(true);
-    // override:弹窗"测试连接"携带表单当前值,后端以其为准 —— 不要求先保存
-    const payload = override ? { requestId, messages, ai: override } : { requestId, messages };
-    api('ai:chat', payload).catch((e) => {
-      if (state.aiReq === holder) {
-        state.aiReq = null;
-        setAiBusy(false);
-        resolve({ error: e.message });
-      }
-    });
+    aiTouchRequest(requestId);
+    api('ai:chat', { requestId, messages: snapshot, ai: config }).then(() => {
+      // 若停止早于后端登记 abort flag,登记完成后再补一次取消。
+      if (holder.cancelled) api('ai:abort', { requestId }).catch(() => {});
+    }).catch((e) => failAiRequest(holder, e.message));
   });
 }
 
 export function aiFinishHolder(done) {
   const h = state.aiReq;
-  if (!h) return;
+  if (!h || (done && done.requestId && done.requestId !== h.id)) return;
+  clearTimeout(h.idleTimer);
   state.aiReq = null;
   setAiBusy(false);
   if (h.bubble) {
@@ -190,24 +576,31 @@ export function aiFinishHolder(done) {
     // 累加进 h.acc 但还没被 rAF 画上去,直接 cancel 会把结尾整段吞掉。
     // 失败时不能补写:ai:error 已经往气泡里写了「正文 + ⚠️ 错误」,补写会盖掉它。
     clearBubbleState(h.bubble);
+    h.bubble.dataset.responseState = h.failed ? 'failed'
+      : h.cancelled || done?.finishReason === 'aborted' ? 'aborted'
+        : done?.finishReason === 'stop' ? 'completed' : 'incomplete';
     if (h.raf) { cancelAnimationFrame(h.raf); h.raf = 0; }
     if (!h.failed && h.acc) setAiBody(h.bubble, h.acc);
+    refreshAiCodeActions(h.bubble);
     if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {
-      aiBodyOf(h.bubble).textContent = '（AI 未返回内容）';
+      aiBodyOf(h.bubble).textContent = done?.finishReason === 'aborted' ? '（已停止生成）' : '（AI 未返回内容）';
     }
     // 响应元信息(模型/token/耗时):有内容才挂,没有就不占视觉
     if (!h.failed && (done && (done.usage || done.elapsedMs != null))) {
       setAiMeta(h.bubble, { model: h.model, usage: done.usage, elapsedMs: done.elapsedMs });
     }
+    // 收尾做了全量 DOM 重写(清等待态 + 最终正文),WebKit 滚动锚定可能把
+    // 视图拽离底部:补一次贴底判定,这是"回复完成瞬间上跳"的修复点。
+    aiStickScroll();
   }
-  if (h.acc) {
+  if (h.acc && h.recordHistory) {
     state.aiHistory.push({ role: 'assistant', content: h.acc });
     trimAiHistory();
   }
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
   h.resolve(h.failed
     ? { error: h.failed, text: h.acc }
-    : { ok: true, text: h.acc, usage: done && done.usage, elapsedMs: done && done.elapsedMs });
+    : { ok: true, text: h.acc, aborted: done?.finishReason === 'aborted', usage: done && done.usage, elapsedMs: done && done.elapsedMs });
 }
 
 export async function aiSend(rawText, mode, opts) {
@@ -248,13 +641,8 @@ export async function aiSend(rawText, mode, opts) {
 }
 
 export async function aiTestConnection() {
-  // 用弹窗表单当前值直连测试:填完即可测,不必先保存(密钥留空则沿用已保存密钥)
-  const override = {
-    protocol: $('#ai-protocol').value,
-    baseUrl: $('#ai-baseurl').value.trim(),
-    model: $('#ai-model').value.trim(),
-    apiKey: $('#ai-apikey').value,
-  };
+  // 仅相同端点可沿用已保存密钥。测试不写对话历史。
+  const override = readAiDraft();
   if (!override.model) return toast('请先选择模型', 'error');
   const btn = $('#btn-ai-test');
   const t0 = performance.now();
@@ -265,6 +653,8 @@ export async function aiTestConnection() {
     const sec = ((performance.now() - t0) / 1000).toFixed(1);
     if (r && r.error) {
       toast(`测试失败（${sec}s）：${r.error}`, 'error');
+    } else if (r?.aborted) {
+      toast('测试已停止');
     } else {
       const u = r && r.usage;
       const tok = u && (u.promptTokens != null || u.completionTokens != null)
@@ -280,14 +670,20 @@ export async function aiTestConnection() {
 // dsh 式快速配置:按当前协议请求 /models,结果填入弹框供勾选
 export async function fetchAiModels() {
   const btn = $('#btn-ai-fetch-models');
-  const base = $('#ai-baseurl').value.trim();
-  if (!base) return toast('请先填写 Base URL', 'error');
+  const config = readAiDraft();
+  if (!config.baseUrl) return toast('请先填写 Base URL', 'error');
+  const draft = aiDraft;
+  const endpoint = aiEndpointIdentity(config);
+  const seq = ++modelsFetchSeq;
+  const isCurrent = () => aiDraft === draft && seq === modelsFetchSeq && endpoint === aiEndpointIdentity(draftEndpoint());
+  btn.__aiFetchSeq = seq;
   btn.disabled = true;
   btn.textContent = '获取中…';
   try {
-    const list = await api('ai:models', { protocol: $('#ai-protocol').value, baseUrl: base, apiKey: $('#ai-apikey').value.trim() });
+    const list = await api('ai:models', config);
+    if (!isCurrent()) return;
     if (!list || !list.length) {
-      toast('供应商未返回任何模型', 'error');
+      toast('供应商未返回任何模型，可手动填写模型 ID', 'error');
       return;
     }
     state.aiModels = list.map(normModel).filter((m) => m.id);
@@ -299,10 +695,13 @@ export async function fetchAiModels() {
     openModelPicker();
     toast(`获取到 ${list.length} 个模型，请勾选要启用的`, 'success');
   } catch (e) {
-    toast('拉取模型失败：' + e.message, 'error');
+    if (isCurrent()) toast('拉取模型失败：' + e.message + '；可手动填写模型 ID', 'error');
   } finally {
-    btn.disabled = false;
-    btn.textContent = '拉取模型';
+    // 新端点的 fetch 不得被旧 fetch 的 finally 提前解锁。
+    if (btn.__aiFetchSeq === seq) {
+      btn.disabled = false;
+      btn.textContent = '拉取模型';
+    }
   }
 }
 
@@ -470,39 +869,61 @@ export function filterModelPicker(kw) {
 /// 生效模型若被取消勾选,自动落到剩下的第一个 —— 否则设置里会留下一个
 /// 列表上已看不见、却仍在被请求使用的模型。
 export function applySelectedModels(list) {
-  state.aiSelected = list.slice();
+  state.aiSelected = list.map(normModel).filter((m) => m.id);
   const ids = state.aiSelected.map((m) => m.id);
   if (!ids.includes($('#ai-model').value)) {
     $('#ai-model').value = ids[0] || '';
   }
   renderModelChips();
-  renderModelSwitch();
 }
 
-/// "模型"一栏:chip 列表取代纯文本输入框。点 chip = 设为当前生效模型。
+/// "模型"一栏:chip 列表 + 框内输入。点 chip = 设为当前生效模型;
+/// chip 右侧 ✕ = 从启用列表移除(生效模型被移除时自动落到剩下的第一个);
+/// 框尾输入模型 ID 回车即添加(addManualAiModel)。chip 只渲染进
+/// #ai-model-chips-list —— 输入框是 #ai-model-chips 的常驻兄弟节点,
+/// 不能被 innerHTML 重置一起清掉。
 export function renderModelChips() {
-  const box = $('#ai-model-chips');
-  box.innerHTML = '';
+  const list = $('#ai-model-chips-list') || $('#ai-model-chips');
+  list.innerHTML = '';
   if (!state.aiSelected.length) {
     const em = document.createElement('span');
     em.className = 'model-chips-empty';
-    em.textContent = '未选择模型，请点右侧"拉取模型"勾选';
-    box.appendChild(em);
+    em.textContent = '未选择模型 — 在右侧框输入 ID 回车，或点"拉取模型"勾选';
+    list.appendChild(em);
     return;
   }
   const active = $('#ai-model').value;
   for (const m of state.aiSelected) {
-    const chip = document.createElement('button');
-    chip.type = 'button';
+    const chip = document.createElement('span');
     chip.className = 'model-chip' + (m.id === active ? ' active' : '');
+    chip.setAttribute('role', 'button');
+    chip.setAttribute('tabindex', '0');
     chip.title = m.id === active ? `${m.id}(当前使用)` : `点击切换为 ${m.id}`;
-    chip.textContent = m.name || m.id;
-    chip.addEventListener('click', () => {
+    const name = document.createElement('span');
+    name.className = 'model-chip-name';
+    name.textContent = m.name || m.id;
+    chip.appendChild(name);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'model-chip-del';
+    del.title = `移除 ${m.id}（不再启用）`;
+    del.setAttribute('aria-label', `移除模型 ${m.id}`);
+    del.textContent = '✕';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applySelectedModels(state.aiSelected.filter((x) => x.id !== m.id));
+    });
+    chip.appendChild(del);
+    const setActive = () => {
       $('#ai-model').value = m.id;
       renderModelChips();
       renderModelSwitch();
+    };
+    chip.addEventListener('click', setActive);
+    chip.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); setActive(); }
     });
-    box.appendChild(chip);
+    list.appendChild(chip);
   }
 }
 
@@ -511,19 +932,34 @@ export function renderModelChips() {
 /// 对话页的模型下拉:只列"已勾选启用"的模型 —— 未勾选的模型不应能被选用。
 export function renderModelSwitch() {
   const sel = $('#ai-model-switch');
-  const current = $('#ai-model').value || (state.settings && state.settings.ai && state.settings.ai.model) || '';
-  const models = state.aiSelected.slice();
+  const current = savedAi().model || '';
+  const models = savedModels();
   sel.innerHTML = models.length
     ? models.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name || m.id)}</option>`).join('')
     : '<option value="">未启用模型</option>';
   if (current && models.some((m) => m.id === current)) sel.value = current;
-  sel.disabled = models.length === 0;
+  sel.disabled = models.length === 0 || !!state.aiReq || modelSwitchPending;
 }
 
+let modelSwitchPending = false;
 export async function switchModel(model) {
-  if (!model) return;
-  state.settings = await api('settings:save', { ai: { model } });
-  toast('模型已切换:' + model, 'success');
+  if (!model || modelSwitchPending) return;
+  if (state.aiReq) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
+  if (!savedModels().some((m) => m.id === model)) { renderModelSwitch(); return; }
+  modelSwitchPending = true;
+  renderModelSwitch();
+  try {
+    const settings = await api('settings:save', { ai: { model } });
+    state.settings = settings;
+    syncSelectedModelsFromSettings();
+    toast('模型已切换:' + model, 'success');
+  } catch (e) {
+    toast('模型切换失败：' + e.message, 'error');
+    throw e;
+  } finally {
+    modelSwitchPending = false;
+    renderModelSwitch();
+  }
 }
 
 /// 把 settings 里的已启用模型读进内存。boot 与保存设置后共用。
@@ -532,14 +968,11 @@ export async function switchModel(model) {
 /// 若在启动时拉 /models 来"重建"它,网络一抖动就会把用户的勾选清空。
 /// 拉取只发生在用户显式点击"拉取模型"时。
 export function syncSelectedModelsFromSettings() {
-  const s = (state.settings && state.settings.ai) || {};
-  let saved = Array.isArray(s.models) ? s.models.map(normModel).filter((m) => m.id) : [];
-  // 老配置迁移:只有单个 model、没有 models 列表时,把它当作唯一已启用模型,
-  // 否则升级后下拉会变成"未启用模型",用户的配置看起来丢了。
-  if (!saved.length && s.model) saved = [normModel(s.model)];
-  state.aiSelected = saved;
-  if (!$('#ai-model').value && s.model) $('#ai-model').value = s.model;
-  renderModelChips();
+  if (!aiDraft) {
+    state.aiSelected = savedModels();
+    $('#ai-model').value = savedAi().model || (state.aiSelected[0] || {}).id || '';
+    renderModelChips();
+  }
   renderModelSwitch();
 }
 
@@ -572,11 +1005,19 @@ export async function aiDiagnose() {
   aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```', undefined, { md: true });
   $('#ai-panel').classList.remove('hidden');
   $('#ai-resizer').classList.remove('hidden');
+  aiStickScroll(); // 面板从隐藏到可见:隐藏期间的滚动全是空操作,这里补一次贴底
 }
 
 /* ---------------- 监控条增强(H1/H2):磁盘 + sparkline ---------------- */
 
 export function openAiSettings() {
+  aiDraft = null;
+  modelsFetchSeq++;
+  resetModelFetchButton();
+  state.aiModels = [];
+  $('#ai-apikey').value = '';
+  const inline = $('#ai-model-inline');
+  if (inline) inline.value = '';
   const sel = $('#ai-provider');
   sel.innerHTML = '';
   for (const [key, p] of Object.entries(AI_PRESETS)) {
@@ -592,8 +1033,7 @@ export function openAiSettings() {
   fillPreset(sel.value);
   if (s.baseUrl) $('#ai-baseurl').value = s.baseUrl;
   // 已启用模型从内存集合重建 chip(含老配置的单 model 迁移)
-  state.aiSelected = (Array.isArray(s.models) ? s.models.map(normModel).filter((m) => m.id) : []);
-  if (!state.aiSelected.length && s.model) state.aiSelected = [normModel(s.model)];
+  state.aiSelected = savedModels();
   $('#ai-model').value = s.model || (state.aiSelected[0] || {}).id || '';
   // 候选池:启动时是空的(不再联网拉取),先把已启用的并进来,
   // 这样用户不点"拉取模型"也能重开弹框调整勾选。
@@ -604,7 +1044,8 @@ export function openAiSettings() {
   renderModelSwitch();
   $('#ai-protocol').value = s.protocol || 'openai';
   $('#ai-apikey').value = '';
-  $('#ai-apikey').placeholder = s.apiKeySet ? '已保存（留空保持不变）' : '密钥';
+  aiDraft = { endpoint: aiEndpointIdentity(draftEndpoint()) };
+  onAiEndpointChange();
   openModal('#modal-ai');
 }
 
@@ -625,26 +1066,26 @@ export function fillPreset(key) {
     if (!state.aiSelected.length && cur.model) state.aiSelected = [normModel(cur.model)];
     $('#ai-model').value = cur.model || (state.aiSelected[0] || {}).id || '';
   }
+  onAiEndpointChange();
+  state.aiModels = state.aiSelected.map((m) => ({ ...m }));
   renderModelChips();
-  renderModelSwitch();
 }
 
 export async function saveAiSettings() {
+  const draft = readAiDraft();
   const payload = {
     ai: {
       provider: $('#ai-provider').value,
-      protocol: $('#ai-protocol').value,
-      baseUrl: $('#ai-baseurl').value.trim(),
-      model: $('#ai-model').value.trim(),
-      models: state.aiSelected,
+      protocol: draft.protocol, baseUrl: draft.baseUrl, model: draft.model,
+      models: state.aiSelected.map((m) => ({ ...m })),
     },
   };
-  const key = $('#ai-apikey').value;
-  if (key) payload.ai.apiKey = key;
+  if (draft.apiKey) payload.ai.apiKey = draft.apiKey;
+  // 换端点且未填新密钥时通知后端清除旧密钥(后端另有 endpoint_changed 兜底)。
+  else if (!draft.useSavedApiKey) payload.ai.clearApiKey = true;
   try {
     state.settings = await api('settings:save', payload);
-    closeModal('#modal-ai');
-    refreshAiModels(); // 后台刷新,不阻塞保存提示;失败时下拉仍会显示已保存模型
+    closeAiSettings();
     toast('AI 设置已保存', 'success');
   } catch (e) {
     toast('保存失败：' + e.message, 'error');

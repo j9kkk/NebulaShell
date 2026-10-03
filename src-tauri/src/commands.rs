@@ -1,18 +1,101 @@
 // IPC 统一分发:channel → 处理器,返回 {ok, data|error} 信封(与 Electron 版 IPC 契约一致)
 use crate::config::Store;
 use crate::forward::ForwardService;
-use crate::monitor;
 use crate::ssh::SshService;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
-pub struct LogEntry {
-    pub file: std::path::PathBuf,
-    pub timestamps: bool,
-    pub record_input: bool,
-    pub handle: std::fs::File,
+use crate::session_log::LogEntry;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Command-side setup must be serialized with disconnect, not just SSH publication.
+/// Weak entries keep closed session IDs from accumulating in the lifecycle registry.
+#[derive(Default)]
+struct ConnectionLifecycle {
+    current: Mutex<Option<Arc<AtomicBool>>>,
+    activation: tokio::sync::Mutex<()>,
+}
+
+impl ConnectionLifecycle {
+    fn begin(&self) -> Arc<AtomicBool> {
+        let token = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = self.current.lock().unwrap().replace(token.clone()) {
+            previous.store(true, Ordering::Release);
+        }
+        token
+    }
+
+    fn cancel(&self) {
+        if let Some(token) = self.current.lock().unwrap().as_ref() {
+            token.store(true, Ordering::Release);
+        }
+    }
+}
+
+type AbortRegistry = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+
+struct RequestRegistration {
+    registry: AbortRegistry,
+    id: String,
+    flag: Arc<AtomicBool>,
+}
+
+impl RequestRegistration {
+    fn new(registry: AbortRegistry, id: String, duplicate_error: &str) -> Result<Self, String> {
+        let flag = Arc::new(AtomicBool::new(false));
+        {
+            let mut requests = registry.lock().unwrap();
+            if requests.contains_key(&id) {
+                return Err(duplicate_error.to_string());
+            }
+            requests.insert(id.clone(), flag.clone());
+        }
+        Ok(Self { registry, id, flag })
+    }
+}
+
+impl Drop for RequestRegistration {
+    fn drop(&mut self) {
+        self.flag.store(true, Ordering::Release);
+        let mut requests = self.registry.lock().unwrap();
+        if requests
+            .get(&self.id)
+            .is_some_and(|flag| Arc::ptr_eq(flag, &self.flag))
+        {
+            requests.remove(&self.id);
+        }
+    }
+}
+
+pub fn record_session_log<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    sid: &str,
+    data: &str,
+    input: bool,
+) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let entry = state.logs.lock().unwrap().get(sid).cloned();
+    if let Some(entry) = entry {
+        if let Err(message) = entry.record(data, input) {
+            let current = state
+                .logs
+                .lock()
+                .unwrap()
+                .get(sid)
+                .is_some_and(|current| Arc::ptr_eq(current, &entry));
+            if current {
+                crate::ai::emit_evt(
+                    app,
+                    "log:error",
+                    json!({ "sessionId": sid, "file": entry.file.to_string_lossy(), "message": message }),
+                );
+            }
+        }
+    }
 }
 
 pub struct AppState {
@@ -20,10 +103,27 @@ pub struct AppState {
     pub ssh: Arc<SshService>,
     pub forwards: ForwardService,
     pub monitors: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
-    pub logs: Mutex<HashMap<String, LogEntry>>,
+    pub logs: Mutex<HashMap<String, Arc<LogEntry>>>,
     pub ai_aborts: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    pub batch_aborts: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub test_results: Arc<Mutex<HashMap<String, String>>>,
     pub test_mode: bool,
+}
+
+impl AppState {
+    fn connection_lifecycle(&self, sid: &str) -> Arc<ConnectionLifecycle> {
+        type Lifecycles = Mutex<HashMap<(usize, String), std::sync::Weak<ConnectionLifecycle>>>;
+        static LIFECYCLES: std::sync::OnceLock<Lifecycles> = std::sync::OnceLock::new();
+        let key = (Arc::as_ptr(&self.ssh) as usize, sid.to_string());
+        let mut lifecycles = LIFECYCLES.get_or_init(Mutex::default).lock().unwrap();
+        lifecycles.retain(|_, lifecycle| lifecycle.strong_count() > 0);
+        if let Some(lifecycle) = lifecycles.get(&key).and_then(std::sync::Weak::upgrade) {
+            return lifecycle;
+        }
+        let lifecycle = Arc::new(ConnectionLifecycle::default());
+        lifecycles.insert(key, Arc::downgrade(&lifecycle));
+        lifecycle
+    }
 }
 
 fn ok(data: Value) -> Result<Value, String> {
@@ -179,6 +279,7 @@ pub async fn nebula_invoke(
                             Ok(r) => ok(json!({
                                 "path": p, "added": r["added"], "skipped": r["skipped"],
                                 "withCredentials": r["withCredentials"],
+                                "updated": r["updated"], "credentialsFilled": r["credentialsFilled"],
                                 "legacyPlaintext": r["legacyPlaintext"],
                             })),
                             Err(e) => err_msg(e),
@@ -206,37 +307,68 @@ pub async fn nebula_invoke(
                 .as_str()
                 .map(String::from)
                 .unwrap_or_else(uid);
-            match state
-                .ssh
-                .connect(app.clone(), host, session_id.clone())
-                .await
-            {
+            let lifecycle = state.connection_lifecycle(&session_id);
+            let token = {
+                let _activation = lifecycle.activation.lock().await;
+                lifecycle.begin()
+            };
+            let result = tokio::select! {
+                biased;
+                _ = wait_for_cancel(&token) => Err("连接已取消".to_string()),
+                result = state.ssh.connect(app.clone(), host, session_id.clone()) => result,
+            };
+            let _activation = lifecycle.activation.lock().await;
+            // Cancellation is not a connection failure. A stale invoke error must not
+            // make the frontend overwrite the status of a newer connection generation.
+            if token.load(Ordering::Acquire) {
+                return ok(json!({ "sessionId": session_id, "cancelled": true }));
+            }
+            match result {
                 Ok(_) => {
+                    let session = state.ssh.sessions.lock().await.get(&session_id).cloned();
+                    let Some(session) = session.filter(|session| {
+                        !token.load(Ordering::Acquire) && session.alive.load(Ordering::Acquire)
+                    }) else {
+                        return ok(json!({ "sessionId": session_id, "cancelled": true }));
+                    };
                     // 监控任务随连接启动(批量会话除外)
                     if !session_id.starts_with("batch-") {
                         state.start_monitor(&app, &session_id);
-                        // autoStart 转发规则
                         let rules: Vec<Value> = {
                             let data = state.store.data.lock().unwrap();
                             data["forwards"].as_array().cloned().unwrap_or_default()
                         };
-                        let host_id = state
-                            .ssh
-                            .session_host_id(&session_id)
-                            .await
-                            .unwrap_or_default();
+                        let host_id = session.host["id"].as_str().unwrap_or("");
                         for rule in rules {
-                            if rule["autoStart"].as_bool().unwrap_or(false)
-                                && rule["hostId"].as_str() == Some(host_id.as_str())
+                            if token.load(Ordering::Acquire)
+                                || !session.alive.load(Ordering::Acquire)
                             {
-                                let _ = state
-                                    .forwards
-                                    .start(app.clone(), state.ssh.clone(), &rule)
-                                    .await;
+                                break;
                             }
+                            if rule["autoStart"].as_bool().unwrap_or(false)
+                                && rule["hostId"].as_str() == Some(host_id)
+                            {
+                                tokio::select! {
+                                    biased;
+                                    _ = wait_for_cancel(&token) => break,
+                                    _ = state.forwards.start(app.clone(), state.ssh.clone(), &rule) => {},
+                                }
+                            }
+                        }
+                        // Disconnect may have arrived while an async forward was
+                        // binding. It takes the same activation lock before cleanup.
+                        if token.load(Ordering::Acquire) || !session.alive.load(Ordering::Acquire) {
+                            state.stop_monitor(&session_id);
+                            state
+                                .forwards
+                                .stop_by_session(&app, state.ssh.clone(), &session_id);
+                            return ok(json!({ "sessionId": session_id, "cancelled": true }));
                         }
                     }
                     ok(json!({ "sessionId": session_id }))
+                }
+                Err(e) if e == "连接已取消" => {
+                    ok(json!({ "sessionId": session_id, "cancelled": true }))
                 }
                 Err(e) => err_msg(e),
             }
@@ -250,27 +382,27 @@ pub async fn nebula_invoke(
             .await
         {
             Ok(_) => {
-                // 会话日志记录输入(J1/J2)
-                let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
-                let data = payload["data"].as_str().unwrap_or("").to_string();
-                let mut logs = state.logs.lock().unwrap();
-                if let Some(entry) = logs.get_mut(&sid) {
-                    if entry.record_input && data != "\r" {
-                        use std::io::Write;
-                        let ts = if entry.timestamps {
-                            format!("[IN ] {} ", chrono::Local::now().to_rfc3339())
-                        } else {
-                            String::new()
-                        };
-                        let _ = entry
-                            .handle
-                            .write_all(format!("{}{}", ts, data.replace('\r', "")).as_bytes());
-                    }
-                }
+                record_session_log(
+                    &app,
+                    payload["sessionId"].as_str().unwrap_or(""),
+                    payload["data"].as_str().unwrap_or(""),
+                    true,
+                );
                 ok(json!(null))
             }
             Err(e) => err_msg(e),
         },
+        "ssh:setReadonly" => {
+            let sid = payload["sessionId"].as_str().unwrap_or("");
+            match state
+                .ssh
+                .set_readonly(sid, payload["readOnly"].as_bool().unwrap_or(false))
+                .await
+            {
+                Ok(_) => ok(json!(null)),
+                Err(e) => err_msg(e),
+            }
+        }
         "ssh:resize" => match state
             .ssh
             .resize(
@@ -285,6 +417,9 @@ pub async fn nebula_invoke(
         },
         "ssh:disconnect" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
+            let lifecycle = state.connection_lifecycle(&sid);
+            lifecycle.cancel();
+            let _activation = lifecycle.activation.lock().await;
             state.ssh.disconnect(&sid).await;
             state.stop_monitor(&sid);
             state
@@ -298,7 +433,7 @@ pub async fn nebula_invoke(
                 &state,
                 app.clone(),
                 &payload,
-                |sftp, _app, sid, p| async move {
+                |sftp, _app, _sid, p| async move {
                     crate::sftp::list(&sftp, p["path"].as_str().map(String::from)).await
                 },
             )
@@ -374,12 +509,14 @@ pub async fn nebula_invoke(
                 app.clone(),
                 &payload,
                 |sftp, app, sid, p| async move {
-                    crate::sftp::upload(
+                    crate::sftp::upload_with_policy(
                         &sftp,
                         app,
                         sid,
                         p["localPath"].as_str().unwrap_or(""),
                         p["remoteDir"].as_str().unwrap_or(""),
+                        p["remoteName"].as_str(),
+                        p["conflictPolicy"].as_str().unwrap_or("error"),
                     )
                     .await
                 },
@@ -472,7 +609,9 @@ pub async fn nebula_invoke(
             .start(app.clone(), state.ssh.clone(), &payload)
             .await
         {
-            Ok(port) => ok(json!({ "port": port })),
+            Ok(_port) => ok(state
+                .forwards
+                .runtime_state(payload["id"].as_str().unwrap_or(""))),
             Err(e) => err_msg(e),
         },
         "forward:stop" => {
@@ -492,10 +631,45 @@ pub async fn nebula_invoke(
                         .collect()
                 })
                 .unwrap_or_default();
-            ok(state.forwards.states(&ids))
+            ok(state.forwards.runtime_states(&ids))
         }
 
         "batch:exec" => batch_exec(app.clone(), &state, &payload).await,
+        "batch:exportResults" => {
+            let result = export_batch_results(&payload, |default_name| async move {
+                // Test hosts opt in via an environment-owned directory, never an IPC path.
+                // With no directory configured, test mode cancels without showing a dialog.
+                if state.test_mode {
+                    return batch_test_export_path(
+                        std::env::var_os("NEBULA_TEST_EXPORT_DIR"),
+                        &default_name,
+                    );
+                }
+                rfd::AsyncFileDialog::new()
+                    .set_title("导出批量执行结果")
+                    .add_filter("JSON", &["json"])
+                    .set_file_name(&default_name)
+                    .save_file()
+                    .await
+                    .map(|file| file.path().to_path_buf())
+            })
+            .await;
+            match result {
+                Ok(data) => ok(data),
+                Err(error) => err_msg(error),
+            }
+        }
+        "batch:cancel" => {
+            if let Some(flag) = state
+                .batch_aborts
+                .lock()
+                .unwrap()
+                .get(payload["requestId"].as_str().unwrap_or(""))
+            {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+            ok(json!(null))
+        }
 
         "history:add" => {
             {
@@ -597,28 +771,75 @@ pub async fn nebula_invoke(
                 "_",
             );
             let stamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
-            let file = dir.join(format!("{}-{}.log", label, stamp));
-            let handle = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file)
-                .map_err(|e| e.to_string())?;
+            let file = dir.join(format!("{}-{}-{}.log", label, stamp, uid()));
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let handle = options.open(&file).map_err(|e| e.to_string())?;
             let file_str = file.to_string_lossy().to_string();
-            state.logs.lock().unwrap().insert(
-                sid,
-                LogEntry {
-                    file: file.clone(),
-                    timestamps: payload["timestamps"].as_bool().unwrap_or(true),
-                    record_input: payload["recordInput"].as_bool().unwrap_or(false),
-                    handle,
+            let app_log = app.clone();
+            let sid_log = sid.clone();
+            let log_file = file.clone();
+            let entry = match LogEntry::new(
+                file,
+                handle,
+                payload["timestamps"].as_bool().unwrap_or(true),
+                payload["recordInput"].as_bool().unwrap_or(false),
+                move |message| {
+                    let current = app_log.try_state::<AppState>().is_some_and(|state| {
+                        state
+                            .logs
+                            .lock()
+                            .unwrap()
+                            .get(&sid_log)
+                            .is_some_and(|entry| entry.file == log_file)
+                    });
+                    if current {
+                        crate::ai::emit_evt(
+                            &app_log,
+                            "log:error",
+                            json!({ "sessionId": sid_log, "file": log_file.to_string_lossy(), "message": message }),
+                        );
+                    }
                 },
-            );
+            ) {
+                Ok(entry) => entry,
+                Err(error) => return err_msg(error),
+            };
+            let previous = state.logs.lock().unwrap().insert(sid.clone(), entry);
+            if let Some(previous) = previous {
+                let previous_file = previous.file.to_string_lossy().to_string();
+                let failure = match tokio::task::spawn_blocking(move || previous.stop()).await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(error) => Some(error.to_string()),
+                };
+                if let Some(message) = failure {
+                    crate::ai::emit_evt(
+                        &app,
+                        "log:error",
+                        json!({ "sessionId": sid, "file": previous_file, "message": message }),
+                    );
+                }
+            }
             ok(json!({ "file": file_str }))
         }
         "log:stop" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
-            match state.logs.lock().unwrap().remove(&sid) {
-                Some(entry) => ok(json!({ "file": entry.file.to_string_lossy() })),
+            let entry = state.logs.lock().unwrap().remove(&sid);
+            match entry {
+                Some(entry) => {
+                    let file = entry.file.to_string_lossy().to_string();
+                    match tokio::task::spawn_blocking(move || entry.stop()).await {
+                        Ok(Ok(())) => ok(json!({ "file": file })),
+                        Ok(Err(error)) => err_msg(error),
+                        Err(error) => err_msg(error),
+                    }
+                }
                 None => ok(json!({ "file": null })),
             }
         }
@@ -626,7 +847,9 @@ pub async fn nebula_invoke(
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
             let logs = state.logs.lock().unwrap();
             match logs.get(&sid) {
-                Some(e) => ok(json!({ "active": true, "file": e.file.to_string_lossy() })),
+                Some(e) => ok(
+                    json!({ "active": e.active(), "file": e.file.to_string_lossy(), "recordInput": e.record_input }),
+                ),
                 None => ok(json!({ "active": false, "file": null })),
             }
         }
@@ -669,7 +892,8 @@ pub async fn nebula_invoke(
             Err(e) => err_msg(e),
         },
 
-        // 凭据校验:保存前先探一次(地域 + 首个地域实例),只读不落库。
+        // 凭据校验:保存前做一次与"拉取全部"同路径的全量只读扫描(不落库),
+        // 报出的地域数/实例数即真实拉取结果;个别地域失败不阻断,附 errorCount。
         // keyId/secret 留空时回退到已保存账号的值(编辑场景无需重输密钥)。
         "cloud:testAccount" => {
             let id = payload["id"].as_str().unwrap_or("");
@@ -706,11 +930,11 @@ pub async fn nebula_invoke(
                 crate::cloud::tencent_probe(&key, &secret, &endpoint).await
             };
             match r {
-                Ok((regions, instances, region, services)) => ok(json!({
+                Ok((regions, instances, services, error_count)) => ok(json!({
                     "regionCount": regions,
                     "instanceCount": instances,
-                    "sampleRegion": region,
                     "services": services,
+                    "errorCount": error_count,
                 })),
                 Err(e) => err_msg(e),
             }
@@ -749,6 +973,7 @@ pub async fn nebula_invoke(
                     Ok((mut list, mut errs)) => {
                         // 默认名 {云}-{区域}-{IP};已命名的实例保留原名
                         for it in list.iter_mut() {
+                            it["cloud"]["accountId"] = json!(id);
                             if it["name"]
                                 .as_str()
                                 .map(|s| s.trim().is_empty())
@@ -798,63 +1023,47 @@ pub async fn nebula_invoke(
         "settings:save" => ok(state.store.save_settings(&payload)),
 
         "ai:models" => {
-            let protocol = payload["protocol"].as_str().unwrap_or("openai").to_string();
-            let base = payload["baseUrl"].as_str().unwrap_or("").to_string();
-            let key = payload["apiKey"].as_str().unwrap_or("").to_string();
-            let key = if key.is_empty() {
+            let (saved, saved_key) = {
                 let data = state.store.data.lock().unwrap();
-                state
-                    .store
-                    .dec(data["settings"]["ai"]["apiKeyEnc"].as_str().unwrap_or(""))
-            } else {
-                key
+                let saved = data["settings"]["ai"].clone();
+                let key = state.store.dec(saved["apiKeyEnc"].as_str().unwrap_or(""));
+                (saved, key)
             };
-            match crate::ai::list_models(&protocol, &base, &key).await {
+            let config = crate::ai::resolve_request_config(&saved, Some(&payload), &saved_key);
+            match crate::ai::list_models(&config.protocol, &config.base_url, &config.api_key).await
+            {
                 Ok(ids) => ok(json!(ids)),
                 Err(e) => err_msg(e),
             }
         }
         "ai:chat" => {
             let request_id = payload["requestId"].as_str().unwrap_or("").to_string();
-            // 弹窗里"测试连接"先于"保存":payload.ai 携带表单当前值时以其为准,
-            // 留空的字段回落到已保存配置 —— 否则"填完就测"会误报未配置。
-            let ov = payload["ai"].clone();
-            let ai = {
+            if request_id.is_empty() {
+                return err_msg("缺少 AI 请求标识");
+            }
+            let (saved, saved_key) = {
                 let data = state.store.data.lock().unwrap();
-                let mut ai = data["settings"]["ai"].clone();
-                if ov.is_object() {
-                    for k in ["protocol", "baseUrl", "model"] {
-                        let v = ov[k].as_str().unwrap_or("");
-                        if !v.is_empty() {
-                            ai[k] = json!(v);
-                        }
-                    }
-                }
-                ai
+                let saved = data["settings"]["ai"].clone();
+                let key = state.store.dec(saved["apiKeyEnc"].as_str().unwrap_or(""));
+                (saved, key)
             };
-            let base = ai["baseUrl"].as_str().unwrap_or("").to_string();
-            if base.is_empty() {
+            let config = crate::ai::resolve_request_config(
+                &saved,
+                payload.get("ai").filter(|value| value.is_object()),
+                &saved_key,
+            );
+            if config.base_url.is_empty() {
                 return err_msg("未配置 API Base URL,请先在 AI 设置中填写");
             }
-            // 表单里现填的密钥优先;留空表示沿用已保存密钥
-            let key = {
-                let form_key = ov["apiKey"].as_str().unwrap_or("");
-                if form_key.is_empty() {
-                    let data = state.store.data.lock().unwrap();
-                    state
-                        .store
-                        .dec(data["settings"]["ai"]["apiKeyEnc"].as_str().unwrap_or(""))
-                } else {
-                    form_key.to_string()
-                }
+            let registration = match RequestRegistration::new(
+                state.ai_aborts.clone(),
+                request_id.clone(),
+                "AI 请求标识已存在",
+            ) {
+                Ok(registration) => registration,
+                Err(error) => return err_msg(error),
             };
-            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            state
-                .ai_aborts
-                .lock()
-                .unwrap()
-                .insert(request_id.clone(), flag.clone());
-            let aborts = state.ai_aborts.clone();
+            let flag = registration.flag.clone();
             let request_id2 = request_id.clone();
             let app_err = app.clone();
             tokio::spawn(async move {
@@ -863,10 +1072,10 @@ pub async fn nebula_invoke(
                 if let Err(e) = crate::ai::chat_stream(
                     app.clone(),
                     request_id2.clone(),
-                    ai["protocol"].as_str().unwrap_or("openai").to_string(),
-                    base,
-                    key,
-                    ai["model"].as_str().unwrap_or("").to_string(),
+                    config.protocol,
+                    config.base_url,
+                    config.api_key,
+                    config.model,
                     payload["messages"].clone(),
                     flag,
                 )
@@ -878,7 +1087,7 @@ pub async fn nebula_invoke(
                         json!({ "requestId": request_id2.clone(), "message": e }),
                     );
                 }
-                aborts.lock().unwrap().remove(&request_id2);
+                drop(registration);
             });
             ok(json!({ "requestId": request_id }))
         }
@@ -1006,86 +1215,393 @@ fn default_cloud_name(it: &Value) -> Value {
     json!(format!("{}-{}-{}", vendor, region, ip))
 }
 
+async fn wait_for_cancel(flag: &std::sync::atomic::AtomicBool) {
+    while !flag.load(std::sync::atomic::Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+fn batch_test_export_path(
+    directory: Option<std::ffi::OsString>,
+    default_name: &str,
+) -> Option<std::path::PathBuf> {
+    directory
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| std::path::PathBuf::from(dir).join(default_name))
+}
+
+/// The picker is the only authority for the destination; payload paths/names are ignored.
+/// Taking owned JSON before awaiting the picker also preserves the frontend snapshot.
+async fn export_batch_results<F, Fut>(payload: &Value, pick_path: F) -> Result<Value, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Option<std::path::PathBuf>>,
+{
+    let snapshot = payload["json"]
+        .as_str()
+        .ok_or_else(|| "缺少批量结果 JSON".to_string())?
+        .to_string();
+    let results: Value =
+        serde_json::from_str(&snapshot).map_err(|e| format!("批量结果 JSON 无效: {e}"))?;
+    let rows = results
+        .as_array()
+        .filter(|rows| rows.iter().all(Value::is_object))
+        .ok_or_else(|| "批量结果必须是 JSON 对象数组".to_string())?;
+    let count = rows.len();
+    let default_name = format!(
+        "NebulaShell-batch-{}.json",
+        chrono::Local::now().format("%Y-%m-%dT%H-%M-%S-%3f")
+    );
+    let Some(path) = pick_path(default_name).await else {
+        return Ok(Value::Null);
+    };
+    tokio::fs::write(&path, snapshot)
+        .await
+        .map_err(|e| format!("写入批量结果失败 ({}): {e}", path.display()))?;
+    Ok(json!({ "path": path.to_string_lossy(), "count": count }))
+}
+
+fn batch_output_result(code: i64, output: String, truncated: bool, original_bytes: usize) -> Value {
+    json!({
+        "ok": code == 0, "code": code, "retainedChars": output.chars().count(),
+        "originalBytes": original_bytes, "output": output, "truncated": truncated,
+        "outputLimitBytes": 1048576, "cancelled": false, "error": null,
+    })
+}
+
 fn batch_exec(
     app: tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     payload: &Value,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
-    let app = app.clone();
     let ssh = state.ssh.clone();
     let store = state.store.clone();
+    let aborts = state.batch_aborts.clone();
     let payload = payload.clone();
     Box::pin(async move {
-        let host_ids: Vec<String> = payload["hostIds"]
+        let mut host_ids: Vec<String> = payload["hostIds"]
             .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(String::from))
                     .collect()
             })
             .unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        host_ids.retain(|id| seen.insert(id.clone()));
         if host_ids.is_empty() {
             return err_msg("请选择目标主机");
         }
-        let cmd = payload["command"].as_str().unwrap_or("").trim().to_string();
-        if cmd.is_empty() {
+        let command = payload["command"].as_str().unwrap_or("").trim().to_string();
+        if command.is_empty() {
             return err_msg("请输入命令");
         }
-        let timeout_ms = payload["timeoutMs"].as_u64().unwrap_or(30000);
-        let max_parallel = payload["maxParallel"].as_u64().unwrap_or(5).clamp(1, 10) as usize;
-        let sem = Arc::new(tokio::sync::Semaphore::new(max_parallel));
-        let mut handles = vec![];
-        for host_id in &host_ids {
-            let permit = sem.clone();
+        let request_id = payload["requestId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .unwrap_or_else(uid);
+        let registration =
+            match RequestRegistration::new(aborts, request_id.clone(), "批量任务标识已存在")
+            {
+                Ok(registration) => registration,
+                Err(error) => return err_msg(error),
+            };
+        let cancelled = registration.flag.clone();
+        let targets: Vec<_> = host_ids
+            .into_iter()
+            .map(|id| {
+                let full = store.host_full(&id);
+                (id, full)
+            })
+            .collect();
+        let timeout_ms = payload["timeoutMs"]
+            .as_u64()
+            .unwrap_or(30000)
+            .clamp(1000, 600000);
+        let parallel = payload["maxParallel"].as_u64().unwrap_or(5).clamp(1, 10) as usize;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel));
+        let mut tasks = Vec::new();
+        for (host_id, full) in targets {
             let app = app.clone();
             let ssh = ssh.clone();
-            let store = store.clone();
-            let cmd = cmd.clone();
-            let timeout_ms = timeout_ms;
-            let host_id = host_id.clone();
-            handles.push(tokio::spawn(async move {
+            let semaphore = semaphore.clone();
+            let cancelled = cancelled.clone();
+            let command = command.clone();
+            let request_id = request_id.clone();
+            tasks.push(tokio::spawn(async move {
+                let session_id = format!("batch-{}", uid());
                 let started = std::time::Instant::now();
-                let _permit = permit.acquire_owned().await;
-                let out = match store.host_full(&host_id) {
-                    Ok(full) => {
-                        let sid = format!("batch-{}", host_id);
-                        ssh.disconnect(&sid).await;
-                        let label = format!(
-                            "{}@{}",
-                            full["username"].as_str().unwrap_or("root"),
-                            full["host"].as_str().unwrap_or("")
-                        );
-                        match ssh.connect(app.clone(), full, sid.clone()).await {
-                            Ok(_) => match tokio::time::timeout(
-                                std::time::Duration::from_millis(timeout_ms),
-                                ssh.exec(&sid, &cmd),
-                            )
-                            .await
-                            {
-                                Ok(Ok((code, output))) => json!({
-                                    "hostId": host_id, "host": label, "ok": code == 0, "code": code,
-                                    "output": output.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>(),
-                                    "ms": started.elapsed().as_millis() as u64, "error": null
-                                }),
-                                Ok(Err(e)) => json!({ "hostId": host_id, "host": label, "ok": false, "code": null, "output": "", "ms": started.elapsed().as_millis() as u64, "error": e }),
-                                Err(_) => json!({ "hostId": host_id, "host": label, "ok": false, "code": null, "output": "", "ms": started.elapsed().as_millis() as u64, "error": "执行超时" }),
-                            },
-                            Err(e) => json!({ "hostId": host_id, "host": host_id, "ok": false, "code": null, "output": "", "ms": started.elapsed().as_millis() as u64, "error": e }),
-                        }
-                    }
-                    Err(e) => json!({ "hostId": host_id, "host": host_id, "ok": false, "code": null, "output": "", "ms": 0, "error": e }),
+                let label = full.as_ref().map(|host| format!("{}@{}", host["username"].as_str().unwrap_or("root"), host["host"].as_str().unwrap_or(""))).unwrap_or_else(|_| host_id.clone());
+                let work = async {
+                    let _permit = semaphore.acquire_owned().await.map_err(|e| e.to_string())?;
+                    if cancelled.load(std::sync::atomic::Ordering::Acquire) { return Err("已取消".to_string()); }
+                    let host = full?;
+                    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
+                        ssh.connect(app.clone(), host, session_id.clone()).await?;
+                        ssh.exec_limited(&session_id, &command, 1024 * 1024).await
+                    }).await.map_err(|_| "连接或执行超时".to_string())?
                 };
-                ssh.disconnect(&format!("batch-{}", host_id)).await;
+                let result = tokio::select! {
+                    biased;
+                    _ = wait_for_cancel(&cancelled) => Err("已取消".to_string()),
+                    result = work => result,
+                };
+                ssh.disconnect(&session_id).await;
+                let ms = started.elapsed().as_millis() as u64;
+                let mut out = match result {
+                    Ok((code, output, truncated, original_bytes)) => batch_output_result(code, output, truncated, original_bytes),
+                    Err(error) => json!({ "ok": false, "code": null, "output": "", "retainedChars": 0, "originalBytes": null, "outputLimitBytes": 1048576, "truncated": false, "cancelled": error == "已取消", "error": error }),
+                };
+                out["requestId"] = json!(request_id);
+                out["hostId"] = json!(host_id);
+                out["host"] = json!(label);
+                out["ms"] = json!(ms);
                 crate::ai::emit_evt(&app, "batch:progress", out.clone());
                 out
             }));
         }
-        let mut results = vec![];
-        for h in handles {
-            if let Ok(r) = h.await {
-                results.push(r);
+        let mut results = Vec::new();
+        for task in tasks {
+            match task.await {
+                Ok(result) => results.push(result),
+                Err(error) => results.push(json!({ "requestId": request_id, "ok": false, "error": format!("任务异常：{}", error) })),
             }
         }
+        drop(registration);
         ok(json!(results))
     })
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    struct BatchExportTempDir(std::path::PathBuf);
+
+    impl BatchExportTempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("nebula-batch-export-{}", uid()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for BatchExportTempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_export_uses_safe_test_filename_and_preserves_retained_json() {
+        let directory = BatchExportTempDir::new();
+        let unselected = directory.0.join("unselected.json");
+        std::fs::write(&unselected, "do not overwrite").unwrap();
+        let snapshot = serde_json::to_string_pretty(&json!([{
+            "hostId": "a", "output": format!("中🙂\n{}", "x".repeat(5000)),
+            "truncated": true, "originalBytes": 2_000_000,
+            "retainedChars": 5003, "outputLimitBytes": 1_048_576,
+            "detail": "[输出已截断]", "code": 2, "error": "failed"
+        }]))
+        .unwrap();
+        let payload = json!({
+            "json": snapshot, "path": unselected, "defaultName": "../unselected.json"
+        });
+        let result = export_batch_results(&payload, |name| {
+            assert!(name.starts_with("NebulaShell-batch-20"));
+            assert!(name.ends_with(".json"));
+            assert!(name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'));
+            std::future::ready(batch_test_export_path(
+                Some(directory.0.clone().into_os_string()),
+                &name,
+            ))
+        })
+        .await
+        .unwrap();
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(directory.0.as_path()));
+        assert_eq!(result["count"], 1);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), snapshot);
+        assert_eq!(
+            std::fs::read_to_string(unselected).unwrap(),
+            "do not overwrite"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_export_cancellation_is_null_and_writes_nothing() {
+        let directory = BatchExportTempDir::new();
+        let result = export_batch_results(&json!({ "json": "[]" }), |_| async { None })
+            .await
+            .unwrap();
+        assert!(result.is_null());
+        assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 0);
+        assert!(batch_test_export_path(None, "NebulaShell-batch.json").is_none());
+        assert!(batch_test_export_path(Some("".into()), "NebulaShell-batch.json").is_none());
+    }
+
+    #[tokio::test]
+    async fn batch_export_write_failure_is_reported() {
+        let directory = BatchExportTempDir::new();
+        let error = export_batch_results(&json!({ "json": "[]" }), |_| async {
+            // A directory cannot be overwritten with JSON; only temporary paths are touched.
+            Some(directory.0.clone())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("写入批量结果失败"));
+        assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn batch_export_invalid_snapshot_never_opens_picker() {
+        for payload in [
+            json!({}),
+            json!({ "json": "not JSON" }),
+            json!({ "json": "{}" }),
+            json!({ "json": "[1]" }),
+        ] {
+            let result = export_batch_results(&payload, |_| async {
+                panic!("invalid results must not open the picker")
+            })
+            .await;
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn batch_metadata_distinguishes_retained_characters_from_total_bytes() {
+        let result = batch_output_result(0, "中🙂".into(), true, 2_000_000);
+        assert_eq!(result["retainedChars"], 2);
+        assert_eq!(result["originalBytes"], 2_000_000);
+        assert_eq!(result["outputLimitBytes"], 1_048_576);
+        assert_eq!(result["truncated"], true);
+        assert!(result.get("originalChars").is_none());
+    }
+
+    #[test]
+    fn duplicate_request_ids_do_not_replace_original_abort_flag() {
+        let registry = Arc::new(Mutex::new(HashMap::new()));
+        let first = RequestRegistration::new(registry.clone(), "same".into(), "duplicate").unwrap();
+        assert!(RequestRegistration::new(registry.clone(), "same".into(), "duplicate").is_err());
+        assert!(Arc::ptr_eq(
+            registry.lock().unwrap().get("same").unwrap(),
+            &first.flag
+        ));
+        registry
+            .lock()
+            .unwrap()
+            .get("same")
+            .unwrap()
+            .store(true, Ordering::Release);
+        assert!(first.flag.load(Ordering::Acquire));
+        drop(first);
+        assert!(registry.lock().unwrap().is_empty());
+        let next = RequestRegistration::new(registry.clone(), "same".into(), "duplicate").unwrap();
+        assert!(!next.flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn concurrent_duplicate_requests_have_exactly_one_owner() {
+        let registry = Arc::new(Mutex::new(HashMap::new()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let registry = registry.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let registration =
+                        RequestRegistration::new(registry, "same".into(), "duplicate");
+                    barrier.wait(); // Keep the winner registered until every attempt has completed.
+                    registration.is_ok()
+                })
+            })
+            .collect();
+        let owners = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|owner| *owner)
+            .count();
+        assert_eq!(owners, 1);
+        assert!(registry.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn request_cleanup_never_removes_a_replacement_and_cancels_dropped_work() {
+        let registry = Arc::new(Mutex::new(HashMap::new()));
+        let first = RequestRegistration::new(registry.clone(), "same".into(), "duplicate").unwrap();
+        let first_flag = first.flag.clone();
+        let replacement = Arc::new(AtomicBool::new(false));
+        registry
+            .lock()
+            .unwrap()
+            .insert("same".into(), replacement.clone());
+        drop(first);
+        assert!(first_flag.load(Ordering::Acquire));
+        assert!(Arc::ptr_eq(
+            registry.lock().unwrap().get("same").unwrap(),
+            &replacement
+        ));
+    }
+
+    #[tokio::test]
+    async fn new_connection_generation_cancels_only_previous_attempt() {
+        let lifecycle = ConnectionLifecycle::default();
+        let old = lifecycle.begin();
+        let new = lifecycle.begin();
+        assert!(old.load(Ordering::Acquire));
+        assert!(!new.load(Ordering::Acquire));
+        lifecycle.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait_for_cancel(&new))
+            .await
+            .unwrap();
+        assert!(new.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_a_pending_forward_activation() {
+        let lifecycle = Arc::new(ConnectionLifecycle::default());
+        let token = lifecycle.begin();
+        let activation = lifecycle.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _activation = activation.activation.lock().await;
+            started_tx.send(()).unwrap();
+            tokio::select! {
+                biased;
+                _ = wait_for_cancel(&token) => {},
+                _ = std::future::pending::<()>() => panic!("forward must not complete"),
+            }
+        });
+        started_rx.await.unwrap();
+        lifecycle.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(lifecycle.activation.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn disconnect_invalidates_in_flight_activation_before_cleanup_lock() {
+        let lifecycle = Arc::new(ConnectionLifecycle::default());
+        let token = lifecycle.begin();
+        let activating = lifecycle.activation.lock().await;
+        let disconnecting = lifecycle.clone();
+        let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+        let cleanup = tokio::spawn(async move {
+            disconnecting.cancel();
+            cancelled_tx.send(()).unwrap();
+            let _activation = disconnecting.activation.lock().await;
+        });
+        cancelled_rx.await.unwrap();
+        assert!(token.load(Ordering::Acquire));
+        assert!(!cleanup.is_finished());
+        drop(activating);
+        cleanup.await.unwrap();
+    }
 }

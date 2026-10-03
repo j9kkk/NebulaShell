@@ -1,13 +1,16 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, accel, api, applyAccelTitles, askPrompt, bindCtxMenuDismiss, closeCtxMenu, closeModal, copyText, openModal, PLATFORM, showCtxMenu, state, toast } from './core.js';
-import { activateSession, activateTab, autoLayoutTab, clearActiveTerm, closeActivePane, closeSession, closeTab, closeTermSearch, connectHost, doTermSearch, firstPaint, fitActive, fitAllVisible, followFilePanel, leafCount, newTabWithPicker, openBroadcastPicker, openTermSearch, parseQuickTarget, quickConnect, renderLayout, scheduleResizeSync, splitActive, togglePaneZoom, toggleReadonly, toggleSessionLog, updateStatusbar, updateTab, updateWelcome } from './terminal.js';
+import { $, activeTab, accel, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, isAppModifier, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { isEditableTarget } from './interaction.js';
+import { bindCommandButtons, executeCommand, refreshCommandStates, registerCommand } from './commands.js';
+import { bindMoreMenu, closeMoreMenu } from './menu.js';
+import { activateSession, activateTab, autoLayoutTab, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, followFilePanel, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { aiDiagnose, aiFinishHolder, aiSend, aiTestConnection, clearBubbleState, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, openAiSettings, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, saveAiSettings, setAiBody, switchModel, togglePickerFocus } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, saveAiSettings, setAiBody, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
 import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
-import { activeConnectedSession, addBookmark, fileNavBack, fileNavForward, fileNavUp, filePanelSession, fileUpload, initialFileDir, loadFileDir, renderFileTarget, uploadLocalPaths } from './sftp.js';
+import { activeConnectedSession, addBookmark, beginFilePanelSession, commitFileRename, fileNavBack, fileNavForward, fileNavUp, filePanelSession, fileUpload, initialFileDir, isFileTargetCurrent, loadFileDir, remoteEntryPath, renderFileTarget, snapshotFileTarget, uploadLocalPaths, validEntryName } from './sftp.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
-import { openBatchModal, openForwardModal, renderBatchHosts, runBatch, saveForwardRule, toggleHistory } from './tools.js';
+import { bindBatchUi, openBatchModal, openForwardModal, saveForwardRule, toggleHistory } from './tools.js';
 
 export function termFromEvent(e) {
   const paneEl = e.target && e.target.closest ? e.target.closest('.term-pane') : null;
@@ -125,6 +128,110 @@ async function commitFilePath() {
   $('#file-path').value = state.file.cwd || '';
 }
 
+/// 侧边栏收缩:面板 + 拖拽把手同步显隐。收起时侧栏塌缩为一个窄条,
+/// 底部的收起/展开按钮仍留在条上(收起后必须有入口展开,按钮不能随面板消失)。
+/// 展开态用按钮文字+图标反映;工具栏按钮(已移除)、功能菜单、
+/// 把手双击三处共用这一个入口。
+let expandedSidebarWidth = null;
+function toggleSidebar() {
+  const sb = $('#sidebar');
+  const collapsed = !sb.classList.contains('collapsed');
+  if (collapsed) {
+    expandedSidebarWidth = sb.getBoundingClientRect().width;
+    sb.style.width = '';
+  } else if (expandedSidebarWidth) {
+    sb.style.width = Math.min(Math.max(180, expandedSidebarWidth), window.innerWidth * 0.5) + 'px';
+  }
+  sb.classList.toggle('collapsed', collapsed);
+  sb.classList.remove('hidden');
+  $('#sidebar-resizer').classList.toggle('hidden', collapsed);
+  syncSidebarToggle(collapsed);
+  fitAllVisible();
+  scheduleResizeSync();
+  refreshCommandStates();
+}
+
+/// 收起/展开按钮的状态呈现:图标(☰/»)+ 文案(收起侧边栏/展开侧边栏)。
+function syncSidebarToggle(collapsed) {
+  const btn = $('#btn-sidebar-toggle');
+  btn.classList.toggle('active', !collapsed);
+  $('#sidebar-toggle-icon').textContent = collapsed ? '»' : '«';
+  const label = collapsed ? '展开主机侧栏' : '收起主机侧栏';
+  $('#sidebar-toggle-text').textContent = label;
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('aria-expanded', String(!collapsed));
+}
+
+function toggleAiPanel(force = null) {
+  const panel = $('#ai-panel');
+  const open = force === null ? panel.classList.contains('hidden') : force;
+  panel.classList.toggle('hidden', !open);
+  $('#ai-resizer').classList.toggle('hidden', !open);
+  if (open) aiStickScroll(); // 隐藏期间收到的回复把内容顶出了视口,重开回到底部
+  fitAllVisible();
+  scheduleResizeSync();
+  refreshCommandStates();
+}
+
+async function toggleFilePanel() {
+  const panel = $('#file-panel');
+  const open = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !open);
+  $('#file-resizer').classList.toggle('hidden', !open);
+  fitAllVisible();
+  scheduleResizeSync();
+  refreshCommandStates();
+  if (!open) return;
+  const session = activeConnectedSession();
+  beginFilePanelSession(session);
+  if (!session) return loadFileDir(null);
+  const dir = session.lastFileDir || await initialFileDir(session);
+  if (activeConnectedSession()?.sessionId !== session.sessionId || panel.classList.contains('hidden')) return;
+  await loadFileDir(dir, { sessionId: session.sessionId });
+}
+
+function closeCurrent() {
+  const tab = activeTab();
+  if (!tab) return;
+  if (leafCount(tab.layout) > 1) closeActivePane(focusedPaneId());
+  else closeTab(tab.id);
+}
+
+function setupWorkspaceCommands() {
+  const session = () => state.sessions.get(state.activeId);
+  const count = () => leafCount(activeTab()?.layout);
+  registerCommand('tab.new', { label: '新建标签', run: newTabWithPicker });
+  registerCommand('pane.split', { label: '新增分屏', enabled: () => session()?.status === 'connected' && count() < maxPaneCapacity(), run: () => splitActive() });
+  registerCommand('workspace.tile', { label: '标签平铺', checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, run: toggleTabTiling });
+  registerCommand('pane.reflow', { label: '整理当前标签分屏', enabled: () => count() > 1, run: autoLayoutTab });
+  registerCommand('pane.zoom', { label: () => state.zoomPaneId ? '还原窗格' : '放大当前窗格', enabled: () => count() > 1 && !!state.panes.get(focusedPaneId())?.sessionId, checked: () => !!state.zoomPaneId, run: () => togglePaneZoom(state.zoomPaneId || focusedPaneId()) });
+  registerCommand('workspace.close', { label: () => count() > 1 ? '关闭当前窗格' : '关闭当前标签', enabled: () => !!activeTab(), run: closeCurrent });
+  registerCommand('panel.sidebar', { label: '主机侧栏', checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
+  registerCommand('panel.ai', { label: 'AI 助手', checked: () => !$('#ai-panel').classList.contains('hidden'), run: () => toggleAiPanel() });
+  registerCommand('panel.files', { label: '文件管理', checked: () => !$('#file-panel').classList.contains('hidden'), run: toggleFilePanel });
+  registerCommand('panel.history', { label: '命令历史', checked: () => state.historyOpen, run: toggleHistory });
+  registerCommand('panel.snippets', { label: '常用片段', checked: () => !$('#snippet-menu').classList.contains('hidden'), run: toggleSnippetMenu });
+  registerCommand('session.reconnect', { label: '重连当前会话', enabled: () => !!session() && !['connected', 'connecting'].includes(session().status), run: () => reconnectSession(state.activeId) });
+  registerCommand('session.disconnect', { enabled: () => !!session() && (['connected', 'connecting'].includes(session().status) || session().reconnectScheduled), run: () => disconnectSession(state.activeId) });
+  registerCommand('session.readonly', { label: '只读模式', enabled: () => session()?.status === 'connected', checked: () => !!session()?.readOnly, run: toggleReadonly });
+  registerCommand('session.log', { label: () => session()?.logActive ? '停止记录日志' : '记录会话日志（仅输出）', enabled: () => session()?.status === 'connected', checked: () => !!session()?.logActive, run: toggleSessionLog });
+  registerCommand('session.clear', { enabled: () => !!session(), run: clearActiveTerm });
+  registerCommand('session.search', { enabled: () => !!session(), run: openTermSearch });
+  registerCommand('tools.broadcast', { label: '广播输入', enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly), checked: () => !!state.broadcast, run: openBroadcastPicker });
+  registerCommand('tools.batch', { label: '批量执行', run: openBatchModal });
+  registerCommand('tools.forwards', { label: '端口转发', run: openForwardModal });
+  registerCommand('settings.terminal', { label: '终端设置', run: openTermSettings });
+  registerCommand('settings.ai', { label: 'AI 配置', run: openAiSettings });
+  registerCommand('settings.fingerprints', { label: '主机指纹', run: openFingerprints });
+  registerCommand('app.about', { label: '关于', run: openAbout });
+  const buttons = { 'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.ai', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch', 'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect' };
+  for (const [id, command] of Object.entries(buttons)) document.getElementById(id).dataset.command = command;
+  bindCommandButtons();
+  document.addEventListener('nebula:state-change', refreshCommandStates);
+  document.addEventListener('nebula:modal-scope', refreshCommandStates);
+}
+
 export function bindEvents() {
   $('#btn-add-host').addEventListener('click', () => openHostModal(null));
   $('#btn-welcome-add').addEventListener('click', () => openHostModal(null));
@@ -187,18 +294,18 @@ export function bindEvents() {
   $('#btn-cloud-import-selected').addEventListener('click', cloudImportSelected);
   $('#btn-cloud-close').addEventListener('click', () => closeModal('#modal-cloud'));
 
-  $('#btn-ai-toggle').addEventListener('click', () => {
-    $('#ai-panel').classList.toggle('hidden');
-    $('#ai-resizer').classList.toggle('hidden', $('#ai-panel').classList.contains('hidden'));
-    fitActive();
-  });
-  $('#btn-ai-close').addEventListener('click', () => {
-    $('#ai-panel').classList.add('hidden');
-    $('#ai-resizer').classList.add('hidden');
-    fitActive();
-  });
+  $('#btn-ai-close').addEventListener('click', () => toggleAiPanel(false));
   $('#ai-settings-open').addEventListener('click', openAiSettings);
-  $('#btn-ai-cancel').addEventListener('click', () => closeModal('#modal-ai'));
+  $('#btn-ai-cancel').addEventListener('click', closeAiSettings);
+  setModalDismissHandler('#modal-ai', closeAiSettings);
+  setModalDismissHandler('#modal-model-picker', closeModelPicker);
+  $('#ai-baseurl').addEventListener('input', onAiEndpointChange);
+  $('#ai-protocol').addEventListener('change', onAiEndpointChange);
+  $('#ai-model-inline').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addManualAiModel(); } });
+  // 点列表框空白处(chip 之间/空态提示)把焦点交给输入框,让整个框看起来可输入
+  $('#ai-model-chips').addEventListener('click', (event) => {
+    if (!event.target.closest('.model-chip, .model-chips-input')) $('#ai-model-inline').focus();
+  });
   $('#btn-ai-save').addEventListener('click', saveAiSettings);
   $('#btn-ai-test').addEventListener('click', aiTestConnection);
   $('#ai-provider').addEventListener('change', () => fillPreset($('#ai-provider').value));
@@ -218,54 +325,11 @@ export function bindEvents() {
   $('#ai-model-switch').addEventListener('change', (e) => switchModel(e.target.value).then(renderModelSwitch).catch(() => {}));
   $('#btn-ai-diagnose').addEventListener('click', aiDiagnose);
 
-  // ＋ 新建标签页:空标签,等待用户在窗格选择器里选主机(⌘T / 标签右键同源)
-  $('#btn-newtab').addEventListener('click', () => newTabWithPicker());
-
-  // ⋯ 更多菜单
-  const moreMenu = $('#more-menu');
-  $('#btn-more').addEventListener('click', (e) => {
-    e.stopPropagation();
-    moreMenu.classList.toggle('hidden');
-  });
-  moreMenu.addEventListener('click', (e) => {
-    if (e.target.closest('button')) moreMenu.classList.add('hidden'); // 选中即收起
-  });
-  document.addEventListener('mousedown', (e) => {
-    if (!moreMenu.classList.contains('hidden') && !e.target.closest('#more-menu') && !e.target.closest('#btn-more')) {
-      moreMenu.classList.add('hidden');
-    }
-  });
-
-  // 分屏:⛶ 点击弹出方向选择(左右/上下),与按钮 title 声明一致 ——
-  // 此前点击只会左右分屏,tooltip 却写着两个方向,想上下只能去菜单或记快捷键。
-  $('#btn-split').addEventListener('click', (e) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    showCtxMenu(r.left, r.bottom + 6, [
-      { label: '左右分屏', key: accel('mod+D'), run: () => splitActive('h') },
-      { label: '上下分屏', key: accel('mod+shift+D'), run: () => splitActive('v') },
-    ]);
-  });
-  $('#btn-broadcast').addEventListener('click', openBroadcastPicker);
-  $('#btn-history').addEventListener('click', toggleHistory);
-  $('#btn-forwards').addEventListener('click', openForwardModal);
+  setupWorkspaceCommands();
+  bindMoreMenu();
   $('#btn-fw-save').addEventListener('click', saveForwardRule);
   $('#btn-fw-close').addEventListener('click', () => closeModal('#modal-forward'));
-  $('#btn-batch').addEventListener('click', openBatchModal);
-  $('#batch-search').addEventListener('input', (e) => renderBatchHosts(e.target.value));
-  $('#btn-batch-run').addEventListener('click', runBatch);
-  $('#btn-batch-close').addEventListener('click', () => closeModal('#modal-batch'));
-  $('#quick-connect').addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    const parsed = parseQuickTarget(e.target.value);
-    if (!parsed) return toast('格式:user@host:port', 'error');
-    e.target.value = '';
-    quickConnect(parsed);
-  });
-
-  // 只读 / 清屏 / 会话日志
-  $('#btn-readonly').addEventListener('click', toggleReadonly);
-  $('#btn-clear').addEventListener('click', clearActiveTerm);
-  $('#btn-log-toggle').addEventListener('click', toggleSessionLog);
+  bindBatchUi();
 
   // 文件面板扩展:导航 / 重命名 / 权限 / 书签 / 拖拽上传。
   // 工具栏是"导航三连(后退/前进/上一级)+ 新建文件夹 / 上传 / 刷新";
@@ -275,8 +339,12 @@ export function bindEvents() {
   $('#btn-file-forward').addEventListener('click', fileNavForward);
   $('#btn-file-up').addEventListener('click', fileNavUp);
   $('#btn-file-refresh').addEventListener('click', () => loadFileDir(state.file.cwd));
+  $('#btn-file-bookmark').addEventListener('click', addBookmark);
   $('#btn-file-mkdir').addEventListener('click', () => {
-    state.file.renameMode = null; // 从"新建"进入,别把上次的重命名态带过来
+    const target = snapshotFileTarget();
+    if (!target) return toast('请先连接并打开目录', 'error');
+    state.file.renameMode = null;
+    state.file.mkdirTarget = target;
     $('#file-mkdir-row').classList.remove('hidden');
     $('#file-mkdir-name').value = '';
     $('#file-mkdir-name').placeholder = '新建文件夹名称';
@@ -288,38 +356,42 @@ export function bindEvents() {
     $('#file-mkdir-row').classList.add('hidden');
   });
   $('#btn-file-mkdir-ok').addEventListener('click', async () => {
-    const s = filePanelSession();
     const name = $('#file-mkdir-name').value.trim();
-    if (!s) return toast('请先连接主机', 'error');
-    if (!name) return toast('请填写名称', 'error');
+    if (!validEntryName(name)) return toast('名称不能为空、包含路径分隔符或为 . / ..', 'error');
+    const button = $('#btn-file-mkdir-ok');
+    button.disabled = true;
     try {
-      if (state.file.renameMode) {
-        await api('sftp:rename', { sessionId: s.sessionId, from: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + state.file.renameMode.from, to: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + name });
-        state.file.renameMode = null;
-        toast('已重命名', 'success');
-      } else {
-        await api('sftp:mkdir', { sessionId: s.sessionId, path: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + name });
-        toast('目录已创建', 'success');
+      if (state.file.renameMode) { await commitFileRename(name); toast('已重命名', 'success'); return; }
+      const target = state.file.mkdirTarget;
+      if (!isFileTargetCurrent(target)) return toast('目录已切换,请重新新建', 'error');
+      await api('sftp:mkdir', { sessionId: target.sessionId, path: remoteEntryPath(target.cwd, name) });
+      toast('目录已创建', 'success');
+      if (isFileTargetCurrent(target)) {
+        $('#file-mkdir-row').classList.add('hidden');
+        $('#file-mkdir-name').value = '';
+        await loadFileDir(target.cwd, { sessionId: target.sessionId });
       }
-      $('#file-mkdir-row').classList.add('hidden');
-      $('#file-mkdir-name').value = '';
-      loadFileDir(state.file.cwd);
     } catch (e) {
       toast('操作失败：' + e.message, 'error');
-    }
+    } finally { button.disabled = false; }
   });
   $('#file-mkdir-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-file-mkdir-ok').click(); });
   $('#btn-file-chmod-ok').addEventListener('click', async () => {
-    const s = filePanelSession();
-    const en = state.file.chmodTarget;
-    const mode = parseInt($('#file-chmod-octal').value, 8);
-    if (!s || !en || Number.isNaN(mode)) return toast('权限格式错误(八进制,如 0644)', 'error');
+    const target = state.file.chmodTarget;
+    const value = $('#file-chmod-octal').value.trim();
+    if (!/^[0-7]{3,4}$/.test(value)) return toast('权限格式错误(八进制,如 0644)', 'error');
+    if (!isFileTargetCurrent(target)) return toast('目录已切换,请重新选择目标', 'error');
+    const button = $('#btn-file-chmod-ok');
+    button.disabled = true;
     try {
-      await api('sftp:chmod', { sessionId: s.sessionId, path: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name, mode });
-      $('#file-chmod-row').classList.add('hidden');
+      await api('sftp:chmod', { sessionId: target.sessionId, path: remoteEntryPath(target.cwd, target.name), mode: parseInt(value, 8) });
       toast('权限已更新', 'success');
-      loadFileDir(state.file.cwd);
+      if (isFileTargetCurrent(target)) {
+        $('#file-chmod-row').classList.add('hidden');
+        await loadFileDir(target.cwd, { sessionId: target.sessionId });
+      }
     } catch (e) { toast('修改权限失败:' + e.message, 'error'); }
+    finally { button.disabled = false; }
   });
   $('#btn-file-chmod-cancel').addEventListener('click', () => $('#file-chmod-row').classList.add('hidden'));
   // 路径栏右键 = 收藏当前目录(原工具栏的「★ 书签」按钮已移除)
@@ -359,23 +431,13 @@ export function bindEvents() {
     if (!sel) return toast('请先在终端中选中要解释的内容', 'error');
     aiSend(sel, 'explain');
   });
-  $('#ai-send').addEventListener('click', () => aiSend());
+  // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
+  $('#ai-send').addEventListener('click', () => (state.aiReq ? stopAiGeneration() : aiSend()));
   $('#ai-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       aiSend();
     }
-  });
-
-  $('#btn-reconnect').addEventListener('click', () => {
-    const s = state.sessions.get(state.activeId);
-    if (!s) return;
-    closeSession(s.sessionId);
-    connectHost(s.host.id);
-  });
-  $('#btn-disconnect').addEventListener('click', () => {
-    const s = state.sessions.get(state.activeId);
-    if (s) closeSession(s.sessionId);
   });
 
   // 主机导入/导出/克隆
@@ -433,7 +495,9 @@ export function bindEvents() {
         r = await api('hosts:importFile', { passphrase: pass, path: r.path });
       }
       if (r) {
-        const parts = [`新增 ${r.added} 台`, `跳过重复 ${r.skipped} 台`];
+        const parts = [`新增 ${r.added} 台`, `保留重复 ${r.skipped} 台`];
+        if (r.updated) parts.push(`更新 ${r.updated} 台`);
+        if (r.credentialsFilled) parts.push(`补全凭据 ${r.credentialsFilled} 台`);
         if (r.withCredentials) parts.push(`恢复凭据 ${r.withCredentials} 台`);
         toast(`导入完成：${parts.join('，')}`, 'success');
         if (r.legacyPlaintext) {
@@ -447,51 +511,19 @@ export function bindEvents() {
   });
 
   // 片段 / 文件 / 终端设置
-  $('#btn-snippets').addEventListener('click', toggleSnippetMenu);
   $('#btn-snippet-close').addEventListener('click', closeSnippetMenu);
   $('#btn-snippet-add').addEventListener('click', addSnippet);
   $('#snippet-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') addSnippet(); });
-  // 分屏:左右 / 上下(原先只有左右,且入口只在标签栏的图标按钮上)
-  $('#btn-split-left-right').addEventListener('click', () => splitActive('h'));
-  $('#btn-split-top-bottom').addEventListener('click', () => splitActive('v'));
-  $('#btn-auto-layout').addEventListener('click', () => autoLayoutTab());
-  $('#btn-close-pane').addEventListener('click', closeActivePane);
-  // 功能菜单新增入口:放大当前窗格 / AI 助手 / 会话日志 ——
-  // 此前放大只有窗格悬停按钮与 ⌘⇧↵,AI 只有标签栏 ✨,日志只有状态栏小按钮,
-  // 菜单里找不到它们(每个功能都该在菜单里有稳定的"家")。
-  $('#btn-zoom-pane').addEventListener('click', () => {
-    const pid = state.zoomPaneId || (state.sessions.get(state.activeId) || {}).paneId;
-    if (pid) togglePaneZoom(pid);
+  $('#btn-file-close').addEventListener('click', () => {
+    $('#file-panel').classList.add('hidden');
+    $('#file-resizer').classList.add('hidden');
+    fitAllVisible();
+    scheduleResizeSync();
+    refreshCommandStates();
   });
-  $('#btn-ai-menu').addEventListener('click', () => {
-    $('#ai-panel').classList.toggle('hidden');
-    $('#ai-resizer').classList.toggle('hidden', $('#ai-panel').classList.contains('hidden'));
-    fitActive();
-  });
-  $('#btn-log-menu').addEventListener('click', toggleSessionLog);
-  $('#btn-files').addEventListener('click', async () => {
-    const panel = $('#file-panel');
-    if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); $('#file-resizer').classList.add('hidden'); fitActive(); return; }
-    panel.classList.remove('hidden');
-    $('#file-resizer').classList.remove('hidden');
-    $('#file-list').innerHTML = '<div class="file-empty">加载中…</div>';
-    renderFileTarget();
-    fitActive();
-    // 用"当前会话自己"记住的目录打开,而不是全局 cwd ——
-    // 后者可能属于另一台服务器,拿它的路径去 list 会张冠李戴。
-    // 该会话还没浏览过目录(首次打开)时,默认落到 shell 当前执行路径。
-    const s = activeConnectedSession();
-    if (!s) await loadFileDir(null);
-    else if (s.lastFileDir) await loadFileDir(s.lastFileDir);
-    else await loadFileDir(await initialFileDir(s));
-  });
-  $('#btn-file-close').addEventListener('click', () => { $('#file-panel').classList.add('hidden'); $('#file-resizer').classList.add('hidden'); fitActive(); });
-  $('#btn-term-settings').addEventListener('click', openTermSettings);
   $('#btn-term-cancel').addEventListener('click', () => closeModal('#modal-term'));
   $('#btn-term-save').addEventListener('click', saveTermSettings);
-  $('#btn-fingerprints').addEventListener('click', openFingerprints);
   $('#btn-fp-close').addEventListener('click', () => closeModal('#modal-fp'));
-  $('#btn-about').addEventListener('click', openAbout);
   $('#btn-about-close').addEventListener('click', () => closeModal('#modal-about'));
 
   // 终端搜索
@@ -503,65 +535,33 @@ export function bindEvents() {
     if (e.key === 'Escape') { e.preventDefault(); closeTermSearch(); }
   });
 
-  // 全局快捷键：⌘F 搜索、⌘T 新标签、⌘W 关标签、⌘D 分屏、⌘1..9 切标签
   window.addEventListener('keydown', (e) => {
-    const mod = e.metaKey || e.ctrlKey;
-    if (mod && !e.shiftKey && e.key === 'f') { e.preventDefault(); openTermSearch(); return; }
-    if (mod && !e.shiftKey && (e.key === 'w' || e.key === 'W')) {
-      e.preventDefault();
-      // ⌘W 与菜单里的"关闭当前窗格"必须是同一套规则:都走 closeActivePane
-      // (它优先关空窗格)。此前这里按"标签内会话数>1"判断,连开多个空窗格时
-      // 会话数仍是 1 → 直接关掉整个标签,与用户"退掉一个分屏"的意图不符。
-      const tab = activeTab();
-      if (!tab) return;
-      if (leafCount(tab.layout) > 1) closeActivePane();
-      else closeTab(tab.id);
-      return;
+    if (e.defaultPrevented || e.isComposing || hasOpenModal()) return;
+    if (!$('#more-menu').classList.contains('hidden') || !$('#ctx-menu').classList.contains('hidden')) return;
+    const terminalInput = !!e.target.closest?.('.term-pane');
+    if (isEditableTarget(e.target) && !terminalInput) return;
+    if (isAppModifier(e)) {
+      const key = e.key.toLowerCase();
+      const command = e.shiftKey
+        ? (key === 'enter' ? 'pane.zoom' : null)
+        : ({ f: 'session.search', w: 'workspace.close', t: 'tab.new', d: 'pane.split' }[key]);
+      if (command) { e.preventDefault(); executeCommand(command); return; }
+      if (!e.shiftKey && /^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        const target = [...state.tabs.keys()][Number(e.key) - 1];
+        if (target) activateTab(target);
+        return;
+      }
     }
-    if (mod && !e.shiftKey && (e.key === 't' || e.key === 'T')) {
-      e.preventDefault();
-      newTabWithPicker();
-      return;
-    }
-    if (mod && e.key === 'd') { e.preventDefault(); splitActive(e.shiftKey ? 'v' : 'h'); return; }
-    if (mod && e.shiftKey && e.key === 'Enter') { e.preventDefault(); const pid = state.zoomPaneId || (state.sessions.get(state.activeId) || {}).paneId; if (pid) togglePaneZoom(pid); return; }
-    // ⌘1..9 切标签(标签是会话的容器,切标签比切会话更符合直觉)
-    if (mod && /^[1-9]$/.test(e.key)) {
-      e.preventDefault();
-      const ids = [...state.tabs.keys()];
-      const target = ids[Number(e.key) - 1];
-      if (target) activateTab(target);
-      return;
-    }
-    if (e.key === 'Escape' && !$('#term-search').classList.contains('hidden')) { closeTermSearch(); return; }
-    if (e.key === 'Escape' && !$('#ctx-menu').classList.contains('hidden')) { closeCtxMenu(); return; }
-    if (e.key === 'Escape' && !$('#snippet-menu').classList.contains('hidden')) closeSnippetMenu();
-    if (e.key === 'Escape' && state.historyOpen) toggleHistory();
-    if (e.key === 'Escape' && !$('#more-menu').classList.contains('hidden')) $('#more-menu').classList.add('hidden');
-  });
-
-  document.querySelectorAll('.modal').forEach((m) => {
-    if (m.id === 'modal-confirm') return; // 必须经按钮/keyboard resolve
-    m.addEventListener('mousedown', (e) => {
-      if (e.target === m) m.classList.add('hidden');
-    });
-  });
-  window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    // 确认对话框有专属按键处理(必须经 resolve 关闭,否则 Promise 悬挂)
-    // 只关最上层那一个:模型选择弹框叠在 AI 设置之上,一次 Esc 若把两层都关掉,
-    // 用户回不到还在编辑的表单。z-index 高者在上,同值时 DOM 靠后者在上。
-    const open = [...document.querySelectorAll('.modal:not(.hidden)')].filter((m) => m.id !== 'modal-confirm');
-    if (!open.length) return;
-    let top = open[0];
-    for (const m of open.slice(1)) {
-      const z = (el) => Number(getComputedStyle(el).zIndex) || 0;
-      if (z(m) >= z(top)) top = m;
-    }
-    top.classList.add('hidden');
+    if (!$('#term-search').classList.contains('hidden')) { closeTermSearch(); return; }
+    if (!$('#snippet-menu').classList.contains('hidden')) { closeSnippetMenu(); refreshCommandStates(); return; }
+    if (state.historyOpen) { toggleHistory(); refreshCommandStates(); }
   });
 
-  const ro = new ResizeObserver(() => { fitAllVisible(); scheduleResizeSync(); });
+  // Workspace scheduling coalesces frames and ignores unchanged geometry; observing
+  // the fixed outer stack (not its rendered children) avoids layout feedback loops.
+  const ro = new ResizeObserver(() => { scheduleWorkspaceLayout(); fitAllVisible(); scheduleResizeSync(); });
   ro.observe($('#term-stack'));
 
   // 主进程事件
@@ -581,14 +581,11 @@ export function bindEvents() {
       s.lastOutput = ((s.lastOutput || '') + data).slice(-6000);
     }
   });
-  window.nebula.on('ssh:status', ({ sessionId, state: st, error, label }) => {
+  window.nebula.on('ssh:status', (payload) => {
+    const { sessionId, state: st, label } = payload;
     const s = state.sessions.get(sessionId);
-    if (!s) return;
-    if (st === 'connected') s.reconnectAttempt = 0;
-    s.status = st === 'connected' ? 'connected' : st === 'error' ? 'error' : st;
-    if (label) s.label = label;
-    updateTab(s);
-    if (state.activeId === sessionId) updateStatusbar(s, error);
+    if (!s || !handleSessionStatus(payload)) return;
+    if (label) { s.label = label; updateTab(s); }
     if (st === 'connected') {
       // 面板开着但还没有可用目标(例如刚切换过去时会话还在 connecting),
       // 等它连上后再补一次,否则面板会一直停在"未连接"。
@@ -611,12 +608,21 @@ export function bindEvents() {
     state.metrics.set(m.sessionId, m);
     if (m.sessionId === state.activeId) renderMonitorBar();
   });
+  window.nebula.on('log:error', ({ sessionId, file, message }) => {
+    const session = state.sessions.get(sessionId);
+    if (session && (!file || !session.logFile || session.logFile === file)) {
+      session.logActive = false;
+      if (state.activeId === sessionId) updateStatusbar(session);
+    }
+    toast('日志记录失败：' + message, 'error');
+  });
   window.nebula.on('sftp:progress', ({ op, name, pct }) => {
     $('#file-status').textContent = `${op === 'upload' ? '上传' : '下载'} ${name} ${pct}%`;
   });
   window.nebula.on('ai:delta', ({ requestId, text }) => {
     const h = state.aiReq;
     if (!h || h.id !== requestId) return;
+    aiTouchRequest(requestId);
     h.acc += text;
     if (!h.bubble) return;
     // 首个 token:撤掉"正在思考…"占位,转入流式态
@@ -633,8 +639,7 @@ export function bindEvents() {
         // 必须经 setAiBody 写进 .ai-body:直接改 textContent 会把
         // 复制按钮和内容容器一起抹掉,气泡从此渲染成空壳。
         setAiBody(h.bubble, h.bubble.dataset.text || h.acc);
-        const box = $('#ai-messages');
-        box.scrollTop = box.scrollHeight;
+        aiStickScroll(); // 贴底才跟随;用户上滚阅读时不打扰
       });
     }
   });
@@ -669,7 +674,7 @@ function fillMenuKeys() {
 
 /// 面板边界拖拽调宽:sidebar(左边界)、ai-panel / file-panel(右边界各一条)。
 /// 拖动时直接写面板的 width,上下限交给面板自己的 min/max-width 兜底;
-/// 结束后 fitActive() 让 xterm 按新宽度重新排字。
+/// 结束后 fitAllVisible() 让 xterm 按新宽度重新排字。
 function setupResizers() {
   const panels = {
     'sidebar-resizer': { el: () => $('#sidebar'), side: 'left' },
@@ -681,7 +686,7 @@ function setupResizers() {
     if (!grip) continue;
     grip.addEventListener('pointerdown', (ev) => {
       const panel = el();
-      if (!panel || panel.classList.contains('hidden')) return;
+      if (!panel || panel.classList.contains('hidden') || panel.classList.contains('collapsed') || hasOpenModal()) return;
       ev.preventDefault();
       grip.setPointerCapture(ev.pointerId);
       grip.classList.add('dragging');
@@ -691,24 +696,44 @@ function setupResizers() {
       let lastFit = 0;
       const move = (e) => {
         const dx = e.clientX - startX;
-        panel.style.width = Math.round(side === 'left' ? startW + dx : startW - dx) + 'px';
+        const style = getComputedStyle(panel);
+        const minimum = parseFloat(style.minWidth) || 180;
+        const otherWidth = [...document.querySelectorAll('#sidebar, #ai-panel, #file-panel')]
+          .filter((element) => element !== panel && !element.classList.contains('hidden'))
+          .reduce((sum, element) => sum + element.getBoundingClientRect().width, 0);
+        const maximum = Math.max(minimum, Math.min(parseFloat(style.maxWidth) || Infinity, window.innerWidth - otherWidth - 340));
+        const requested = side === 'left' ? startW + dx : startW - dx;
+        panel.style.width = Math.round(Math.max(minimum, Math.min(maximum, requested))) + 'px';
+        if (id === 'sidebar-resizer') expandedSidebarWidth = panel.getBoundingClientRect().width;
         // 拖动过程中节流重排终端,松手后再精排一次
         const now = performance.now();
-        if (now - lastFit > 100) { lastFit = now; fitActive(); }
+        if (now - lastFit > 100) { lastFit = now; fitAllVisible(); }
       };
       const up = (e) => {
         grip.removeEventListener('pointermove', move);
         grip.removeEventListener('pointerup', up);
+        grip.removeEventListener('pointercancel', up);
+        grip.removeEventListener('lostpointercapture', up);
         grip.classList.remove('dragging');
         document.body.classList.remove('resizing');
-        move(e);
-        fitActive();
+        if (e.type === 'pointerup') move(e);
+        if (grip.hasPointerCapture(ev.pointerId)) grip.releasePointerCapture(ev.pointerId);
+        fitAllVisible();
+        scheduleResizeSync();
+        refreshCommandStates();
       };
       grip.addEventListener('pointermove', move);
       grip.addEventListener('pointerup', up);
+      grip.addEventListener('pointercancel', up);
+      grip.addEventListener('lostpointercapture', up);
     });
-    // 双击把手恢复默认宽度
-    grip.addEventListener('dblclick', () => { el().style.width = ''; fitActive(); });
+    // 双击把手:sidebar 收起(拖到最窄的直觉延伸);其余面板恢复默认宽度。
+    // 收起走 toggleSidebar,让工具栏按钮的 active 态同步。
+    grip.addEventListener('dblclick', () => {
+      if (id === 'sidebar-resizer') { toggleSidebar(); return; }
+      el().style.width = '';
+      fitAllVisible();
+    });
   }
 }
 
@@ -716,20 +741,86 @@ export async function boot() {
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
   applyAccelTitles();
   fillMenuKeys();
+  bindModalInteractions();
+  bindAiCodeActions();
+  bindAiScroll();
   bindEvents();
   setupResizers();
   bindContextMenu();
+  // 启动时同步一次收起按钮的状态(侧栏默认展开):此后由 toggleSidebar 维护
+  syncSidebarToggle($('#sidebar').classList.contains('collapsed'));
   state.settings = await api('settings:get');
   await refreshHosts();
   await refreshAiModels();
-  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨\n可以直接提问，或使用上方快捷操作：\n· **解释选中内容**：选中终端输出后点击\n· **诊断报错**：把最后一次输入的命令及其控制台输出发给 AI 分析\n\n回复支持 Markdown 展示，每条消息可一键复制。');
+  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨\n可以直接提问，或使用上方快捷操作：\n· **解释选中内容**：选中终端输出后点击\n· **诊断报错**：把最后一次输入的命令及其控制台输出发给 AI 分析\n\n回复支持 Markdown 展示，代码块可单独复制；明确的 Shell 命令可由你点击执行到当前终端。');
 }
 
 boot();
 
 // 端到端测试钩子(仅 Tauri 测试桥环境注入):模拟键盘输入走完整广播/历史链路
 if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
+  // Identity tokens are observation-only: never tag production objects or mutate
+  // layout trees. Repeated snapshots can detect recreation even when IDs match.
+  const identities = new WeakMap();
+  let identitySeq = 0;
+  const identity = (object) => {
+    if (!object || (typeof object !== 'object' && typeof object !== 'function')) return null;
+    if (!identities.has(object)) identities.set(object, ++identitySeq);
+    return identities.get(object);
+  };
+  const rect = (element) => {
+    if (!element) return null;
+    const r = element.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const layoutSnapshot = (layout) => layout ? JSON.parse(JSON.stringify(layout)) : null;
+  const workspaceState = (details = false) => ({
+    mode: state.workspace.mode,
+    fits: state.workspace.fits,
+    layout: layoutSnapshot(state.workspace.layout),
+    activeTabId: state.activeTabId,
+    activeId: state.activeId,
+    focusedPaneId: focusedPaneId(),
+    zoomPaneId: state.zoomPaneId,
+    broadcast: [...(state.broadcast || [])],
+    root: rect($('#layout-root')),
+    focus: { tabId: document.activeElement?.closest('.workspace-tile')?.dataset.tab || null, paneId: document.activeElement?.closest('.term-pane')?.dataset.pane || null },
+    tabs: [...state.tabs.values()].map((tab) => {
+      const tile = [...document.querySelectorAll('.workspace-tile')].find((el) => el.dataset.tab === tab.id);
+      return {
+        id: tab.id, activePaneId: tab.activePaneId, zoomPaneId: tab.zoomPaneId,
+        layout: layoutSnapshot(tab.layout),
+        ...(details ? { identity: identity(tab), layoutIdentity: identity(tab.layout), tile: rect(tile), header: rect(tile?.querySelector('.workspace-tile-header')), content: rect(tile?.querySelector('.workspace-tile-content')) } : {}),
+        panes: [...tab.panes.values()].map((pane) => ({
+          id: pane.id, sessionId: pane.sessionId, mounted: pane.el.isConnected, rect: rect(pane.el),
+          ...(details ? { identity: identity(pane), elementIdentity: identity(pane.el) } : {}),
+        })),
+      };
+    }),
+    sessions: [...state.sessions.values()].map((session) => {
+      const r = session.pane?.getBoundingClientRect();
+      const visible = !!(session.pane?.isConnected && session.pane.getClientRects().length && r?.width > 0 && r?.height > 0);
+      let buffer = '';
+      if (details) {
+        try {
+          const b = session.term.buffer.active;
+          buffer = Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true) || '').join('\n');
+        } catch { /* disposed terminals are reported through identity/status */ }
+      }
+      let proposed = null;
+      if (details && visible) { try { proposed = session.fit.proposeDimensions(); } catch { /* unavailable before first paint */ } }
+      return {
+        id: session.sessionId, host: session.host.id, tabId: session.tabId, paneId: session.paneId,
+        status: session.status, readOnly: !!session.readOnly, mounted: !!session.pane?.isConnected, visible,
+        cols: session.term.cols, rows: session.term.rows,
+        ...(details ? { identity: identity(session), termIdentity: identity(session.term), fitIdentity: identity(session.fit), paneIdentity: identity(session.pane), surface: rect(session.pane?.querySelector('.term-surface')), proposed, buffer } : {}),
+      };
+    }),
+  });
   window.__nbTest = {
+    workspaceState,
+    askPrompt,
+    askConfirm,
     confirmOpen: () => !$('#modal-confirm').classList.contains('hidden'),
     confirmClickOk: () => $('#btn-confirm-ok').click(),
     confirmClickCancel: () => $('#btn-confirm-cancel').click(),
@@ -762,9 +853,10 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     modelPickerFilter: (kw) => { $('#model-picker-search').value = kw; $('#model-picker-search').dispatchEvent(new Event('input', { bubbles: true })); },
     modelPickerKey: (key) => $('#model-picker-search').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })),
     modelPickerValue: () => $('#ai-model').value,
-    // "模型"一栏展示的 chip(选中的模型必须都在这里)
-    modelChips: () => [...document.querySelectorAll('#ai-model-chips .model-chip')].map((b) => b.textContent),
-    modelChipActive: () => (($('#ai-model-chips .model-chip.active') || {}).textContent) || '',
+    // "模型"一栏展示的 chip(选中的模型必须都在这里);读模型名 span,
+    // 不能读整 chip 的 textContent —— 里面还有 ✕ 移除按钮的文字
+    modelChips: () => [...document.querySelectorAll('#ai-model-chips .model-chip')].map((b) => (b.querySelector('.model-chip-name') || b).textContent),
+    modelChipActive: () => ($('#ai-model-chips .model-chip.active .model-chip-name') || {}).textContent || '',
     modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-switch option')].map((o) => o.value),
     // 设置弹窗里"拉取模型"按钮与模型栏的高度(第 4 条:两者必须等高)
     aiRowHeights: () => {
@@ -941,6 +1033,12 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     cloudFormTest: () => $('#btn-cloud-test').click(),
     cloudFormSave: () => $('#btn-cloud-form-save').click(),
     // 文件面板状态:供 e2e 断言"面板标识的目标 = 当前会话",以及切换后是否跟随
+    sidebar: () => ({
+      open: !$('#sidebar').classList.contains('collapsed'),
+      resizerOpen: !$('#sidebar-resizer').classList.contains('hidden'),
+      btnActive: $('#btn-sidebar-toggle').classList.contains('active'),
+      mainW: Math.round($('#main').getBoundingClientRect().width),
+    }),
     filePanel: () => {
       const s = state.file.sessionId ? state.sessions.get(state.file.sessionId) : null;
       const active = state.sessions.get(state.activeId);
@@ -1012,16 +1110,16 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       newtab: $('#btn-newtab').title,
       split: $('#btn-split').title,
       closePane: $('#btn-close-pane').title,
-      splitLR: $('#btn-split-left-right').title,
-      splitTB: $('#btn-split-top-bottom').title,
+      hasDirectionMenus: !!$('#btn-split-left-right') || !!$('#btn-split-top-bottom'),
       zoom: (document.querySelector('.pane-zoom-btn') || {}).title || '',
     }),
-    // 侧边栏底部:版本号已移除(移入关于弹窗)
+    // 侧边栏底部:版本号与导入/导出均已移除(分别移入关于弹窗与功能菜单「配置」组)
     footer: () => ({
       version: $('#app-version') ? $('#app-version').textContent : null,
       hasVersion: !!$('#app-version'),
       hasFingerprintBtn: !!$('#btn-fingerprints') && $('#btn-fingerprints').closest('.side-footer') !== null,
-      text: document.querySelector('.side-footer').textContent.trim(),
+      // .side-footer 元素已整体移除:底部只剩快捷连接框
+      text: document.querySelector('.side-footer') ? document.querySelector('.side-footer').textContent.trim() : '',
     }),
     // 功能菜单项(含指纹/关于是否已并入)
     moreMenuItems: () => [...document.querySelectorAll('#more-menu .btn')].map((b) => b.textContent.trim()),
@@ -1029,11 +1127,11 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     moreMenuGeom: () => {
       const mm = $('#more-menu');
       const wasHidden = mm.classList.contains('hidden');
-      if (wasHidden) mm.classList.remove('hidden');
+      if (wasHidden) $('#btn-more').click();
       const mr = mm.getBoundingClientRect();
       const pr = $('#file-panel').getBoundingClientRect();
       const overlap = mr.right > pr.left && mr.left < pr.right && mr.bottom > pr.top && mr.top < pr.bottom;
-      if (wasHidden) mm.classList.add('hidden');
+      if (wasHidden) closeMoreMenu();
       return {
         menu: [Math.round(mr.left), Math.round(mr.top), Math.round(mr.right), Math.round(mr.bottom)],
         panel: [Math.round(pr.left), Math.round(pr.top), Math.round(pr.right), Math.round(pr.bottom)],

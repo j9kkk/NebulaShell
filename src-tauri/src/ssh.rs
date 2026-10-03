@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 
 use futures::FutureExt; // Channel::wait().now_or_never():收干已就绪数据做合帧
@@ -268,6 +268,37 @@ pub(crate) fn take_utf8(pending: &mut Vec<u8>) -> String {
     String::from_utf8(head).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).to_string())
 }
 
+struct BoundedOutput {
+    prefix: Vec<u8>,
+    limit: usize,
+    original_bytes: usize,
+}
+impl BoundedOutput {
+    fn new(limit: usize) -> Self {
+        Self {
+            prefix: Vec::new(),
+            limit,
+            original_bytes: 0,
+        }
+    }
+    fn push(&mut self, bytes: &[u8]) {
+        self.original_bytes = self.original_bytes.saturating_add(bytes.len());
+        let take = bytes
+            .len()
+            .min(self.limit.saturating_sub(self.prefix.len()));
+        self.prefix.extend_from_slice(&bytes[..take]);
+    }
+    fn finish(mut self) -> (String, bool, usize) {
+        let truncated = self.original_bytes > self.limit;
+        let mut text = take_utf8(&mut self.prefix);
+        // A truncation boundary may split a character: drop its incomplete tail.
+        if !truncated {
+            text.push_str(&String::from_utf8_lossy(&self.prefix));
+        }
+        (text, truncated, self.original_bytes)
+    }
+}
+
 /// 判断会话是否仍是当前代(旧泵退出前避免误动新会话)。
 /// 只读会话自持的 alive 标记,不锁全局会话表 —— 这张表同时被 exec(监控探针
 /// 全程持有)、write、resize 抢占,数据泵热路径上再排一次队会把高 RTT 链路上
@@ -294,6 +325,43 @@ async fn shut_down_session(session: Arc<Session>) {
         .await;
 }
 
+// Dropping a setup future must close every already-open transport: russh Handle::drop
+// does not disconnect. This guard also covers errors midway through a jump chain.
+#[derive(Default)]
+struct SetupHandles(Vec<Handle<SshHandler>>);
+impl Drop for SetupHandles {
+    fn drop(&mut self) {
+        let handles = std::mem::take(&mut self.0);
+        if !handles.is_empty() {
+            tokio::spawn(async move {
+                for handle in handles {
+                    let _ = handle
+                        .disconnect(russh::Disconnect::ByApplication, "", "en")
+                        .await;
+                }
+            });
+        }
+    }
+}
+
+#[derive(Default)]
+struct PendingConnection {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+impl PendingConnection {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+    async fn cancellation(&self) {
+        // notify_one retains a permit when disconnect precedes this await.
+        if !self.cancelled.load(Ordering::SeqCst) {
+            self.notify.notified().await;
+        }
+    }
+}
+
 pub struct Session {
     /// Handle 不可 Clone(内含 receiver),tcpip_forward 需要 &mut 而其余方法
     /// 只要 &self,故以 Arc<tokio::Mutex<_>> 共享:exec/open_sftp/转发只在
@@ -308,12 +376,31 @@ pub struct Session {
     /// 置 false 的时机:被新会话替换(connect)、主动断开(disconnect)、
     /// 远端关闭后的自回收(数据泵收尾)。热路径上只做原子读。
     pub alive: AtomicBool,
+    pub read_only: AtomicBool,
+    generation: Arc<PendingConnection>,
+}
+
+/// A remote registration owns the exact transport that accepted it. Session IDs
+/// can be reused before asynchronous stop cleanup gets a chance to run.
+pub struct RemoteForward {
+    handle: Arc<AsyncMutex<Handle<SshHandler>>>,
+    bind_host: String,
+    bound_port: u32,
+}
+impl RemoteForward {
+    pub async fn cancel(self) {
+        let handle = self.handle.lock().await;
+        let _ = handle
+            .cancel_tcpip_forward(&self.bind_host, self.bound_port)
+            .await;
+    }
 }
 
 pub struct SshService {
     /// 值为 Arc<Session>:write/resize/exec 等热路径只从表里克隆句柄副本即放锁,
     /// 数据泵持有同代 Arc 做存活判断,均不长期占用这张表。
     pub sessions: AsyncMutex<std::collections::HashMap<String, Arc<Session>>>,
+    pending: AsyncMutex<HashMap<String, Arc<PendingConnection>>>,
     /// 按 sessionId 缓存的 SFTP 会话。
     ///
     /// 每次 SFTP 操作都新开一条通道要付"channel_open_session + sftp 子系统协商"
@@ -325,10 +412,57 @@ pub struct SshService {
     pub remote_targets: RemoteTargets,
 }
 
+// A caller-side timeout or task abort can drop connect() without calling disconnect.
+// Cancel synchronously, then remove only this generation from the pending registry.
+struct PendingGuard {
+    service: std::sync::Weak<SshService>,
+    session_id: String,
+    token: Arc<PendingConnection>,
+    completed: bool,
+}
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.token.cancel();
+        if let Some(service) = self.service.upgrade() {
+            let sid = self.session_id.clone();
+            let token = self.token.clone();
+            tokio::spawn(async move {
+                let mut pending = service.pending.lock().await;
+                if pending
+                    .get(&sid)
+                    .map(|p| Arc::ptr_eq(p, &token))
+                    .unwrap_or(false)
+                {
+                    pending.remove(&sid);
+                }
+                let mut sessions = service.sessions.lock().await;
+                let owned = sessions
+                    .get(&sid)
+                    .map(|s| Arc::ptr_eq(&s.generation, &token))
+                    .unwrap_or(false);
+                let removed = if owned { sessions.remove(&sid) } else { None };
+                if let Some(session) = removed.as_ref() {
+                    session.alive.store(false, Ordering::Relaxed);
+                }
+                drop(sessions);
+                drop(pending);
+                if let Some(session) = removed {
+                    service.forget_sftp(&sid).await;
+                    shut_down_session(session).await;
+                }
+            });
+        }
+    }
+}
+
 impl SshService {
     pub fn new(store: Arc<crate::config::Store>, remote_targets: RemoteTargets) -> Self {
         SshService {
             sessions: AsyncMutex::new(std::collections::HashMap::new()),
+            pending: AsyncMutex::new(HashMap::new()),
             sftp_sessions: AsyncMutex::new(std::collections::HashMap::new()),
             store,
             remote_targets,
@@ -338,6 +472,7 @@ impl SshService {
     pub fn clone_shared(&self) -> Arc<Self> {
         Arc::new(SshService {
             sessions: AsyncMutex::new(std::collections::HashMap::new()),
+            pending: AsyncMutex::new(HashMap::new()),
             sftp_sessions: AsyncMutex::new(std::collections::HashMap::new()),
             store: self.store.clone(),
             remote_targets: self.remote_targets.clone(),
@@ -443,7 +578,7 @@ impl SshService {
             remote_pump: None,
             fp_mismatch: fp_mismatch.clone(),
         };
-        let mut handle = match sock {
+        let handle = match sock {
             Some(stream) => client::connect_stream(Self::make_config(), stream, handler)
                 .await
                 .map_err(|e| connect_err(host_addr, e, &fp_mismatch))?,
@@ -462,22 +597,56 @@ impl SshService {
                     .map_err(|e| connect_err(host_addr, e, &fp_mismatch))?
             }
         };
-        Self::auth(&mut handle, user, host).await?;
-        Ok(handle)
+        let mut guard = SetupHandles(vec![handle]);
+        Self::auth(&mut guard.0[0], user, host).await?;
+        Ok(guard.0.pop().unwrap())
     }
 
     /// 连接(支持跳板链 host.jumpIds):返回 (sessionId, 跳板连接数)
-    pub async fn connect<
-        R: tauri::Runtime,
-        E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
-    >(
+    pub async fn connect<R: tauri::Runtime>(
         self: &Arc<Self>,
-        app: E,
+        app: tauri::AppHandle<R>,
         host_full: Value,
         session_id: String,
     ) -> Result<usize, String> {
+        let token = Arc::new(PendingConnection::default());
+        {
+            let mut pending = self.pending.lock().await;
+            if let Some(previous) = pending.insert(session_id.clone(), token.clone()) {
+                previous.cancel();
+            }
+        }
+        let mut pending_guard = PendingGuard {
+            service: Arc::downgrade(self),
+            session_id: session_id.clone(),
+            token: token.clone(),
+            completed: false,
+        };
+        let result = tokio::select! {
+            biased;
+            _ = token.cancellation() => Err("连接已取消".to_string()),
+            result = self.connect_pending(app, host_full, session_id.clone(), token.clone()) => result,
+        };
+        let mut pending = self.pending.lock().await;
+        if pending
+            .get(&session_id)
+            .map(|current| Arc::ptr_eq(current, &token))
+            .unwrap_or(false)
+        {
+            pending.remove(&session_id);
+        }
+        pending_guard.completed = true;
+        result
+    }
+
+    async fn connect_pending<R: tauri::Runtime>(
+        self: &Arc<Self>,
+        app: tauri::AppHandle<R>,
+        host_full: Value,
+        session_id: String,
+        token: Arc<PendingConnection>,
+    ) -> Result<usize, String> {
         let host_addr = host_full["host"].as_str().unwrap_or("").to_string();
-        let port = host_full["port"].as_i64().unwrap_or(22);
         let user = host_full["username"].as_str().unwrap_or("root").to_string();
         let jump_ids: Vec<String> = host_full["jumpIds"]
             .as_array()
@@ -489,7 +658,7 @@ impl SshService {
             .unwrap_or_default();
 
         // 跳板链:逐级 forwardOut 直通流到最终目标
-        let mut jump_handles: Vec<Handle<SshHandler>> = Vec::new();
+        let mut setup = SetupHandles::default();
         let mut prev_sock: Option<BoxStream> = None;
         let chain_len = jump_ids.len();
         for (i, jid) in jump_ids.iter().enumerate() {
@@ -498,7 +667,6 @@ impl SshService {
                 .host_full(jid)
                 .map_err(|e| format!("跳板: {}", e))?;
             let jhost = jump["host"].as_str().unwrap_or("").to_string();
-            let jport = jump["port"].as_i64().unwrap_or(22);
             let target = if i + 1 < jump_ids.len() {
                 self.store
                     .host_full(&jump_ids[i + 1])
@@ -506,11 +674,15 @@ impl SshService {
             } else {
                 host_full.clone()
             };
-            let mut jh = self
+            let jh = self
                 .connect_one(self.store.clone(), &jump, prev_sock.take())
                 .await
                 .map_err(|e| format!("跳板 {} 失败: {}", jhost, e))?;
-            let ch = jh
+            setup.0.push(jh);
+            let ch = setup
+                .0
+                .last()
+                .unwrap()
                 .channel_open_direct_tcpip(
                     target["host"].as_str().unwrap_or(""),
                     target["port"].as_i64().unwrap_or(22) as u32,
@@ -521,7 +693,6 @@ impl SshService {
                 .map_err(|e| format!("跳板 {} 建立直连失败: {}", jhost, e))?;
             let stream: BoxStream = Box::new(ch.into_stream());
             prev_sock = Some(stream);
-            jump_handles.push(jh);
         }
 
         let handle = self
@@ -535,8 +706,12 @@ impl SshService {
                 }
             })?;
 
+        setup.0.push(handle);
         // shell 通道
-        let mut channel = handle
+        let mut channel = setup
+            .0
+            .last()
+            .unwrap()
             .channel_open_session()
             .await
             .map_err(|e| e.to_string())?;
@@ -558,22 +733,44 @@ impl SshService {
         // 原子替换:若该 sessionId 已有旧会话(自动重连走的就是这条路径),
         // 必须先显式断开,否则旧 TCP 连接与 shell 通道会永久泄漏
         // (russh 的 Handle::drop 不做任何关闭动作)。
+        // Keep pending locked through publication and connected emit. A disconnect
+        // either cancels setup or removes this published generation, never misses it.
+        let pending = self.pending.lock().await;
+        let current = pending
+            .get(&session_id)
+            .map(|p| Arc::ptr_eq(p, &token))
+            .unwrap_or(false);
+        if !current || token.cancelled.load(Ordering::SeqCst) {
+            return Err("连接已取消".into());
+        }
+        self.forget_sftp(&session_id).await;
+        let handle = setup.0.pop().unwrap();
         let session = Arc::new(Session {
             handle: Arc::new(tokio::sync::Mutex::new(handle)),
             writer: writer_tx,
             resize_tx,
             host: host_full,
-            jump_handles,
+            jump_handles: std::mem::take(&mut setup.0),
             alive: AtomicBool::new(true),
+            read_only: AtomicBool::new(false),
+            generation: token.clone(),
         });
         let replaced = {
             let mut sessions = self.sessions.lock().await;
-            sessions.insert(session_id.clone(), session.clone())
+            let old = sessions.insert(session_id.clone(), session.clone());
+            if let Some(old) = old.as_ref() {
+                old.alive.store(false, Ordering::Relaxed);
+            }
+            old
         };
+        crate::ai::emit_evt(
+            &app,
+            "ssh:status",
+            json!({ "sessionId": session_id.clone(), "state": "connected", "label": format!("{}@{}", user, host_addr) }),
+        );
+        drop(pending);
         if let Some(old) = replaced {
-            old.alive.store(false, Ordering::Relaxed); // 旧泵据此停止发射并退出
-            self.forget_sftp(&session_id).await; // 旧连接的 SFTP 缓存必须作废
-            shut_down_session(old).await;
+            tokio::spawn(shut_down_session(old));
         }
 
         // 数据泵:channel → ssh:data / ssh:status 事件。
@@ -588,6 +785,9 @@ impl SshService {
             let mut batch: Vec<u8> = Vec::new(); // 本轮累积的数据(合帧)
             let mut exit: Option<Value> = None;
             'pump: loop {
+                if !is_alive(&pump_session) {
+                    break 'pump;
+                }
                 batch.clear();
                 // 1) 先收干"已就绪"的数据消息,合成单个事件(降低 IPC 次数与 GC 压力)。
                 //    设上限 64 条,避免持续洪泛把写入/尺寸变化饿死。
@@ -605,8 +805,16 @@ impl SshService {
                             }));
                             break;
                         }
+                        Some(Some(russh::ChannelMsg::ExitSignal { .. })) => {
+                            exit = Some(
+                                json!({ "sessionId": pump_sid, "state": "exited", "reason": "exit-signal" }),
+                            );
+                            break;
+                        }
                         Some(Some(russh::ChannelMsg::Close)) | Some(None) => {
-                            exit = Some(json!({ "sessionId": pump_sid, "state": "exited" }));
+                            exit = Some(
+                                json!({ "sessionId": pump_sid, "state": "disconnected", "reason": "network" }),
+                            );
                             break;
                         }
                         Some(Some(_)) => {}
@@ -632,7 +840,14 @@ impl SshService {
                         d = writer_rx.recv() => {
                             match d {
                                 Some(bytes) => {
-                                    let _ = channel.data(&bytes[..]).await;
+                                    if !pump_session.read_only.load(Ordering::SeqCst) && is_alive(&pump_session) {
+                                        if let Err(error) = channel.data(&bytes[..]).await {
+                                            if is_alive(&pump_session) {
+                                                crate::ai::emit_evt(&pump_app, "ssh:status", json!({ "sessionId": pump_sid, "state": "disconnected", "reason": "network", "error": error.to_string() }));
+                                            }
+                                            break 'pump;
+                                        }
+                                    }
                                     continue;
                                 }
                                 None => break 'pump,
@@ -651,8 +866,15 @@ impl SshService {
                                 "code": exit_status
                             }));
                         }
+                        Some(russh::ChannelMsg::ExitSignal { .. }) => {
+                            exit = Some(
+                                json!({ "sessionId": pump_sid, "state": "exited", "reason": "exit-signal" }),
+                            );
+                        }
                         Some(russh::ChannelMsg::Close) | None => {
-                            exit = Some(json!({ "sessionId": pump_sid, "state": "exited" }));
+                            exit = Some(
+                                json!({ "sessionId": pump_sid, "state": "disconnected", "reason": "network" }),
+                            );
                         }
                         Some(_) => continue,
                     }
@@ -663,6 +885,7 @@ impl SshService {
                     pending.extend_from_slice(&batch);
                     let text = take_utf8(&mut pending);
                     if !text.is_empty() && is_alive(&pump_session) {
+                        crate::commands::record_session_log(&pump_app, &pump_sid, &text, false);
                         crate::ai::emit_evt(
                             &pump_app,
                             "ssh:data",
@@ -697,27 +920,30 @@ impl SshService {
                 }
             }
         });
-        crate::ai::emit_evt(
-            &app,
-            "ssh:status",
-            json!({ "sessionId": session_id.clone(), "state": "connected", "label": format!("{}@{}", user, host_addr) }),
-        );
         Ok(chain_len)
     }
 
     // write/resize 是按键与窗口变化的热路径:锁只用来查表取句柄副本,
     // 发送在锁外完成 —— 否则监控探针(3s 一次,高 RTT 下全程持锁)会把
     // 每次敲键卡出可感知的停顿。
+    pub async fn set_readonly(&self, session_id: &str, read_only: bool) -> Result<(), String> {
+        let sessions = self.sessions.lock().await;
+        let session = sessions.get(session_id).ok_or("会话不存在或已断开")?;
+        session.read_only.store(read_only, Ordering::SeqCst);
+        Ok(())
+    }
+
     pub async fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let writer = {
-            let sessions = self.sessions.lock().await;
-            sessions
-                .get(session_id)
-                .ok_or("会话不存在或已断开")?
-                .writer
-                .clone()
-        };
-        writer
+        let sessions = self.sessions.lock().await;
+        let session = sessions.get(session_id).ok_or("会话不存在或已断开")?;
+        if !is_alive(session) {
+            return Err("会话已断开".into());
+        }
+        if session.read_only.load(Ordering::SeqCst) {
+            return Err("会话为只读模式".into());
+        }
+        session
+            .writer
             .send(data.as_bytes().to_vec())
             .map_err(|_| "会话已断开".to_string())
     }
@@ -737,6 +963,19 @@ impl SshService {
     }
 
     pub async fn exec(&self, session_id: &str, command: &str) -> Result<(i64, String), String> {
+        self.exec_limited(session_id, command, usize::MAX)
+            .await
+            .map(|(code, output, _, _)| (code, output))
+    }
+
+    /// Keep at most max_bytes of output while draining the entire channel. Returns
+    /// (exit code, UTF-8 prefix, truncated, original byte count), including stderr.
+    pub async fn exec_limited(
+        &self,
+        session_id: &str,
+        command: &str,
+        max_bytes: usize,
+    ) -> Result<(i64, String, bool, usize), String> {
         // exec 的执行期(开通道 + 远端跑完 + 读到 Close)在高 RTT 链路上可达
         // 数秒,旧实现全程持有全局会话锁,期间所有会话的输入/输出一并冻结。
         // 这里只克隆句柄指针,通道打开即放锁,读输出期间不占任何锁。
@@ -756,25 +995,21 @@ impl SshService {
             .exec(true, command)
             .await
             .map_err(|e| e.to_string())?;
-        let mut output = String::new();
-        let mut pending: Vec<u8> = Vec::new();
+        let mut output = BoundedOutput::new(max_bytes);
         let mut code: i64 = 0;
         loop {
             match channel.wait().await {
                 Some(russh::ChannelMsg::Data { ref data })
                 | Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
-                    // 逐块拼接后再按完整 UTF-8 前缀解码,避免多字节字符被包边界切断
-                    pending.extend_from_slice(data);
-                    output.push_str(&take_utf8(&mut pending));
+                    output.push(data);
                 }
                 Some(russh::ChannelMsg::ExitStatus { exit_status }) => code = exit_status as i64,
                 Some(russh::ChannelMsg::Close) | None => break,
                 _ => {}
             }
         }
-        output.push_str(&take_utf8(&mut pending)); // 收尾:残留的完整前缀
-        output.push_str(&String::from_utf8_lossy(&pending)); // 异常截断的尾部(尽力而为)
-        Ok((code, output))
+        let (text, truncated, original_bytes) = output.finish();
+        Ok((code, text, truncated, original_bytes))
     }
 
     /// 取该会话的 SFTP 通道(优先复用缓存)。
@@ -854,7 +1089,7 @@ impl SshService {
         session_id: &str,
         bind_host: &str,
         bind_port: u32,
-    ) -> Result<u32, String> {
+    ) -> Result<(u32, RemoteForward), String> {
         let handle = {
             let sessions = self.sessions.lock().await;
             sessions
@@ -863,27 +1098,38 @@ impl SshService {
                 .handle
                 .clone()
         };
-        let mut h = handle.lock().await;
-        h.tcpip_forward(bind_host, bind_port)
+        let allocated_port = handle
+            .lock()
             .await
-            .map_err(|e| e.to_string())
-    }
-
-    pub async fn remote_forward_cancel(&self, session_id: &str, bind_host: &str, bind_port: u32) {
-        let handle = {
-            let sessions = self.sessions.lock().await;
-            match sessions.get(session_id) {
-                Some(s) => s.handle.clone(),
-                None => return,
-            }
+            .tcpip_forward(bind_host, bind_port)
+            .await
+            .map_err(|e| e.to_string())?;
+        // SSH replies include an allocated port only for a port-0 request;
+        // russh returns 0 on successful fixed-port registrations.
+        let bound_port = if bind_port == 0 {
+            allocated_port
+        } else {
+            bind_port
         };
-        let mut h = handle.lock().await;
-        let _ = h.cancel_tcpip_forward(bind_host, bind_port).await;
+        Ok((
+            bound_port,
+            RemoteForward {
+                handle,
+                bind_host: bind_host.to_string(),
+                bound_port,
+            },
+        ))
     }
 
     pub async fn disconnect(&self, session_id: &str) {
+        let mut pending = self.pending.lock().await;
+        if let Some(token) = pending.remove(session_id) {
+            token.cancel();
+        }
         let mut sessions = self.sessions.lock().await;
-        if let Some(s) = sessions.remove(session_id) {
+        let removed = sessions.remove(session_id);
+        drop(pending);
+        if let Some(s) = removed {
             s.alive.store(false, Ordering::Relaxed);
             drop(sessions);
             self.forget_sftp(session_id).await;
@@ -944,5 +1190,291 @@ impl SshService {
             .iter()
             .find(|(_, s)| s.host["id"].as_str() == Some(host_id))
             .map(|(k, _)| k.clone())
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::Duration;
+
+    type ForwardRequests = Arc<std::sync::Mutex<Vec<(bool, String, u32)>>>;
+
+    struct ForwardServer(ForwardRequests);
+    #[async_trait::async_trait]
+    impl russh::server::Handler for ForwardServer {
+        type Error = russh::Error;
+
+        async fn auth_none(&mut self, _: &str) -> Result<russh::server::Auth, Self::Error> {
+            Ok(russh::server::Auth::Accept)
+        }
+
+        async fn tcpip_forward(
+            &mut self,
+            address: &str,
+            port: &mut u32,
+            _: &mut russh::server::Session,
+        ) -> Result<bool, Self::Error> {
+            if *port == 0 {
+                *port = 41234;
+            }
+            self.0.lock().unwrap().push((false, address.into(), *port));
+            Ok(true)
+        }
+
+        async fn cancel_tcpip_forward(
+            &mut self,
+            address: &str,
+            port: u32,
+            _: &mut russh::server::Session,
+        ) -> Result<bool, Self::Error> {
+            self.0.lock().unwrap().push((true, address.into(), port));
+            Ok(true)
+        }
+    }
+
+    // Entire SSH exchange runs through in-memory duplex streams, never a host/socket.
+    async fn forward_session(
+        ssh: &SshService,
+        key: &str,
+        requests: ForwardRequests,
+    ) -> Arc<Session> {
+        let (client_stream, server_stream) = tokio::io::duplex(65536);
+        let config = russh::server::Config {
+            keys: vec![russh::keys::key::KeyPair::generate_ed25519()],
+            ..Default::default()
+        };
+        let server = tokio::spawn(russh::server::run_stream(
+            Arc::new(config),
+            server_stream,
+            ForwardServer(requests),
+        ));
+        let handler = SshHandler {
+            host_id: "host".into(),
+            key: key.into(),
+            password: String::new(),
+            store: ssh.store.clone(),
+            remote_targets: ssh.remote_targets.clone(),
+            remote_pump: None,
+            fp_mismatch: Default::default(),
+        };
+        let mut handle = client::connect_stream(SshService::make_config(), client_stream, handler)
+            .await
+            .unwrap();
+        assert!(handle.authenticate_none("test").await.unwrap());
+        server.await.unwrap().unwrap();
+        Arc::new(Session {
+            handle: Arc::new(AsyncMutex::new(handle)),
+            writer: tokio::sync::mpsc::unbounded_channel().0,
+            resize_tx: tokio::sync::mpsc::unbounded_channel().0,
+            host: json!({"id": "host"}),
+            jump_handles: Vec::new(),
+            alive: AtomicBool::new(true),
+            read_only: AtomicBool::new(false),
+            generation: Arc::new(PendingConnection::default()),
+        })
+    }
+
+    async fn check_remote_cancellation(remove_replacement: bool) {
+        let dir =
+            std::env::temp_dir().join(format!("nb-forward-generation-{}", uuid::Uuid::new_v4()));
+        let ssh = SshService::new(
+            Arc::new(crate::config::Store::load_plain(dir.clone())),
+            Default::default(),
+        );
+        let old_requests: ForwardRequests = Default::default();
+        let new_requests: ForwardRequests = Default::default();
+        let old = forward_session(&ssh, "old", old_requests.clone()).await;
+        let new = forward_session(&ssh, "new", new_requests.clone()).await;
+        ssh.sessions
+            .lock()
+            .await
+            .insert("same-id".into(), old.clone());
+        let (port, registration) = ssh
+            .remote_forward_listen("same-id", "127.0.0.1", 0)
+            .await
+            .unwrap();
+        assert_eq!(port, 41234);
+        let (release, ready) = tokio::sync::oneshot::channel();
+        let cancellation = tokio::spawn(async move {
+            ready.await.unwrap();
+            registration.cancel().await;
+        });
+        old.alive.store(false, Ordering::Relaxed);
+        ssh.sessions
+            .lock()
+            .await
+            .insert("same-id".into(), new.clone());
+        let (_, replacement) = ssh
+            .remote_forward_listen("same-id", "127.0.0.1", port)
+            .await
+            .unwrap();
+        if remove_replacement {
+            ssh.sessions.lock().await.remove("same-id");
+        }
+        release.send(()).unwrap();
+        cancellation.await.unwrap();
+        assert_eq!(
+            *old_requests.lock().unwrap(),
+            vec![
+                (false, "127.0.0.1".into(), port),
+                (true, "127.0.0.1".into(), port)
+            ]
+        );
+        assert_eq!(
+            *new_requests.lock().unwrap(),
+            vec![(false, "127.0.0.1".into(), port)]
+        );
+        // Stopping a current registration still sends its own cancellation.
+        replacement.cancel().await;
+        assert_eq!(
+            new_requests.lock().unwrap().last().unwrap(),
+            &(true, "127.0.0.1".into(), port)
+        );
+        shut_down_session(old).await;
+        shut_down_session(new).await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn remote_forward_cancellation_keeps_handle_after_same_id_replacement() {
+        tokio::time::timeout(Duration::from_secs(5), check_remote_cancellation(false))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_forward_cancellation_keeps_handle_after_session_removal() {
+        tokio::time::timeout(Duration::from_secs(5), check_remote_cancellation(true))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn bounded_exec_prefix_drains_counts_and_keeps_utf8_boundary() {
+        let mut output = BoundedOutput::new(5);
+        output.push("ab中".as_bytes());
+        output.push("文tail".as_bytes());
+        assert_eq!(output.finish(), ("ab中".into(), true, 12));
+        let mut split = BoundedOutput::new(4);
+        split.push("ab中文".as_bytes());
+        assert_eq!(split.finish(), ("ab".into(), true, 8));
+        let mut chunks = BoundedOutput::new(100);
+        for byte in "中文".as_bytes() {
+            chunks.push(&[*byte]);
+        }
+        assert_eq!(chunks.finish(), ("中文".into(), false, 6));
+        let mut empty = BoundedOutput::new(0);
+        empty.push(b"stderr");
+        assert_eq!(empty.finish(), ("".into(), true, 6));
+    }
+
+    #[tokio::test]
+    async fn cancellation_retains_notification_before_wait() {
+        let token = PendingConnection::default();
+        token.cancel();
+        tokio::time::timeout(Duration::from_millis(100), token.cancellation())
+            .await
+            .unwrap();
+        assert!(token.cancelled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn disconnect_cancels_pending_even_without_established_session() {
+        let dir = std::env::temp_dir().join(format!("nb-pending-unit-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(crate::config::Store::load_plain(dir.clone()));
+        let ssh = SshService::new(store, Default::default());
+        let token = Arc::new(PendingConnection::default());
+        ssh.pending
+            .lock()
+            .await
+            .insert("pending".into(), token.clone());
+        ssh.disconnect("pending").await;
+        assert!(token.cancelled.load(Ordering::SeqCst));
+        assert!(ssh.pending.lock().await.is_empty());
+        assert!(ssh.sessions.lock().await.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn dropped_attempt_guard_removes_only_its_own_pending_generation() {
+        let dir = std::env::temp_dir().join(format!("nb-drop-guard-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(crate::config::Store::load_plain(dir.clone()));
+        let ssh = Arc::new(SshService::new(store, Default::default()));
+        let old = Arc::new(PendingConnection::default());
+        let new = Arc::new(PendingConnection::default());
+        ssh.pending
+            .lock()
+            .await
+            .insert("superseded".into(), new.clone());
+        ssh.pending
+            .lock()
+            .await
+            .insert("aborted".into(), old.clone());
+        let guard = |sid: &str| PendingGuard {
+            service: Arc::downgrade(&ssh),
+            session_id: sid.into(),
+            token: old.clone(),
+            completed: false,
+        };
+        drop(guard("superseded"));
+        drop(guard("aborted"));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while ssh.pending.lock().await.contains_key("aborted") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(old.cancelled.load(Ordering::SeqCst));
+        assert!(!new.cancelled.load(Ordering::SeqCst));
+        assert!(Arc::ptr_eq(
+            ssh.pending.lock().await.get("superseded").unwrap(),
+            &new
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Synthetic loopback socket never completes SSH handshake; no credentials/real host.
+    #[tokio::test]
+    async fn cancelled_handshake_returns_promptly_and_releases_socket() {
+        let dir = std::env::temp_dir().join(format!("nb-cancel-socket-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(crate::config::Store::load_plain(dir.clone()));
+        let ssh = Arc::new(SshService::new(store, Default::default()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        let service = ssh.clone();
+        let attempt = tokio::spawn(async move {
+            service.connect(app, json!({"host":"127.0.0.1", "port":port, "username":"test", "password":"unused"}), "cancel-unit".into()).await
+        });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        ssh.disconnect("cancel-unit").await;
+        let result = tokio::time::timeout(Duration::from_secs(3), attempt)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err(), "连接已取消");
+        assert!(ssh.pending.lock().await.is_empty());
+        assert!(ssh.sessions.lock().await.is_empty());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut buf = [0u8; 1024];
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        })
+        .await
+        .expect("cancelled handshake leaked its TCP socket");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

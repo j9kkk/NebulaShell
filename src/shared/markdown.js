@@ -61,25 +61,53 @@ function renderBlock(lines) {
   return null;
 }
 
-export function mdToHtml(src) {
-  const lines = String(src ?? '').replace(/\r\n/g, '\n').split('\n');
+// info 的首个词是语言标签;其余信息也属于 opening fence,不能落回普通文本。
+function openingFence(line) {
+  const match = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/.exec(line);
+  if (!match) return null;
+  return { mark: match[1], language: match[2].trim().split(/[ \t]+/)[0].toLowerCase() };
+}
+
+function closesFence(line, mark) {
+  const match = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+  return !!match && match[1][0] === mark[0] && match[1].length >= mark.length;
+}
+
+// 默认渲染始终转义。自定义 renderer 收到未经转义的原文,必须自行安全转义。
+// index 从 0 开始;language 是小写标签;closed 仅表示 Markdown 围栏已闭合。
+export function renderMarkdown(src, { renderCodeBlock } = {}) {
+  // 捕获行尾分隔符,避免接口中的命令原文被 CRLF → LF 或 trim 改写。
+  const parts = String(src ?? '').split(/(\r\n|\n)/);
+  const rawLines = [];
+  for (let n = 0; n < parts.length; n += 2) {
+    rawLines.push({ text: parts[n], eol: parts[n + 1] ?? '' });
+  }
+  const lines = rawLines.map((line) => line.text);
   const out = [];
+  const codeBlocks = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     // 围栏代码块:``` 或 ~~~ 开头。流式输出时结尾围栏可能还没到 ——
     // 按"未闭合"处理,把剩余内容全部当代码渲染,别把命令原文当 HTML。
-    const fence = /^(```+|~~~+)\s*([\w-]*)\s*$/.exec(line);
+    const fence = openingFence(line);
     if (fence) {
-      const mark = fence[1][0].repeat(3);
       const buf = [];
       i += 1;
-      while (i < lines.length && !lines[i].startsWith(mark)) {
-        buf.push(lines[i]);
+      while (i < lines.length && !closesFence(lines[i], fence.mark)) {
+        buf.push(rawLines[i]);
         i += 1;
       }
-      if (i < lines.length) i += 1; // 跳过闭合围栏
-      out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);
+      const closed = i < lines.length;
+      // 围栏前的最后一个行尾只是正文/围栏分隔符,不属于 text。
+      // 未闭合且 EOF 以换行结尾时,split 产生的空行会保留真实尾部换行。
+      const text = buf.map((l, n) => l.text + (n < buf.length - 1 ? l.eol : '')).join('');
+      const block = { index: codeBlocks.length, language: fence.language, text, closed };
+      codeBlocks.push(block);
+      if (closed) i += 1;
+      out.push(renderCodeBlock
+        ? renderCodeBlock(block)
+        : `<pre><code>${esc(text.replace(/\r\n/g, '\n'))}</code></pre>`);
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
@@ -89,7 +117,7 @@ export function mdToHtml(src) {
       const head = splitTableRow(line);
       i += 2; // 跳过表头与分隔行
       const rows = [];
-      while (i < lines.length && isTableRow(lines[i]) && lines[i].trim() !== '') {
+      while (i < lines.length && !openingFence(lines[i]) && isTableRow(lines[i]) && lines[i].trim() !== '') {
         rows.push(splitTableRow(lines[i]));
         i += 1;
       }
@@ -107,7 +135,7 @@ export function mdToHtml(src) {
     const firstIsOl = /^\d+[.)]\s+/.test(line);
     const buf = [line];
     i += 1;
-    while (i < lines.length && lines[i].trim() !== '' && !/^(```|~~~)/.test(lines[i])
+    while (i < lines.length && lines[i].trim() !== '' && !openingFence(lines[i])
       && !/^(#{1,6})\s/.test(lines[i])) {
       if (firstIsUl && !/^[-*+]\s+/.test(lines[i])) break;
       if (firstIsOl && !/^\d+[.)]\s+/.test(lines[i])) break;
@@ -121,5 +149,10 @@ export function mdToHtml(src) {
       ? `<ul><li>${inline(esc(l.replace(/^[-*+]\s+/, '')))}</li></ul>`
       : `<p>${inline(esc(l))}</p>`)).join(''));
   }
-  return out.join('');
+  return { html: out.join(''), codeBlocks };
+}
+
+// 兼容现有调用方,不启用命令操作 UI。
+export function mdToHtml(src) {
+  return renderMarkdown(src).html;
 }

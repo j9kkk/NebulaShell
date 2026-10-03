@@ -1,5 +1,6 @@
 // 资源监控:指标采集与监控条
 import { $, api, makeDraggable, state, toast } from './core.js';
+import { writeSessionInput } from './terminal.js';
 
 // 状态栏数值一律定长展示:最多 1 位小数、去掉无意义的尾 .0(100.0→100)。
 // 多位小数既挤占槽位也让数字难以速读,这里统一收口。
@@ -83,8 +84,7 @@ export function renderSnippets() {
       if (e.target.classList.contains('s-del')) return;
       const cur = state.sessions.get(state.activeId);
       if (!cur || cur.status !== 'connected') return toast('请先连接主机', 'error');
-      await api('ssh:write', { sessionId: cur.sessionId, data: s.cmd + '\r' }).catch(() => {});
-      closeSnippetMenu();
+      if (await writeSessionInput(cur.sessionId, s.cmd + '\r')) closeSnippetMenu();
     });
     row.querySelector('.s-del').addEventListener('click', async (e) => {
       e.stopPropagation();

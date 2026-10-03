@@ -1,8 +1,14 @@
 // 共享底座:DOM 查询、IPC 封装、全局状态、通用弹窗/toast、标签与窗格访问器
 
+import { isAppModifier as matchAppModifier } from './interaction.js';
+
 export const $ = (s) => document.querySelector(s);
 
 export async function api(channel, payload) {
+  if (channel === 'ssh:write') {
+    const session = state.sessions.get(payload?.sessionId);
+    if (session?.readOnly) throw new Error('会话处于只读模式');
+  }
   const r = await window.nebula.invoke(channel, payload);
   if (!r || r.ok !== true) throw new Error((r && r.error) || channel + ' 调用失败');
   return r.data;
@@ -50,6 +56,8 @@ export const state = {
   // 是"当前标签"的访问器(见下方 defineProperties),便于既有分屏代码原样复用。
   tabs: new Map(),     // tabId -> { id, el, layout, panes: Map, zoomPaneId, activePaneId, sessionId }
   activeTabId: null,
+  // Runtime-only outer tab layout. Each tab keeps its independent inner tree.
+  workspace: { mode: 'single', layout: null, fits: true },
   tabSeq: 0,
   paneSeq: 0,
   broadcast: null,     // E5: Set(sessionId) 广播参与者
@@ -102,6 +110,7 @@ export const PLATFORM = (() => {
 })();
 
 export const IS_MAC = PLATFORM === 'darwin';
+export const isAppModifier = (event) => matchAppModifier(event, PLATFORM);
 
 const MAC_KEY = { mod: '⌘', ctrl: '⌃', shift: '⇧', alt: '⌥', enter: '↵', tab: '⇥', space: 'Space', esc: 'Esc' };
 const PC_KEY = { mod: 'Ctrl', ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', enter: 'Enter', tab: 'Tab', space: 'Space', esc: 'Esc' };
@@ -172,9 +181,152 @@ export async function copyText(text) {
   }
 }
 
+const dialogQueues = new Map();
+const modalReturns = new WeakMap();
+const modalOwners = new WeakMap();
+const modalDismiss = new WeakMap();
+const activeModals = new Set();
+let modalOrder = 0;
+let scopedModal = null;
+
+function queueDialog(id, run) {
+  const next = (dialogQueues.get(id) || Promise.resolve()).then(run);
+  dialogQueues.set(id, next.catch(() => {}));
+  return next;
+}
+
+export function topModal() {
+  return [...document.querySelectorAll('.modal:not(.hidden), dialog[open]')]
+    .sort((a, b) => (Number(a.dataset.modalOrder) || 0) - (Number(b.dataset.modalOrder) || 0)).at(-1) || null;
+}
+
+export function hasOpenModal() { return !!topModal(); }
+
+function syncModalScope() {
+  const top = topModal();
+  const app = $('#app');
+  if (app) app.inert = !!top;
+  for (const modal of document.querySelectorAll('.modal, dialog')) {
+    modal.inert = modal !== top;
+    if (!modal.classList.contains('hidden')) modal.style.zIndex = String(200 + Number(modal.dataset.modalOrder || 0));
+  }
+  if (document.body.classList.contains('modal-open') !== !!top) document.body.classList.toggle('modal-open', !!top);
+  if (scopedModal !== top) {
+    scopedModal = top;
+    document.dispatchEvent(new Event('nebula:modal-scope'));
+  }
+}
+
+export function setModalDismissHandler(id, handler) {
+  const modal = typeof id === 'string' ? $(id) : id;
+  if (modal) modalDismiss.set(modal, handler);
+}
+
+export function openModal(id) {
+  const modal = typeof id === 'string' ? $(id) : id;
+  if (!modal) return;
+  closeCtxMenu();
+  document.dispatchEvent(new Event('nebula:close-menus'));
+  if (!activeModals.has(modal)) {
+    modalReturns.set(modal, document.activeElement);
+    modalOwners.set(modal, [state.activeTabId, state.activeId, state.activePaneId]);
+  }
+  activeModals.add(modal);
+  modal.dataset.modalOrder = String(++modalOrder);
+  modal.classList.remove('hidden');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.tabIndex = -1;
+  const heading = modal.querySelector('h3');
+  if (heading) {
+    if (!heading.id) heading.id = modal.id + '-title';
+    modal.setAttribute('aria-labelledby', heading.id);
+  }
+  syncModalScope();
+  const control = [...modal.querySelectorAll('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)')]
+    .find((element) => element.getClientRects().length && !element.closest('.hidden'));
+  (control || modal).focus();
+}
+
+export function closeModal(id) {
+  const modal = typeof id === 'string' ? $(id) : id;
+  if (!modal || modal._closing || (modal.classList.contains('hidden') && !activeModals.has(modal))) return;
+  modal._closing = true;
+  try { modalDismiss.get(modal)?.(); } finally { modal._closing = false; }
+  activeModals.delete(modal);
+  modal.classList.add('hidden');
+  if (modal.tagName === 'DIALOG' && modal.open) modal.close();
+  modal.style.zIndex = '';
+  syncModalScope();
+  const target = modalReturns.get(modal);
+  const top = topModal();
+  const owner = modalOwners.get(modal);
+  const sameOwner = !owner || owner.every((value, index) => value === [state.activeTabId, state.activeId, state.activePaneId][index]);
+  // An awaited picker/operation may finish after the user selected a different
+  // tile. Restoring its old terminal would activate that tile and steal focus.
+  if (target?.isConnected && (!top || top.contains(target)) && (top || sameOwner)) target.focus();
+  else if (top) top.focus();
+}
+
+export function bindModalInteractions() {
+  if (bindModalInteractions._bound) return;
+  bindModalInteractions._bound = true;
+  for (const label of document.querySelectorAll('.form-grid label')) {
+    if (label.htmlFor) continue;
+    const next = label.nextElementSibling;
+    const input = next?.matches('input, select, textarea') ? next : next?.querySelector('input:not([type="hidden"]), select, textarea');
+    if (input?.id) label.htmlFor = input.id;
+  }
+  document.addEventListener('mousedown', (event) => {
+    const top = topModal();
+    if (top && event.target === top) closeModal(top);
+  });
+  document.addEventListener('keydown', (event) => {
+    const top = topModal();
+    if (!top) return;
+    const context = $('#ctx-menu');
+    if (context && !context.classList.contains('hidden') && context.contains(event.target)) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeModal(top);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [...top.querySelectorAll('button:not(:disabled), input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+      .filter((el) => el.getClientRects().length && !el.closest('.hidden'));
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first) { event.preventDefault(); top.focus(); }
+    else if (event.shiftKey && (document.activeElement === first || !top.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !top.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+  }, true);
+  document.addEventListener('focusin', (event) => {
+    const top = topModal();
+    if (top && !top.contains(event.target) && !event.target.closest?.('#ctx-menu')) top.focus();
+  });
+  new MutationObserver((records) => {
+    const relevant = records.some((record) => record.type === 'attributes'
+      ? record.target.matches?.('.modal, dialog')
+      : [...record.addedNodes, ...record.removedNodes].some((node) => node.matches?.('.modal, dialog') || node.querySelector?.('.modal, dialog')));
+    if (!relevant) return;
+    for (const modal of [...activeModals]) {
+      if (!modal.isConnected || modal.classList.contains('hidden') || (modal.tagName === 'DIALOG' && !modal.open)) closeModal(modal);
+    }
+    for (const modal of document.querySelectorAll('.modal:not(.hidden), dialog[open]')) {
+      if (!activeModals.has(modal)) openModal(modal);
+    }
+    syncModalScope();
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'open'] });
+}
+
 /// 应用内输入对话框:返回 Promise<string|null>(null = 取消)。
 /// 与 askConfirm 同因 —— wry/WKWebView 未实现原生 prompt,直接调用拿不到输入。
 export function askPrompt(message, opts = {}) {
+  return queueDialog('prompt', () => runPrompt(message, opts));
+}
+
+function runPrompt(message, opts) {
   const {
     title = '请输入',
     okText = '确定',
@@ -199,12 +351,16 @@ export function askPrompt(message, opts = {}) {
     okBtn.textContent = okText;
     okBtn.disabled = false;
 
+    let settled = false;
     const done = (val) => {
-      modal.classList.add('hidden');
+      if (settled) return;
+      settled = true;
+      modalDismiss.delete(modal);
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
       input.removeEventListener('keydown', onKey);
-      document.removeEventListener('keydown', onEsc);
+      closeModal(modal);
+      input.value = '';
       resolve(val);
     };
     const onOk = () => {
@@ -215,15 +371,14 @@ export function askPrompt(message, opts = {}) {
     };
     const onCancel = () => done(null);
     const onKey = (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') onOk();
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.stopPropagation(); onOk(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
     };
-    const onEsc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
     input.addEventListener('keydown', onKey);
-    document.addEventListener('keydown', onEsc);
-    modal.classList.remove('hidden');
+    setModalDismissHandler(modal, onCancel);
+    openModal(modal);
     input.focus();
   });
 }
@@ -235,7 +390,11 @@ export function askPrompt(message, opts = {}) {
 // defaultFocus:'ok' 时焦点与 Enter 落在确认键(默认);涉及安全决策(如指纹变更后
 // 重新信任)必须传 'cancel' —— 弹窗一弹出就高亮"信任"会让用户顺手回车放行,
 // 而这正是中间人攻击最希望发生的动作。
-export function askConfirm(message, { title = '确认操作', okText = '确定', cancelText = '取消', danger = true, defaultFocus = 'ok' } = {}) {
+export function askConfirm(message, opts = {}) {
+  return queueDialog('confirm', () => runConfirm(message, opts));
+}
+
+function runConfirm(message, { title = '确认操作', okText = '确定', cancelText = '取消', danger = true, defaultFocus = danger ? 'cancel' : 'ok' } = {}) {
   return new Promise((resolve) => {
     const modal = $('#modal-confirm');
     $('#confirm-title').textContent = title;
@@ -245,31 +404,34 @@ export function askConfirm(message, { title = '确认操作', okText = '确定',
     okBtn.textContent = okText;
     cancelBtn.textContent = cancelText;
     okBtn.className = 'btn ' + (danger ? 'danger' : 'primary');
+    let settled = false;
     const done = (val) => {
-      modal.classList.add('hidden');
+      if (settled) return;
+      settled = true;
+      modalDismiss.delete(modal);
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
-      document.removeEventListener('keydown', onKey);
+      modal.removeEventListener('keydown', onKey);
+      closeModal(modal);
       resolve(val);
     };
     const onOk = () => done(true);
     const onCancel = () => done(false);
-    // 默认落在"取消"时,Enter 也必须走取消 —— 否则键盘用户仍会误放行。
-    const enterIsCancel = defaultFocus === 'cancel';
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); done(false); }
-      if (e.key === 'Enter') { e.stopPropagation(); enterIsCancel ? done(false) : done(true); }
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (document.activeElement === okBtn) onOk();
+      else onCancel();
     };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
-    document.addEventListener('keydown', onKey);
-    modal.classList.remove('hidden');
-    (enterIsCancel ? cancelBtn : okBtn).focus();
+    modal.addEventListener('keydown', onKey);
+    setModalDismissHandler(modal, onCancel);
+    openModal(modal);
+    (defaultFocus === 'cancel' ? cancelBtn : okBtn).focus();
   });
 }
-
-export function openModal(id) { $(id).classList.remove('hidden'); }
-export function closeModal(id) { $(id).classList.add('hidden'); }
 
 /// 让浮动面板可拖动(片段/历史这类常驻面板会遮住左侧操作区,须能挪开)。
 /// handle 是拖拽把手(通常标题栏)。定位统一用相对 offsetParent 的 left/top ——
@@ -315,9 +477,28 @@ export function makeDraggable(el, handle) {
    而 entry 已经依赖 sftp —— 若把菜单留在 entry,文件面板就得反向依赖它,
    绕成一个环。 */
 
-export function closeCtxMenu() {
+export function bindMenuKeyboard(menu, close, back = null) {
+  menu.setAttribute('role', 'menu');
+  menu.addEventListener('keydown', (event) => {
+    const items = [...menu.querySelectorAll('button:not(:disabled)')].filter((el) => el.getClientRects().length && !el.closest('.hidden'));
+    const index = items.indexOf(document.activeElement);
+    let next = null;
+    if (event.key === 'ArrowDown') next = items[(index + 1) % items.length];
+    if (event.key === 'ArrowUp') next = items[(index - 1 + items.length) % items.length];
+    if (event.key === 'Home') next = items[0];
+    if (event.key === 'End') next = items.at(-1);
+    if (next) { event.preventDefault(); event.stopPropagation(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+    if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); close(); }
+    if (event.key === 'ArrowLeft' && back) { event.preventDefault(); event.stopPropagation(); back(); }
+  });
+}
+
+export function closeCtxMenu(restore = true) {
   const m = $('#ctx-menu');
-  if (m) m.classList.add('hidden');
+  if (!m || m.classList.contains('hidden')) return;
+  const focused = m.contains(document.activeElement);
+  m.classList.add('hidden');
+  if (restore && focused && m._returnFocus?.isConnected) m._returnFocus.focus();
 }
 
 /// 在 (x, y) 弹出右键菜单。items 元素形如
@@ -325,6 +506,12 @@ export function closeCtxMenu() {
 export function showCtxMenu(x, y, items) {
   const menu = $('#ctx-menu');
   if (!menu) return;
+  const modal = topModal();
+  if (modal && !modal.contains(document.activeElement)) return;
+  document.dispatchEvent(new Event('nebula:close-menus'));
+  menu._returnFocus = document.activeElement;
+  menu.style.zIndex = modal ? String(Number(modal.style.zIndex) + 1) : '100';
+  if (!menu._keyboardBound) { bindMenuKeyboard(menu, closeCtxMenu); menu._keyboardBound = true; }
   menu.innerHTML = '';
   for (const it of items) {
     if (it === '-') {
@@ -339,9 +526,11 @@ export function showCtxMenu(x, y, items) {
     btn.querySelector('.ctx-label').textContent = it.label;
     if (it.key) btn.querySelector('.ctx-key').textContent = it.key;
     btn.disabled = !!it.disabled;
+    btn.setAttribute('role', it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem');
+    if (it.checked !== undefined) btn.setAttribute('aria-checked', String(!!it.checked));
     btn.addEventListener('click', () => {
       closeCtxMenu();
-      try { it.run(); } catch { /* ignore */ }
+      Promise.resolve().then(() => it.run()).catch((error) => toast(error.message || '操作失败', 'error'));
     });
     menu.appendChild(btn);
   }
@@ -352,6 +541,7 @@ export function showCtxMenu(x, y, items) {
   const py = Math.min(y, window.innerHeight - r.height - 8);
   menu.style.left = `${Math.max(8, px)}px`;
   menu.style.top = `${Math.max(8, py)}px`;
+  menu.querySelector('button:not(:disabled)')?.focus();
 }
 
 /// 全局右键菜单的收起逻辑:点击别处/滚动/失焦/缩放都收起。
@@ -361,11 +551,11 @@ export function bindCtxMenuDismiss() {
   bindCtxMenuDismiss._bound = true;
   window.addEventListener('mousedown', (e) => {
     const menu = $('#ctx-menu');
-    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#ctx-menu')) closeCtxMenu();
+    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#ctx-menu')) closeCtxMenu(false);
   }, true);
   window.addEventListener('resize', closeCtxMenu);
   window.addEventListener('blur', closeCtxMenu);
-  document.addEventListener('scroll', closeCtxMenu, true);
+  document.addEventListener('scroll', (event) => { if (!event.target.closest?.('#ctx-menu')) closeCtxMenu(); }, true);
 }
 
 /* ---------------- 主机列表 ---------------- */

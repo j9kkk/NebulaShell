@@ -122,9 +122,17 @@ export function openHostModal(host) {
   $('#host-password').value = '';
   $('#host-password').placeholder = host && host.hasPassword ? '已保存（留空保持不变）' : '密码';
   $('#host-passphrase').value = '';
-  $('#host-passphrase').placeholder = host && host.hasKey ? '已保存（留空保持不变）' : '无则留空';
+  $('#host-passphrase').placeholder = host && host.hasPassphrase ? '已保存（留空保持不变）' : '无则留空';
   $('#key-path').textContent = host && host.keyPath ? host.keyPath : '未选择';
   $('#host-group').value = host ? groupOf(host) : '';
+  if ($('#host-tags')) $('#host-tags').value = (host?.tags || []).join(', ');
+  for (const field of ['password', 'key', 'passphrase']) {
+    const control = $(`#host-clear-${field}`);
+    if (control) {
+      control.checked = false;
+      control.disabled = !host;
+    }
+  }
   // 跳板机多选(I3):排除自身
   const jumpSel = $('#host-jump');
   jumpSel.innerHTML = '<option value="">(无)</option>';
@@ -169,6 +177,9 @@ export async function saveHostModal() {
     password: $('#host-password').value || undefined,
     passphrase: $('#host-passphrase').value || undefined,
   };
+  if ($('#host-tags')) payload.tags = $('#host-tags').value.split(',').map((tag) => tag.trim()).filter(Boolean);
+  payload.clearSecrets = ['password', 'privateKey', 'passphrase'].filter((field) =>
+    $(`#host-clear-${field === 'privateKey' ? 'key' : field}`)?.checked);
   if (!payload.host) return toast('请填写主机地址', 'error');
   if (payload.authType === 'key') {
     if (state.pickedKey) {
@@ -180,6 +191,7 @@ export async function saveHostModal() {
       return toast('请选择私钥文件', 'error');
     }
   }
+  if (payload.clearSecrets.length && !(await askConfirm('保存后将删除所选的已保存凭据。空白输入原本会保留凭据，此处为明确删除。', { title: '清除主机凭据', okText: '清除并保存' }))) return;
   try {
     await api('hosts:save', payload);
     closeModal('#modal-host');
@@ -204,7 +216,12 @@ export async function openFingerprints() {
     } else {
       for (const f of list) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td class="mono">${escapeHtml(f.id)}</td><td class="mono">${escapeHtml(String(f.fp).slice(0, 32))}…</td><td><button class="btn small fp-del">删除</button></td>`;
+        const fingerprint = String(f.fp);
+        tr.innerHTML = `<td class="mono">${escapeHtml(f.id)}</td><td class="mono"><span tabindex="0" aria-label="完整主机指纹" style="display:block;white-space:normal;overflow-wrap:anywhere;user-select:text">${escapeHtml(fingerprint)}</span></td><td><button class="btn small fp-copy" aria-label="${escapeHtml(f.id)} 复制完整指纹">复制</button> <button class="btn small fp-del">删除</button></td>`;
+        tr.querySelector('.fp-copy').addEventListener('click', async () => {
+          const ok = await copyText(fingerprint);
+          toast(ok ? '完整指纹已复制' : '复制失败', ok ? 'success' : 'error');
+        });
         tr.querySelector('.fp-del').addEventListener('click', async () => {
           if (!(await askConfirm(`删除主机 ${f.id} 的指纹?下次连接将重新信任。`, { title: '删除指纹', okText: '删除' }))) return;
           await api('fingerprints:delete', { id: f.id });

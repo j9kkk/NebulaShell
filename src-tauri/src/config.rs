@@ -196,6 +196,84 @@ fn cred_key(v: &Value) -> String {
     )
 }
 
+// Account + service + region + instance ID form the cloud-managed identity. Older
+// configs may lack account/region; only upgrade an unambiguous legacy match.
+fn cloud_match(hosts: &[Value], cloud: &Value) -> Result<Option<usize>, String> {
+    if cloud["provider"].as_str().unwrap_or("").is_empty()
+        || cloud["instanceId"].as_str().unwrap_or("").is_empty()
+    {
+        return Ok(None);
+    }
+    let matches: Vec<usize> = hosts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, h)| {
+            let old = &h["cloud"];
+            let same = old["provider"] == cloud["provider"]
+                && old["instanceId"] == cloud["instanceId"]
+                && ["accountId", "region"].iter().all(|key| {
+                    let a = old[*key].as_str().unwrap_or("");
+                    let b = cloud[*key].as_str().unwrap_or("");
+                    a.is_empty() || b.is_empty() || a == b
+                });
+            same.then_some(i)
+        })
+        .collect();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [i] => Ok(Some(*i)),
+        _ => Err("云实例身份不明确，请指定账号、地域或主机 ID".into()),
+    }
+}
+
+fn validate_jump_graph(hosts: &[Value]) -> Result<(), String> {
+    use std::collections::{HashMap, HashSet};
+    let mut graph = HashMap::new();
+    for host in hosts {
+        let id = host["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("主机 ID 无效")?;
+        if graph.insert(id, host).is_some() {
+            return Err("主机 ID 重复".into());
+        }
+    }
+    fn visit<'a>(
+        id: &'a str,
+        graph: &HashMap<&'a str, &'a Value>,
+        active: &mut HashSet<&'a str>,
+        done: &mut HashSet<&'a str>,
+    ) -> Result<(), String> {
+        if done.contains(id) {
+            return Ok(());
+        }
+        if !active.insert(id) {
+            return Err("跳板机链包含循环".into());
+        }
+        let host = graph
+            .get(id)
+            .ok_or_else(|| format!("跳板机不存在: {}", id))?;
+        if !host["jumpIds"].is_null() {
+            for jump in host["jumpIds"].as_array().ok_or("跳板机列表格式不正确")? {
+                let jump = jump
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or("跳板机 ID 无效")?;
+                visit(jump, graph, active, done)?;
+            }
+        }
+        active.remove(id);
+        done.insert(id);
+        Ok(())
+    }
+    let mut active = HashSet::new();
+    let mut done = HashSet::new();
+    for id in graph.keys() {
+        visit(id, &graph, &mut active, &mut done)?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn enc(&self, plain: &str, path: &str) -> String {
         if plain.is_empty() {
@@ -394,25 +472,47 @@ impl Store {
             return Err("主机地址不能为空".into());
         }
         let hosts = data["hosts"].as_array_mut().unwrap();
-        // 云导入幂等:provider+instanceId;编辑按 id
-        let cloud_match =
-            if !input["cloud"]["provider"].is_null() && !input["cloud"]["instanceId"].is_null() {
-                hosts.iter().position(|h| {
-                    h["cloud"]["provider"] == input["cloud"]["provider"]
-                        && h["cloud"]["instanceId"] == input["cloud"]["instanceId"]
-                })
-            } else {
-                None
-            };
         let by_id = input["id"]
             .as_str()
+            .filter(|id| !id.is_empty())
             .and_then(|id| hosts.iter().position(|h| h["id"] == *id));
-        let idx = by_id.or(cloud_match);
-        let (host, is_new) = match idx {
-            Some(i) => (hosts[i].clone(), false),
+        let idx = if by_id.is_some() {
+            by_id
+        } else {
+            cloud_match(hosts, &input["cloud"])?
+        };
+        // A cloud refresh owns IP/cloud metadata, not the user's login/preferences.
+        let preserve = idx.is_some() && by_id.is_none() && !input["cloud"].is_null();
+        let host = self.merge_host(input, idx.map(|i| &hosts[i]), preserve)?;
+        let mut candidate = hosts.clone();
+        match idx {
+            Some(i) => candidate[i] = host.clone(),
+            None => candidate.push(host.clone()),
+        }
+        validate_jump_graph(&candidate)?;
+        *hosts = candidate;
+        drop(data);
+        self.save()?;
+        self.public_host(host["id"].as_str().unwrap_or(""))
+            .ok_or_else(|| "保存后读取失败".into())
+    }
+
+    fn merge_host(
+        &self,
+        input: &Value,
+        existing: Option<&Value>,
+        preserve: bool,
+    ) -> Result<Value, String> {
+        let host_field = input["host"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("主机地址不能为空")?;
+        let (host, is_new) = match existing {
+            Some(host) => (host.clone(), false),
             None => {
                 let id = input["id"]
                     .as_str()
+                    .filter(|id| !id.is_empty())
                     .map(String::from)
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 (
@@ -433,64 +533,76 @@ impl Store {
             }
         };
         let mut host = host;
-        let merge = |host: &mut Value, key: &str, default: Value| {
-            if !input[key].is_null()
-                && (!input[key].is_string()
-                    || !input[key].as_str().unwrap_or("").is_empty()
-                    || key == "name")
-            {
-                host[key] = input[key].clone();
-            } else if is_new && host[key].is_null() {
-                host[key] = default;
-            }
-        };
-        if !input["name"].is_null() {
+        // Track a discovered name until the user edits it. Legacy/file-imported
+        // names have no baseline and are always preserved on cloud refresh.
+        if is_new
+            && input["id"].as_str().filter(|id| !id.is_empty()).is_none()
+            && !input["cloud"].is_null()
+        {
+            host["cloudImportedName"] = host["name"].clone();
+        } else if preserve
+            && host["cloudNameEdited"] != json!(true)
+            && !host["cloudImportedName"].is_null()
+            && host["name"] == host["cloudImportedName"]
+            && !input["name"].is_null()
+        {
             host["name"] = input["name"].clone();
+            host["cloudImportedName"] = input["name"].clone();
+        } else if !is_new && !preserve && !host["cloud"].is_null() && !input["name"].is_null() {
+            host["cloudNameEdited"] = json!(true);
         }
         host["host"] = json!(host_field);
-        if !input["port"].is_null() {
-            host["port"] = json!(input["port"].as_i64().unwrap_or(22));
-        }
-        if !input["username"].is_null() && !input["username"].as_str().unwrap_or("").is_empty() {
-            host["username"] = input["username"].clone();
-        }
-        if !input["authType"].is_null() {
-            host["authType"] = input["authType"].clone();
-        }
-        merge(&mut host, "group", json!(""));
-        if !input["tags"].is_null() {
-            host["tags"] = input["tags"].clone();
+        if !preserve {
+            for field in [
+                "name", "port", "username", "authType", "group", "tags", "keyPath", "jumpIds",
+                "initcmd",
+            ] {
+                if !input[field].is_null() {
+                    host[field] = input[field].clone();
+                }
+            }
         }
         if !input["cloud"].is_null() {
             host["cloud"] = input["cloud"].clone();
         }
-        if !input["keyPath"].is_null() {
-            host["keyPath"] = input["keyPath"].clone();
+        let clear = input["clearSecrets"].as_array();
+        if !input["clearSecrets"].is_null() && clear.is_none() {
+            return Err("clearSecrets 必须是凭据字段数组".into());
         }
-        if !input["jumpIds"].is_null() {
-            host["jumpIds"] = input["jumpIds"].clone();
-        }
-        if !input["initcmd"].is_null() {
-            host["initcmd"] = input["initcmd"].clone();
+        if let Some(fields) = clear {
+            if fields
+                .iter()
+                .any(|f| !matches!(f.as_str(), Some("password" | "privateKey" | "passphrase")))
+            {
+                return Err("不能清除未知凭据字段".into());
+            }
         }
         // 敏感字段:仅在提供非空值时更新
         for field in ["password", "privateKey", "passphrase"] {
             let plain = input[field].as_str().unwrap_or("");
-            if !plain.is_empty() {
+            let cipher_field = format!("{}Enc", field);
+            if clear
+                .map(|fields| fields.iter().any(|f| f == field))
+                .unwrap_or(false)
+            {
+                host[&cipher_field] = json!("");
+                host.as_object_mut().unwrap().remove(field);
+                if field == "privateKey" {
+                    host["keyPath"] = json!("");
+                }
+            } else if !plain.is_empty()
+                && (!preserve
+                    || self
+                        .dec(host[&cipher_field].as_str().unwrap_or(""))
+                        .is_empty())
+            {
                 let path = format!("hosts.{}.{}", host["id"].as_str().unwrap_or(""), field);
-                host[format!("{}Enc", field)] = json!(self.enc(plain, &path));
+                host[&cipher_field] = json!(self.enc(plain, &path));
             } else if is_new {
                 host[format!("{}Enc", field)] = json!("");
             }
         }
-        match idx {
-            Some(i) => hosts[i] = host.clone(),
-            None => hosts.push(host.clone()),
-        }
-        drop(data);
-        self.save()?;
-        self.public_host(&host["id"].as_str().unwrap_or(""))
-            .ok_or_else(|| "保存后读取失败".into())
+        Ok(host)
     }
 
     /// 公开形态(不含明文凭据,带 hasPassword/hasKey)
@@ -509,8 +621,16 @@ impl Store {
         let mut out = h.clone();
         out["hasPassword"] = json!(has("password"));
         out["hasKey"] = json!(has("privateKey"));
-        // 明文字段不出现在公开形态
-        for f in ["passwordEnc", "privateKeyEnc", "passphraseEnc"] {
+        out["hasPassphrase"] = json!(has("passphrase"));
+        // Never leak either encrypted or legacy plaintext credentials over IPC.
+        for f in [
+            "password",
+            "privateKey",
+            "passphrase",
+            "passwordEnc",
+            "privateKeyEnc",
+            "passphraseEnc",
+        ] {
             out.as_object_mut().unwrap().remove(f);
         }
         Some(out)
@@ -537,6 +657,11 @@ impl Store {
         let before = hosts.len() as i64;
         hosts.retain(|h| h["id"] != *id);
         let removed = before - hosts.len() as i64;
+        for host in hosts {
+            if let Some(jumps) = host["jumpIds"].as_array_mut() {
+                jumps.retain(|jump| jump != id);
+            }
+        }
         drop(data);
         self.save()?;
         Ok(removed)
@@ -574,8 +699,9 @@ impl Store {
                 .iter()
                 .map(|h| {
                     json!({
-                        "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
+                        "id": h["id"], "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
                         "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
+                        "jumpIds": h["jumpIds"], "initcmd": h["initcmd"], "cloud": h["cloud"],
                     })
                 })
                 .collect();
@@ -586,7 +712,7 @@ impl Store {
                     .iter()
                     .map(|h| {
                         json!({
-                            "host": h["host"], "port": h["port"], "username": h["username"],
+                            "id": h["id"], "host": h["host"], "port": h["port"], "username": h["username"],
                             "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
                             "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
                             "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
@@ -597,8 +723,9 @@ impl Store {
             (hosts, creds)
         };
 
+        validate_jump_graph(&hosts)?;
         let mut out = json!({
-            "app": "nebulashell", "version": 2,
+            "app": "nebulashell", "version": 3,
             "exportedAt": chrono::Utc::now().to_rfc3339(),
             "hosts": hosts,
             // 明确标记:本文件不含明文凭据
@@ -618,22 +745,39 @@ impl Store {
         Ok(out)
     }
 
-    /// 导入主机。兼容三种来源:
-    ///  - 旧版(v1)明文导出:凭据是明文,导入后按当前存储方式重新加密
-    ///  - 新版(v2)不带凭据:只导入主机信息
-    ///  - 新版(v2)带凭据:需提供口令解密 credentials
+    /// 导入 v1 明文、v2 端点凭据与 v3 完整拓扑导出。v3 先重映射 ID,
+    /// 校验所有跳板引用/循环后整体提交。重复项保留用户配置,仅补缺失凭据;
+    /// 加密凭据必须提供原导出口令。
     pub fn import_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
         let parsed: Value =
             serde_json::from_str(text).map_err(|_| "文件不是合法 JSON".to_string())?;
+        let version = parsed["version"].as_u64().unwrap_or(1);
+        if version > 3 {
+            return Err("不支持该主机导出版本".into());
+        }
         let items = if parsed.is_array() {
             parsed.as_array().unwrap().clone()
-        } else if !parsed["hosts"].is_null() {
-            parsed["hosts"].as_array().unwrap().clone()
         } else {
-            return Err("文件格式不对:需要 { hosts: [...] } 或主机数组".into());
+            parsed["hosts"]
+                .as_array()
+                .ok_or("文件格式不对:需要 { hosts: [...] } 或主机数组")?
+                .clone()
         };
+        let mut source_ids = std::collections::HashSet::new();
+        for item in &items {
+            if !item.is_object() || item["host"].as_str().unwrap_or("").trim().is_empty() {
+                return Err("导入主机地址不能为空".into());
+            }
+            if let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) {
+                if !source_ids.insert(id.to_owned()) {
+                    return Err("导入文件主机 ID 重复".into());
+                }
+            } else if version >= 3 {
+                return Err("导入文件缺少主机 ID".into());
+            }
+        }
 
-        // 凭据表:host:port:user -> {password, privateKey, passphrase}
+        // v3 credentials are keyed by source ID; v1/v2 use host:port:user.
         let mut creds: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
         let mut legacy_plaintext = false;
 
@@ -647,70 +791,170 @@ impl Store {
             let list: Vec<Value> = serde_json::from_slice(&plain)
                 .map_err(|_| "凭据内容解析失败(口令是否正确?)".to_string())?;
             for c in &list {
-                creds.insert(cred_key(c), c.clone());
+                let key = if version >= 3 {
+                    c["id"].as_str().ok_or("凭据缺少主机 ID")?.to_owned()
+                } else {
+                    cred_key(c)
+                };
+                if creds.insert(key, c.clone()).is_some() {
+                    return Err("凭据身份重复".into());
+                }
             }
         }
 
-        // 锁内筛选,锁外逐条保存(save_host 需要拿锁)
-        let payloads: Vec<Value> = {
-            let data = self.data.lock().unwrap();
-            let hosts = data["hosts"].as_array().unwrap();
-            let mut payloads = vec![];
-            for it in &items {
-                let host = it["host"].as_str().unwrap_or("");
-                if host.is_empty() {
-                    continue;
-                }
-                let dup = hosts.iter().any(|h| {
-                    h["host"].as_str().unwrap_or("").to_lowercase() == host.to_lowercase()
-                        && h["port"].as_i64().unwrap_or(22) == it["port"].as_i64().unwrap_or(22)
-                        && h["username"].as_str().unwrap_or("root").to_lowercase()
-                            == it["username"].as_str().unwrap_or("root").to_lowercase()
-                });
-                if dup {
-                    continue;
-                }
-                let mut payload = it.clone();
-                payload["id"] = json!(null);
-                payload["host"] = json!(host);
-                // 旧版明文导出:v1 的凭据直接挂在主机对象上
-                let has_inline = ["password", "privateKey", "passphrase"]
-                    .iter()
-                    .any(|f| !it[*f].is_null() && it[*f].as_str().unwrap_or("") != "");
-                if has_inline {
-                    legacy_plaintext = true;
-                } else {
-                    // 用新版凭据表补上
-                    if let Some(c) = creds.get(&cred_key(it)) {
-                        for f in ["password", "privateKey", "passphrase"] {
-                            if payload[f].is_null() {
-                                payload[f] = c[f].clone();
-                            }
-                        }
+        // Stage a complete transaction: resolve every ID before validating jumps,
+        // and never leave a partially imported graph after a bad file.
+        let mut data = self.data.lock().unwrap();
+        let mut staged = data["hosts"].as_array().ok_or("主机列表损坏")?.clone();
+        let mut remap = std::collections::HashMap::new();
+        let mut claimed = std::collections::HashSet::new();
+        let mut plans = Vec::new();
+        let mut added = 0;
+        for item in &items {
+            let source = item["id"].as_str().filter(|id| !id.is_empty());
+            let by_source = source.and_then(|id| {
+                staged.iter().position(|h| {
+                    h["importSourceId"] == id
+                        || h["id"] == id
+                        || h["importSourceIds"]
+                            .as_array()
+                            .map(|ids| ids.iter().any(|source| source == id))
+                            .unwrap_or(false)
+                })
+            });
+            let by_cloud = if by_source.is_some() {
+                None
+            } else {
+                cloud_match(&staged, &item["cloud"])?
+            };
+            let endpoints: Vec<usize> = staged
+                .iter()
+                .enumerate()
+                .filter(|(i, h)| {
+                    !claimed.contains(i)
+                        && cred_key(h) == cred_key(item)
+                        && (item["cloud"].is_null() || h["cloud"].is_null())
+                })
+                .map(|(i, _)| i)
+                .collect();
+            // Never collapse two independent v3 cloud identities merely because
+            // they currently share an IP/login tuple.
+            let by_endpoint = if endpoints.len() == 1 {
+                Some(endpoints[0])
+            } else {
+                None
+            };
+            let (idx, is_new) = match by_source.or(by_cloud).or(by_endpoint) {
+                Some(i) => (i, false),
+                None => {
+                    let i = staged.len();
+                    let mut payload = item.clone();
+                    payload["id"] = json!(uuid::Uuid::new_v4().to_string());
+                    payload["jumpIds"] = json!([]);
+                    payload.as_object_mut().unwrap().remove("clearSecrets");
+                    for f in ["password", "privateKey", "passphrase"] {
+                        payload.as_object_mut().unwrap().remove(f);
                     }
-                    // v1 也可能把凭据放在 credentials 之外的明文位置,这里不再猜测。
+                    let mut host = self.merge_host(&payload, None, false)?;
+                    if let Some(source) = source {
+                        host["importSourceId"] = json!(source);
+                    }
+                    staged.push(host);
+                    added += 1;
+                    (i, true)
                 }
-                payloads.push(payload);
+            };
+            if let Some(source) = source {
+                remap.insert(source.to_owned(), staged[idx]["id"].clone());
+                // Remember source identity even when the first import matched a
+                // local host. Later user edits to IP/login must not create a new
+                // host when reimporting its encrypted credentials.
+                if staged[idx]["importSourceIds"].is_null() {
+                    staged[idx]["importSourceIds"] = json!([]);
+                }
+                let ids = staged[idx]["importSourceIds"]
+                    .as_array_mut()
+                    .ok_or("导入身份记录损坏")?;
+                if !ids.iter().any(|id| id == source) {
+                    ids.push(json!(source));
+                }
             }
-            payloads
-        };
-        let skipped = items.len() - payloads.len();
-        // 计算实际恢复了多少条凭据(用于给用户明确反馈)
-        let with_cred = payloads
-            .iter()
-            .filter(|p| {
-                ["password", "privateKey", "passphrase"]
-                    .iter()
-                    .any(|f| p[*f].as_str().map(|s| !s.is_empty()).unwrap_or(false))
-            })
-            .count();
-        for payload in &payloads {
-            self.save_host(payload)?;
+            claimed.insert(idx);
+            plans.push((idx, is_new));
         }
+        let mut updated_hosts = std::collections::HashSet::new();
+        let mut credential_hosts = std::collections::HashSet::new();
+        let mut credentials_filled = 0;
+        let mut imported_graph = Vec::new();
+        for (item, (idx, is_new)) in items.iter().zip(plans) {
+            let mut jumps = Vec::new();
+            if !item["jumpIds"].is_null() {
+                for jump in item["jumpIds"].as_array().ok_or("跳板机列表格式不正确")? {
+                    let source = jump.as_str().ok_or("跳板机 ID 无效")?;
+                    jumps.push(
+                        remap
+                            .get(source)
+                            .cloned()
+                            .ok_or_else(|| format!("导入文件含悬空跳板机: {}", source))?,
+                    );
+                }
+            }
+            let mut graph_host = staged[idx].clone();
+            graph_host["jumpIds"] = json!(jumps);
+            imported_graph.push(graph_host);
+            if is_new {
+                staged[idx]["jumpIds"] = json!(jumps);
+            }
+            let credential_key = if version >= 3 {
+                item["id"].as_str().unwrap_or("").to_owned()
+            } else {
+                cred_key(item)
+            };
+            let encrypted = creds.get(&credential_key);
+            for field in ["password", "privateKey", "passphrase"] {
+                let inline = item[field].as_str().filter(|s| !s.is_empty());
+                if inline.is_some() {
+                    legacy_plaintext = true;
+                }
+                let plain = inline
+                    .or_else(|| encrypted.and_then(|c| c[field].as_str()))
+                    .unwrap_or("");
+                let cipher = format!("{}Enc", field);
+                // Default repeat import only fills a missing secret. Existing
+                // credentials/preferences are never silently replaced.
+                if !plain.is_empty()
+                    && self
+                        .dec(staged[idx][&cipher].as_str().unwrap_or(""))
+                        .is_empty()
+                {
+                    staged[idx][&cipher] = json!(self.enc(
+                        plain,
+                        &format!(
+                            "hosts.{}.{}",
+                            staged[idx]["id"].as_str().unwrap_or(""),
+                            field
+                        )
+                    ));
+                    credential_hosts.insert(idx);
+                    if !is_new {
+                        updated_hosts.insert(idx);
+                        credentials_filled += 1;
+                    }
+                }
+            }
+        }
+        validate_jump_graph(&imported_graph)?;
+        validate_jump_graph(&staged)?;
+        let updated = updated_hosts.len();
+        data["hosts"] = json!(staged);
+        drop(data);
+        self.save()?;
         Ok(json!({
-            "added": payloads.len(),
-            "skipped": skipped,
-            "withCredentials": with_cred,
+            "added": added,
+            "updated": updated,
+            "skipped": items.len().saturating_sub(added + updated),
+            "withCredentials": credential_hosts.len(),
+            "credentialsFilled": credentials_filled,
             "legacyPlaintext": legacy_plaintext,
         }))
     }
@@ -870,6 +1114,36 @@ impl Store {
         }
         if let Some(ai) = patch["ai"].as_object() {
             let out = &mut data["settings"]["ai"];
+            let normalize = |value: &Value| {
+                value
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_owned()
+            };
+            let endpoint_changed = ai
+                .get("baseUrl")
+                .filter(|v| !v.is_null())
+                .map(|url| normalize(url) != normalize(&out["baseUrl"]))
+                .unwrap_or(false)
+                || ai
+                    .get("protocol")
+                    .filter(|v| !v.is_null())
+                    .map(|protocol| {
+                        protocol.as_str().unwrap_or("openai")
+                            != out["protocol"].as_str().unwrap_or("openai")
+                    })
+                    .unwrap_or(false);
+            if ai
+                .get("clearApiKey")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || endpoint_changed
+            {
+                out["apiKeyEnc"] = json!("");
+                out.as_object_mut().unwrap().remove("apiKey");
+            }
             for k in ["provider", "protocol", "baseUrl", "model"] {
                 if let Some(v) = ai.get(k) {
                     if !v.is_null() {
@@ -886,7 +1160,12 @@ impl Store {
             }
             if let Some(v) = ai.get("apiKey") {
                 let plain = v.as_str().unwrap_or("");
-                if !plain.is_empty() {
+                if !plain.is_empty()
+                    && !ai
+                        .get("clearApiKey")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
                     out["apiKeyEnc"] = json!(self.enc(plain, "settings.ai.apiKey"));
                 }
             }

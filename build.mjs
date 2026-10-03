@@ -21,5 +21,7 @@ await build({
 
 await cp(path.join(root, 'src/index.html'), path.join(dist, 'index.html'));
 await cp(path.join(root, 'src/nebula-shim.js'), path.join(dist, 'nebula-shim.js'));
+// AI 头像引用的应用图标(单一来源:src-tauri/icons/icon.svg,勿在 JS 里复制)
+await cp(path.join(root, 'src-tauri/icons/icon.svg'), path.join(dist, 'icon.svg'));
 
 console.log('[build] frontend -> dist/');

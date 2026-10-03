@@ -1,5 +1,5 @@
 // SFTP 文件面板:列目录、上传下载、权限、书签
-import { $, api, askConfirm, copyText, showCtxMenu, state, toast } from './core.js';
+import { $, api, askConfirm, copyText, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 
 export function fileParent(p) {
   const trimmed = String(p || '/').replace(/\/+$/, '');
@@ -78,9 +78,9 @@ function renderFileNav() {
   const fwd = $('#btn-file-forward');
   const up = $('#btn-file-up');
   if (!back || !fwd || !up) return;
-  back.disabled = f.histIdx <= 0;
-  fwd.disabled = f.histIdx < 0 || f.histIdx >= f.hist.length - 1;
-  up.disabled = !f.cwd || fileParent(f.cwd) === f.cwd;
+  back.disabled = f.loading || f.histIdx <= 0;
+  fwd.disabled = f.loading || f.histIdx < 0 || f.histIdx >= f.hist.length - 1;
+  up.disabled = f.loading || !f.cwd || fileParent(f.cwd) === f.cwd;
   back.title = f.histIdx > 0 ? `后退到 ${f.hist[f.histIdx - 1]}` : '后退(没有更早的目录)';
   fwd.title = f.histIdx >= 0 && f.histIdx < f.hist.length - 1 ? `前进到 ${f.hist[f.histIdx + 1]}` : '前进(没有更晚的目录)';
   up.title = f.cwd ? `上一级:${fileParent(f.cwd)}` : '上一级';
@@ -89,16 +89,14 @@ function renderFileNav() {
 /// 后退:只在历史数组里移动游标,不再入栈(record=false)。
 export function fileNavBack() {
   const f = state.file;
-  if (f.histIdx <= 0) return;
-  f.histIdx -= 1;
-  loadFileDir(f.hist[f.histIdx], { record: false });
+  if (f.loading || f.histIdx <= 0) return;
+  return loadFileDir(f.hist[f.histIdx - 1], { record: false, historyIndex: f.histIdx - 1 });
 }
 
 export function fileNavForward() {
   const f = state.file;
-  if (f.histIdx < 0 || f.histIdx >= f.hist.length - 1) return;
-  f.histIdx += 1;
-  loadFileDir(f.hist[f.histIdx], { record: false });
+  if (f.loading || f.histIdx < 0 || f.histIdx >= f.hist.length - 1) return;
+  return loadFileDir(f.hist[f.histIdx + 1], { record: false, historyIndex: f.histIdx + 1 });
 }
 
 /// 上一级:与列表里的「..」行同源(fileParent);已在根目录时无事发生。
@@ -115,20 +113,25 @@ export function fileNavUp() {
 export function openFileCtxMenu(x, y, en) {
   const s = filePanelSession();
   const connected = !!s;
-  const full = (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name;
+  const target = snapshotFileTarget();
+  const full = state.file.cwd ? remoteEntryPath(state.file.cwd, en.name) : en.name;
+  const guarded = (run) => () => {
+    if (!isFileTargetCurrent(target)) return toast('目录已切换,请重新选择目标', 'error');
+    return run();
+  };
   showCtxMenu(x, y, [
     // 首项 = 打开:目录进面板;文件下载临时副本后交系统默认程序(见 openRemoteEntry)
     en.dir
-      ? { label: '打开目录', disabled: !connected, run: () => loadFileDir(full) }
-      : { label: '打开(临时副本)', disabled: !connected, run: () => openRemoteEntry(en) },
-    ...(en.dir ? [] : [{ label: '下载…', disabled: !connected, run: () => downloadEntry(en) }]),
-    { label: '重命名…', disabled: !connected, run: () => startRename(en) },
-    { label: '权限…', disabled: !connected, run: () => startChmod(en) },
+      ? { label: '打开目录', disabled: !connected, run: guarded(() => loadFileDir(full, { sessionId: target.sessionId })) }
+      : { label: '打开(临时副本)', disabled: !connected, run: guarded(() => openRemoteEntry(en)) },
+    ...(en.dir ? [] : [{ label: '下载…', disabled: !connected, run: guarded(() => downloadEntry(en)) }]),
+    { label: '重命名…', disabled: !connected, run: guarded(() => startRename(en)) },
+    { label: '权限…', disabled: !connected, run: guarded(() => startChmod(en)) },
     '-',
     { label: '复制名称', run: () => { copyText(en.name).then((ok) => toast(ok ? '已复制名称' : '复制失败', ok ? 'success' : 'error')); } },
     { label: '复制完整路径', run: () => { copyText(full).then((ok) => toast(ok ? '已复制路径' : '复制失败', ok ? 'success' : 'error')); } },
     '-',
-    { label: en.dir ? '删除目录' : '删除文件', danger: true, disabled: !connected, run: () => removeEntry(en) },
+    { label: en.dir ? '删除目录' : '删除文件', danger: true, disabled: !connected, run: guarded(() => removeEntry(en)) },
   ]);
 }
 
@@ -141,15 +144,17 @@ export async function downloadEntry(en) {
   if (!en) en = state.file.entries.find((x) => x.name === state.file.selected);
   if (!en) return toast('请先选择要下载的文件', 'error');
   if (en.dir) return toast('目录不支持直接下载,请进入目录后再选择文件', 'error');
+  const target = snapshotFileTarget();
+  const remotePath = remoteEntryPath(target.cwd, en.name);
   const localPath = await api('dialog:saveFile', { defaultName: en.name });
   if (!localPath) return;
-  $('#file-status').textContent = `下载 ${en.name}…`;
+  setFileStatus(target, `下载 ${en.name}…`);
   try {
-    await api('sftp:download', { sessionId: s.sessionId, remotePath: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name, localPath });
-    $('#file-status').textContent = `已保存到 ${localPath}`;
+    await api('sftp:download', { sessionId: target.sessionId, remotePath, localPath });
+    setFileStatus(target, `已保存到 ${localPath}`);
     toast('下载完成', 'success');
   } catch (e) {
-    $('#file-status').textContent = '下载失败：' + e.message;
+    setFileStatus(target, '下载失败：' + e.message);
     toast('下载失败：' + e.message, 'error');
   }
 }
@@ -167,15 +172,16 @@ export async function openRemoteEntry(en) {
   if (!en) en = state.file.entries.find((x) => x.name === state.file.selected);
   if (!en) return toast('请先选择要打开的文件', 'error');
   if (en.dir) return toast('目录请双击进入,不支持直接打开', 'error');
-  const full = (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name;
-  $('#file-status').textContent = `打开 ${en.name}:下载临时副本…`;
+  const target = snapshotFileTarget();
+  const full = remoteEntryPath(target.cwd, en.name);
+  setFileStatus(target, `打开 ${en.name}:下载临时副本…`);
   try {
     const r = await api('sftp:openRemote', { sessionId: s.sessionId, remotePath: full });
-    state.file.lastOpen = r || null; // e2e 断言用:临时副本的实际落盘路径
-    if (state.file.sessionId === s.sessionId) $('#file-status').textContent = `已用本地程序打开 ${en.name}`;
+    if (isFileTargetCurrent(target)) state.file.lastOpen = r || null;
+    setFileStatus(target, `已用本地程序打开 ${en.name}`);
     toast(`已用本地程序打开 ${en.name}`, 'success');
   } catch (e) {
-    $('#file-status').textContent = `打开失败：${e.message}`;
+    setFileStatus(target, `打开失败：${e.message}`);
     toast('打开失败：' + e.message, 'error');
   }
 }
@@ -183,7 +189,9 @@ export async function openRemoteEntry(en) {
 /// 进入"重命名"态:复用新建文件夹那一行的输入框,由 renameMode 区分语义
 export function startRename(en) {
   if (!en) return toast('请先选中文件或目录', 'error');
-  state.file.renameMode = { from: en.name };
+  const target = snapshotFileTarget();
+  if (!target) return toast('请先连接并打开目录', 'error');
+  state.file.renameMode = { from: en.name, ...target };
   $('#file-mkdir-row').classList.remove('hidden');
   $('#file-mkdir-name').placeholder = `重命名为(原名 ${en.name})`;
   $('#file-mkdir-name').value = en.name;
@@ -191,10 +199,37 @@ export function startRename(en) {
   $('#file-mkdir-name').select();
 }
 
+/// Entry's shared mkdir/rename submit handler calls this only in rename mode.
+/// The original target is immutable even if navigation happens while awaiting IPC.
+export async function commitFileRename(name) {
+  const target = state.file.renameMode;
+  if (!target || !isFileTargetCurrent(target)) throw new Error('目录已切换,请重新选择重命名目标');
+  if (!validEntryName(name)) throw new Error('名称不能为空、包含路径分隔符或为 . / ..');
+  await api('sftp:rename', {
+    sessionId: target.sessionId,
+    from: remoteEntryPath(target.cwd, target.from),
+    to: remoteEntryPath(target.cwd, name),
+  });
+  if (state.file.renameMode === target) {
+    state.file.renameMode = null;
+    $('#file-mkdir-row').classList.add('hidden');
+    $('#file-mkdir-name').value = '';
+  }
+  await refreshFileTarget(target);
+  return true;
+}
+
+export function validEntryName(name) {
+  return typeof name === 'string' && !!name.trim() && name !== '.' && name !== '..'
+    && !/[\/\\\0]/.test(name);
+}
+
 /// 进入"改权限"态
 export function startChmod(en) {
   if (!en) return toast('请先选中文件或目录', 'error');
-  state.file.chmodTarget = en;
+  const target = snapshotFileTarget();
+  if (!target) return toast('请先连接并打开目录', 'error');
+  state.file.chmodTarget = { ...en, ...target };
   $('#file-chmod-row').classList.remove('hidden');
   $('#file-chmod-octal').value = en.dir ? '0755' : '0644';
 }
@@ -205,11 +240,13 @@ export async function removeEntry(en) {
   if (!s) return toast('请先连接主机', 'error');
   if (!en) en = state.file.entries.find((x) => x.name === state.file.selected);
   if (!en) return toast('请先选择要删除的项', 'error');
+  const target = snapshotFileTarget();
+  const path = remoteEntryPath(target.cwd, en.name);
   if (!(await askConfirm(`确定删除「${en.name}」吗？${en.dir ? '目录必须为空才能删除。' : ''}`, { title: en.dir ? '删除目录' : '删除文件', okText: '删除' }))) return;
   try {
-    await api('sftp:remove', { sessionId: s.sessionId, path: (state.file.cwd === '/' ? '' : state.file.cwd) + '/' + en.name, isDir: en.dir });
+    await api('sftp:remove', { sessionId: target.sessionId, path, isDir: en.dir });
     toast('已删除', 'success');
-    loadFileDir(state.file.cwd);
+    await refreshFileTarget(target);
   } catch (e) {
     toast('删除失败：' + e.message, 'error');
   }
@@ -231,6 +268,7 @@ export async function renderFileBookmarks() {
   if (!s) return;
   let list = [];
   try { list = await api('bookmarks:list'); } catch { return; }
+  if (filePanelSession()?.sessionId !== s.sessionId) return;
   const mine = (list || []).filter((b) => b.hostId === s.host.id);
   if (!mine.length) return;
   for (const b of mine) {
@@ -253,7 +291,7 @@ export async function renderFileBookmarks() {
   }
 }
 
-/// 收藏当前目录(工具栏的 ★ 已移除,改由路径栏右键触发)
+/// 收藏当前主机目录。
 export async function addBookmark() {
   const s = filePanelSession();
   if (!s || !state.file.cwd) return toast('请先连接并打开目录', 'error');
@@ -266,35 +304,105 @@ export async function addBookmark() {
 
 /// 把一组本地绝对路径上传到当前目录(拖拽与文件选择共用)。
 /// remoteDir 用面板当前目录:拖到面板 = 传到"我正在看的目录"。
-export async function uploadLocalPaths(paths) {
-  const list = (paths || []).filter(Boolean);
-  if (!list.length) return;
-  const s = filePanelSession();
-  if (!s) return toast('请先连接主机', 'error');
-  if (!state.file.cwd) return toast('请先打开一个远程目录', 'error');
-  let okCount = 0;
-  for (const p of list) {
-    const name = p.split('/').pop();
-    $('#file-status').textContent = `上传 ${name}…`;
+let uploadQueue = Promise.resolve();
+
+/// A DOM-created conflict sheet needs no shared HTML changes. Closing = cancel.
+export function chooseUploadConflict(name, target) {
+  return new Promise((resolve) => {
+    const sheet = document.createElement('dialog');
+    sheet.id = 'upload-conflict-dialog';
+    sheet.className = 'upload-conflict';
+    sheet.innerHTML = '<h3>上传同名文件</h3><p></p><label><input type="checkbox" id="upload-conflict-all"> 对此队列的后续冲突使用相同策略</label><div class="modal-foot"></div>';
+    const session = state.sessions.get(target.sessionId);
+    const host = session?.host;
+    const label = host ? `${host.username}@${host.host}:${host.port}` : target.sessionId;
+    sheet.querySelector('p').textContent = `目标 ${label} 的 ${target.cwd} 中已存在「${name}」。默认不覆盖。`;
+    let finished = false;
+    const finish = (policy) => {
+      if (finished) return;
+      finished = true;
+      const applyToAll = sheet.querySelector('input').checked;
+      sheet.close();
+      sheet.remove();
+      resolve({ policy, applyToAll });
+    };
+    for (const [policy, label] of [['skip', '跳过(默认)'], ['overwrite', '覆盖'], ['rename', '自动重命名'], ['cancel', '取消剩余队列']]) {
+      const button = document.createElement('button');
+      button.className = 'btn' + (policy === 'overwrite' ? ' danger' : '');
+      button.textContent = label;
+      button.dataset.policy = policy;
+      button.addEventListener('click', () => finish(policy));
+      sheet.querySelector('.modal-foot').appendChild(button);
+    }
+    sheet.addEventListener('cancel', (e) => { e.preventDefault(); finish('cancel'); });
+    sheet.addEventListener('close', () => finish('cancel'));
+    setModalDismissHandler(sheet, () => finish('cancel'));
+    document.body.appendChild(sheet);
+    sheet.showModal();
+    sheet.querySelector('button').focus();
+  });
+}
+
+export function uploadLocalPaths(paths, target = snapshotFileTarget()) {
+  const list = [...(paths || [])].filter(Boolean);
+  if (!list.length) return Promise.resolve([]);
+  if (!target) { toast('请先连接并打开远程目录', 'error'); return Promise.resolve([]); }
+  // Snapshot before queuing or opening dialogs, never read cwd inside the loop.
+  const snapshot = Object.freeze({ sessionId: target.sessionId, cwd: target.cwd });
+  const task = uploadQueue.then(() => runUploadQueue(list, snapshot));
+  uploadQueue = task.catch(() => {});
+  return task;
+}
+
+async function runUploadQueue(paths, target) {
+  const results = [];
+  let allPolicy = null;
+  let cancelled = false;
+  for (const localPath of paths) {
+    const name = localPath.split(/[\/\\]/).pop();
+    if (cancelled) { results.push({ localPath, cancelled: true }); continue; }
+    setFileStatus(target, `上传 ${name}…`);
     try {
-      await api('sftp:upload', { sessionId: s.sessionId, localPath: p, remoteDir: state.file.cwd });
-      okCount += 1;
-      $('#file-status').textContent = `已上传 ${name}`;
+      let conflictPolicy = allPolicy || 'error';
+      let result = await api('sftp:upload', { sessionId: target.sessionId, localPath, remoteDir: target.cwd, conflictPolicy });
+      if (result?.conflict) {
+        const choice = await chooseUploadConflict(name, target);
+        if (choice.policy === 'cancel') {
+          cancelled = true;
+          results.push({ localPath, cancelled: true });
+          continue;
+        }
+        conflictPolicy = choice.policy;
+        if (choice.applyToAll) allPolicy = conflictPolicy;
+        result = await api('sftp:upload', { sessionId: target.sessionId, localPath, remoteDir: target.cwd, conflictPolicy });
+      }
+      // Older backends may still return conflict after a policy request; never call it success.
+      if (result?.conflict) throw new Error('目标仍有同名文件,未上传');
+      results.push({ localPath, ...result, ok: !result?.skipped });
+      setFileStatus(target, result?.skipped ? `已跳过 ${name}` : `已上传 ${result?.remotePath || name}`);
     } catch (e) {
-      $('#file-status').textContent = `上传失败(${name})：${e.message}`;
+      results.push({ localPath, error: e.message, ok: false });
+      setFileStatus(target, `上传失败(${name})：${e.message}`);
       toast(`上传失败(${name})：${e.message}`, 'error');
     }
   }
-  if (okCount) toast(`已上传 ${okCount} 个文件`, 'success');
-  loadFileDir(state.file.cwd);
+  const okCount = results.filter((r) => r.ok).length;
+  const skipped = results.filter((r) => r.skipped).length;
+  const failed = results.filter((r) => r.error).length;
+  const cancelledCount = results.filter((r) => r.cancelled).length;
+  const summary = `上传完成:${okCount} 成功 / ${skipped} 跳过 / ${failed} 失败 / ${cancelledCount} 取消`;
+  await refreshFileTarget(target);
+  setFileStatus(target, summary);
+  toast(summary, failed ? 'error' : 'success');
+  return results;
 }
 
 export async function fileUpload() {
-  const s = filePanelSession();
-  if (!s) return toast('请先连接主机', 'error');
+  const target = snapshotFileTarget();
+  if (!target) return toast('请先连接并打开目录', 'error');
   const paths = await api('dialog:pickAnyFile');
   if (!paths || !paths.length) return;
-  await uploadLocalPaths(paths);
+  return uploadLocalPaths(paths, target);
 }
 
 /// 文件面板的目标会话。
@@ -303,14 +411,62 @@ export async function fileUpload() {
 /// 否则切标签后会出现"看着 A 的目录、操作落到 B"的误删风险。
 export function filePanelSession() {
   const s = state.file.sessionId ? state.sessions.get(state.file.sessionId) : null;
-  return s && s.status === 'connected' ? s : null;
+  return s && s.status === 'connected' && s.sessionId === state.activeId
+    && !state.file.loading && state.file.cwd ? s : null;
+}
+
+export function remoteEntryPath(cwd, name) {
+  return (cwd === '/' ? '' : cwd.replace(/\/+$/, '')) + '/' + name;
+}
+
+export function snapshotFileTarget() {
+  const s = filePanelSession();
+  return s ? Object.freeze({ sessionId: s.sessionId, cwd: state.file.cwd }) : null;
+}
+
+export function isFileTargetCurrent(target) {
+  return !!target && filePanelSession()?.sessionId === target.sessionId && state.file.cwd === target.cwd;
+}
+
+function setFileStatus(target, text) {
+  if (isFileTargetCurrent(target)) $('#file-status').textContent = text;
+}
+
+async function refreshFileTarget(target) {
+  if (isFileTargetCurrent(target)) await loadFileDir(target.cwd, { sessionId: target.sessionId });
+}
+
+let fileLoadGeneration = 0;
+
+/// Call synchronously when following a new session, BEFORE awaiting initialFileDir.
+/// No new session identifier is ever paired with the previous session's cwd.
+export function beginFilePanelSession(s) {
+  fileLoadGeneration += 1;
+  Object.assign(state.file, {
+    sessionId: null, cwd: null, entries: [], selected: null, renameMode: null,
+    chmodTarget: null, hist: [], histIdx: -1, histSid: null,
+    pendingSessionId: s?.sessionId || null, loading: !!s,
+  });
+  for (const id of ['#file-mkdir-row', '#file-chmod-row']) $(id)?.classList.add('hidden');
+  $('#file-bookmarks')?.replaceChildren();
+  renderFileList();
+  $('#file-list').innerHTML = `<div class="file-empty">${s ? '加载中…' : '请先连接主机'}</div>`;
+  $('#file-status').textContent = s ? '加载中…' : '';
+  renderFileTarget();
+  return fileLoadGeneration;
 }
 
 /// 渲染面板的服务器标识(标题下方),让用户明确当前操作对象
 export function renderFileTarget() {
   const el = $('#file-target');
   if (!el) return;
+  const pending = state.file.pendingSessionId ? state.sessions.get(state.file.pendingSessionId) : null;
   const s = filePanelSession();
+  if (state.file.loading && pending && pending.sessionId === state.activeId) {
+    el.textContent = `${pending.host.username}@${pending.host.host}:${pending.host.port} · 加载中(操作禁用)`;
+    el.classList.remove('warn');
+    return;
+  }
   if (!s) {
     const active = state.sessions.get(state.activeId);
     el.textContent = active && active.status === 'connected' ? '未选择目录(点刷新加载)' : '未连接';
@@ -324,40 +480,37 @@ export function renderFileTarget() {
 
 export async function loadFileDir(dir, opts = {}) {
   const s = activeConnectedSession();
-  if (!s) {
-    state.file.sessionId = null;
-    state.file.cwd = null;
-    state.file.entries = [];
-    $('#file-list').innerHTML = '<div class="file-empty">请先连接主机</div>';
-    const pathEl = $('#file-path');
-    pathEl.value = '';
-    pathEl.disabled = true;
-    renderFileTarget();
-    renderFileNav();
-    return;
-  }
-  // 记录本次列表属于哪个会话:操作时以此为准,避免切标签后张冠李戴
-  state.file.sessionId = s.sessionId;
-  // 换了目标会话:导航历史整体作废 —— 历史里是另一台机器的路径,
-  // 后退过去只会张冠李戴。
-  if (state.file.histSid !== s.sessionId) {
-    state.file.histSid = s.sessionId;
-    state.file.hist = [];
-    state.file.histIdx = -1;
-  }
+  // Async cwd probes must pass their originating session, never fall onto a new tab.
+  if (opts.sessionId && opts.sessionId !== s?.sessionId) return false;
+  if (!s) { beginFilePanelSession(null); return false; }
+  if (state.file.sessionId !== s.sessionId) beginFilePanelSession(s);
+  const generation = ++fileLoadGeneration;
+  state.file.loading = true;
+  state.file.pendingSessionId = s.sessionId;
+  $('#file-path').disabled = true;
   renderFileTarget();
+  renderFileNav();
   $('#file-status').textContent = '加载中…';
+  const isCurrent = () => generation === fileLoadGeneration && state.activeId === s.sessionId && s.status === 'connected';
   try {
     const r = await api('sftp:list', { sessionId: s.sessionId, path: dir });
-    // 期间用户可能已切换会话:丢弃过期响应,避免把旧服务器的目录画到新目标上
-    if (state.file.sessionId !== s.sessionId) return;
-    state.file.cwd = r.path;
-    state.file.entries = r.entries;
-    state.file.selected = null;
-    s.lastFileDir = r.path; // 记住各会话的最后目录,切回时恢复到原处
-    // 导航历史:只记成功列出的目录;record=false 表示本次是后退/前进在移动
-    // 游标,不能截断"未来"。刷新/重复进入同一目录不产生新条目。
-    if (opts.record !== false && state.file.hist[state.file.histIdx] !== r.path) {
+    if (!isCurrent()) return false;
+    if (!r || typeof r.path !== 'string' || !r.path.startsWith('/') || !Array.isArray(r.entries)) throw new Error('目录响应无效');
+    // Commit identity, cwd, entries and history in one synchronous transaction.
+    if (state.file.histSid !== s.sessionId) {
+      state.file.hist = [];
+      state.file.histIdx = -1;
+      state.file.histSid = s.sessionId;
+    }
+    Object.assign(state.file, {
+      sessionId: s.sessionId, cwd: r.path, entries: r.entries, selected: null,
+      loading: false, pendingSessionId: null, renameMode: null, chmodTarget: null,
+    });
+    for (const id of ['#file-mkdir-row', '#file-chmod-row']) $(id)?.classList.add('hidden');
+    s.lastFileDir = r.path;
+    if (opts.record === false && Number.isInteger(opts.historyIndex)) {
+      state.file.histIdx = opts.historyIndex;
+    } else if (opts.record !== false && state.file.hist[state.file.histIdx] !== r.path) {
       state.file.hist = state.file.hist.slice(0, state.file.histIdx + 1);
       state.file.hist.push(r.path);
       if (state.file.hist.length > 50) state.file.hist = state.file.hist.slice(-50);
@@ -365,14 +518,20 @@ export async function loadFileDir(dir, opts = {}) {
     }
     renderFileList();
     renderFileTarget();
-    // 书签按主机过滤渲染:换主机后必须重画,否则会拿 A 的路径跳到 B
     renderFileBookmarks().catch(() => {});
     $('#file-status').textContent = '';
+    return true;
   } catch (e) {
-    if (state.file.sessionId !== s.sessionId) return;
+    if (!isCurrent()) return false;
+    state.file.loading = false;
+    state.file.pendingSessionId = null;
+    // Same-session failure keeps the previous committed cwd/history. New-session
+    // failure has no committed target and cannot enable destructive operations.
+    renderFileList();
+    if (!state.file.cwd) $('#file-list').innerHTML = '<div class="file-empty">目录加载失败,请刷新重试</div>';
+    renderFileTarget();
     $('#file-status').textContent = '加载失败：' + e.message;
-    // 失败不入历史(游标没动),但按钮态要回到与当前目录一致
-    renderFileNav();
+    return false;
   }
 }
 

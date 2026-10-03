@@ -69,10 +69,15 @@ export async function startMockCloudServer() {
       }
       calls.tencent++; calls.tencentAuthOk++;
       if (action === 'DescribeRegions') {
-        res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', RegionSet: [
-          { Region: 'ap-guangzhou', RegionName: '广州', RegionState: 'AVAILABLE' },
-          { Region: 'ap-shanghai', RegionName: '上海', RegionState: 'AVAILABLE' },
-        ] } }));
+        // 回归:CVM 与轻量的地域表不保证一致 —— 轻量只覆盖广州。
+        // 校验/拉取必须按"两表并集"扫描:沿用单表会漏地域或扫错服务。
+        const regions = svc === 'lighthouse'
+          ? [{ Region: 'ap-guangzhou', RegionName: '广州', RegionState: 'AVAILABLE' }]
+          : [
+              { Region: 'ap-guangzhou', RegionName: '广州', RegionState: 'AVAILABLE' },
+              { Region: 'ap-shanghai', RegionName: '上海', RegionState: 'AVAILABLE' },
+            ];
+        res.end(JSON.stringify({ Response: { RequestId: 'mock-tc', RegionSet: regions } }));
         return;
       }
       if (action === 'DescribeInstances') {
@@ -172,6 +177,24 @@ export async function startMockCloudServer() {
   return { port, calls, base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
 }
 
+// Closed blocks arrive before DONE, so E2E can inspect the actual streaming UI.
+// Expectations are fixture data, not imports of the production classifier.
+export const AI_COMMAND_BLOCKS = [
+  { language: 'bash', text: 'nebula-probe', shell: true, eligible: true },
+  { language: 'sh', text: 'whoami\nnebula-probe', shell: true, eligible: true },
+  { language: 'python', text: 'print("nebula-probe")', shell: false, eligible: false },
+  { language: '', text: 'nebula-probe', shell: false, eligible: false },
+  { language: 'console', text: '$ nebula-probe', shell: false, eligible: false },
+  { language: 'bash', text: 'ssh <HOST>', shell: true, eligible: true, warning: { token: '<HOST>', reason: '需要用户填写的示例参数' } },
+  { language: 'shell', text: '$ nebula-probe', shell: true, eligible: false, reason: '提示符' },
+  { language: 'zsh', text: 'rm -rf /tmp/nebula-ai-e2e-only', shell: true, eligible: true },
+  { language: 'bash', text: '', shell: true, eligible: false, reason: '为空' },
+  { language: 'bash', text: "printf '<%s>\\n' 'left\tright'", shell: true, eligible: true },
+  // User's original command: backslash-t is literal shell/template text, not a TAB key.
+  { language: 'bash', text: "docker ps --format 'table {{.Names}}\\t{{.ID}}\\t{{.Ports}}'", shell: true, eligible: true },
+  { language: 'shell', text: 'nebula-probe', shell: true, eligible: false, reason: '尚未闭合', closed: false },
+];
+
 export async function startMockAiServer() {
   const calls = { openai: 0, anthropic: 0, models: 0 };
   const server = http.createServer(async (req, res) => {
@@ -201,6 +224,30 @@ export async function startMockAiServer() {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
       return;
     }
+    // Command fixtures use real SSE/IPC, never inject assistant DOM or ai:done.
+    // /commands/incomplete closes HTTP without DONE to exercise the completion gate.
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/commands')) {
+      calls.openai++;
+      await readBody(req);
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const delta = (content) => res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+      delta('AI-COMMANDS-BEGIN\n\n```bash\nnebula-probe\n```\n');
+      // Hold a fully closed, otherwise eligible shell block in streaming state.
+      await sleep(1800);
+      if (res.destroyed) return;
+      delta('\n' + AI_COMMAND_BLOCKS.slice(1).map((block) =>
+        '```' + block.language + '\n' + block.text + (block.closed === false ? '' : '\n```'),
+      ).join('\n\n'));
+      await sleep(450);
+      if (res.destroyed) return;
+      if (!url.pathname.includes('/incomplete')) {
+        const finishReason = url.pathname.includes('/length') ? 'length' : 'stop';
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+      }
+      res.end();
+      return;
+    }
     // 慢速端点:先压 1.5s 再吐首个 token,此后按 300ms 间隔分段吐完
     if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/slow')) {
       calls.openai++;
@@ -213,6 +260,27 @@ export async function startMockAiServer() {
       }
       res.write('data: [DONE]\n\n');
       res.end();
+      return;
+    }
+    // 长回复端点:120 段按 60ms 逐段流式(约 7 秒),把消息区撑出滚动条,
+    // 供"贴底跟随 / 回到底部按钮"用例断言。客户端断开时停止推流。
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/long')) {
+      calls.openai++;
+      await readBody(req);
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const paras = Array.from({ length: 120 }, (_, i) => `长回复第${i + 1}段：用于撑高消息区域的流式内容。`);
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i >= paras.length) {
+          clearInterval(timer);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: paras[i] + '\n\n' } }] })}\n\n`);
+        i += 1;
+      }, 60);
+      res.on('close', () => clearInterval(timer));
       return;
     }
     // 逐字节发送含中文的 SSE 回复:强制多字节字符跨 chunk 边界,

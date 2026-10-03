@@ -160,7 +160,7 @@ function attachMockSftp(session, tree, emit = () => {}) {
   });
 }
 
-export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent } = {}) {
+export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent, commandBlockInput = false } = {}) {
   const hostPrivateKey = crypto
     .generateKeyPairSync('rsa', { modulusLength: 2048 })
     .privateKey.export({ type: 'pkcs1', format: 'pem' });
@@ -168,6 +168,10 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
 
   const clientListenServers = [];
   const windowChanges = [];
+  // Observation only; channel IDs let UI E2E prove which shell received bytes.
+  const shellWrites = [];
+  const shellCommands = [];
+  let shellSeq = 0;
   // 生命周期计数器(可选):用于断言连接/通道是否被正确回收。
   const emit = (kind, delta) => { try { onEvent && onEvent(kind, delta); } catch { /* ignore */ } };
   const server = new Server({ hostKeys: [hostPrivateKey], debug: process.env.SSHD_DEBUG ? (l) => console.log('[SSHD]', l) : undefined }, (client) => {
@@ -192,26 +196,63 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
           const stream = ac();
           stream.on('close', () => emit('shell', -1));
           let line = '';
+          const shellId = ++shellSeq;
+          let bracketed = false;
+          let inPaste = false;
+          let input = '';
+          const pasteStart = '\x1b[200~', pasteEnd = '\x1b[201~';
+          const submit = () => {
+            const cmd = line.trim();
+            line = '';
+            if (cmd) {
+              shellCommands.push({ shellId, command: cmd });
+              stream.write('\r\n');
+              if (commandBlockInput && cmd === 'nebula-e2e-bracketed-on') {
+                bracketed = true;
+                stream.write('\x1b[?2004hBRACKETED-ON\r\n');
+              } else if (commandBlockInput && cmd === 'nebula-e2e-bracketed-off') {
+                bracketed = false;
+                stream.write('\x1b[?2004lBRACKETED-OFF\r\n');
+              } else if (commandBlockInput && cmd === 'whoami\nnebula-probe') {
+                // One submitted block, not two Enter events. The mock never evals it.
+                stream.write('root\r\nPROBE-OK nebula-e2e\r\n');
+              } else if (cmd === 'whoami') stream.write('root\r\n');
+              else if (cmd === 'nebula-probe') stream.write('PROBE-OK nebula-e2e\r\n');
+              else if (cmd === 'exit') { stream.end(); return false; }
+              else stream.write(`bash: ${cmd}: command not found\r\n`);
+            }
+            stream.write('root@mock:~# ');
+            return true;
+          };
           stream.write('Welcome to NebulaShell mock sshd\r\n');
           stream.write('root@mock:~# ');
           stream.on('data', (d) => {
+            shellWrites.push({ shellId, data: d.toString() });
             stream.write(d); // 模拟 PTY 回显
-            for (const ch of d.toString()) {
-              if (ch === '\r') {
-                const cmd = line.trim();
-                line = '';
-                if (cmd) {
-                  stream.write('\r\n');
-                  if (cmd === 'whoami') stream.write('root\r\n');
-                  else if (cmd === 'nebula-probe') stream.write('PROBE-OK nebula-e2e\r\n');
-                  else if (cmd === 'exit') { stream.end(); return; }
-                  else stream.write(`bash: ${cmd}: command not found\r\n`);
+            // Default parsing stays unchanged; opt-in channels recognize paste
+            // boundaries even when SSH splits an escape sequence across packets.
+            input += d.toString();
+            while (input) {
+              if (commandBlockInput && bracketed) {
+                const marker = inPaste ? pasteEnd : pasteStart;
+                if (input.startsWith(marker)) {
+                  inPaste = !inPaste;
+                  input = input.slice(marker.length);
+                  continue;
                 }
-                stream.write('root@mock:~# ');
+                if (marker.startsWith(input)) break;
+              }
+              const ch = input[0];
+              input = input.slice(1);
+              if (commandBlockInput && bracketed && ch === '\x03') {
+                line = ''; inPaste = false;
+                stream.write('^C\r\nroot@mock:~# ');
+              } else if (ch === '\r' && !inPaste) {
+                if (!submit()) return;
               } else if (ch === '\x7f') {
                 line = line.slice(0, -1);
               } else {
-                line += ch;
+                line += inPaste && ch === '\r' ? '\n' : ch;
               }
             }
           });
@@ -348,6 +389,8 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     hostFingerprintHex,
     hostFingerprintB64,
     windowChanges,
+    shellWrites,
+    shellCommands,
     close: () => new Promise((r) => {
       for (const s of clientListenServers) { try { s.close(); } catch { /* ignore */ } }
       server.close(r);

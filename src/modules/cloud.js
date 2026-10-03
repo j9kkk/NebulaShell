@@ -136,7 +136,9 @@ export async function testCloudAccount() {
   status.textContent = '正在校验…';
   try {
     const r = await api('cloud:testAccount', p);
-    status.textContent = `✓ 校验通过：${r.regionCount} 个地域，${r.sampleRegion} 发现 ${r.instanceCount} 台实例`;
+    // 校验是与"拉取全部"同路径的全量只读扫描:数字即真实拉取结果,不再是抽样
+    status.textContent = `✓ 校验通过：${r.regionCount} 个地域，共发现 ${r.instanceCount} 台实例（未保存）` +
+      (r.errorCount ? `；另有 ${r.errorCount} 项地域查询失败，结果可能不完整` : '');
     toast('凭据校验通过', 'success');
   } catch (e) {
     status.textContent = '✗ ' + e.message;
@@ -205,42 +207,65 @@ export function renderCloudRows() {
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(it);
   }
-  let idx = 0;
+  const instances = new Map(state.cloudResults.map((it) => [cloudInstanceIdentity(it), it]));
   for (const [region, list] of groups) {
     const head = document.createElement('tr');
     head.className = 'cloud-group-row';
     head.innerHTML = `<td colspan="8">📍 ${escapeHtml(region)} · ${list.length} 台</td>`;
     tbody.appendChild(head);
     for (const it of list) {
-      const i = idx++;
+      const identity = escapeHtml(cloudInstanceIdentity(it));
       const running = /running/i.test(it.state);
       const tr = document.createElement('tr');
       tr.className = 'cloud-row';
       tr.innerHTML = `
-        <td><input type="checkbox" class="cloud-check" data-i="${i}" ${running ? 'checked' : ''} /></td>
+        <td><input type="checkbox" class="cloud-check" data-instance="${identity}" ${running ? 'checked' : ''} /></td>
         <td>${escapeHtml(it.name)}</td>
         <td class="mono">${escapeHtml(it.host || '（无公网 IP）')}</td>
         <td><span class="tag">${escapeHtml(SERVICE_LABEL[it.cloud.provider] || it.cloud.provider)}</span></td>
         <td class="muted">${escapeHtml(it.cloud.region)}</td>
         <td><span class="badge ${running ? 'running' : /stop/i.test(it.state) ? 'stopped' : 'other'}">${escapeHtml(it.state || '-')}</span></td>
         <td class="muted">${escapeHtml(it.cloud.os || '-')}</td>
-        <td><button class="btn small cloud-connect" data-i="${i}">连接</button></td>`;
+        <td><button class="btn small cloud-connect" data-instance="${identity}">连接</button></td>`;
       tbody.appendChild(tr);
     }
   }
   tbody.querySelectorAll('.cloud-connect').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const it = state.cloudResults[Number(btn.dataset.i)];
-      const saved = await importInstance(it);
-      closeModal('#modal-cloud');
-      await refreshHosts();
-      connectHost(saved.id);
+      const it = instances.get(btn.dataset.instance);
+      if (!it) return toast('实例列表已变化，请重新拉取', 'error');
+      btn.disabled = true;
+      try {
+        const saved = await importInstance(it);
+        closeModal('#modal-cloud');
+        await refreshHosts();
+        connectHost(saved.id);
+      } catch (e) {
+        toast('导入失败：' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
   $('#cloud-table').classList.remove('hidden');
   const checked = tbody.querySelectorAll('.cloud-check:checked').length;
   $('#cloud-count').textContent = `共 ${state.cloudResults.length} 台，已选 ${checked} 台`;
   $('#btn-cloud-import-selected').classList.toggle('hidden', state.cloudResults.length === 0);
+}
+
+// Identity must not depend on the region-grouped presentation order or mutable IP/name.
+export function cloudInstanceIdentity(it) {
+  const cloud = it.cloud || {};
+  return JSON.stringify([cloud.accountId || '', cloud.provider || '', cloud.region || '', cloud.instanceId || '']);
+}
+
+export function selectedCloudInstances(results, checks) {
+  const instances = new Map(results.map((it) => [cloudInstanceIdentity(it), it]));
+  return [...new Set([...checks].map((c) => c.dataset.instance))].map((key) => {
+    const it = instances.get(key);
+    if (!it) throw new Error('实例列表已变化，请重新拉取');
+    return it;
+  });
 }
 
 export function instancePayload(it, group) {
@@ -261,10 +286,11 @@ export async function importInstance(it) {
 }
 
 export async function cloudImportSelected() {
-  const checked = [...document.querySelectorAll('.cloud-check:checked')].map((c) => Number(c.dataset.i));
-  if (!checked.length) return toast('请先勾选要导入的实例', 'error');
+  const checks = document.querySelectorAll('#cloud-tbody .cloud-check:checked');
+  if (!checks.length) return toast('请先勾选要导入的实例', 'error');
   try {
-    for (const i of checked) await importInstance(state.cloudResults[i]);
+    const checked = selectedCloudInstances(state.cloudResults, checks);
+    for (const it of checked) await importInstance(it);
     toast(`已导入 ${checked.length} 台主机，请编辑主机补全登录凭据`, 'success');
     closeModal('#modal-cloud');
     await refreshHosts();

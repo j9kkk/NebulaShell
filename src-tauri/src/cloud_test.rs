@@ -1,5 +1,7 @@
 // 云厂商实例映射测试:重点回归"轻量与 CVM 字段名不同导致轻量 IP 读成空"的缺陷
-use crate::cloud::{aliyun_probe, map_tencent_instances, tencent_probe};
+use crate::cloud::{
+    aliyun_probe, map_tencent_instances, parse_tencent_regions, tencent_probe, union_region_count,
+};
 use serde_json::{json, Value};
 
 /// 回归:腾讯云轻量(Lighthouse)返回 PublicAddresses/PrivateAddresses,
@@ -83,4 +85,44 @@ async fn probe_rejects_empty_credentials() {
     assert!(e.contains("SecretKey"), "应提示填写 SecretKey: {}", e);
     let e = aliyun_probe("", "", "").await.unwrap_err();
     assert!(e.contains("AccessKeyId"), "应提示填写 AccessKeyId: {}", e);
+}
+
+/// 地域表解析:CVM 与轻量的 DescribeRegions 响应同构,
+/// 空 region 条目丢弃、缺失 RegionSet 不 panic
+#[test]
+fn tencent_region_parse_filters_empty_entries() {
+    let resp = json!({ "RegionSet": [
+        { "Region": "ap-guangzhou", "RegionName": "广州", "RegionState": "AVAILABLE" },
+        { "Region": "", "RegionName": "坏数据" },
+        { "Region": "ap-singapore", "RegionName": "新加坡", "RegionState": "AVAILABLE" },
+    ]});
+    let out = parse_tencent_regions(&resp);
+    assert_eq!(out.len(), 2, "空 region 条目必须被过滤");
+    assert_eq!(out[0], ("ap-guangzhou".to_string(), "广州".to_string()));
+    assert_eq!(out[1], ("ap-singapore".to_string(), "新加坡".to_string()));
+    // 缺失/空响应返回空表
+    assert!(parse_tencent_regions(&json!({})).is_empty());
+    assert!(parse_tencent_regions(&json!({ "RegionSet": [] })).is_empty());
+}
+
+/// 回归:两张地域表不保证一致,地域数必须按并集口径统计
+/// (只用 CVM 的表会漏掉仅轻量覆盖的地域,如部分海外地域)
+#[test]
+fn region_count_uses_union_of_divergent_tables() {
+    let cvm = vec![
+        ("ap-guangzhou".to_string(), "广州".to_string()),
+        ("ap-shanghai".to_string(), "上海".to_string()),
+    ];
+    let lh = vec![
+        ("ap-guangzhou".to_string(), "广州".to_string()),
+        ("ap-singapore".to_string(), "新加坡".to_string()),
+    ];
+    assert_eq!(union_region_count(&cvm, &lh), 3, "广州去重,并集 3 个地域");
+    assert_eq!(union_region_count(&cvm, &cvm), 2, "两表一致时等于单表数量");
+    assert_eq!(
+        union_region_count(&cvm, &[]),
+        2,
+        "轻量表为空时回退 CVM 口径"
+    );
+    assert_eq!(union_region_count(&[], &[]), 0);
 }

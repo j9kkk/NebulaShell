@@ -12,7 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockSshd } from './helpers/ssh-server.mjs';
-import { startMockCloudServer, startMockAiServer } from './helpers/mock-servers.mjs';
+import { AI_COMMAND_BLOCKS, startMockCloudServer, startMockAiServer } from './helpers/mock-servers.mjs';
+import { auditNarrowPanels, auditTerminalViewport } from './helpers/layout-audit.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Windows 的 cargo 产物带 .exe 后缀,按平台补齐。
@@ -33,6 +34,9 @@ const FAIL = '\x1b[31m✗\x1b[0m';
 let proc = null;
 let sshd = null;
 let sshd2 = null;
+let tileSshd = null;
+let sshConnectionsOpened = 0;
+const countSshConnections = (kind, delta) => { if (kind === 'client' && delta > 0) sshConnectionsOpened += delta; };
 let cloud = null;
 let ai = null;
 let bridge = 0;
@@ -118,10 +122,685 @@ async function answerPrompt(value, expectTitle, tries = 4) {
   throw new Error(`输入框「${expectTitle}」未被接受(值可能被弹窗重建清空)`);
 }
 
+// Bridge events are untrusted: WebView does not perform native button activation.
+// Emulate that default only for an uncancelled Enter on the current visible button;
+// arrows/Escape/Tab and dialog Enter always go through the real app listeners.
+async function focusedKey(key, options = {}) {
+  return asObj(await evalJs(`return JSON.stringify((() => {
+    const target = document.activeElement;
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ${JSON.stringify(key)}, ...${JSON.stringify(options)} });
+    target.dispatchEvent(event);
+    if (event.key === 'Enter' && !event.defaultPrevented && !event.isComposing
+        && target.matches('button:not(:disabled)') && target.getClientRects().length
+        && !target.closest('.hidden, [inert]') && document.activeElement === target) target.click();
+    return { prevented: event.defaultPrevented, focus: document.activeElement?.id || '', menuOpen: !document.querySelector('#more-menu').classList.contains('hidden') };
+  })())`));
+}
+
+// Select a visible paged-menu route through its keyboard navigation, not hidden .click().
+async function menuFocus(selector) {
+  for (let i = 0; i < 24; i++) {
+    const state = asObj(await evalJs(`return JSON.stringify({ found: document.activeElement.matches(${JSON.stringify(selector)}),
+      hidden: document.querySelector('#more-menu').classList.contains('hidden'),
+      startupBlur: window.__menuTrace?.some(x => x.type === 'blur' && x.at >= window.__e2eMenuOpenAt),
+      retried: !!window.__e2eStartupBlurRetried })`));
+    if (state.found) return;
+    // A late native launch blur legitimately dismisses the popup; retry once only
+    // when that external focus transition was observed after this open.
+    if (state.hidden && state.startupBlur && !state.retried) {
+      await evalJs(`window.__e2eStartupBlurRetried = true; document.querySelector('#btn-more').click(); return 1`);
+      continue;
+    }
+    await focusedKey('ArrowDown');
+  }
+  const detail = await evalJs(`return JSON.stringify({ focus: document.activeElement?.outerHTML, documentFocused: document.hasFocus(), trace: window.__menuTrace, menuHidden: document.querySelector('#more-menu').classList.contains('hidden'), modal: [...document.querySelectorAll('.modal:not(.hidden), dialog[open]')].map(x => x.id) })`);
+  throw new Error('菜单键盘无法到达: ' + selector + ' — ' + detail);
+}
+
+async function openMenuPage(page = 'root') {
+  await evalJs(`
+    const menu = document.querySelector('#more-menu');
+    if (!menu.classList.contains('hidden')) document.querySelector('#btn-more').click();
+    window.__e2eMenuOpenAt = Date.now();
+    document.querySelector('#btn-more').focus(); document.querySelector('#btn-more').click(); return 1`);
+  if (page !== 'root') {
+    await menuFocus('[data-menu-page="' + page + '"]');
+    await focusedKey('Enter');
+  }
+}
+
+// The planner may choose balanced rows OR columns according to available dimensions.
+function balancedGrid(boxes) {
+  const bands = (axis, size, otherSize) => {
+    const starts = [...new Set(boxes.map((b) => b[axis]))];
+    const groups = starts.map((p) => boxes.filter((b) => b[axis] === p));
+    const counts = groups.map((g) => g.length);
+    const spread = (values) => Math.max(...values) - Math.min(...values);
+    return counts.length > 0 && spread(counts) <= 1
+      && groups.every((g) => spread(g.map((b) => b[size])) <= 2)
+      && spread(groups.map((g) => g[0][otherSize])) <= 2;
+  };
+  return boxes.length > 0 && (bands(1, 2, 3) || bands(0, 3, 2));
+}
+
+// These are untrusted bridge-dispatched WebView events against mock SSH servers,
+// not native OS mouse/keyboard coverage. Every fixture tab is tracked by ID; the
+// already-connected baseline session must survive even if an assertion throws.
+async function tabTilingRegressions() {
+  const snapshot = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState(true))`));
+  const prior = await snapshot();
+  const priorFile = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`));
+  const baselineTabs = new Set(prior.tabs.map((tab) => tab.id));
+  const setTiled = async (enabled) => {
+    if ((await snapshot()).mode === (enabled ? 'tiled' : 'single')) return;
+    await openMenuPage(); await menuFocus('#btn-tile-tabs'); await focusedKey('Enter');
+    await waitEval(`return window.__nbTest.workspaceState().mode`, enabled ? 'tiled' : 'single');
+    await sleep(180);
+  };
+  const focusSession = async (id) => {
+    await evalJs(`const s = window.__nbTest.workspaceState().sessions.find(s => s.id === ${JSON.stringify(id)});
+      if (!s) throw new Error('fixture session missing');
+      document.querySelector('.tab[data-tab="' + s.tabId + '"]').click();
+      const pane = document.querySelector('.term-pane[data-pane="' + s.paneId + '"]');
+      pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      pane.querySelector('textarea')?.focus(); return 1`);
+    await sleep(100);
+  };
+  const content = (text) => String(text).replace(/\s/g, ''); // Resizes may rewrap the same xterm buffer.
+  const sameSessions = (before, after) => before.sessions.every((s) => {
+    const current = after.sessions.find((candidate) => candidate.id === s.id);
+    return current && ['identity', 'termIdentity', 'fitIdentity', 'paneIdentity', 'host', 'tabId', 'paneId', 'status'].every((key) => current[key] === s[key])
+      && content(current.buffer).includes(content(s.buffer));
+  });
+  const sameLayouts = (before, after) => before.tabs.every((tab) => {
+    const current = after.tabs.find((candidate) => candidate.id === tab.id);
+    return current && current.identity === tab.identity && current.layoutIdentity === tab.layoutIdentity
+      && JSON.stringify(current.layout) === JSON.stringify(tab.layout)
+      && tab.panes.every((pane) => current.panes.some((p) => p.id === pane.id && p.identity === pane.identity && p.elementIdentity === pane.elementIdentity));
+  });
+  try {
+    await setTiled(false);
+    // An independent saved-host tab with an internal split, and an independent
+    // temporary-host tab targeting the fixture-only mock endpoint.
+    await evalJs(`const host = [...document.querySelectorAll('.host-item')].find(el => el.textContent.includes('ui-a'));
+      host.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true, ctrlKey: true })); return 1`);
+    await waitEval(`return document.querySelector('#status-text').textContent`, '已连接');
+    const tabA = (await snapshot()).activeTabId;
+    await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.tabId === ${JSON.stringify(tabA)} && s.status === 'connected').length`, '2');
+    const sessionsA = (await snapshot()).sessions.filter((s) => s.tabId === tabA);
+    await evalJs(`document.querySelector('#btn-newtab').click();
+      const input = document.querySelector('.pane-picker input'); input.value = 'root@127.0.0.1:${tileSshd.port}';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1`);
+    await answerPrompt(PASSWORD, '快速连接');
+    await waitEval(`return document.querySelector('#status-text').textContent`, '已连接');
+    await waitEval(`return window.__nbTest.workspaceState(true).sessions.find(s => s.id === window.__nbTest.workspaceState().activeId)?.buffer`, 'Welcome to NebulaShell mock sshd');
+    const before = await snapshot();
+    const sessionB = before.sessions.find((s) => s.id === before.activeId);
+    const opened = sshConnectionsOpened;
+    await setTiled(true);
+    const tiled = await snapshot();
+    check('T70 标签平铺:独立 mock 端点保留会话/xterm/fit/窗格身份、内层布局、缓冲及连接数',
+      sessionB.host !== sessionsA[0].host && tiled.mode === 'tiled' && sameSessions(before, tiled) && sameLayouts(before, tiled)
+      && tiled.sessions.every((s) => s.mounted && s.visible) && opened === sshConnectionsOpened, JSON.stringify({ before, tiled, opened, now: sshConnectionsOpened }));
+    await openMenuPage();
+    const menu = asObj(await evalJs(`return JSON.stringify({ checked: document.querySelector('#btn-tile-tabs').getAttribute('aria-checked'),
+      label: document.querySelector('#btn-auto-layout .mm-label').textContent,
+      tileButtons: document.querySelectorAll('[data-command="workspace.tile"]').length,
+      toolbarTile: !!document.querySelector('#tabbar > [data-command="workspace.tile"]'), accel: document.querySelector('#btn-tile-tabs').dataset.accel || '' })`));
+    check('T70b 平铺只在更多根菜单提供勾选入口,整理明确限于当前标签,无快捷键/常驻图标',
+      menu.checked === 'true' && menu.label === '整理当前标签分屏' && menu.tileButtons === 1 && !menu.toolbarTile && !menu.accel, JSON.stringify(menu));
+    await focusedKey('Escape');
+    const tileChrome = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('.workspace-tile-header')].map(header => ({
+      title: header.querySelector('.workspace-tile-title')?.textContent || '', connected: !!header.querySelector('.tab-dot.connected'),
+      closeLabel: header.querySelector('.workspace-tile-close')?.getAttribute('aria-label') || '' })))`));
+    check('T70c 平铺标题保留标签名、连接状态和有标识的关闭入口', tileChrome.length === before.tabs.length
+      && tileChrome.every((tile) => tile.title && tile.connected && tile.closeLabel === '关闭标签'), JSON.stringify(tileChrome));
+    await evalJs(`window.__e2eTileMountChanges = 0;
+      const relevant = node => node.nodeType === 1 && (node.matches('.term-pane,.term-surface,.workspace-tile,.split-node,.workspace-split-node') || node.querySelector('.term-pane,.workspace-tile'));
+      window.__e2eTileObserver = new MutationObserver(records => { for (const record of records) if ([...record.addedNodes, ...record.removedNodes].some(relevant)) window.__e2eTileMountChanges++; });
+      window.__e2eTileObserver.observe(document.querySelector('#layout-root'), { childList: true, subtree: true }); return 1`);
+    await focusSession(sessionsA[0].id);
+    await evalJs(`document.querySelector('.workspace-tile[data-tab="${sessionB.tabId}"] .workspace-tile-header').click(); return 1`);
+    await sleep(180);
+    const focused = await snapshot();
+    const mountChanges = Number(await evalJs(`return window.__e2eTileMountChanges`));
+    check('T71 点击非活动窗格/标签标题只更新焦点,不摘挂任何平铺或终端节点', focused.activeId === sessionB.id
+      && focused.activeTabId === sessionB.tabId && sameSessions(tiled, focused) && sameLayouts(tiled, focused) && mountChanges === 0, JSON.stringify({ active: focused.activeId, mountChanges }));
+    await evalJs(`window.__e2eTileObserver.disconnect(); delete window.__e2eTileObserver; delete window.__e2eTileMountChanges; return 1`);
+    const geometry = await snapshot();
+    check('T72 平铺内层使用扣除边框/标题的内容盒,所有可见会话 fit 到自身表面', geometry.tabs.every((tab) => tab.header && tab.content
+      && Math.abs(tab.header.height - 28) <= 1 && Math.abs(tab.tile.height - tab.content.height - 30) <= 1
+      && Math.abs(tab.tile.width - tab.content.width - 2) <= 1)
+      && geometry.sessions.filter((s) => s.visible).every((s) => {
+        const tab = geometry.tabs.find((t) => t.id === s.tabId);
+        const pane = tab.panes.find((p) => p.id === s.paneId).rect;
+        return s.surface && s.surface.width > 0 && s.surface.height > 0 && s.surface.left >= pane.left - 1
+          && s.surface.right <= pane.right + 1 && s.surface.top >= tab.header.bottom - 1 && s.surface.bottom <= pane.bottom + 1
+          && s.proposed && s.cols === s.proposed.cols && s.rows === s.proposed.rows;
+      }), JSON.stringify(geometry));
+    await evalJs(`const stack = document.querySelector('#term-stack'); window.__e2eTilingStackStyle = stack.getAttribute('style');
+      stack.style.flex = 'none'; stack.style.width = '480px'; stack.style.height = '240px'; return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().fits`, 'false');
+    await sleep(200);
+    const overflow = asObj(await evalJs(`return JSON.stringify((() => {
+      const hint = document.querySelector('#workspace-layout-hint'), root = document.querySelector('#layout-root');
+      const h = hint.getBoundingClientRect(), r = root.getBoundingClientRect();
+      return { shown: !hint.classList.contains('hidden'), sibling: hint.parentNode === root.parentNode,
+        height: h.height, separated: h.bottom <= r.top + 1, scrollable: root.scrollWidth > root.clientWidth || root.scrollHeight > root.clientHeight };
+    })())`));
+    check('T72b 空间不足使用全局非重叠提示条和滚动,不重排内层布局或重建终端', overflow.shown && overflow.sibling
+      && overflow.height === 28 && overflow.separated && overflow.scrollable && sameLayouts(geometry, await snapshot())
+      && sameSessions(geometry, await snapshot()), JSON.stringify(overflow));
+    await evalJs(`const root = document.querySelector('#layout-root'); root.scrollLeft = root.scrollWidth; root.scrollTop = root.scrollHeight;
+      document.querySelector('.tab[data-tab="${prior.activeTabId}"]').click(); return 1`);
+    await sleep(180);
+    const revealed = asObj(await evalJs(`return JSON.stringify((() => {
+      const scroller = document.querySelector('#layout-root');
+      const root = scroller.getBoundingClientRect();
+      const header = document.querySelector('.workspace-tile[data-tab="${prior.activeTabId}"] .workspace-tile-header').getBoundingClientRect();
+      return { active: window.__nbTest.workspaceState().activeTabId, reachable: header.right > root.left && header.left < root.right
+        && header.bottom > root.top && header.top < root.bottom, root: root.toJSON(), header: header.toJSON(),
+        scrollLeft: scroller.scrollLeft, scrollTop: scroller.scrollTop, focus: document.activeElement?.className };
+    })())`));
+    check('T72c 顶部标签激活自动将溢出的对应卡片滚入可见区域', revealed.active === prior.activeTabId && revealed.reachable, JSON.stringify(revealed));
+    await evalJs(`const stack = document.querySelector('#term-stack');
+      if (window.__e2eTilingStackStyle === null) stack.removeAttribute('style'); else stack.setAttribute('style', window.__e2eTilingStackStyle);
+      delete window.__e2eTilingStackStyle; return 1`);
+    await sleep(200);
+    await focusSession(sessionB.id);
+
+    // The inactive owner's explicit controls must not affect the active B tab.
+    await evalJs(`document.querySelector('.term-pane[data-pane="${sessionsA[0].paneId}"] .pane-zoom-btn').click(); return 1`);
+    const zoomed = await snapshot();
+    check('T73 非活动标签显式放大仅改变其内层,不抢活动标签或隐藏其他标签', zoomed.activeId === sessionB.id
+      && zoomed.tabs.find((t) => t.id === tabA).zoomPaneId === sessionsA[0].paneId
+      && zoomed.sessions.find((s) => s.id === sessionB.id).mounted, JSON.stringify(zoomed));
+    await evalJs(`document.querySelector('.term-pane[data-pane="${sessionsA[0].paneId}"] .pane-zoom-btn').click(); return 1`);
+    await evalJs(`document.querySelector('.term-pane[data-pane="${sessionsA[1].paneId}"] .pane-close-btn').click(); return 1`);
+    const explicitClose = await snapshot();
+    check('T73b 非活动窗格显式关闭只释放目标会话,当前 B 与既有基线保活', explicitClose.activeId === sessionB.id
+      && !explicitClose.sessions.some((s) => s.id === sessionsA[1].id) && sameSessions(prior, explicitClose), JSON.stringify(explicitClose));
+    await evalJs(`document.querySelector('#btn-newtab').click(); return 1`);
+    const emptyTab = (await snapshot()).activeTabId;
+    await focusSession(sessionB.id);
+    await evalJs(`document.querySelector('.workspace-tile[data-tab="${emptyTab}"] .pane-picker-close').click(); return 1`);
+    const emptyClosed = await snapshot();
+    check('T73c 非活动空选择器可关闭其自身标签且不触碰当前会话', !emptyClosed.tabs.some((t) => t.id === emptyTab)
+      && emptyClosed.activeId === sessionB.id && sameSessions(prior, emptyClosed), JSON.stringify(emptyClosed));
+
+    await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === ${JSON.stringify(sessionB.id)}).readOnly`, 'true');
+    await evalJs(`window.__nbTest.write('echo NB_TILE_READONLY_BLOCKED\\r'); return 1`);
+    if (!priorFile.open) { await openMenuPage(); await menuFocus('#btn-files'); await focusedKey('Enter'); }
+    await waitEval(`return window.__nbTest.filePanel().targetId`, sessionB.id);
+    await openMenuPage('session'); await menuFocus('#btn-broadcast'); await focusedKey('Enter');
+    await waitEval(`return !!document.querySelector('#bc-list')`, 'true');
+    const readonlyExcluded = await evalJs(`return !document.querySelector('#bc-list input[value="${sessionB.id}"]')`);
+    await evalJs(`for (const input of document.querySelectorAll('#bc-list input')) input.checked = input.value === ${JSON.stringify(sessionsA[0].id)};
+      document.querySelector('#bc-ok').click(); return 1`);
+    await setTiled(false); await setTiled(true);
+    const policy = await snapshot();
+    await focusSession(sessionsA[0].id);
+    await waitEval(`return window.__nbTest.filePanel().targetId`, sessionsA[0].id);
+    await evalJs(`window.__nbTest.write('echo NB_TILE_BROADCAST_ONLY_A\\r'); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState(true).sessions.find(s => s.id === ${JSON.stringify(sessionsA[0].id)}).buffer.replace(/\\s/g, '')`, 'NB_TILE_BROADCAST_ONLY_A');
+    const broadcast = await snapshot();
+    check('T74 平铺开关保留只读/广播,文件目标跟随焦点且广播不写只读或未选基线', readonlyExcluded === true
+      && policy.sessions.find((s) => s.id === sessionB.id).readOnly && JSON.stringify(policy.broadcast) === JSON.stringify([sessionsA[0].id])
+      && content(broadcast.sessions.find((s) => s.id === sessionsA[0].id).buffer).includes('NB_TILE_BROADCAST_ONLY_A')
+      && !content(broadcast.sessions.find((s) => s.id === sessionB.id).buffer).includes('NB_TILE_BROADCAST_ONLY_A')
+      && !content(broadcast.sessions.find((s) => s.id === sessionB.id).buffer).includes('NB_TILE_READONLY_BLOCKED')
+      && prior.sessions.every((s) => !content(broadcast.sessions.find((now) => now.id === s.id).buffer).includes('NB_TILE_BROADCAST_ONLY_A')), JSON.stringify(policy));
+    await evalJs(`document.querySelector('#btn-broadcast-stop').click(); return 1`);
+    await focusSession(sessionB.id);
+    await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === ${JSON.stringify(sessionB.id)}).readOnly`, 'false');
+    await evalJs(`document.querySelector('.workspace-tile[data-tab="${tabA}"] .workspace-tile-close').click(); return 1`);
+    const closedA = await snapshot();
+    check('T75 非活动平铺标签关闭不抢当前 B,只释放该标签连接', !closedA.tabs.some((t) => t.id === tabA)
+      && closedA.activeId === sessionB.id && sameSessions(prior, closedA), JSON.stringify(closedA));
+    await focusSession(prior.activeId);
+    await evalJs(`document.querySelector('.workspace-tile[data-tab="${sessionB.tabId}"] .workspace-tile-close').click(); return 1`);
+    const last = await snapshot();
+    check('T75b 关闭到最后一个标签仍保留当前会话身份/布局/缓冲,平铺模式可退出', last.tabs.length === prior.tabs.length
+      && last.mode === 'tiled' && last.activeId === prior.activeId && sameSessions(prior, last) && sameLayouts(prior, last)
+      && last.tabs.every((tab) => Math.abs(tab.tile.width - last.root.width) <= 1 && Math.abs(tab.tile.height - last.root.height) <= 1), JSON.stringify(last));
+    const beforeExitConnections = sshConnectionsOpened;
+    await setTiled(false);
+    const untiled = await snapshot();
+    check('T75c 退出平铺恢复单标签语义,无重连或会话重建', untiled.mode === 'single' && sameSessions(prior, untiled)
+      && sameLayouts(prior, untiled) && beforeExitConnections === sshConnectionsOpened, JSON.stringify(untiled));
+  } finally {
+    await evalJs(`window.__e2eTileObserver?.disconnect(); delete window.__e2eTileObserver; delete window.__e2eTileMountChanges;
+      if ('__e2eTilingStackStyle' in window) {
+        const stack = document.querySelector('#term-stack');
+        if (window.__e2eTilingStackStyle === null) stack.removeAttribute('style'); else stack.setAttribute('style', window.__e2eTilingStackStyle);
+        delete window.__e2eTilingStackStyle;
+      }
+      document.querySelector('#bc-cancel')?.click(); document.querySelector('#btn-broadcast-stop')?.click();
+      const baseline = new Set(${JSON.stringify([...baselineTabs])});
+      for (const tab of window.__nbTest.workspaceState().tabs) if (!baseline.has(tab.id)) document.querySelector('.tab[data-tab="' + tab.id + '"] .tab-close')?.click(); return 1`);
+    await setTiled(prior.mode === 'tiled');
+    if (prior.activeId) await focusSession(prior.activeId);
+    if (!priorFile.open) await evalJs(`document.querySelector('#btn-file-close').click(); return 1`);
+    await evalJs(`return window.nebula.invoke('fingerprints:delete', { id: '127.0.0.1:${tileSshd.port}' })`);
+    const restored = await snapshot();
+    check('T75d 平铺用例清理只移除自建标签/会话,还原原模式与活动基线', restored.mode === prior.mode
+      && restored.activeId === prior.activeId && sameSessions(prior, restored) && sameLayouts(prior, restored)
+      && restored.tabs.length === prior.tabs.length && restored.sessions.length === prior.sessions.length, JSON.stringify(restored));
+  }
+}
+
+// Command-block coverage uses rendered buttons and the production SSE -> AI ->
+// SSH IPC path. __nbTest.write is only terminal typing/setup, never an AI handler.
+async function aiCommandBlockRegressions() {
+  const snapshot = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  const prior = await snapshot();
+  const active = prior.sessions.find((s) => s.id === prior.activeId);
+  const peer = prior.sessions.find((s) => s.id !== prior.activeId && s.tabId === prior.activeTabId);
+  if (!active || !peer) throw new Error('AI command E2E requires the existing T6 split sessions');
+  await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.tabId === ${JSON.stringify(prior.activeTabId)} && s.status === 'connected').length`, '2');
+  const focusSession = async (s) => {
+    await evalJs(`document.querySelector('.tab[data-tab="${s.tabId}"]').click();
+      const pane = document.querySelector('.term-pane[data-pane="${s.paneId}"]');
+      pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      pane.querySelector('textarea').focus(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().activeId`, s.id);
+  };
+  const setBase = async (suffix) => {
+    await evalJs(`document.querySelector('#ai-settings-open').click();
+      document.querySelector('#ai-baseurl').value = ${JSON.stringify(ai.base)} + ${JSON.stringify(suffix)};
+      document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#btn-ai-save').click(); return 1`);
+    await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden')`, 'true');
+  };
+  const send = async (text) => {
+    const count = Number(await evalJs(`document.querySelector('#ai-input').value = ${JSON.stringify(text)};
+      document.querySelector('#ai-send').click(); return document.querySelectorAll('#ai-messages .ai-msg').length`));
+    return `#ai-messages .ai-msg:nth-child(${count})`;
+  };
+  let bubble = '';
+  const blockSelector = (index) => `${bubble} .ai-code-block[data-code-index="${index}"]`;
+  const actionSelector = (index, action) => `${blockSelector(index)} [data-ai-code-action="${action}"]`;
+  const blockStates = async () => asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll(${JSON.stringify(bubble + ' .ai-code-block')})].map(block => {
+    const copy = block.querySelector('[data-ai-code-action="copy"]');
+    const execute = block.querySelector('[data-ai-code-action="execute"]');
+    const insert = block.querySelector('[data-ai-code-action="insert"]');
+    const warnings = [...block.querySelectorAll('.ai-code-warning')].map(note => ({
+      text: note.textContent, visible: !!note.getClientRects().length && getComputedStyle(note).visibility !== 'hidden'
+    }));
+    return { index: Number(block.dataset.codeIndex), language: block.querySelector('.ai-code-language')?.textContent,
+      text: block.querySelector('pre code')?.textContent, toolbar: !!block.querySelector('.ai-code-toolbar .ai-code-actions'),
+      copy: !!copy && !copy.disabled, execute: !!execute, disabled: execute?.disabled,
+      title: execute?.title || '', insert: !!insert, insertDisabled: insert?.disabled, insertTitle: insert?.title || '', warnings,
+      insertInMenu: !!insert?.closest('details.ai-code-menu') };
+  }))`));
+  const clickAction = async (index, action) => {
+    await evalJs(`const block = document.querySelector(${JSON.stringify(blockSelector(index))});
+      if (!block) throw new Error('AI command block missing');
+      if (${JSON.stringify(action)} === 'insert') block.querySelector('.ai-code-menu summary').click();
+      const button = block.querySelector(${JSON.stringify('[data-ai-code-action="' + action + '"]')});
+      if (!button || button.disabled || !button.getClientRects().length) throw new Error('AI command action not available');
+      button.scrollIntoView({ block: 'nearest' }); button.click(); return 1`);
+  };
+  const waitSsh = async (predicate) => {
+    const deadline = Date.now() + 5000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error('等待 mock SSH 命令块输入超时');
+      await sleep(50);
+    }
+  };
+  const mark = () => ({ writes: sshd.shellWrites.length, commands: sshd.shellCommands.length });
+  const traffic = (from) => ({ writes: sshd.shellWrites.slice(from.writes), commands: sshd.shellCommands.slice(from.commands) });
+  const wireIs = (observed, shellId, text) => observed.writes.length > 0
+    && observed.writes.every((write) => write.shellId === shellId)
+    && observed.writes.map((write) => write.data).join('') === text;
+  const noTraffic = (from) => sshd.shellWrites.length === from.writes && sshd.shellCommands.length === from.commands;
+  let bracketedOn = false;
+  let readonlyOn = false;
+  let emptyTab = null;
+  let shellId = null;
+  try {
+    await focusSession(active);
+    await setBase('/commands');
+    bubble = await send('AI 命令块真实端到端测试');
+    await waitEval(`return document.querySelector(${JSON.stringify(bubble)})?.dataset.responseState`, 'streaming');
+    await waitEval(`return document.querySelector(${JSON.stringify(blockSelector(0) + ' pre code')})?.textContent`, 'nebula-probe');
+    const during = await blockStates();
+    const streamingMark = mark();
+    await evalJs(`document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).click();
+      document.querySelector(${JSON.stringify(blockSelector(0) + ' summary')}).click();
+      document.querySelector(${JSON.stringify(actionSelector(0, 'insert'))}).click(); return 1`);
+    check('T76 完整闭合 bash 块在实际生成期间可复制但执行/填入禁用,点击不发 SSH',
+      during.length === 1 && during[0].text === 'nebula-probe' && during[0].copy
+      && during[0].disabled && during[0].insertDisabled && during[0].title.includes('生成中')
+      && noTraffic(streamingMark), JSON.stringify(during));
+    await waitEval(`return document.querySelector(${JSON.stringify(bubble)})?.dataset.responseState`, 'completed');
+    const done = await blockStates();
+    check('T76b 正常 ai:done 后硬保护保持,示例参数仅提醒且按钮可用,合法模板无提醒',
+      done.length === AI_COMMAND_BLOCKS.length && done.every((block, i) => {
+        const expected = AI_COMMAND_BLOCKS[i];
+        const enabled = expected.eligible && i !== 1 && i !== 9; // Newlines and actual TAB require remote paste mode.
+        const warningMatches = expected.warning
+          ? block.warnings.length === 1 && block.warnings[0].visible
+            && block.warnings[0].text.includes(expected.warning.token) && block.warnings[0].text.includes(expected.warning.reason)
+            && block.warnings[0].text.includes('可仅填入终端修改')
+            && block.title.includes(block.warnings[0].text) && block.insertTitle.includes(block.warnings[0].text)
+          : block.warnings.length === 0;
+        return block.index === i && block.text === expected.text && block.language === (expected.language || '代码')
+          && block.toolbar && block.copy && block.execute === expected.shell && block.insert === expected.shell
+          && (!expected.shell || (block.disabled === !enabled && block.insertDisabled === !enabled && block.insertInMenu))
+          && (!expected.reason || block.title.includes(expected.reason)) && warningMatches;
+      }) && done[1]?.title.includes('bracketed paste'), JSON.stringify(done));
+
+    // Capture the boundary used by copyText, including its denied-API fallback.
+    // No internal copy handler is called, and both own-property descriptors are
+    // restored in finally (including the inherited/absent-property case).
+    await evalJs(`window.__e2eCommandClipboard = {
+      clipboardDescriptor: Object.getOwnPropertyDescriptor(navigator, 'clipboard'),
+      execDescriptor: Object.getOwnPropertyDescriptor(document, 'execCommand'), copies: [], fallback: false
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => {
+      if (window.__e2eCommandClipboard.fallback) throw new Error('E2E clipboard denied');
+      window.__e2eCommandClipboard.copies.push({ text, via: 'clipboard' });
+    } } });
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: command => {
+      if (command !== 'copy') throw new Error('unexpected execCommand');
+      const selected = document.activeElement;
+      window.__e2eCommandClipboard.copies.push({ text: selected.value.slice(selected.selectionStart, selected.selectionEnd), via: 'fallback' });
+      return true;
+    } }); return 1`);
+    const copied = [];
+    for (let i = 0; i < AI_COMMAND_BLOCKS.length; i++) {
+      if (!AI_COMMAND_BLOCKS[i].text) continue; // copyText deliberately rejects empty text.
+      const before = copied.length;
+      await clickAction(i, 'copy');
+      await waitEval(`return window.__e2eCommandClipboard.copies.length`, String(before + 1));
+      copied.push(asObj(await evalJs(`return JSON.stringify(window.__e2eCommandClipboard.copies.at(-1))`)));
+    }
+    check('T77 每块独立复制精确原文(含换行、非 Shell、占位符及未闭合块),不夹带围栏/工具栏',
+      copied.length === AI_COMMAND_BLOCKS.filter((block) => block.text).length
+      && copied.every((copy, i) => copy.text === AI_COMMAND_BLOCKS.filter((block) => block.text)[i].text && copy.via === 'clipboard'), JSON.stringify(copied));
+    await evalJs(`window.__e2eCommandClipboard.fallback = true; return 1`);
+    await clickAction(1, 'copy');
+    await waitEval(`return window.__e2eCommandClipboard.copies.length`, String(copied.length + 1));
+    const fallback = asObj(await evalJs(`return JSON.stringify(window.__e2eCommandClipboard.copies.at(-1))`));
+    check('T77b Clipboard API 拒绝时真实 copyText 回退仍复制完整多行原文',
+      fallback.via === 'fallback' && fallback.text === AI_COMMAND_BLOCKS[1].text, JSON.stringify(fallback));
+
+    const singleMark = mark();
+    await clickAction(0, 'execute');
+    await waitSsh(() => sshd.shellCommands.length > singleMark.commands);
+    shellId = sshd.shellCommands[singleMark.commands].shellId;
+    await waitEval(`return JSON.stringify(window.__nbTest.diagSource())`, 'PROBE-OK nebula-e2e');
+    const single = traffic(singleMark);
+    const diag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    check('T78 单行执行通过真实 SSH 得到 probe 输出,诊断素材记录命令及远端输出',
+      wireIs(single, shellId, 'nebula-probe\r') && single.commands.length === 1
+      && single.commands[0].command === 'nebula-probe' && diag.cmd === 'nebula-probe'
+      && diag.output.includes('PROBE-OK nebula-e2e'), JSON.stringify({ single, diag }));
+
+    const tabBlockedMark = mark();
+    await evalJs(`document.querySelector(${JSON.stringify(actionSelector(9, 'execute'))}).click();
+      document.querySelector(${JSON.stringify(actionSelector(9, 'insert'))}).click(); return 1`);
+    check('T78b 未开启 bracketed paste 的单行 TAB 块可复制但执行/填入禁用,不发补全键',
+      done[9].copy && done[9].disabled && done[9].insertDisabled
+      && done[9].title.includes('TAB') && noTraffic(tabBlockedMark), JSON.stringify(done[9]));
+
+    // Keep the user's literal backslash-t template on the plain single-line path.
+    // This mock records SSH input but never runs Docker on the host; its unknown-
+    // command response must not be mistaken for a successful Docker invocation.
+    const targetTitle = String(await evalJs(`return document.querySelector(${JSON.stringify(actionSelector(10, 'execute'))}).title`));
+    const targetLabel = targetTitle.match(/^执行到：(.+?)。/)?.[1] || '';
+    const targetPane = prior.tabs.find((tab) => tab.id === active.tabId).panes.findIndex((pane) => pane.id === active.paneId) + 1;
+    const templateMark = mark();
+    await clickAction(10, 'execute');
+    await waitSsh(() => sshd.shellCommands.length > templateMark.commands);
+    await waitEval(`return JSON.stringify(window.__nbTest.diagSource())`, 'command not found');
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(10, 'execute'))}).disabled`, 'false');
+    const template = traffic(templateMark);
+    const templateDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    check('T78c 合法 Docker 模板无提醒/确认,真实按钮一次 SSH 原文提交,仅断言 mock 输入而非 Docker 成功',
+      done[10].warnings.length === 0 && !done[10].disabled && !done[10].insertDisabled
+      && !(await evalJs(`return window.__nbTest.confirmOpen()`))
+      && AI_COMMAND_BLOCKS[10].text.includes('\\t') && !AI_COMMAND_BLOCKS[10].text.includes('\t')
+      && template.writes.length === 1 && wireIs(template, shellId, AI_COMMAND_BLOCKS[10].text + '\r')
+      && template.commands.length === 1 && template.commands[0].command === AI_COMMAND_BLOCKS[10].text
+      && templateDiag.cmd === AI_COMMAND_BLOCKS[10].text && templateDiag.output.includes('command not found'), JSON.stringify({ template, templateDiag }));
+
+    const placeholderWarning = done[5].warnings[0]?.text.split('\n')[0] || '';
+    const placeholderCancelMark = mark();
+    await clickAction(5, 'execute');
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'true');
+    const placeholderConfirm = asObj(await evalJs(`return JSON.stringify({ title: window.__nbTest.confirmTitle(),
+      text: window.__nbTest.confirmText(), focus: window.__nbTest.confirmFocus() })`));
+    check('T78d 疑似示例参数提醒可见且按钮可用,确认含具体 token/理由/全文/目标且默认取消',
+      !done[5].disabled && !done[5].insertDisabled && done[5].warnings[0]?.visible
+      && placeholderWarning.includes(AI_COMMAND_BLOCKS[5].warning.token) && placeholderWarning.includes(AI_COMMAND_BLOCKS[5].warning.reason)
+      && placeholderConfirm.title === '确认执行 AI 命令' && placeholderConfirm.focus === 'cancel'
+      && placeholderConfirm.text.includes(placeholderWarning) && placeholderConfirm.text.includes(AI_COMMAND_BLOCKS[5].text)
+      && targetLabel.includes('ui-a') && targetLabel.includes(`root@127.0.0.1:${sshd.port}`)
+      && targetLabel.endsWith(`窗格 ${targetPane}`) && placeholderConfirm.text.includes(`目标：${targetLabel}`)
+      && noTraffic(placeholderCancelMark), JSON.stringify(placeholderConfirm));
+    await evalJs(`document.querySelector('#btn-confirm-cancel').click(); return 1`);
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'false');
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(5, 'execute'))}).disabled`, 'false');
+    await sleep(180);
+    check('T78e 取消示例参数确认不产生任何 SSH 输入或提交', noTraffic(placeholderCancelMark), JSON.stringify(traffic(placeholderCancelMark)));
+    const placeholderMark = mark();
+    await clickAction(5, 'execute');
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitSsh(() => sshd.shellCommands.length > placeholderMark.commands);
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(5, 'execute'))}).disabled`, 'false');
+    await sleep(180);
+    const placeholder = traffic(placeholderMark);
+    check('T78f 接受示例参数确认后仅一次原文 SSH 提交,不替换 token/不重复确认',
+      placeholder.writes.length === 1 && wireIs(placeholder, shellId, AI_COMMAND_BLOCKS[5].text + '\r')
+      && placeholder.commands.length === 1 && placeholder.commands[0].command === AI_COMMAND_BLOCKS[5].text
+      && !(await evalJs(`return window.__nbTest.confirmOpen()`)), JSON.stringify(placeholder));
+
+    const modeMark = mark();
+    bracketedOn = true;
+    await evalJs(`window.__nbTest.write('nebula-e2e-bracketed-on\\r'); return 1`);
+    await waitSsh(() => sshd.shellCommands.slice(modeMark.commands).some((entry) => entry.command === 'nebula-e2e-bracketed-on'));
+    await waitEval(`return window.__NB_TERM_TEXT__()`, 'BRACKETED-ON');
+    await focusSession(active); // Real focus refresh after xterm parsed the remote mode.
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(1, 'execute'))}).disabled`, 'false');
+    const cancelMark = mark();
+    await clickAction(1, 'execute');
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'true');
+    const multiConfirm = asObj(await evalJs(`return JSON.stringify({ title: window.__nbTest.confirmTitle(),
+      text: window.__nbTest.confirmText(), focus: window.__nbTest.confirmFocus() })`));
+    check('T79 多行执行确认展示完整两行文本及目标标签/主机/窗格,安全焦点默认取消',
+      multiConfirm.title === '确认执行 AI 命令' && multiConfirm.focus === 'cancel'
+      && multiConfirm.text.includes('whoami\nnebula-probe') && multiConfirm.text.includes('2 行')
+      && targetLabel.includes('ui-a') && targetLabel.includes(`root@127.0.0.1:${sshd.port}`)
+      && targetLabel.endsWith(`窗格 ${targetPane}`) && multiConfirm.text.includes(`目标：${targetLabel}`), JSON.stringify(multiConfirm));
+    await evalJs(`document.querySelector('#btn-confirm-cancel').click(); return 1`);
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'false');
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(1, 'execute'))}).disabled`, 'false');
+    await sleep(180);
+    check('T79b 取消多行确认不产生任何 SSH 输入或提交', noTraffic(cancelMark), JSON.stringify(traffic(cancelMark)));
+    const multiMark = mark();
+    await clickAction(1, 'execute');
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitSsh(() => sshd.shellCommands.length > multiMark.commands);
+    await waitEval(`return JSON.stringify(window.__nbTest.diagSource())`, 'PROBE-OK nebula-e2e');
+    const multi = traffic(multiMark);
+    const multiDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    check('T79c 确认后 bracketed paste 整体发送多行,仅末尾提交一次,诊断保留整个块',
+      wireIs(multi, shellId, '\x1b[200~whoami\rnebula-probe\x1b[201~\r')
+      && multi.commands.length === 1 && multi.commands[0].command === 'whoami\nnebula-probe'
+      && multiDiag.cmd === 'whoami\nnebula-probe' && multiDiag.output.includes('PROBE-OK nebula-e2e'), JSON.stringify({ multi, multiDiag }));
+
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(7, 'execute'))}).disabled`, 'false');
+    const riskMark = mark();
+    await clickAction(7, 'execute');
+    await waitEval(`return window.__nbTest.confirmOpen()`, 'true');
+    const risk = asObj(await evalJs(`return JSON.stringify({ text: window.__nbTest.confirmText(), focus: window.__nbTest.confirmFocus() })`));
+    await evalJs(`document.querySelector('#btn-confirm-cancel').click(); return 1`);
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).disabled`, 'false');
+    check('T80 明显危险单行也需确认,风险/完整命令/目标可见且默认取消,取消不发送',
+      risk.focus === 'cancel' && risk.text.includes('递归删除') && risk.text.includes(AI_COMMAND_BLOCKS[7].text)
+      && risk.text.includes(`目标：${targetLabel}`) && noTraffic(riskMark), JSON.stringify(risk));
+
+    const insertMark = mark();
+    const beforeInsertDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    await clickAction(1, 'insert');
+    await waitSsh(() => sshd.shellWrites.length > insertMark.writes);
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(1, 'insert'))}).disabled`, 'false');
+    await sleep(180);
+    const inserted = traffic(insertMark);
+    const afterInsertDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    check('T81 details 菜单仅填入完整多行,无末尾回车/SSH 提交/新的诊断命令',
+      wireIs(inserted, shellId, '\x1b[200~whoami\rnebula-probe\x1b[201~') && inserted.commands.length === 0
+      && afterInsertDiag.cmd === beforeInsertDiag.cmd, JSON.stringify(inserted));
+    // User-visible Ctrl+C discards the fixture's unsubmitted input before later cases.
+    await evalJs(`window.__nbTest.write('\\x03'); return 1`);
+    await sleep(150);
+
+    const tabInsertMark = mark();
+    await clickAction(9, 'insert');
+    await waitSsh(() => sshd.shellWrites.length > tabInsertMark.writes);
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(9, 'insert'))}).disabled`, 'false');
+    await sleep(180);
+    const tabInserted = traffic(tabInsertMark);
+    check('T81b 开启 bracketed paste 后含 TAB 单行精确填入,不改为空格/补全且不提交回车',
+      wireIs(tabInserted, shellId, '\x1b[200~' + AI_COMMAND_BLOCKS[9].text + '\x1b[201~')
+      && tabInserted.commands.length === 0, JSON.stringify(tabInserted));
+    await evalJs(`window.__nbTest.write('\\x03'); return 1`);
+    await sleep(150);
+
+    const placeholderInsertMark = mark();
+    const beforePlaceholderInsertDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    await clickAction(5, 'insert');
+    await waitSsh(() => sshd.shellWrites.length > placeholderInsertMark.writes);
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(5, 'insert'))}).disabled`, 'false');
+    await sleep(180);
+    const placeholderInserted = traffic(placeholderInsertMark);
+    const afterPlaceholderInsertDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    check('T81c 有提醒的仅填入不弹确认,bracketed 全文无末尾回车/命令增长/新诊断命令',
+      !(await evalJs(`return window.__nbTest.confirmOpen()`))
+      && wireIs(placeholderInserted, shellId, '\x1b[200~' + AI_COMMAND_BLOCKS[5].text + '\x1b[201~')
+      && placeholderInserted.commands.length === 0 && afterPlaceholderInsertDiag.cmd === beforePlaceholderInsertDiag.cmd,
+      JSON.stringify(placeholderInserted));
+    await evalJs(`window.__nbTest.write('\\x03'); return 1`);
+    await sleep(150);
+
+    readonlyOn = true;
+    await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === ${JSON.stringify(active.id)}).readOnly`, 'true');
+    const readonly = await blockStates();
+    const readonlyMark = mark();
+    await evalJs(`document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).click(); return 1`);
+    check('T82 只读会话禁用所有 Shell 执行/填入但保留复制,禁用按钮不写 SSH',
+      readonly.every((block) => block.copy && (!block.execute || (block.disabled && block.insertDisabled)))
+      && readonly[0].title.includes('只读') && noTraffic(readonlyMark), JSON.stringify(readonly));
+    await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+    readonlyOn = false;
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).disabled`, 'false');
+    await evalJs(`document.querySelector('#btn-newtab').click(); return 1`);
+    emptyTab = (await snapshot()).activeTabId;
+    const empty = await blockStates();
+    const emptyMark = mark();
+    await evalJs(`document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).click(); return 1`);
+    check('T82b 空 pane 不回退到其他已连接会话,执行/填入禁用且复制可用',
+      !(await snapshot()).activeId && empty.every((block) => block.copy && (!block.execute || (block.disabled && block.insertDisabled)))
+      && empty[0].title.includes('没有活动终端') && noTraffic(emptyMark), JSON.stringify(empty));
+    await evalJs(`document.querySelector('.tab[data-tab="${emptyTab}"] .tab-close').click(); return 1`);
+    emptyTab = null;
+    await focusSession(active);
+
+    await openMenuPage('session'); await menuFocus('#btn-broadcast'); await focusedKey('Enter');
+    await waitEval(`return !!document.querySelector('#bc-list')`, 'true');
+    await evalJs(`for (const input of document.querySelectorAll('#bc-list input')) input.checked = ${JSON.stringify([active.id, peer.id])}.includes(input.value);
+      document.querySelector('#bc-ok').click(); return 1`);
+    const broadcasting = await snapshot();
+    const broadcastMark = mark();
+    await waitEval(`return document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).disabled`, 'false');
+    await clickAction(0, 'execute');
+    await waitSsh(() => sshd.shellCommands.length > broadcastMark.commands);
+    await sleep(180);
+    const broadcast = traffic(broadcastMark);
+    check('T83 广播选中两个真实会话时,AI 命令仍只发当前 activeId 的 SSH channel',
+      broadcasting.broadcast.length === 2 && broadcasting.broadcast.includes(active.id) && broadcasting.broadcast.includes(peer.id)
+      && wireIs(broadcast, shellId, '\x1b[200~nebula-probe\x1b[201~\r')
+      && broadcast.commands.length === 1 && broadcast.commands[0].shellId === shellId && broadcast.commands[0].command === 'nebula-probe', JSON.stringify({ broadcasting, broadcast }));
+    await evalJs(`document.querySelector('#btn-broadcast-stop').click(); return 1`);
+
+    await setBase('/commands/incomplete');
+    bubble = await send('命令块不正常结束测试');
+    await waitEval(`return document.querySelector(${JSON.stringify(bubble)})?.dataset.responseState`, 'incomplete');
+    const incomplete = await blockStates();
+    check('T84 HTTP EOF 无 DONE 的完整 Shell 块仅可复制,不误启用执行/填入',
+      incomplete.length === AI_COMMAND_BLOCKS.length && incomplete.every((block) => block.copy && (!block.execute || (block.disabled && block.insertDisabled)))
+      && incomplete[0].title.includes('未正常结束'), JSON.stringify(incomplete));
+    await setBase('/commands/length');
+    bubble = await send('供应商 token 截断命令块测试');
+    await waitEval(`return document.querySelector(${JSON.stringify(bubble)})?.dataset.responseState`, 'incomplete');
+    const truncated = await blockStates();
+    const truncatedMark = mark();
+    await evalJs(`document.querySelector(${JSON.stringify(actionSelector(0, 'execute'))}).click();
+      document.querySelector(${JSON.stringify(actionSelector(0, 'insert'))}).click(); return 1`);
+    check('T84d 供应商 finish_reason=length 即使返回 DONE,闭合 Shell 块仍仅可复制且不发 SSH',
+      truncated.length === AI_COMMAND_BLOCKS.length
+      && truncated.every(block => block.copy && (!block.execute || (block.disabled && block.insertDisabled)))
+      && truncated[0].title.includes('未正常结束') && noTraffic(truncatedMark), JSON.stringify(truncated));
+
+    await setBase('/commands');
+    bubble = await send('命令块停止生成测试');
+    await waitEval(`return document.querySelector(${JSON.stringify(blockSelector(0) + ' pre code')})?.textContent`, 'nebula-probe');
+    const abortMark = mark();
+    await evalJs(`document.querySelector('#ai-send').click(); return 1`); // Actual busy-state Stop button.
+    await waitEval(`return document.querySelector(${JSON.stringify(bubble)})?.dataset.responseState`, 'aborted');
+    const aborted = await blockStates();
+    check('T84b 用户停止实际流式回复后完整 Shell 块仅可复制,不发送 SSH',
+      aborted.length > 0 && aborted.every((block) => block.copy && (!block.execute || (block.disabled && block.insertDisabled)))
+      && aborted[0].title.includes('中止') && noTraffic(abortMark), JSON.stringify(aborted));
+  } finally {
+    const restoredBoundaries = asObj(await evalJs(`const saved = window.__e2eCommandClipboard;
+      let clipboardRestored = true, execRestored = true;
+      if (saved) {
+        if (saved.clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', saved.clipboardDescriptor); else delete navigator.clipboard;
+        if (saved.execDescriptor) Object.defineProperty(document, 'execCommand', saved.execDescriptor); else delete document.execCommand;
+        const sameDescriptor = (actual, expected) => !expected ? !actual : !!actual
+          && ['value', 'get', 'set', 'writable', 'enumerable', 'configurable'].every(key => actual[key] === expected[key]);
+        clipboardRestored = sameDescriptor(Object.getOwnPropertyDescriptor(navigator, 'clipboard'), saved.clipboardDescriptor);
+        execRestored = sameDescriptor(Object.getOwnPropertyDescriptor(document, 'execCommand'), saved.execDescriptor);
+        delete window.__e2eCommandClipboard;
+      }
+      document.querySelector('#btn-confirm-cancel')?.click(); document.querySelector('#bc-cancel')?.click();
+      document.querySelector('#btn-broadcast-stop')?.click();
+      if (document.querySelector('#ai-send')?.title === '停止生成') document.querySelector('#ai-send').click();
+      return JSON.stringify({ clipboardRestored, execRestored })`));
+    if (emptyTab) await evalJs(`document.querySelector('.tab[data-tab="${emptyTab}"] .tab-close')?.click(); return 1`);
+    await focusSession(active);
+    if (readonlyOn) await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+    if (bracketedOn) {
+      const resetMark = mark();
+      await evalJs(`window.__nbTest.write('\\x03'); window.__nbTest.write('nebula-e2e-bracketed-off\\r'); return 1`);
+      await waitSsh(() => sshd.shellCommands.slice(resetMark.commands).some((entry) => entry.shellId === shellId && entry.command === 'nebula-e2e-bracketed-off'));
+      await waitEval(`return window.__NB_TERM_TEXT__()`, 'BRACKETED-OFF');
+    }
+    await setBase('');
+    await focusSession(active);
+    const restored = await snapshot();
+    check('T84c 命令块用例还原 clipboard/AI endpoint/只读/广播/空标签,基线会话保留',
+      restoredBoundaries.clipboardRestored && restoredBoundaries.execRestored
+      && restored.activeId === prior.activeId && restored.broadcast.length === 0
+      && restored.tabs.length === prior.tabs.length && restored.sessions.length === prior.sessions.length
+      && restored.sessions.every((s) => prior.sessions.some((before) => before.id === s.id && before.readOnly === s.readOnly)), JSON.stringify({ restored, restoredBoundaries }));
+  }
+}
+
 async function cleanup() {
   try { if (proc) proc.kill(); } catch { /* ignore */ }
   try { if (sshd) await sshd.close(); } catch { /* ignore */ }
   try { if (sshd2) await sshd2.close(); } catch { /* ignore */ }
+  try { if (tileSshd) await tileSshd.close(); } catch { /* ignore */ }
   try { if (cloud) await cloud.close(); } catch { /* ignore */ }
   try { if (ai) await ai.close(); } catch { /* ignore */ }
   try { if (work) fs.rmSync(work, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -137,7 +816,10 @@ const watchdog = setTimeout(() => {
 async function main() {
   if (!fs.existsSync(BIN)) throw new Error(`未找到应用二进制: ${BIN}\n请先执行: npm run build:web && cd src-tauri && cargo build`);
 
-  sshd = await startMockSshd({ password: PASSWORD });
+  sshd = await startMockSshd({ password: PASSWORD, onEvent: countSshConnections, commandBlockInput: true });
+  // A fixture-only endpoint: never consume sshd2's deliberately mismatched
+  // fingerprint, which belongs to the later security/retrust regression.
+  tileSshd = await startMockSshd({ password: PASSWORD, onEvent: countSshConnections });
   // 第二台 mock sshd:主机密钥与 sshd 不同,用于制造"服务器指纹变更"(T32)。
   sshd2 = await startMockSshd({ password: PASSWORD });
   cloud = await startMockCloudServer();
@@ -157,7 +839,7 @@ async function main() {
   fs.writeFileSync(
     path.join(userData, 'nebulashell-config.json'),
     JSON.stringify({
-      knownHosts: { [tofuKey]: sshd.hostFingerprintHex, [fpKey2]: sshd.hostFingerprintB64 },
+      knownHosts: { [tofuKey]: sshd.hostFingerprintHex, [fpKey2]: sshd.hostFingerprintB64, [`127.0.0.1:${tileSshd.port}`]: tileSshd.hostFingerprintB64 },
       hosts: [],
       settings: {},
     }),
@@ -176,6 +858,7 @@ async function main() {
       NEBULA_TEST_PICK_PATHS: uploadSrc,
       NEBULA_TEST_SAVE_PATH: path.join(work, 'hosts-export.json'),
       NEBULA_TEST_IMPORT_PATH: path.join(work, 'hosts-export.json'),
+      NEBULA_TEST_EXPORT_DIR: work,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -194,16 +877,18 @@ async function main() {
   }
   console.log(`测试桥 :${bridge}`);
 
-  // 等 webview 就绪
+  // The initial blank WebView can already be complete before the app loads.
   await waitEval(`return document.readyState`, 'complete', 40000);
-  await evalJs(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); 0`);
+  await waitEval(`return !!document.querySelector('#more-menu') && !!window.__nbTest`, 'true', 40000);
+  await evalJs(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); window.__menuTrace = []; for (const type of ['focus', 'blur']) window.addEventListener(type, () => window.__menuTrace.push({ type, focus: document.activeElement?.id, at: Date.now() })); 0`);
   check('T1 应用启动 / webview 就绪', true);
 
   await evalJs(`return document.querySelector('#welcome') ? 1 : 0`);
   // 版本号不再显示在侧边栏左下角,而是收进「关于」弹窗(功能菜单 → 关于)。
   // 断言改为:点开「关于」能看到版本与平台,且侧边栏底部已无版本号。
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await evalJs(`document.querySelector('#btn-about').click(); return 1`);
+  await openMenuPage('settings');
+  await menuFocus('#btn-about');
+  await focusedKey('Enter');
   await waitEval(`window.__nbTest.about().open`, 'true', 10000);
   const about = asObj(await evalJs(`return JSON.stringify(window.__nbTest.about())`));
   check('T2 欢迎页 + 关于弹窗显示版本号', about.version === `v${APP_VERSION}` && !!about.platform, JSON.stringify(about));
@@ -262,17 +947,23 @@ async function main() {
   // 此时 canvas 不存在 —— 该断言防止渲染器被静默降级而不自知。
   const glCanvas = await evalJs(`return String(!!document.querySelector('.term-pane.focused canvas'))`);
   check('T5c WebGL 渲染器激活(canvas 已挂载)', glCanvas === 'true', glCanvas);
+  const terminalViewport = asObj(await evalJs(`return (${auditTerminalViewport.toString()})().then(JSON.stringify)`));
+  check('T5d 终端完整行和底部留白不被裁切(5 宽度 × 10 高度)', terminalViewport.issues.length === 0, JSON.stringify(terminalViewport));
+
+  // Run while there is one baseline tab so closing to the last remaining tab
+  // can be exercised without ever disconnecting existing baseline sessions.
+  await tabTilingRegressions();
 
   // 分屏
   // 分屏:同一标签内并排两个终端(标签数不变,窗格数 +1)
-  // ⛶ 按钮现在弹出方向选择(与 title 声明一致),走真实路径选"左右分屏"。
+  // ⛶ 现在直接分屏并自动整理,不再弹方向菜单;新窗格也直接复用当前
+  // 已连接主机,不再出现"选择主机"的空窗格步骤。
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
-  await sleep(200);
-  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.textContent.includes('左右分屏')).click(); return 1`);
-  await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
   await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
   const splitState = await evalJs(`return JSON.stringify({ tabs: document.querySelectorAll('.tab').length, panes: document.querySelectorAll('.term-pane').length })`);
   check('T6 分屏双会话(同一标签内并排)', asObj(splitState).panes === 2, splitState);
+  const splitViewport = asObj(await evalJs(`return (${auditTerminalViewport.toString()})().then(JSON.stringify)`));
+  check('T6b 分屏和滚动容器内终端完整行不被裁切', splitViewport.issues.length === 0, JSON.stringify(splitViewport));
 
   // 删除确认对话框(回归:confirm 在 WKWebView 失效 → 已换应用内实现)
   await evalJs(`
@@ -280,14 +971,13 @@ async function main() {
     it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     it.querySelector('.hi-clone').click(); return 1`);
   await waitEval(`return document.querySelector('#host-list').textContent`, '副本', 10000);
-  const confirmShown = await evalJs(`
-    return (() => {
-      const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('副本'));
-      it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      it.querySelector('.hi-del').click();
-      return !document.querySelector('#modal-confirm').classList.contains('hidden');
-    })()`);
-  check('T7 删除弹出应用内确认框(替代失效的 confirm)', confirmShown === true);
+  await evalJs(`
+    const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('副本'));
+    it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    it.querySelector('.hi-del').click(); return 1`);
+  // askConfirm 经 FIFO promise 队列打开,不能在 .click() 同一栈内抢读可见性。
+  await waitEval(`window.__nbTest.confirmOpen()`, 'true', 10000);
+  check('T7 删除弹出应用内确认框(替代失效的 confirm)', await evalJs(`return window.__nbTest.confirmOpen()`) === true);
 
   await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
   await sleep(800);
@@ -304,7 +994,9 @@ async function main() {
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
+    document.querySelector('#ai-provider').dispatchEvent(new Event('change', { bubbles: true }));
     document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-fetch-models').click(); return 1`);
   await waitEval(`return document.querySelector('#toasts').textContent`, '获取到 3 个模型', 15000);
@@ -351,7 +1043,7 @@ async function main() {
   await evalJs(`window.__nbTest.modelPickerFilter(''); return 1`);
 
   // Esc 只关最上层:模型弹框关闭后,AI 设置必须还开着(否则用户的编辑内容凭空消失)
-  await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
+  await focusedKey('Escape');
   await sleep(200);
   const escState = asObj(await evalJs(`return JSON.stringify({ picker: window.__nbTest.modelPickerOpen(), settings: window.__nbTest.aiSettingsOpen() })`));
   check('T9j Esc 只关最上层的模型弹框,AI 设置仍打开', escState.picker === false && escState.settings === true, JSON.stringify(escState));
@@ -415,6 +1107,8 @@ async function main() {
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}/slow';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
   await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
   await evalJs(`document.querySelector('#ai-input').value = '慢速测试'; document.querySelector('#ai-send').click(); return 1`);
@@ -445,6 +1139,8 @@ async function main() {
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
   await sleep(300);
 
@@ -472,6 +1168,8 @@ async function main() {
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}/utf8split';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
   await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
   await evalJs(`document.querySelector('#ai-input').value = 'utf8测试'; document.querySelector('#ai-send').click(); return 1`);
@@ -484,21 +1182,116 @@ async function main() {
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
   await sleep(300);
+
+  // —— 滚动行为:贴底跟随 + "回到底部"按钮(T9x 系列) ——
+  // /long 端点 120 段 × 60ms 流式,把消息区撑出滚动条。断言全部走 DOM 桥。
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}/long';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
+  await evalJs(`document.querySelector('#ai-input').value = '长回复滚动测试'; document.querySelector('#ai-send').click(); return 1`);
+  // T9x1: 流式期间贴底跟随(在流式窗口内至少一个采样点距底 ≤24px)
+  const t9x1 = await waitEval(`return (() => {
+    const b = document.querySelector('#ai-messages');
+    const off = b.scrollHeight - b.scrollTop - b.clientHeight;
+    return (off <= 24 && !!document.querySelector('.ai-msg.streaming')) ? 'ok'
+      : 'off=' + Math.round(off) + ',streaming=' + !!document.querySelector('.ai-msg.streaming');
+  })()`, 'ok', 20000).then(() => true).catch((e) => String(e).slice(-120));
+  check('T9x1 流式期间贴底跟随最新内容', t9x1 === true, String(t9x1));
+  // T9x2: 流式中上滚阅读不被拽回,按钮浮现
+  await evalJs(`document.querySelector('#ai-messages').scrollTop = 0; return 1`);
+  await sleep(500);
+  const t9x2 = asObj(await evalJs(`return JSON.stringify((() => {
+    const b = document.querySelector('#ai-messages');
+    return { st: Math.round(b.scrollTop), btn: document.querySelector('#ai-scroll-bottom').classList.contains('show'),
+      streaming: !!document.querySelector('.ai-msg.streaming') };
+  })())`));
+  check('T9x2 流式中上滚不被拽回,回到底部按钮浮现',
+    t9x2.st <= 2 && t9x2.btn === true && t9x2.streaming === true, JSON.stringify(t9x2));
+  // T9x3: 点按钮立即回底(流式态为瞬时滚动,避免被后续帧打断)
+  await evalJs(`document.querySelector('#ai-scroll-bottom').click(); return 1`);
+  const t9x3 = await waitEval(`return (() => {
+    const b = document.querySelector('#ai-messages');
+    const off = b.scrollHeight - b.scrollTop - b.clientHeight;
+    return off <= 24 ? 'ok' : 'off=' + Math.round(off);
+  })()`, 'ok', 8000).then(() => true).catch((e) => String(e).slice(-120));
+  check('T9x3 流式态点"回到底部"恢复贴底跟随', t9x3 === true, String(t9x3));
+  // 等流式收尾(第 120 段落盘 + streaming 标记撤除)
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, '长回复第120段', 30000);
+  await waitEval(`return !!document.querySelector('.ai-msg.streaming') ? 'streaming' : 'done'`, 'done', 15000);
+  // T9x4: 回复完成后仍停在底部(回归"完成瞬间滚动锚定上跳"),按钮隐藏
+  const t9x4 = await waitEval(`return (() => {
+    const b = document.querySelector('#ai-messages');
+    const off = Math.round(b.scrollHeight - b.scrollTop - b.clientHeight);
+    const btn = document.querySelector('#ai-scroll-bottom').classList.contains('show');
+    return (off <= 2 && !btn) ? 'ok' : 'off=' + off + ',btn=' + btn;
+  })()`, 'ok', 8000).then(() => true).catch((e) => String(e).slice(-120));
+  check('T9x4 回复完成后停在底部,按钮隐藏', t9x4 === true, String(t9x4));
+  // T9x5: 空闲态上滚浮现按钮,点击(平滑)回底后按钮隐藏
+  await evalJs(`document.querySelector('#ai-messages').scrollTop = 0; return 1`);
+  await sleep(300);
+  const t9x5a = asObj(await evalJs(`return JSON.stringify((() => {
+    const b = document.querySelector('#ai-messages');
+    return { st: Math.round(b.scrollTop), btn: document.querySelector('#ai-scroll-bottom').classList.contains('show') };
+  })())`));
+  await evalJs(`document.querySelector('#ai-scroll-bottom').click(); return 1`);
+  await sleep(900); // 平滑滚动约 300ms,等动画结束再断言
+  const t9x5b = asObj(await evalJs(`return JSON.stringify((() => {
+    const b = document.querySelector('#ai-messages');
+    return { off: Math.round(b.scrollHeight - b.scrollTop - b.clientHeight),
+      btn: document.querySelector('#ai-scroll-bottom').classList.contains('show') };
+  })())`));
+  check('T9x5 空闲态上滚浮现按钮,点击回底后按钮隐藏',
+    t9x5a.st <= 2 && t9x5a.btn === true && t9x5b.off <= 2 && t9x5b.btn === false,
+    JSON.stringify({ t9x5a, t9x5b }));
+  // T9x6: 面板隐藏期间收到完整回复,经真实入口(#btn-ai-close / #btn-ai-menu)
+  // 重开后自动贴底 —— display:none 下滚动全是空操作,重开必须补一次。
+  await evalJs(`document.querySelector('#ai-input').value = '隐藏面板滚动测试'; document.querySelector('#ai-send').click(); return 1`);
+  await sleep(400);
+  await evalJs(`document.querySelector('#btn-ai-close').click(); return 1`);
+  // 第二轮流式正文与第一轮相同,用"第120段"出现次数 ≥2 判断第二轮收完
+  await waitEval(`return document.querySelector('#ai-messages').textContent.split('长回复第120段').length - 1 >= 2
+    && !document.querySelector('.ai-msg.streaming') ? 'done' : 'wait'`, 'done', 30000);
+  await evalJs(`document.querySelector('#btn-ai-menu').click(); return 1`);
+  const t9x6 = await waitEval(`return (() => {
+    const b = document.querySelector('#ai-messages');
+    const off = Math.round(b.scrollHeight - b.scrollTop - b.clientHeight);
+    return off <= 2 ? 'ok' : 'off=' + off;
+  })()`, 'ok', 10000).then(() => true).catch((e) => String(e).slice(-120));
+  check('T9x6 面板隐藏期间收到回复,重开自动贴底', t9x6 === true, String(t9x6));
+  // 还原 base,后续用例仍走正常端点
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await sleep(300);
+
+  await aiCommandBlockRegressions();
 
   check('T9 AI 配置 / 模型发现 / 流式对话 / 保存后下拉即时刷新', true);
 
   // T9b:未保存的表单值可直接"测试连接"(曾误报"未配置");后端流式任务的 HTTP 错误
   // 必须经 ai:error 透出 —— 曾被吞掉,前端永远停在"生成中…"。
   // 用 /err 前缀 base:mock 对该路径的 chat 请求返回 401,若仍走已保存配置则会成功。
-  // 模型栏现在是 chip(不可直接输入),先把已勾选的 mock-model-2 选为生效模型。
+  // 模型栏:点 chip 切换生效模型(也可在框内输入 ID 回车添加),先把已勾选的 mock-model-2 选为生效模型。
   await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
   await evalJs(`document.querySelectorAll('#ai-model-chips .model-chip')[0].click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
+    document.querySelector('#ai-provider').dispatchEvent(new Event('change', { bubbles: true }));
     document.querySelector('#ai-protocol').value = 'openai';
+    document.querySelector('#ai-protocol').dispatchEvent(new Event('change', { bubbles: true }));
     document.querySelector('#ai-baseurl').value = '${ai.base}/err';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#ai-apikey').value = 'sk-err';
     document.querySelector('#btn-ai-test').click(); return 1`);
   const t9bToast = await waitEval(`return document.querySelector('#toasts').textContent`, '测试失败', 20000);
@@ -583,15 +1376,19 @@ async function main() {
   const tb = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel().toolbar)`));
   const tbIds = tb.map((b) => b.id);
   check(
-    'T52 文件工具栏 = 导航三连+刷新/新建/上传(图标按钮)',
-    JSON.stringify(tbIds) === JSON.stringify(['btn-file-back', 'btn-file-forward', 'btn-file-up', 'btn-file-refresh', 'btn-file-mkdir', 'btn-file-upload'])
+    'T52 文件工具栏 = 导航三连+刷新/收藏/新建/上传(图标按钮)',
+    JSON.stringify(tbIds) === JSON.stringify(['btn-file-back', 'btn-file-forward', 'btn-file-up', 'btn-file-refresh', 'btn-file-bookmark', 'btn-file-mkdir', 'btn-file-upload'])
       // 文字按钮已去除:按钮文案应是图标字形,不是"新建文件夹/上传/下载"这类词
       && tb.every((b) => !/新建文件夹|上传|下载|重命名|权限|删除|书签/.test(b.text)),
     JSON.stringify(tb),
   );
-  // 工具栏里不再有下载/重命名/权限/删除/书签按钮(它们已挪进右键菜单)
-  const goneBtns = await evalJs(`return JSON.stringify(['#btn-file-download','#btn-file-rename','#btn-file-chmod','#btn-file-delete','#btn-file-bookmark'].filter((s) => document.querySelector(s)))`);
-  check('T53 下载/重命名/权限/删除/书签按钮已从工具栏移除', goneBtns === '[]', goneBtns);
+  // 文件动作属于文件右键菜单;目录收藏保留独立的可发现入口。
+  const goneBtns = await evalJs(`return JSON.stringify(['#btn-file-download','#btn-file-rename','#btn-file-chmod','#btn-file-delete'].filter((s) => document.querySelector(s)))`);
+  check('T53 下载/重命名/权限/删除按钮已从工具栏移除', goneBtns === '[]', goneBtns);
+  await evalJs(`document.querySelector('#btn-file-bookmark').click(); return 1`);
+  await waitEval(`return document.querySelector('#toasts').textContent`, '已收藏当前目录', 10000);
+  const bookmark = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`));
+  check('T53b 可见收藏入口保存当前目录', bookmark.bookmarks.some(b => b.includes(bookmark.cwd)), JSON.stringify(bookmark.bookmarks));
 
   // 右键文件行 → 弹出针对该文件的菜单(含下载/重命名/权限/删除)
   const fileCtx = asObj(await evalJs(`return JSON.stringify(window.__nbTest.fileCtxMenu('README.md'))`));
@@ -688,16 +1485,35 @@ async function main() {
     badTest.testStatus.startsWith('✗') && badTest.accountCount === 0,
     JSON.stringify(badTest),
   );
+  // 回归:弹窗打开时 syncModalScope 会内联设 z-index 200+,toast 容器曾停在 99,
+  // 失败提示被弹窗整个盖住 —— 通知必须浮在所有操作界面之上。
+  // 弹窗仍开着,对 toast 中心做命中测试:命中的必须是 toast 自己(而不是弹窗遮罩)。
+  await evalJs(`
+    window.__nbTest.cloudFormFill({ label: 'e2e错密钥2', keyId: 'BADAKID-ui2', secret: 'sk-bad2', endpoint: '${cloud.base}' });
+    window.__nbTest.cloudFormTest(); return 1`);
+  const toastTop = await waitEval(`
+    const t = document.querySelector('#toasts .toast.error');
+    if (!t) return '';
+    const r = t.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return 'toast-hit=' + String(hit === t || t.contains(hit));
+  `, 'toast-hit=', 20000);
+  check('T25b 弹窗打开时失败 toast 保持在最顶层(不被遮挡)', toastTop.includes('toast-hit=true'), toastTop);
 
-  // 正例:正确密钥 → 校验通过(报出地域数/实例数),再保存
+  // 正例:正确密钥 → 校验通过(报出地域数/实例数),再保存。
+  // 回归:校验曾是"只抽样首个地域"的路径,报的实例数与拉取结果对不上 ——
+  // 现在校验与拉取共用同一条全量扫描路径,数字必须一致:
+  // mock 里 CVM 地域表 {广州,上海} + 轻量地域表 {广州},共 2 地域 5 台(4 CVM + 1 轻量)。
   await evalJs(`
     window.__nbTest.cloudFormFill({ label: 'e2e账号', keyId: 'AKID-ui', secret: 'sk-ui' });
     window.__nbTest.cloudFormTest(); return 1`);
   await waitEval(`window.__nbTest.cloudForm().testStatus`, '✓', 20000);
   const goodTest = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
   check(
-    'T26 正确密钥测试连接通过(报出地域与实例数)',
-    goodTest.testStatus.includes('校验通过') && goodTest.testStatus.includes('2 个地域'),
+    'T26 正确密钥测试连接通过(全量扫描口径:地域与实例数)',
+    goodTest.testStatus.includes('校验通过') &&
+      goodTest.testStatus.includes('2 个地域') &&
+      goodTest.testStatus.includes('共发现 5 台'),
     JSON.stringify(goodTest),
   );
   // 校验结论只对当时那组凭据有效:改动字段后必须作废(否则"✓ 通过"会
@@ -847,18 +1663,21 @@ async function main() {
     const pane = document.querySelector('.term-pane.focused') || document.querySelector('.term-pane');
     (pane.querySelector('.pane-zoom-btn')||{}).click?.();    return 1`);
   await sleep(1200);
-  const noZoom = asObj(await evalJs(`return JSON.stringify({ chip: !!document.querySelector('.zoom-chip'), toast: document.querySelector('#toasts').textContent })`));
+  const noZoom = asObj(await evalJs(`return JSON.stringify({ chip: !!document.querySelector('.zoom-chip'), disabled: document.querySelector('.term-pane .pane-zoom-btn').disabled, panes: document.querySelectorAll('.term-pane').length })`));
   check(
-    'T20 单窗格点放大不进入无效放大态',
-    noZoom.chip === false && noZoom.toast.includes('无需放大'),
+    'T20 单窗格放大按钮禁用且不进入无效放大态',
+    noZoom.chip === false && noZoom.disabled === true && noZoom.panes === 1,
     JSON.stringify(noZoom),
   );
 
-  // 分屏 → 放大 → 窗格占满;还原后窗格数恢复
+  // 分屏放大在足够大的终端区验收;双侧面板造成的不足宽度另有容量阻止回归。
+  await evalJs(`
+    if (!document.querySelector('#ai-panel').classList.contains('hidden')) document.querySelector('#btn-ai-close').click();
+    if (!document.querySelector('#file-panel').classList.contains('hidden')) document.querySelector('#btn-file-close').click();
+    return 1`);
+  await waitEval(`return String(!document.querySelector('#btn-split').disabled)`, 'true', 10000);
+  // 分屏 → 放大 → 窗格占满;还原后窗格数恢复(⛶ 直接分屏,新窗格复用当前主机)
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
-  await sleep(200);
-  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.textContent.includes('左右分屏')).click(); return 1`);
-  await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
   await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
   await evalJs(`document.querySelector('.term-pane.focused .pane-zoom-btn').click(); return 1`);
   await waitEval(`return String(!!document.querySelector('.zoom-chip'))`, 'true', 10000);
@@ -1084,24 +1903,48 @@ async function main() {
     `got=${String(refp).slice(0, 16)}… want=${sshd2.hostFingerprintB64.slice(0, 16)}…`,
   );
 
-  // 分屏:必须能"进去也能出来"(曾经分屏后没有关闭入口),且支持上下方向
+  // 缩到不足单格宽度时不得继续分屏,但不能销毁已有会话。
+  const narrowBefore = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
+  await evalJs(`const lr = document.querySelector('#layout-root'); window.__narrowLayoutStyle = lr.style.cssText;
+    lr.style.width = '319px'; lr.style.height = '550px'; lr.style.flex = 'none'; return 1`);
+  await openMenuPage();
+  if (narrowBefore.panes > 1) {
+    await menuFocus('#btn-auto-layout');
+    await focusedKey('Enter');
+  } else await focusedKey('Escape');
+  await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  const narrow = asObj(await evalJs(`return JSON.stringify({ state: window.__nbTest.tabState(),
+    disabled: document.querySelector('#btn-split').disabled, width: document.querySelector('#layout-root').offsetWidth,
+    scrollable: getComputedStyle(document.querySelector('#layout-root')).overflow === 'auto' })`));
+  check('T38a 不足 320px 时禁止新增分屏并保留全部原会话', narrow.width === 319 && narrow.disabled
+    && narrow.scrollable && JSON.stringify(narrow.state) === JSON.stringify(narrowBefore), JSON.stringify(narrow));
+  await evalJs(`document.querySelector('#layout-root').style.cssText = window.__narrowLayoutStyle;
+    delete window.__narrowLayoutStyle;
+    if (!document.querySelector('#ai-panel').classList.contains('hidden')) document.querySelector('#btn-ai-close').click();
+    if (!document.querySelector('#file-panel').classList.contains('hidden')) document.querySelector('#btn-file-close').click();
+    return 1`);
+
+  // 分屏入口统一为工具栏按钮;根页仅保留整理/放大/关闭,不再有方向菜单。
+  await openMenuPage();
   const splitMenu = asObj(await evalJs(`return JSON.stringify((() => {
-    document.querySelector('#btn-more').click();
-    const items = [...document.querySelectorAll('#more-menu .btn')].map((b) => b.textContent.trim());
-    const has = (s) => items.some((t) => t.includes(s));
-    return { items, lr: has('左右分屏'), tb: has('上下分屏'), auto: has('自动整理布局'), close: has('关闭当前窗格') };
+    const root = document.querySelector('#more-menu .mm-page[data-page="root"]');
+    return {
+      items: [...root.querySelectorAll('.btn')].map((b) => b.textContent.trim()),
+      commands: [...root.querySelectorAll('[data-command]')].map((b) => b.dataset.command),
+      splitCommand: document.querySelector('#btn-split').dataset.command,
+      hasDirections: window.__nbTest.accelTitles().hasDirectionMenus,
+    };
   })())`));
   check(
-    'T38 分屏菜单含左右/上下/自动整理/关闭窗格',
-    splitMenu.lr && splitMenu.tb && splitMenu.auto && splitMenu.close,
-    JSON.stringify(splitMenu.items),
+    'T38 统一分屏入口,根菜单保留整理/放大/关闭且无方向按钮',
+    splitMenu.splitCommand === 'pane.split' && splitMenu.hasDirections === false
+      && ['pane.reflow', 'pane.zoom', 'workspace.close'].every((id) => splitMenu.commands.includes(id)),
+    JSON.stringify(splitMenu),
   );
+  await focusedKey('Escape');
   const beforePanes = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
-  await evalJs(`document.querySelector('#btn-split-top-bottom').click(); return 1`);
-  await sleep(600);
-  const splitDir = await evalJs(`return JSON.stringify([...document.querySelectorAll('.split-node')].map((n) => n.className))`);
-  check('T39 上下分屏生成纵向布局节点', String(splitDir).includes('split-node v'), splitDir);
-  await evalJs(`(document.querySelector('.pane-picker .pp-item')||{click(){}}).click(); return 1`);
+  await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  // 分屏不再经过"选择主机"的空窗格:新窗格直接复用当前已连接主机
   await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, String(beforePanes + 1), 30000);
   // 关闭当前窗格:曾经分屏后无法退出(空窗格更没有入口)。
   // 关掉 N 个窗格中的一个后应剩 N-1 个;只有回到 1 个时布局树才不再有分隔节点。
@@ -1112,24 +1955,29 @@ async function main() {
   const afterClose = asObj(await evalJs(`return JSON.stringify({ panes: document.querySelectorAll('.term-pane').length, nodes: document.querySelectorAll('.split-node').length })`));
   check(
     'T40 关闭当前窗格可退出分屏(窗格数 -1)',
-    afterClose.panes === beforePanes && afterClose.nodes === (beforePanes <= 1 ? 0 : 1),
+    afterClose.panes === beforePanes && afterClose.nodes === Math.max(0, beforePanes - 1),
     JSON.stringify({ ...afterClose, beforePanes }),
   );
 
-  // 多分屏可达性 + 自动整理布局:6 个窗格时容器必须可滚动,整理后行列均衡且无溢出
-  for (let i = 0; i < 5; i++) {
-    await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-    await sleep(150);
-    await evalJs(`document.querySelector('#btn-split-left-right').click(); return 1`);
-    await sleep(350);
+  // 多分屏可达性 + 自动整理布局:容量上限由 320×180 与 5px 分隔条计算。
+  // 命令在满容量时禁用,不再要求禁用按钮仍制造 toast。
+  const splitLimit = Number(await evalJs(`const lr = document.querySelector('#layout-root');
+    return Math.max(1, Math.floor((lr.clientWidth + 5) / 325)) * Math.max(1, Math.floor((lr.clientHeight + 5) / 185))`));
+  for (let i = 0; i <= splitLimit; i++) {
+    const before = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
+    await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+    const after = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
+    if (after === before) break;
+    await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, String(after), 20000);
+    await waitEval(`return document.querySelector('#status-text').textContent`, '已连接', 20000);
   }
   const many = asObj(await evalJs(`return JSON.stringify((() => {
     const lr = document.querySelector('#layout-root');
-    return { panes: document.querySelectorAll('.term-pane').length, canScroll: lr.scrollWidth > lr.clientWidth || lr.scrollHeight > lr.clientHeight, ow: getComputedStyle(lr).overflow };
+    return { panes: document.querySelectorAll('.term-pane').length, canScroll: lr.scrollWidth > lr.clientWidth + 1 || lr.scrollHeight > lr.clientHeight + 1, ow: getComputedStyle(lr).overflow, splitDisabled: document.querySelector('#btn-split').disabled };
   })())`));
   check(
-    'T41 多窗格溢出时容器可滚动(窗格都可达)',
-    many.panes >= 6 && many.canScroll && many.ow === 'auto',
+    'T41 多窗格不溢出可视区(受容量上限约束)',
+    many.panes >= 2 && many.panes === splitLimit && many.splitDisabled && !many.canScroll && many.ow === 'auto',
     JSON.stringify(many),
   );
   await evalJs(`document.querySelector('#btn-more').click(); return 1`);
@@ -1142,23 +1990,21 @@ async function main() {
     const tops = [...new Set(panes.map((p) => p[1]))].sort((a, b) => a - b);
     const rows = tops.map((t) => panes.filter((p) => p[1] === t).length);
     return {
-      count: panes.length, rows,
-      // 主区过窄时多列放不下(窗格有 min-width),此时靠容器滚动保证可达
+      count: panes.length, rows, panes,
+      capacity: Math.max(1, Math.floor((lr.clientWidth + 5) / 325)) * Math.max(1, Math.floor((lr.clientHeight + 5) / 185)),
+      // 尺寸规划器可选横向或纵向网格,每格至少 320×180。
       overflowX: lr.scrollWidth - lr.clientWidth, overflowY: lr.scrollHeight - lr.clientHeight,
       scrollable: getComputedStyle(lr).overflow === 'auto',
       minW: Math.min(...panes.map((p) => p[2])), minH: Math.min(...panes.map((p) => p[3])),
     };
   })())`));
   check(
-    'T42 自动整理布局:行列均衡的网格,放不下时可滚动可达',
-    auto.count >= 6
-      && auto.rows.length >= 2
-      // 每行窗格数最多相差 1(均衡),而不是"一行塞满、最后一行剩 1 个"的畸形
-      && Math.max(...auto.rows) - Math.min(...auto.rows) <= 1
-      && (auto.overflowX <= 0 || auto.scrollable)
-      && (auto.overflowY <= 0 || auto.scrollable)
-      // 每个窗格都还得是可用的尺寸(没被压成窄条)
-      && auto.minW >= 100 && auto.minH >= 100,
+    'T42 自动整理布局:行列均衡的网格',
+    auto.count >= 2 && auto.count === auto.capacity
+      && balancedGrid(auto.panes)
+      && auto.overflowX <= 1 && auto.overflowY <= 1 && auto.scrollable
+      // 不以滚动豁免容量内的溢出,也不再接受 100px 的不可用窄条。
+      && auto.minW >= 319 && auto.minH >= 179,
     JSON.stringify(auto),
   );
   // 收尾:把上面开出来的一堆窗格关回 1 个,避免影响后续用例(它们假定特定的窗格数)
@@ -1214,11 +2060,10 @@ async function main() {
   check('T46 历史面板关闭按钮可收起', asObj(histClosed).hidden === true, histClosed);
 
   // 交互动效:存在动画,且带 prefers-reduced-motion 兜底(无障碍)
+  await openMenuPage();
   const anim = asObj(await evalJs(`return JSON.stringify((() => {
     const mm = document.querySelector('#more-menu');
-    mm.classList.remove('hidden');
     const menuAnim = getComputedStyle(mm).animationName;
-    mm.classList.add('hidden');
     let reduced = false;
     for (const s of document.styleSheets) {
       try { if ([...s.cssRules].some((r) => r.conditionText && r.conditionText.includes('prefers-reduced-motion'))) reduced = true; } catch { /* ignore */ }
@@ -1230,35 +2075,26 @@ async function main() {
     anim.menuAnim && anim.menuAnim !== 'none' && anim.reduced === true,
     JSON.stringify(anim),
   );
+  await focusedKey('Escape');
 
   // 对齐类缺陷是像素级可测的,不必靠肉眼:逐一量出边界并断言一致。
+  await openMenuPage();
   const align = asObj(await evalJs(`return JSON.stringify((() => {
     // ① 标签栏右侧按钮:顶边与垂直中心都必须一致(曾因 .ai-btn 单加 margin-bottom 而错位)
     const tbIds = ['#btn-newtab', '#btn-split', '#btn-ai-toggle', '#btn-more'];
     const tbs = tbIds.map((id) => { const r = document.querySelector(id).getBoundingClientRect(); return { id, top: Math.round(r.top * 10) / 10, cy: Math.round((r.top + r.height / 2) * 10) / 10 }; });
     const tabbarAligned = new Set(tbs.map((t) => t.top)).size === 1 && new Set(tbs.map((t) => t.cy)).size === 1;
-    // ② 功能菜单(现为横向工具条):每个按钮内"图标→文字"的间距必须一致,
-    //    图标在本按钮内垂直居中。图标字形宽度不一(📁/⚙️/◫ 各不相同,emoji 还带
-    //    不可见的变体选择符),若间距不固定,同一行里各按钮的文字就会错开。
-    //    (菜单从竖排列表改为横排后,原先"各行文字起点(x)相同"的判据不再适用。)
+    // ② 竖向根页:图标、显式 .mm-label 列与行高都可测,不把隐藏页的零矩形算入。
     const mm = document.querySelector('#more-menu');
-    const wasHidden = mm.classList.contains('hidden');
-    mm.classList.remove('hidden');
-    const items = [...mm.querySelectorAll('.btn')].map((b) => {
-      const mi = b.querySelector('.mi');
+    const items = [...mm.querySelectorAll('.mm-page:not(.hidden) .btn')].map((b) => {
       const br = b.getBoundingClientRect();
-      const mr = mi.getBoundingClientRect();
-      // 文字节点:图标之后的第一个非空文本节点
-      const tn = [...b.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
-      const gap = tn ? Math.round(((() => {
-        const rng = document.createRange();
-        rng.selectNodeContents(tn);
-        return rng.getBoundingClientRect().left - mr.right;
-      })()) * 10) / 10 : null;
-      return { right: Math.round(mr.right * 10) / 10, gap, dCy: Math.round(Math.abs((mr.top + mr.height / 2) - (br.top + br.height / 2)) * 10) / 10 };
+      const mr = b.querySelector('.mi').getBoundingClientRect();
+      const lr = b.querySelector('.mm-label').getBoundingClientRect();
+      return { labelLeft: Math.round(lr.left * 10) / 10, gap: Math.round((lr.left - mr.right) * 10) / 10,
+        h: br.height, dCy: Math.round(Math.abs((mr.top + mr.height / 2) - (br.top + br.height / 2)) * 10) / 10 };
     });
-    if (wasHidden) mm.classList.add('hidden');
-    const menuGapUniform = new Set(items.map((i) => i.gap)).size === 1;
+    const menuGapUniform = items.length > 0 && new Set(items.map((i) => i.gap)).size === 1
+      && new Set(items.map((i) => i.labelLeft)).size === 1 && items.every((i) => i.gap >= 6 && i.h >= 34);
     const menuIconCentered = items.every((i) => i.dCy <= 1);
     return { tabbarAligned, menuGapUniform, menuIconCentered, items, maxIconDCy: Math.max(...items.map((i) => i.dCy)) };
   })())`));
@@ -1267,9 +2103,14 @@ async function main() {
     align.tabbarAligned && align.menuGapUniform && align.menuIconCentered,
     JSON.stringify(align),
   );
+  await focusedKey('Escape');
 
-  // 状态栏监控:窄窗口下必须"先收缩监控/状态文字,绝不遮挡行尾按钮",且高度恒定
-  const sbWidths = [1016, 900, 700, 500, 380, 316];
+  // 状态栏监控:窄窗口下必须"先收缩监控/状态文字,绝不遮挡行尾按钮",且高度恒定。
+  // 宽度取现实档位:1248 = 14 寸默认(1512 − 侧栏 264);888 = 14 寸 + AI 面板(曾
+  // 因降级档位差 8px 不触发而被静默裁掉网络数值);其余为逐级收窄的档位。
+  // monClip 检查监控条**内部**裁切:容器级 overflow 只保证按钮在界内,监控条
+  // 自己 overflow:hidden 仍可能把最后的网络数值裁没 —— 这是本轮踩的坑。
+  const sbWidths = [1248, 1016, 900, 888, 700, 640, 500, 420, 380, 316];
   const sbProbe = asObj(await evalJs(`return JSON.stringify(${JSON.stringify(sbWidths)}.map((w) => {
     const main = document.querySelector('#main');
     const save = main.style.cssText;
@@ -1288,61 +2129,414 @@ async function main() {
       overflow: sb.scrollWidth - sb.clientWidth,
       allBtnsInside: btns.every((b) => b.right <= sbR.right + 0.5 && b.left >= sbR.left - 0.5),
       noOverlap: !monVis || btns.every((b) => monR.right <= b.left + 0.5),
+      monClip: monVis ? mon.scrollWidth - mon.clientWidth : 0,
     };
     main.style.cssText = save;
     return out;
   }))`));
   check(
-    'T49 状态栏监控不遮挡行尾按钮,高度恒定',
-    sbProbe.every((r) => r.overflow <= 0 && r.allBtnsInside && r.noOverlap && r.h === sbProbe[0].h),
+    'T49 状态栏监控不遮挡行尾按钮,高度恒定,监控条自身无裁切',
+    sbProbe.every((r) => r.overflow <= 0 && r.allBtnsInside && r.noOverlap && r.monClip <= 0 && r.h === sbProbe[0].h),
     JSON.stringify(sbProbe),
+  );
+
+  // T49b 延迟槽在各宽度档不被裁:'999ms' 是 #mon-lat 定宽槽(42px)的极端载荷,
+  // 曾在 14 寸收窄窗口下被槽位 overflow:hidden 裁掉 'ms' 尾巴 —— 容器级检查
+  // (monClip)看不到槽内裁切,必须量元素自身的 scrollWidth。
+  const latProbe = asObj(await evalJs(`return JSON.stringify(${JSON.stringify(sbWidths)}.map((w) => {
+    const main = document.querySelector('#main');
+    const save = main.style.cssText;
+    main.style.flex = '0 0 ' + w + 'px'; main.style.width = w + 'px';
+    void main.getBoundingClientRect();
+    window.__nbTest.monitorProbe([
+      { cpuPct: 9.2, memPct: 50, memUsedMB: 488, memTotalMB: 976, diskPct: 40, diskUsedGB: 400, diskTotalGB: 1000, rxBps: 890, txBps: 1536, latencyMs: 999 },
+    ]);
+    const lat = document.querySelector('#mon-lat');
+    const item = lat.closest('.mon-item');
+    const r = lat.getBoundingClientRect();
+    const ir = item.getBoundingClientRect();
+    const out = {
+      w,
+      latText: lat.textContent,
+      latClipped: lat.scrollWidth - lat.clientWidth > 0 || r.right > ir.right + 0.5,
+    };
+    main.style.cssText = save;
+    return out;
+  }))`));
+  check(
+    'T49b 延迟数值(999ms)在各宽度档完整可见',
+    latProbe.every((r) => !r.latClipped && r.latText === '999ms'),
+    JSON.stringify(latProbe),
+  );
+
+  // T49c 连续宽度扫描:档位断点只验证离散点,拖动窗口是连续的 —— 档位之间的
+  // 过渡带曾因 flex 比例收缩把压力平摊给组内容而出现裁切(1300→300 每 8px 扫过)。
+  const sweep = asObj(await evalJs(`return JSON.stringify((() => {
+    const main = document.querySelector('#main');
+    const save = main.style.cssText;
+    const bad = [];
+    for (let w = 1300; w >= 300; w -= 8) {
+      main.style.flex = '0 0 ' + w + 'px'; main.style.width = w + 'px';
+      void main.getBoundingClientRect();
+      window.__nbTest.monitorProbe([
+        { cpuPct: 9.2, memPct: 50, memUsedMB: 488, memTotalMB: 976, diskPct: 40, diskUsedGB: 400, diskTotalGB: 1000, rxBps: 890, txBps: 1536, latencyMs: 999 },
+      ]);
+      const bar = document.querySelector('#monitor-bar');
+      if (getComputedStyle(bar).display === 'none') continue;
+      const g = Math.max(0, ...[...bar.querySelectorAll('.mon-group')].map((el) => el.scrollWidth - el.clientWidth));
+      const lat = document.querySelector('#mon-lat');
+      const b = bar.scrollWidth - bar.clientWidth;
+      const l = lat.scrollWidth - lat.clientWidth;
+      if (g > 0 || b > 0 || l > 0) bad.push({ w, group: g, bar: b, lat: l });
+    }
+    main.style.cssText = save;
+    return bad;
+  })())`));
+  check(
+    'T49c 连续宽度扫描(1300→300 每 8px)无任何裁切',
+    Array.isArray(sweep) && sweep.length === 0,
+    JSON.stringify(sweep),
+  );
+
+  // T49d 长主机名不溢出条目边框(盒级+省略号约束)。
+  // 分屏不再产生"选择主机"的空窗格(新窗格直接复用当前主机),但主机列表
+  // 与侧边栏同样承载任意长度的主机名 —— 同一套盒级+ellipsis 约束在这里断言。
+  await evalJs(`
+    document.querySelector('#btn-add-host').click();
+    document.querySelector('#host-name').value = '长度测试-超长主机名称用于验证窗格选择器溢出行为AAAA';
+    document.querySelector('#host-host').value = '127.0.0.1';
+    document.querySelector('#host-port').value = '${sshd.port}';
+    document.querySelector('#host-username').value = 'root';
+    document.querySelector('#host-password').value = '${PASSWORD}';
+    document.querySelector('#btn-host-save').click(); return 1`);
+  await waitEval(`return document.querySelector('#host-list').textContent.includes('长度测试')`, 'true', 10000);
+  const ppCheck = asObj(await evalJs(`return JSON.stringify((() => {
+    // 约束在 .host-name/.host-sub 上(host-item 是 flex 容器,省略号三件套
+    // 落在其文本子元素);盒级断言同时看条目与文本行是否越出父容器。
+    const rows = [...document.querySelectorAll('#host-list .host-item')]
+      .filter((el) => el.textContent.includes('长度测试'));
+    if (!rows.length) return { err: 'long-host item not found', items: 0 };
+    const out = [];
+    for (const el of rows) {
+      const pr = el.parentElement.getBoundingClientRect();
+      const er = el.getBoundingClientRect();
+      const boxInside = er.right <= pr.right + 0.5 && er.left >= pr.left - 0.5;
+      for (const sel of ['.host-name', '.host-sub']) {
+        const t = el.querySelector(sel);
+        if (!t) continue;
+        const cs = getComputedStyle(t);
+        const tr = t.getBoundingClientRect();
+        out.push({
+          sel,
+          textW: Math.round(tr.width * 10) / 10,
+          parentW: Math.round(pr.width * 10) / 10,
+          boxInside,
+          constrained: cs.overflowX === 'hidden' && cs.whiteSpace === 'nowrap' && cs.textOverflow === 'ellipsis',
+        });
+      }
+    }
+    return out;
+  })())`));
+  check(
+    'T49d 长主机名不溢出条目边框(盒级+省略号约束)',
+    Array.isArray(ppCheck) && ppCheck.length > 0 && ppCheck.every((r) => r.boxInside && r.constrained),
+    JSON.stringify(ppCheck),
   );
 
   /* ===== 本轮改动(1–7)的回归 ===== */
 
   // —— 7 指纹功能已并入功能菜单列表 ——
-  const moreItems = asObj(await evalJs(`document.querySelector('#btn-more').click(); return JSON.stringify(window.__nbTest.moreMenuItems())`));
+  await openMenuPage('settings');
+  const moreItems = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#more-menu .mm-page:not(.hidden) .btn')].map((b) => b.textContent.trim()))`));
   check(
     'T50 指纹与关于已并入功能菜单,侧栏不再有指纹按钮',
     moreItems.some((t) => t.includes('主机指纹')) && moreItems.some((t) => t.includes('关于')) && footer.hasFingerprintBtn === false,
     JSON.stringify({ moreItems, footerHasFp: footer.hasFingerprintBtn }),
   );
+  // T50c 主机导入/导出移入「配置」分组:侧栏底部不再有这两个按钮
+  check(
+    'T50c 主机导入/导出可从「设置与管理」页到达',
+    moreItems.some((t) => t.includes('导入主机')) && moreItems.some((t) => t.includes('导出主机')) && footer.text === '',
+    JSON.stringify({ moreItems, footerText: footer.text }),
+  );
   // 从菜单点开指纹弹窗,确认链路仍通(此前是侧边栏底部的按钮)
-  await evalJs(`document.querySelector('#btn-fingerprints').click(); return 1`);
+  await menuFocus('#btn-fingerprints');
+  await focusedKey('Enter');
   await sleep(800);
   const fpOpen = await evalJs(`return String(!document.querySelector('#modal-fp').classList.contains('hidden'))`);
   check('T50b 功能菜单可打开指纹管理', fpOpen === 'true', fpOpen);
   await evalJs(`document.querySelector('#btn-fp-close') && document.querySelector('#btn-fp-close').click(); return 1`);
 
-  // —— 5 更多菜单不得遮挡文件管理展示区 ——
-  // 打开文件面板(已开则保持),再展开功能菜单,断言两者矩形不相交。
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
+  // 固定 300px 浮层允许覆盖文件面板,但必须贴合工具按钮并钳制在视口内。
   const panelWasOpen = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel())`)).open;
-  if (!panelWasOpen) await evalJs(`document.querySelector('#btn-files').click(); return 1`);
+  if (!panelWasOpen) {
+    await openMenuPage();
+    await menuFocus('#btn-files');
+    await focusedKey('Enter');
+  }
   await waitEval(`window.__nbTest.filePanel().open`, 'true', 15000);
+  await openMenuPage();
   const geom = asObj(await evalJs(`return JSON.stringify((() => {
-    document.querySelector('#btn-more').click();
-    return window.__nbTest.moreMenuGeom();
+    const out = window.__nbTest.moreMenuGeom();
+    const anchor = document.querySelector('#btn-more').getBoundingClientRect();
+    const r = document.querySelector('#more-menu').getBoundingClientRect();
+    const width = window.innerWidth, height = window.innerHeight;
+    const below = height - anchor.bottom - 8, above = anchor.top - 8;
+    const rawTop = r.height <= below || below >= above ? anchor.bottom : anchor.top - r.height;
+    return { ...out, width, height, actualWidth: r.width,
+      expectedLeft: width < 360 ? 8 : Math.max(8, Math.min(anchor.right - r.width, width - r.width - 8)),
+      expectedTop: width < 360 ? Math.max(8, (height - r.height) / 2) : Math.max(8, Math.min(rawTop, height - r.height - 8)),
+      expanded: document.querySelector('#btn-more').getAttribute('aria-expanded') };
   })())`));
   check(
-    'T51 文件面板打开时功能菜单不遮挡展示区',
-    geom.panelOpen === true && geom.overlap === false,
+    'T51 文件面板打开时菜单固定宽度、贴合锚点且钳制在视口内',
+    geom.panelOpen === true && geom.expanded === 'true'
+      && Math.abs(geom.actualWidth - Math.min(300, geom.width - 16)) <= 1
+      && geom.menu[0] >= 7 && geom.menu[1] >= 7 && geom.menu[2] <= geom.width - 7 && geom.menu[3] <= geom.height - 7
+      && Math.abs(geom.menu[0] - geom.expectedLeft) <= 1 && Math.abs(geom.menu[1] - geom.expectedTop) <= 1,
     JSON.stringify(geom),
   );
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`); // 收起菜单
+  await focusedKey('Escape');
+  // Hook opens/closes through the real button when initially hidden; no stale aria state.
+  const geomHook = asObj(await evalJs(`return JSON.stringify({ geom: window.__nbTest.moreMenuGeom(), hidden: document.querySelector('#more-menu').classList.contains('hidden'), expanded: document.querySelector('#btn-more').getAttribute('aria-expanded') })`));
+  check('T51b 隐藏态几何钩子测得菜单并完整复位', geomHook.hidden && geomHook.expanded === 'false'
+    && geomHook.geom.menu[2] > geomHook.geom.menu[0], JSON.stringify(geomHook));
   await evalJs(`document.querySelector('#btn-file-close').click(); return 1`);
+
+  // T63 侧边栏收缩:侧栏底部按钮 / 功能菜单 / 把手双击三处入口,同一 toggle。
+  // 断言:面板与拖拽把手同步显隐、按钮 active 态正确、主区宽度实变(终端拿到空间)。
+  {
+    const sb0 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+    check('T63a 侧边栏初始展开', sb0.open === true && sb0.resizerOpen === true && sb0.btnActive === true, JSON.stringify(sb0));
+    const w0 = sb0.mainW;
+    await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); return 1`);
+    const sb1 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+    check(
+      'T63b 侧栏底部按钮收起(面板+把手隐藏,主区变宽)',
+      sb1.open === false && sb1.resizerOpen === false && sb1.btnActive === false && sb1.mainW > w0 + 200,
+      JSON.stringify({ before: w0, after: sb1.mainW }),
+    );
+    await evalJs(`document.querySelector('#btn-sidebar-menu').click(); return 1`);
+    const sb2 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+    check('T63c 功能菜单恢复展开', sb2.open === true && sb2.resizerOpen === true && sb2.btnActive === true, JSON.stringify(sb2));
+    await evalJs(`document.querySelector('#sidebar-resizer').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return 1`);
+    const sb3 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+    check('T63b2 把手双击收起', sb3.open === false && sb3.btnActive === false, JSON.stringify(sb3));
+    await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); return 1`);
+    const sb4 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+    check('T63d 再点恢复,状态完整回位', sb4.open === true && sb4.resizerOpen === true && sb4.btnActive === true && sb4.mainW === w0, JSON.stringify(sb4));
+
+    // 模拟实际 pointer 拖动链路;合成 pointer 没有系统捕获,仅替换捕获调用。
+    const drag = asObj(await evalJs(`return JSON.stringify((() => {
+      const sidebar = document.querySelector('#sidebar');
+      const grip = document.querySelector('#sidebar-resizer');
+      window.__e2eSidebarStyle = sidebar.style.cssText;
+      const before = sidebar.getBoundingClientRect().width;
+      const x = grip.getBoundingClientRect().left + 2;
+      const capture = grip.setPointerCapture;
+      try {
+        grip.setPointerCapture = () => {};
+        grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 91, button: 0, clientX: x }));
+      } finally { grip.setPointerCapture = capture; }
+      for (const type of ['pointermove', 'pointerup']) grip.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 91, button: 0, clientX: x + 72 }));
+      return { before, after: sidebar.getBoundingClientRect().width, inlineWidth: sidebar.style.width,
+        mainW: document.querySelector('#main').getBoundingClientRect().width,
+        dragging: document.body.classList.contains('resizing') || grip.classList.contains('dragging') };
+    })())`));
+    check('T63e 拖动侧栏留下真实 inline width 并释放拖动态', !!drag.inlineWidth
+      && drag.after > drag.before + 40 && !drag.dragging, JSON.stringify(drag));
+    await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); return 1`);
+    const collapsed = asObj(await evalJs(`return JSON.stringify({ ...window.__nbTest.sidebar(), width: document.querySelector('#sidebar').getBoundingClientRect().width,
+      inlineWidth: document.querySelector('#sidebar').style.width, expanded: document.querySelector('#btn-sidebar-toggle').getAttribute('aria-expanded') })`));
+    check('T63f 拖宽后收起不被 inline width 撑开,主区收回空间', collapsed.open === false
+      && !collapsed.resizerOpen && !collapsed.btnActive && collapsed.width <= 44 && collapsed.inlineWidth === ''
+      && collapsed.expanded === 'false' && collapsed.mainW > drag.mainW + drag.after - collapsed.width - 8, JSON.stringify(collapsed));
+    await openMenuPage();
+    await menuFocus('#btn-sidebar-menu');
+    await focusedKey('Enter');
+    const expanded = asObj(await evalJs(`return JSON.stringify({ ...window.__nbTest.sidebar(), width: document.querySelector('#sidebar').getBoundingClientRect().width,
+      expanded: document.querySelector('#btn-sidebar-toggle').getAttribute('aria-expanded') })`));
+    check('T63g 菜单恢复拖宽尺寸且状态同步', expanded.open && expanded.resizerOpen && expanded.btnActive
+      && expanded.expanded === 'true' && Math.abs(expanded.width - drag.after) <= 1
+      && Math.abs(expanded.mainW - drag.mainW) <= 1, JSON.stringify(expanded));
+    await evalJs(`document.querySelector('#sidebar').style.cssText = window.__e2eSidebarStyle; delete window.__e2eSidebarStyle; return 1`);
+  }
+
+  // T64 全页溢出审计:多宽度 × 多面板状态组合下,扫描可视元素找两类回归:
+  // ①文档级横向溢出(documentElement.scrollWidth > clientWidth,页面出现整体滚动);
+  // ②"静默裁切":元素文字被 nowrap + overflow:hidden 压缩,且**可见宽 < 内容宽超 20px**
+  //   —— 用 getClientRects 不可靠(报告完整内容),改量父级盒链:元素自身盒超出了
+  //   其"布局容器"(最近的非 inline 祖先)的 content 盒即为溢出。
+  // 白名单:有意滚动的容器(host-list/file-list/tabs/md 预览等)与其内部的省略行。
+  // 断言口径:有边框/背景的**卡片类**元素必须完整落在视口内 —— 文字省略是设计,
+  // 盒子越界是 bug。
+  {
+    // 注意:auditJs 必须是**表达式**(不能以 return 开头)—— 它被外层模板串
+    // 内嵌为 `const out = (${auditJs})()`;含 return 则整体语法错误,bridge
+    // 注入的 eval 静默挂掉,表现为 eval 超时(语法错误不会回 ERR:)。
+    const auditJs = `
+      JSON.stringify((() => {
+        const WIN = ['host-list', 'tabs', 'file-list', 'fp-tbody', 'ai-messages', 'snippet-list',
+          'cloud-tbody', 'batch-tbody', 'more-menu', 'model-picker-list', 'history-list', 'statusbar', 'tabbar', 'layout-root'];
+        const inWin = (el) => WIN.some((id) => document.getElementById(id) && document.getElementById(id).contains(el));
+        const out = [];
+        const vw = document.querySelector('#app').getBoundingClientRect().right;
+        // 只扫可视布局区的浅层(状态栏/标签栏/侧栏/面板头/终端窗格),全 body
+        // querySelectorAll('*') 会带出 xterm 上万节点导致 eval 超时。
+        const roots = ['#statusbar', '#tabbar', '#sidebar', '.ai-header', '.ai-quick', '.ai-input-row',
+          '.file-toolbar', '#file-mkdir-row', '#file-chmod-row', '#file-bookmarks', '#file-status',
+          '#more-menu', '#welcome', '.pane-picker'];
+        const seen = new Set();
+        for (const sel of roots) {
+          for (const root of document.querySelectorAll(sel)) {
+            if (!root.getClientRects().length) continue;
+            const all = root.querySelectorAll('*');
+            for (let ci = 0; ci < all.length && ci < 200; ci++) { const child = all[ci];
+              if (seen.has(child)) continue; seen.add(child);
+              if (!child.getClientRects().length) continue;
+              const cs = getComputedStyle(child);
+              if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+              // ①卡片类:自身盒超出视口右缘/左缘
+              const r = child.getBoundingClientRect();
+              const hasBox = cs.borderStyle !== 'none' || cs.backgroundColor !== 'rgba(0, 0, 0, 0)';
+              if (hasBox && !inWin(child) && (r.right > vw + 1 || r.left < -1)) {
+                out.push({ kind: 'box-outside-viewport', sel: child.tagName.toLowerCase() + (child.id ? '#' + child.id : '') + '.' + String(child.className).split(' ')[0], right: Math.round(r.right), left: Math.round(r.left), vw });
+              }
+              // ②内容撑破自身盒(非白名单、非滚动容器):内容比盒子宽 20px 以上
+              const scrollable = cs.overflowX === 'auto' || cs.overflowY === 'auto' || cs.overflowX === 'scroll';
+              if (!scrollable && !inWin(child) && child.clientWidth > 0 && child.scrollWidth - child.clientWidth > 20) {
+                out.push({ kind: 'content-clipped', sel: child.tagName.toLowerCase() + (child.id ? '#' + child.id : '') + '.' + String(child.className).split(' ')[0], clip: child.scrollWidth - child.clientWidth });
+              }
+              if (out.length > 30) return out;
+            }
+          }
+        }
+        return out;
+      })())`;
+    const states = [
+      { name: '默认布局', setup: '' },
+      { name: '侧栏收起', setup: `document.querySelector('#sidebar').classList.add('collapsed'); document.querySelector('#sidebar-resizer').classList.add('hidden');` },
+      { name: '侧栏+AI面板', setup: `document.querySelector('#ai-panel').classList.remove('hidden'); document.querySelector('#ai-resizer').classList.remove('hidden');` },
+      { name: '侧栏+文件面板', setup: `document.querySelector('#file-panel').classList.remove('hidden'); document.querySelector('#file-resizer').classList.remove('hidden');` },
+      { name: '全开', setup: `document.querySelector('#sidebar').classList.remove('collapsed'); document.querySelector('#sidebar-resizer').classList.remove('hidden'); document.querySelector('#ai-panel').classList.remove('hidden'); document.querySelector('#ai-resizer').classList.remove('hidden'); document.querySelector('#file-panel').classList.remove('hidden'); document.querySelector('#file-resizer').classList.remove('hidden');` },
+    ];
+    const widths = [1512, 1280, 1100, 1040, 980];
+    const findings = [];
+    for (const st of states) {
+      for (const w of widths) {
+        const res = asObj(await evalJs(`return JSON.stringify((() => {
+          const app = document.querySelector('#app');
+          const save = app.style.cssText;
+          const panels = [...document.querySelectorAll('#sidebar, #sidebar-resizer, #ai-panel, #ai-resizer, #file-panel, #file-resizer')];
+          const classes = panels.map(el => el.className);
+          document.querySelector('#sidebar').classList.remove('collapsed');
+          document.querySelector('#sidebar-resizer').classList.remove('hidden');
+          for (const el of panels.filter(el => el.id !== 'sidebar' && el.id !== 'sidebar-resizer')) el.classList.add('hidden');
+          ${st.setup}
+          // Constrain the entire workspace so both side panels consume the tested width.
+          app.style.width = ${w} + 'px';
+          void app.getBoundingClientRect();
+          const out = ${auditJs};
+          app.style.cssText = save;
+          panels.forEach((el, i) => { el.className = classes[i]; });
+          return out;
+        })())`, 60000));
+        if (Array.isArray(res) && res.length) findings.push({ state: st.name, w, issues: res.slice(0, 6) });
+      }
+    }
+    // 复位面板状态
+    await evalJs(`document.querySelector('#ai-panel').classList.add('hidden'); document.querySelector('#ai-resizer').classList.add('hidden'); document.querySelector('#file-panel').classList.add('hidden'); document.querySelector('#file-resizer').classList.add('hidden'); return 1`);
+    check(
+      'T64 全页溢出审计(5 状态 × 5 宽度)无盒子越界/静默裁切',
+      findings.length === 0,
+      JSON.stringify(findings).slice(0, 1200),
+    );
+  }
+
+  const narrowPanels = asObj(await evalJs(`return (${auditNarrowPanels.toString()})().then(JSON.stringify)`));
+  check('T64e 窄面板按钮不溢出/变形且底栏对齐(18 种宽度)', narrowPanels.issues.length === 0, JSON.stringify(narrowPanels));
+
+  // T64b 对齐审计:批量执行弹框"同列元素必须等宽对齐"。
+  // 设计规范:同一列里水平堆叠的输入框/列表框,左缘、右缘必须对齐;
+  // 全宽结果表必须与上方配置区左右缘对齐。只断言几何,不依赖任何主题。
+  // 表格宽度断言必须在执行完成、表格可见后进行(隐藏元素没有可断言的几何)。
+  {
+    await evalJs(`document.querySelector('#btn-batch').click(); return 1`);
+    await sleep(300);
+    const alignDraft = asObj(await evalJs(`return JSON.stringify((() => {
+      const R = (el) => { const r = el.getBoundingClientRect(); return { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width) }; };
+      const issues = [];
+      const eq = (a, b, tol) => Math.abs(a - b) <= (tol == null ? 1 : tol);
+      // ①批量弹框:过滤输入框与主机列表框必须等宽对齐(左右缘一致)
+      const search = document.querySelector('#batch-search');
+      const hosts = document.querySelector('#batch-hosts');
+      if (search && hosts) {
+        const s = R(search), h = R(hosts);
+        if (!eq(s.l, h.l) || !eq(s.r, h.r)) issues.push({ where: 'batch-left-col', search: s, hosts: h });
+      }
+      // ②底部操作栏(状态 + 执行/取消/关闭)必须完整落在视口内:头尾固定不随内容滚动
+      const foot = document.querySelector('#modal-batch .batch-foot');
+      if (foot) {
+        const f = R(foot);
+        if (f.l < 0 || f.r > window.innerWidth) issues.push({ where: 'batch-footer-x', foot: f, vw: window.innerWidth });
+      }
+      return { issues };
+    })())`, 30000));
+    check('T64b 批量执行弹框同列元素等宽对齐(草稿态)', alignDraft.issues.length === 0, JSON.stringify(alignDraft));
+    await evalJs(`return (async () => {
+      const response = await window.nebula.invoke('hosts:list');
+      const host = response.data.find(h => h.host === '127.0.0.1' && Number(h.port) === ${sshd.port});
+      if (!host) throw new Error('本地批量执行测试主机缺失');
+      const input = [...document.querySelectorAll('#batch-hosts input')].find(x => x.value === host.id);
+      if (!input) throw new Error('批量目标列表缺少本地主机');
+      input.checked = true; input.dispatchEvent(new Event('change', { bubbles: true }));
+      // 执行按钮现在随"命令非空 + 已选目标"启停:填充后须派发 input,模拟真实键入
+      const cmd = document.querySelector('#batch-cmd');
+      cmd.value = 'echo ux-batch-export';
+      cmd.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#btn-batch-run').click(); return 1;
+    })()`);
+    await waitEval(`return document.querySelector('#batch-status').textContent`, '完成:1 成功', 15000);
+    const alignResult = asObj(await evalJs(`return JSON.stringify((() => {
+      const R = (el) => { const r = el.getBoundingClientRect(); return { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width) }; };
+      const issues = [];
+      const eq = (a, b, tol) => Math.abs(a - b) <= (tol == null ? 1 : tol);
+      // ③结果可见后:结果表横跨整卡,与上方双列配置区左右缘对齐
+      const table = document.querySelector('#batch-results');
+      const grid = document.querySelector('#modal-batch .batch-grid');
+      if (table && grid && !table.classList.contains('hidden')) {
+        const t = R(table), g = R(grid);
+        if (!eq(t.l, g.l) || !eq(t.r, g.r)) issues.push({ where: 'batch-results-full-width', table: t, grid: g });
+      }
+      return { issues };
+    })())`, 30000));
+    check('T64b2 批量结果表全宽且与配置区对齐(结果可见后)', alignResult.issues.length === 0, JSON.stringify(alignResult));
+    await evalJs(`document.querySelector('#batch-tbody button').click(); return 1`);
+    const detail = await evalJs(`return document.querySelector('#batch-detail-output').value`);
+    check('T64c 批量结果详情保留完整本地执行输出', String(detail).includes('EXEC-OK:echo ux-batch-export'), String(detail));
+    await evalJs(`document.querySelector('#btn-batch-export').click(); return 1`);
+    await waitEval(`return document.querySelector('#toasts').textContent`, '已导出批量结果:', 10000);
+    const batchExportFiles = fs.readdirSync(work).filter(name => /^NebulaShell-batch-.*\.json$/.test(name));
+    const batchExport = batchExportFiles.length === 1 ? JSON.parse(fs.readFileSync(path.join(work, batchExportFiles[0]), 'utf8')) : [];
+    check('T64d WebView 原生导出 IPC 将结果写入隔离目录', batchExport.length === 1
+      && batchExport[0].ok === true && batchExport[0].output.includes('EXEC-OK:echo ux-batch-export')
+      && batchExport[0].detail === detail, JSON.stringify({ files: batchExportFiles, count: batchExport.length }));
+    await evalJs(`document.querySelector('#btn-batch-close').click(); return 1`);
+    await sleep(200);
+  }
 
   // —— 1 新增分屏后自动整理为均衡网格 ——
   // 从单窗格连开两次,断言变成"行列均衡、同列宽/同行高一致"的网格,
   // 而不是被反复一刀切出的失衡形状。
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await sleep(150);
-  await evalJs(`document.querySelector('#btn-split-left-right').click(); return 1`);
-  await sleep(400);
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await sleep(150);
-  await evalJs(`document.querySelector('#btn-split-top-bottom').click(); return 1`);
-  await sleep(700);
+  // 固定为可容纳 2×2 的最小尺寸:3 个窗格应为 2+1,不能用旧的 100px 下限。
+  await evalJs(`const lr = document.querySelector('#layout-root'); window.__e2eLayoutStyle = lr.style.cssText;
+    lr.style.width = '645px'; lr.style.height = '365px'; lr.style.flex = 'none'; return 1`);
+  await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '2', 30000);
+  await waitEval(`return document.querySelector('#status-text').textContent`, '已连接', 20000);
+  await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+  await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, '3', 30000);
+  await waitEval(`return document.querySelector('#status-text').textContent`, '已连接', 20000);
   const grid = asObj(await evalJs(`return JSON.stringify(window.__nbTest.paneGrid())`));
   check(
     'T56 新增分屏后自动整理为行列均衡的等分网格',
@@ -1351,14 +2545,27 @@ async function main() {
       && grid.rows.length === 2 && Math.max(...grid.rows) - Math.min(...grid.rows) <= 1
       // 行内等宽(同一行并排的窗格必须一样宽)
       && grid.withinRowWidthSpread <= 2
-      // 行间等高。容差 10px:嵌套的 .split-node 带 height:100%,在 flex 列里
-      // 会与 flex-basis:0 产生约 8px 的高度差 —— 这是既有的 CSS 行为(旧布局
-      // 代码同样如此),肉眼不可见,不属于本次网格算法引入的问题。
-      && grid.acrossRowHeightSpread <= 10
-      // 放不下的极端情况靠滚动兜底,但每个窗格都得是可用的尺寸
-      && grid.minW >= 100 && grid.minH >= 100,
+      && grid.acrossRowHeightSpread <= 2
+      && grid.minW >= 319 && grid.minH >= 179,
     JSON.stringify(grid),
   );
+  const plannerAxes = asObj(await evalJs(`return JSON.stringify([[970, 180], [320, 550]].map(([width, height]) => {
+    const lr = document.querySelector('#layout-root');
+    lr.style.width = width + 'px'; lr.style.height = height + 'px';
+    document.querySelector('#btn-auto-layout').click();
+    const boxes = [...document.querySelectorAll('.term-pane')].map((p) => {
+      const r = p.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+    });
+    return { width, height, boxes, overflowX: lr.scrollWidth - lr.clientWidth, overflowY: lr.scrollHeight - lr.clientHeight };
+  }))`));
+  check('T56b 宽矮/窄高区域按真实尺寸规划横排/竖排,每格至少 320×180',
+    plannerAxes.length === 2 && plannerAxes.every((r) => r.boxes.length === 3 && balancedGrid(r.boxes)
+      && r.boxes.every((b) => b[2] >= 319 && b[3] >= 179) && r.overflowX <= 1 && r.overflowY <= 1)
+      && new Set(plannerAxes[0].boxes.map((b) => b[1])).size === 1
+      && new Set(plannerAxes[1].boxes.map((b) => b[0])).size === 1,
+    JSON.stringify(plannerAxes));
+  await evalJs(`document.querySelector('#layout-root').style.cssText = window.__e2eLayoutStyle;
+    delete window.__e2eLayoutStyle; document.querySelector('#btn-auto-layout').click(); return 1`);
 
   // —— 2 快捷键提示按平台渲染 ——
   const acc = asObj(await evalJs(`return JSON.stringify(window.__nbTest.accelTitles())`));
@@ -1367,7 +2574,8 @@ async function main() {
   check(
     'T57 快捷键提示按运行平台渲染(mac ⌘ / 其它 Ctrl)',
     // 标题里出现正确的修饰键,且不出现另一种平台的符号
-    acc.newtab.includes(wantMod) && acc.split.includes(wantMod) && acc.closePane.includes(wantMod)
+    acc.hasDirectionMenus === false
+      && acc.newtab.includes(wantMod) && acc.split.includes(wantMod) && acc.closePane.includes(wantMod)
       && (macLike ? !/Ctrl/.test(acc.split) : !/⌘/.test(acc.split))
       // macOS 用连接符省略写法(⌘T),其它平台用 Ctrl+T
       && (macLike ? acc.newtab.includes('⌘T') : acc.newtab.includes('Ctrl+T')),
@@ -1439,25 +2647,178 @@ async function main() {
   // 收起右键菜单,避免影响后续
   await evalJs(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return 1`);
 
-  // —— 功能菜单:四组(布局/面板/会话/配置)+ 快捷键列按平台渲染 ——
+  // 分页菜单的真实可见路由(桥接键盘模拟,Enter 默认激活见 focusedKey)。
+  await openMenuPage();
   const menuStruct = asObj(await evalJs(`return JSON.stringify((() => {
-    document.querySelector('#btn-more').click();
-    const heads = [...document.querySelectorAll('#more-menu .mm-head')].map((h) => h.textContent.trim());
-    const keys = [...document.querySelectorAll('#more-menu .mm-key')].filter((k) => k.textContent.trim()).map((k) => k.textContent.trim());
-    const isMac = window.nebula.platform === 'darwin';
-    document.querySelector('#btn-more').click();
-    return { heads, keys, isMac };
+    const root = document.querySelector('#more-menu .mm-page:not(.hidden)');
+    return { page: root.dataset.page, heads: [...root.querySelectorAll('.mm-head')].map((h) => h.textContent.trim()),
+      routes: [...root.querySelectorAll('[data-menu-page]')].map((b) => b.dataset.menuPage),
+      keys: [...root.querySelectorAll('[data-accel] .mm-key')].map((k) => k.textContent.trim()).filter(Boolean),
+      isMac: window.nebula.platform === 'darwin' };
   })())`));
-  check(
-    'T60 功能菜单按任务分组(布局/面板/会话/配置)',
-    JSON.stringify(menuStruct.heads) === JSON.stringify(['布局', '面板', '会话', '配置']),
-    JSON.stringify(menuStruct.heads),
-  );
-  check(
-    'T60b 菜单行快捷键列按平台渲染(mac ⌘ / 其它 Ctrl)',
-    menuStruct.keys.length > 0 && menuStruct.keys.some((k) => (menuStruct.isMac ? k.includes('⌘') : k.includes('Ctrl'))),
-    JSON.stringify(menuStruct.keys),
-  );
+  check('T60 根页为布局/面板,会话与设置使用独立分页', menuStruct.page === 'root'
+    && JSON.stringify(menuStruct.heads) === JSON.stringify(['布局', '面板'])
+    && JSON.stringify(menuStruct.routes) === JSON.stringify(['session', 'settings']), JSON.stringify(menuStruct));
+  check('T60b 可见菜单快捷键列按平台渲染', menuStruct.keys.length > 0
+    && menuStruct.keys.every((k) => menuStruct.isMac ? k.includes('⌘') && !k.includes('Ctrl') : k.includes('Ctrl') && !k.includes('⌘')),
+    JSON.stringify(menuStruct.keys));
+  for (const page of ['session', 'settings']) {
+    await menuFocus('[data-menu-page="' + page + '"]');
+    await focusedKey('Enter');
+    const subpage = asObj(await evalJs(`return JSON.stringify((() => {
+      const menu = document.querySelector('#more-menu');
+      const visible = [...menu.querySelectorAll('.mm-page')].filter((p) => p.getClientRects().length);
+      const focus = document.activeElement;
+      const r = menu.getBoundingClientRect();
+      return { pages: visible.map((p) => p.dataset.page), backFocused: focus.hasAttribute('data-menu-back'),
+        focusVisible: !!focus.getClientRects().length, buttons: [...visible[0].querySelectorAll('button')].map((b) => ({ id: b.id, h: b.getBoundingClientRect().height })),
+        inside: r.left >= 7 && r.top >= 7 && r.right <= innerWidth - 7 && r.bottom <= innerHeight - 7 };
+    })())`));
+    check('T60c ' + page + ' 页仅自身可见,返回项获焦且菜单不越界', JSON.stringify(subpage.pages) === JSON.stringify([page])
+      && subpage.backFocused && subpage.focusVisible && subpage.inside && subpage.buttons.every((b) => b.h >= 34), JSON.stringify(subpage));
+    // Enter 返回应恢复到原根页入口,不是随便落到第一个菜单项。
+    await focusedKey('Enter');
+    const backFocus = await evalJs(`return document.activeElement.dataset.menuPage`);
+    check('T60d ' + page + ' 返回恢复入口焦点', backFocus === page, String(backFocus));
+    await focusedKey('Enter');
+    await focusedKey('ArrowLeft');
+    check('T60e ' + page + ' 左方向键同样返回并恢复焦点', await evalJs(`return document.activeElement.dataset.menuPage`) === page);
+  }
+  await menuFocus('[data-menu-page="settings"]');
+  await focusedKey('Enter');
+  await focusedKey('Escape');
+  const escaped = asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#more-menu').classList.contains('hidden'),
+    focus: document.activeElement.id, expanded: document.querySelector('#btn-more').getAttribute('aria-expanded') })`));
+  check('T60f 子页 Escape 关闭菜单并将焦点归还工具按钮', escaped.hidden && escaped.focus === 'btn-more' && escaped.expanded === 'false', JSON.stringify(escaped));
+  await openMenuPage();
+  check('T60g 再次打开重置为根页且焦点在可见启用项', await evalJs(`return document.activeElement.matches('button:not(:disabled)')
+    && !!document.activeElement.closest('.mm-page[data-page="root"]:not(.hidden)') && !!document.activeElement.getClientRects().length`) === true);
+  await focusedKey('Escape');
+
+  // 模态作用域、队列与当前焦点语义:使用真实 ask* promise,不手改 modal class。
+  await openMenuPage('settings');
+  await menuFocus('#btn-about');
+  await focusedKey('Enter');
+  await waitEval(`window.__nbTest.about().open`, 'true', 10000);
+  await evalJs(`window.__e2eDialogResults = [];
+    for (const title of ['queue-p1', 'queue-p2', 'queue-p3']) {
+      window.__nbTest.askPrompt(title, { title, password: false }).then((value) => window.__e2eDialogResults.push({ title, value }));
+    } return 1`);
+  await waitEval(`window.__nbTest.promptTitle()`, 'queue-p1', 10000);
+  const scope = asObj(await evalJs(`return JSON.stringify((() => {
+    const prompt = document.querySelector('#modal-prompt');
+    const parent = document.querySelector('#modal-about');
+    const before = window.__nbTest.tabState().tabs;
+    document.querySelector('#btn-more').click();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true,
+      metaKey: window.nebula.platform === 'darwin', ctrlKey: window.nebula.platform !== 'darwin' }));
+    document.querySelector('#btn-newtab').focus();
+    const controls = [...prompt.querySelectorAll('input, button')].filter((b) => !b.disabled && b.getClientRects().length);
+    const first = controls[0], last = controls.at(-1);
+    first.focus();
+    const reverse = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }); first.dispatchEvent(reverse);
+    const reverseWrap = document.activeElement === last && reverse.defaultPrevented;
+    const forward = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }); last.dispatchEvent(forward);
+    return { appInert: document.querySelector('#app').inert, parentInert: parent.inert, parentOpen: !parent.classList.contains('hidden'),
+      topInert: prompt.inert, focusInside: prompt.contains(document.activeElement), role: prompt.getAttribute('role'), ariaModal: prompt.getAttribute('aria-modal'),
+      reverseWrap, forwardWrap: document.activeElement === first && forward.defaultPrevented,
+      tabsStable: window.__nbTest.tabState().tabs === before, menuClosed: document.querySelector('#more-menu').classList.contains('hidden') };
+  })())`));
+  check('T65 顶层模态隔离背景/下层弹窗,阻止应用快捷键并循环 Tab 焦点', scope.appInert && scope.parentInert && scope.parentOpen
+    && !scope.topInert && scope.focusInside && scope.role === 'dialog' && scope.ariaModal === 'true'
+    && scope.reverseWrap && scope.forwardWrap && scope.tabsStable && scope.menuClosed, JSON.stringify(scope));
+  await evalJs(`window.__nbTest.promptFill('must-not-leak'); document.querySelector('#modal-prompt').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); return 1`);
+  await waitEval(`window.__nbTest.promptTitle()`, 'queue-p2', 10000);
+  const queuedPrompt = asObj(await evalJs(`return JSON.stringify({ results: window.__e2eDialogResults,
+    value: document.querySelector('#prompt-input').value, focus: document.activeElement.id, open: window.__nbTest.promptOpen() })`));
+  check('T65b backdrop 取消首个 prompt,下一项 FIFO 打开且输入/焦点不串台', queuedPrompt.open
+    && queuedPrompt.results.length === 1 && queuedPrompt.results[0].title === 'queue-p1' && queuedPrompt.results[0].value === null
+    && queuedPrompt.value === '' && queuedPrompt.focus === 'prompt-input', JSON.stringify(queuedPrompt));
+  await evalJs(`window.__nbTest.promptFill('accepted-p2'); return 1`);
+  await focusedKey('Enter');
+  await waitEval(`window.__nbTest.promptTitle()`, 'queue-p3', 10000);
+  await focusedKey('Escape');
+  await waitEval(`return window.__e2eDialogResults.length`, '3', 10000);
+  const promptDone = asObj(await evalJs(`return JSON.stringify({ results: window.__e2eDialogResults, open: window.__nbTest.promptOpen(),
+    parentOpen: window.__nbTest.about().open, parentInert: document.querySelector('#modal-about').inert,
+    focus: document.activeElement.id, appInert: document.querySelector('#app').inert })`));
+  check('T65c queued prompt Enter 接受/Escape 取消各结算一次并回到父弹窗', JSON.stringify(promptDone.results) === JSON.stringify([
+    { title: 'queue-p1', value: null }, { title: 'queue-p2', value: 'accepted-p2' }, { title: 'queue-p3', value: null },
+  ]) && !promptDone.open && promptDone.parentOpen && !promptDone.parentInert && promptDone.appInert
+    && promptDone.focus === 'btn-about-close', JSON.stringify(promptDone));
+  await evalJs(`document.querySelector('#modal-about').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); return 1`);
+  const restoredScope = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.about().open, inert: document.querySelector('#app').inert,
+    focus: document.activeElement.id, modalOpen: document.body.classList.contains('modal-open') })`));
+  check('T65d 父弹窗 backdrop 关闭后解除 inert 并恢复工具按钮焦点', !restoredScope.open && !restoredScope.inert
+    && !restoredScope.modalOpen && restoredScope.focus === 'btn-more', JSON.stringify(restoredScope));
+
+  await evalJs(`window.__e2eDialogResults = [];
+    for (const [title, danger] of [['queue-c1', true], ['queue-c2', false], ['queue-c3', true], ['queue-c4', true]]) {
+      window.__nbTest.askConfirm(title, { title, danger }).then((value) => window.__e2eDialogResults.push({ title, value }));
+    } return 1`);
+  await waitEval(`window.__nbTest.confirmTitle()`, 'queue-c1', 10000);
+  check('T66 危险 confirm 默认取消获焦', await evalJs(`return window.__nbTest.confirmFocus()`) === 'cancel');
+  await evalJs(`document.querySelector('#btn-confirm-ok').focus(); return 1`);
+  await focusedKey('Enter');
+  await waitEval(`window.__nbTest.confirmTitle()`, 'queue-c2', 10000);
+  check('T66b 非危险 confirm 默认确定获焦', await evalJs(`return window.__nbTest.confirmFocus()`) === 'ok');
+  await evalJs(`document.querySelector('#btn-confirm-cancel').focus(); return 1`);
+  await focusedKey('Enter');
+  await waitEval(`window.__nbTest.confirmTitle()`, 'queue-c3', 10000);
+  await evalJs(`document.querySelector('#modal-confirm').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); return 1`);
+  await waitEval(`window.__nbTest.confirmTitle()`, 'queue-c4', 10000);
+  await focusedKey('Escape');
+  await waitEval(`return window.__e2eDialogResults.length`, '4', 10000);
+  const confirmDone = asObj(await evalJs(`return JSON.stringify({ results: window.__e2eDialogResults, open: window.__nbTest.confirmOpen(),
+    appInert: document.querySelector('#app').inert, focus: document.activeElement.id })`));
+  check('T66c queued confirm Enter 服从当前焦点而非默认值,backdrop/Escape 取消且无遗留 waiter',
+    JSON.stringify(confirmDone.results) === JSON.stringify([
+      { title: 'queue-c1', value: true }, { title: 'queue-c2', value: false }, { title: 'queue-c3', value: false }, { title: 'queue-c4', value: false },
+    ]) && !confirmDone.open && !confirmDone.appInert && confirmDone.focus === 'btn-more', JSON.stringify(confirmDone));
+  await evalJs(`delete window.__e2eDialogResults; return 1`);
+
+  // macOS 的 Ctrl+D/W 属于 shell 控制键,不能触发应用分屏或关闭。
+  if (macLike) {
+    const ctrlShell = asObj(await evalJs(`return JSON.stringify((() => {
+      const before = window.__nbTest.tabState();
+      const beforeIds = [...document.querySelectorAll('.term-pane')].map((p) => p.dataset.pane);
+      const prevented = ['d', 'w'].map((key) => {
+        const event = new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true });
+        document.querySelector('.term-pane.focused').dispatchEvent(event); return event.defaultPrevented;
+      });
+      const after = window.__nbTest.tabState();
+      return { before, after, beforeIds, afterIds: [...document.querySelectorAll('.term-pane')].map((p) => p.dataset.pane), prevented };
+    })())`));
+    check('T67 mac Ctrl+D/W 不触发应用、不吞掉 shell 键', JSON.stringify(ctrlShell.before) === JSON.stringify(ctrlShell.after)
+      && JSON.stringify(ctrlShell.beforeIds) === JSON.stringify(ctrlShell.afterIds) && ctrlShell.prevented.every((v) => !v), JSON.stringify(ctrlShell));
+  }
+
+  // 命令统一后每个入口只能新建一个标签/窗格,不能重复绑定产生两个。
+  const tabBaseline = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
+  for (const route of ['toolbar', 'shortcut', 'context']) {
+    if (route === 'toolbar') await evalJs(`document.querySelector('#btn-newtab').click(); return 1`);
+    else if (route === 'shortcut') {
+      await evalJs(`document.querySelector('#btn-more').focus(); return 1`);
+      await focusedKey('t', { metaKey: macLike, ctrlKey: !macLike });
+    } else {
+      await evalJs(`const tab = document.querySelector('.tab.active'); const r = tab.getBoundingClientRect();
+        tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 8 })); return 1`);
+      await focusedKey('End');
+      await focusedKey('Enter');
+    }
+    await sleep(150); // 允许重复的 async listener 也执行,不能只检验第一帧。
+    const created = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
+    check('T68 ' + route + ' 新建命令仅执行一次', created.tabs === tabBaseline.tabs + 1
+      && created.panes === 1 && created.sessions.length === tabBaseline.sessions.length
+      && JSON.stringify(created.sessions.map(({ id, host, tabId }) => ({ id, host, tabId })))
+        === JSON.stringify(tabBaseline.sessions.map(({ id, host, tabId }) => ({ id, host, tabId })))
+      && created.activeTab !== tabBaseline.activeTab, JSON.stringify(created));
+    await evalJs(`document.querySelector('#btn-more').focus(); return 1`);
+    await focusedKey('w', { metaKey: macLike, ctrlKey: !macLike });
+    await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(tabBaseline.activeTab)} + '"]').click(); return 1`);
+    const closed = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
+    check('T68b ' + route + ' 关闭新标签后会话/窗格完整回位', JSON.stringify(closed) === JSON.stringify(tabBaseline), JSON.stringify(closed));
+  }
 
   /* ===== 终端复制三连修(T61):Ctrl+C 按选区分流 / 失败可见 ===== */
 
@@ -1495,6 +2856,16 @@ async function main() {
     paste.ok === true && paste.prevented === true && paste.pasteEvents === 0 && paste.pasteCalls <= 1,
     JSON.stringify(paste),
   );
+
+  await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+  await waitEval(`return document.querySelector('#toasts').textContent`, '已开启只读模式', 10000);
+  const readonlyWrite = asObj(await evalJs(`return JSON.stringify(await window.nebula.invoke('ssh:write', {
+    sessionId: window.__nbTest.filePanel().activeId, data: 'echo ux-readonly-probe\\r'
+  }))`));
+  check('T69 后端拒绝只读会话直接 IPC 写入', readonlyWrite.ok === false
+    && String(readonlyWrite.error).includes('只读'), JSON.stringify(readonlyWrite));
+  await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
+  await waitEval(`return document.querySelector('#toasts').textContent`, '已关闭只读模式', 10000);
 
   // 无未捕获异常
   const errs = await evalJs(`return JSON.stringify(window.__errs)`);
