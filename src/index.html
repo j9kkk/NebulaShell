@@ -385,34 +385,29 @@
       <h3>批量执行</h3>
       <div class="batch-body">
         <div class="batch-grid">
-          <section>
-            <div class="batch-pane-head"><span class="batch-pane-title">目标主机</span></div>
-            <input id="batch-search" type="text" placeholder="过滤:名称 / 用户名 / 地址 / 端口…" />
-            <div class="batch-host-tools">
-              <span id="batch-sel-summary" class="muted"></span>
-              <button id="btn-batch-select-matched" class="btn small">全选当前结果</button>
-              <button id="btn-batch-clear-sel" class="btn small">清空选择</button>
-            </div>
-            <div id="batch-hosts" class="batch-hosts"></div>
-          </section>
-          <section>
-            <div class="batch-pane-head"><span class="batch-pane-title">执行配置</span></div>
-            <label class="batch-field-label" for="batch-cmd">命令</label>
-            <textarea id="batch-cmd" rows="3" placeholder="例如:df -h && free -m"></textarea>
-            <div class="batch-params">
-              <div class="batch-param">
-                <label class="batch-field-label" for="batch-parallel">并行数(1-10)</label>
-                <input id="batch-parallel" type="number" min="1" max="10" step="1" value="5" />
-                <div id="batch-parallel-err" class="batch-param-err"></div>
-              </div>
-              <div class="batch-param">
-                <label class="batch-field-label" for="batch-timeout">连接与执行超时(秒,1-600)</label>
-                <input id="batch-timeout" type="number" min="1" max="600" step="1" value="30" />
-                <div id="batch-timeout-err" class="batch-param-err"></div>
-              </div>
-            </div>
-            <p class="batch-param-hint muted">超时覆盖单台主机的连接与执行,不含排队等待;结果里的"总耗时"包含排队与清理。</p>
-          </section>
+          <label class="batch-field-label" for="batch-search">目标主机</label>
+          <label class="batch-field-label" for="batch-parallel">并行数(1-10)</label>
+          <label class="batch-field-label" for="batch-timeout">连接与执行超时(秒,1-600)</label>
+
+          <input id="batch-search" type="text" placeholder="过滤:名称 / 用户名 / 地址 / 端口…" />
+          <div class="batch-param batch-param-par">
+            <input id="batch-parallel" type="number" min="1" max="10" step="1" value="5" />
+            <div id="batch-parallel-err" class="batch-param-err"></div>
+          </div>
+          <div class="batch-param batch-param-to">
+            <input id="batch-timeout" type="number" min="1" max="600" step="1" value="30" />
+            <div id="batch-timeout-err" class="batch-param-err"></div>
+          </div>
+
+          <div class="batch-host-tools">
+            <span id="batch-sel-summary" class="muted"></span>
+            <button id="btn-batch-select-matched" class="btn small">全选</button>
+            <button id="btn-batch-clear-sel" class="btn small">清空</button>
+          </div>
+          <label class="batch-field-label batch-cmd-label" for="batch-cmd">命令</label>
+
+          <div id="batch-hosts" class="batch-hosts"></div>
+          <textarea id="batch-cmd" rows="3" placeholder="例如:df -h && free -m"></textarea>
         </div>
         <section class="batch-results-section">
           <div class="batch-results-head">

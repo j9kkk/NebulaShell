@@ -947,23 +947,56 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 .file-drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(91,140,255,0.15); border: 2px dashed var(--accent); z-index: 10; font-size: 14px; color: var(--text); }
 #file-panel { position: relative; }
 
-/* 批量执行:卡片 900px,标题/底栏固定,中部滚动,结果区横跨整卡。
+/* 批量执行顶部区:左右两列共享行轨道 —— 标签行/输入行/辅助行/主体行,
+   左右每行落在同一 grid 行上,天然水平对齐(标签对标签、输入框对输入框、
+   主机列表与命令块同起同止)。
    只覆盖 #modal-batch 自己的卡片,不影响其他弹窗的 .modal-card 行为。 */
 .modal-card.batch-card { width: 900px; display: flex; flex-direction: column; overflow: hidden; }
-.batch-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.batch-grid { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.batch-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  /* 聚焦外圈(outline 2px + offset 2px)画在元素框外 4px 处;100% 宽的输入框
+     贴住滚动容器边缘时外圈会被裁,留 4px 内距,负 margin 抵消保持与底栏对齐 */
+  padding: 4px; margin: -4px; }
+.batch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "host-lbl par-lbl  to-lbl"
+    "search   par-in   to-in"
+    "aux      cmd-lbl  cmd-lbl"
+    "hosts    cmd      cmd";
+  column-gap: 16px;
+  row-gap: 6px;
+}
 .batch-grid > * { min-width: 0; }
 .batch-pane-head { margin-bottom: 8px; }
 .batch-pane-title { font-size: 12px; color: var(--muted); }
-/* 左列:过滤输入框必须与下方主机列表框等宽对齐(左右缘一致)。
-   input 默认按内容宽渲染(size 属性),不会自动撑满 grid 列 —— 显式 100%;
-   与列表框之间留 8px,旧版 0 间距会让两个圆角边框贴成双线。 */
-#batch-search { width: 100%; margin-bottom: 8px; }
-.batch-host-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+/* 行内间距统一交给 row-gap,标签/工具行不再自带 margin,避免叠出不一致的间隙 */
+.batch-field-label { display: block; color: var(--muted); font-size: 13px; }
+.batch-grid > label[for="batch-search"] { grid-area: host-lbl; }
+.batch-grid > label[for="batch-parallel"] { grid-area: par-lbl; }
+.batch-grid > label[for="batch-timeout"] { grid-area: to-lbl; }
+#batch-search { grid-area: search; width: 100%; align-self: start; }
+/* 参数格:输入框 + 校验错误提示同格堆叠,错误提示不占独立行
+   (辅助行留给"已选/全选/清空"与"命令"标签对齐) */
+.batch-param { display: flex; flex-direction: column; gap: 4px; }
+.batch-param-par { grid-area: par-in; }
+.batch-param-to { grid-area: to-in; }
+#batch-parallel, #batch-timeout { width: 100%; }
+#batch-parallel { grid-area: par-in; }
+#batch-timeout { grid-area: to-in; }
+/* 辅助行:计数吃掉剩余宽度,全选/清空靠右 */
+.batch-host-tools { grid-area: aux; display: flex; align-items: center; gap: 6px; }
 .batch-host-tools .btn { flex: none; }
-/* 计数独占一行:260px 列宽里与两个按钮同行会被挤到折行 */
-#batch-sel-summary { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
-.batch-hosts { height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+#batch-sel-summary { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* "命令"标签与辅助行(已选/全选/清空)同轨,垂直居中对齐按钮文字 */
+.batch-cmd-label { grid-area: cmd-lbl; align-self: center; }
+.batch-param-err { color: var(--danger); font-size: 11px; line-height: 1.4; min-height: 15px; }
+/* 左列:过滤输入框必须与下方主机列表框等宽对齐(左右缘一致)。
+   input 默认按内容宽渲染(size 属性),不会自动撑满 grid 列 —— 显式 100%。 */
+#batch-search { width: 100%; }
+/* 主机列表:min-height 而非固定高度 —— 命令块被拉高(或文本域手动加高)时
+   列表随共享行一起长高,两侧始终同底。 */
+.batch-hosts { grid-area: hosts; min-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
 .batch-hosts-empty { color: var(--muted); font-size: 12px; padding: 10px 6px; line-height: 1.6; }
 /* 主机条目两层信息:名称 + 连接串,各自单行省略;复选框对齐首行而非整块垂直居中。 */
 .batch-hosts label { display: flex; gap: 8px; align-items: flex-start; padding: 4px 6px; font-size: 13px; cursor: pointer; border-radius: 5px; }
@@ -973,14 +1006,8 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 .batch-hosts .bh-sub { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .batch-hosts.locked label { cursor: default; }
 .batch-hosts.locked label:hover { background: transparent; }
-/* 右列:执行配置。命令用多行文本域;并行/超时并列,标签在控件上方。 */
-.batch-field-label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
-#batch-cmd { width: 100%; resize: vertical; font-family: Menlo, monospace; }
-.batch-params { display: flex; gap: 12px; margin-top: 10px; }
-.batch-param { flex: 1; min-width: 0; }
-.batch-param input { width: 100%; }
-.batch-param-err { color: var(--danger); font-size: 11px; line-height: 1.4; min-height: 15px; margin-top: 4px; }
-.batch-param-hint { font-size: 11px; line-height: 1.5; margin: 2px 0 0; }
+/* 命令文本域独占共享行,与主机列表同起同止(上下缘对齐) */
+#batch-cmd { grid-area: cmd; resize: none; font-family: Menlo, monospace; }
 /* 结果区:横跨整卡,不再挤在右列。表格自带滚动区与吸顶表头,
    避免结果增多把标题/表单/操作栏推出视野。 */
 .batch-results-section { margin-top: 16px; }
@@ -1179,10 +1206,19 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.danger:hover { filter: brightness(1.1); }
 
-/* 窄窗口先叠放批量执行两列,再将表单标签改成单列;终端仍按最小尺寸滚动。 */
+/* 窄窗口先叠放批量执行两列(areas 重排为单列,顺序:主机列 → 参数列 → 命令块),
+   再将表单标签改成单列;终端仍按最小尺寸滚动。 */
 @media (max-width: 700px) {
-  .batch-grid { grid-template-columns: minmax(0, 1fr); }
-  .batch-hosts { height: 180px; max-height: 30vh; }
+  .batch-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "host-lbl" "search" "aux" "hosts"
+      "par-lbl" "par-in"
+      "to-lbl" "to-in"
+      "cmd-lbl" "cmd";
+  }
+  .batch-hosts { min-height: 180px; max-height: 30vh; }
+  #batch-cmd { min-height: 160px; }
 }
 @media (max-width: 480px) {
   .form-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -1195,8 +1231,6 @@ select.ai-model-switch:not([multiple]):disabled { opacity: 0.6; cursor: not-allo
   .cloud-account-form { padding: 10px; }
   .cloud-account-row .ca-key { min-width: 0; max-width: 100%; }
   .modal-actions { gap: 8px; }
-  .batch-params { flex-wrap: wrap; }
-  .batch-param { flex: 1 1 100%; }
   #batch-results th, #batch-results td { padding: 5px 4px; }
   #batch-detail-output { max-height: 35vh; }
   .batch-foot-btns { flex-wrap: wrap; }
