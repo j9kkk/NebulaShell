@@ -26,9 +26,27 @@ function harness({ renderStatusbar = false } = {}) {
   const state = { sessions: new Map(), tabs: new Map(), hosts: [], activeId: null, activeTabId: 'tab-a', broadcast: null, metrics: new Map(), paneSeq: 0, tabSeq: 0 };
   const tab = { id: 'tab-a', el: element('tab-a'), panes: new Map(), layout: null };
   state.tabs.set(tab.id, tab);
-  const paneElement = () => ({ isConnected: true, dataset: {}, innerHTML: '',
-    classList: { toggle() {} }, appendChild() {},
-    getBoundingClientRect: () => ({ width: 640, height: 360 }) });
+  const paneElement = () => {
+    const children = [];
+    const el = { children, isConnected: true, dataset: {}, innerHTML: '', title: '', className: '', textContent: '', _parent: null,
+      classList: { toggle() {} }, addEventListener() {},
+      appendChild(c) { children.push(c); if (c && typeof c === 'object') c._parent = el; return c; },
+      append(...cs) { for (const c of cs) el.appendChild(c); },
+      replaceChildren(...cs) { children.length = 0; children.push(...cs); for (const c of cs) if (c && typeof c === 'object') c._parent = el; },
+      remove() {
+        el.isConnected = false;
+        const p = el._parent;
+        if (p && Array.isArray(p.children)) { const i = p.children.indexOf(el); if (i >= 0) p.children.splice(i, 1); }
+        el._parent = null;
+      },
+      // 断开横幅按 className 复用既有元素;其余选择器(窗格按钮等)落空即可。
+      querySelector(sel) {
+        const cls = String(sel).slice(1);
+        return children.find((c) => String(c.className || '').split(' ').includes(cls)) || null;
+      },
+      getBoundingClientRect: () => ({ width: 640, height: 360 }) };
+    return el;
+  };
   class Terminal {
     constructor() {
       this.modes = { bracketedPasteMode: false }; this.focusCount = 0;
@@ -75,12 +93,22 @@ function harness({ renderStatusbar = false } = {}) {
     closeCtxMenu = () => {};
     closeSnippetMenu = () => {};
     followFilePanel = () => {};
+    dropSessionView = () => {};
+    syncActiveSessionView = () => {};
+    syncFilePanesForSession = () => {};
+    const realMakePaneEl = makePaneEl;
+    globalThis.__buildFilePaneCalls = [];
+    buildFilePane = (paneObj) => { globalThis.__buildFilePaneCalls.push(!!(paneObj && paneObj.el)); };
+    initFilePane = async () => {};
+    createFilePaneState = () => ({});
+    confirmTransferInterrupt = async () => true;
     loadSessionLogState = () => {};
     makePaneEl = paneElement;
     appendPaneButtons = () => {};
-    globalThis.subject = {writeSessionInput, disconnectSession, reconnectSession, runSessionConnection,
+    globalThis.subject = {writeSessionInput, disconnectSession, reconnectSession, runSessionConnection, makePaneEl: realMakePaneEl,
       scheduleReconnect, handleSessionStatus, writableBroadcastSessions, quickConnect, splitActive,
       isRetryableNetworkError, closeActivePane, syncPaneButtons, visibleSessions, fitActive, updateStatusbar,
+      syncPaneStatusBanner,
       getCommandBlockTarget, commandBlockTargetStatus, submitCommandBlock,
       activateSession, activatePane, setActiveTabId, closeSession, createInputSession,
       consumeCommandKeys, setAltScreen};
@@ -100,6 +128,7 @@ function harness({ renderStatusbar = false } = {}) {
     return s;
   }
   return { ...context.subject, state, tab, calls, timers, notices, closedTabs, confirmations, elements, addSession,
+    __buildFilePaneCalls: context.__buildFilePaneCalls,
     setModal: (value) => modal = value, setPassword: (value) => password = value,
     setConfirm: (value) => confirm = value,
     setAPI: (fn) => implementation = fn,
@@ -283,6 +312,77 @@ test('manual disconnect cancels backoff and explicit remote shell exit does not 
   assert.equal(h.timers.size, 1);
   await h.disconnectSession(s.sessionId);
   assert.equal(h.timers.size, 0);
+});
+
+// ---- 窗格断开横幅与回车就地重连 ----
+
+test('pane banner explains disconnect with reason and Enter hint, and clears when connected', () => {
+  const h = harness(), s = h.addSession();
+  const banner = () => s.pane.querySelector('.pane-status-banner');
+  s.lastError = 'socket reset [NB-FP host:22|aa|bb]';
+  h.syncPaneStatusBanner(s, s.lastError);
+  assert.match(banner().className, /disconnected/);
+  assert.match(banner().children.find((c) => c.className === 'psb-text').textContent, /已断开 root@example.invalid:22（socket reset）/);
+  assert.equal(banner().children.find((c) => c.className === 'psb-hint').textContent, '按 Enter 重新连接');
+  assert.equal(banner().title, 'socket reset', '完整原因进 title(指纹标记在展示层剥离),横幅内可截断');
+  // 自动重连排期:横幅展示倒计时,提示语改为"立即重连"
+  s.everConnected = true; s.reconnectAttempt = 0;
+  h.scheduleReconnect(s.sessionId, 'socket reset');
+  h.syncPaneStatusBanner(s, s.lastError);
+  assert.match(banner().children.find((c) => c.className === 'psb-text').textContent, /自动重连 1\/3/);
+  assert.equal(banner().children.find((c) => c.className === 'psb-hint').textContent, '按 Enter 立即重连');
+  // 手动断开不显示残留原因
+  s.manualDisconnect = true; s.reconnectScheduled = false;
+  h.syncPaneStatusBanner(s, s.lastError);
+  assert.match(banner().children.find((c) => c.className === 'psb-text').textContent, /已断开 root@example.invalid:22$/);
+  // 连接中与已连接形态
+  s.manualDisconnect = false; s.status = 'connecting';
+  h.syncPaneStatusBanner(s);
+  assert.match(banner().className, /connecting/);
+  assert.match(banner().children.find((c) => c.className === 'psb-text').textContent, /正在连接/);
+  assert.equal(banner().children.some((c) => c.className === 'psb-hint'), false, '连接中不显示回车提示');
+  s.status = 'connected';
+  h.syncPaneStatusBanner(s);
+  assert.equal(banner(), null);
+});
+
+test('Enter on a disconnected pane reconnects in place; other input is dropped and connecting swallows Enter', async () => {
+  const h = harness();
+  const s = h.createInputSession({ id: 'host-a', host: 'example.invalid', username: 'root', port: 22 });
+  h.state.activeId = s.sessionId;
+  s.status = 'disconnected'; s.lastError = 'connection reset';
+  s.term.data('ls');
+  await new Promise(setImmediate);
+  assert.deepEqual(h.calls, [], '断开后的普通输入原样丢弃,不发也不重连');
+  s.term.data('\r');
+  await new Promise(setImmediate);
+  assert.deepEqual(h.calls.map((c) => c.name), ['ssh:disconnect', 'ssh:connect'], '回车走完整重连');
+  assert.equal(h.state.sessions.get(s.sessionId), s);
+  assert.equal(s.status, 'connected');
+  // connecting 期间的回车不得叠加第二次连接
+  h.calls.length = 0;
+  s.status = 'disconnected';
+  let resolveConnect;
+  h.setAPI((name) => name === 'ssh:connect' ? new Promise((r) => resolveConnect = r) : Promise.resolve({}));
+  s.term.data('\r');
+  await new Promise(setImmediate);
+  assert.deepEqual(h.calls.map((c) => c.name), ['ssh:disconnect', 'ssh:connect']);
+  s.term.data('\r');
+  await new Promise(setImmediate);
+  assert.equal(h.calls.filter((c) => c.name === 'ssh:connect').length, 1, 'connecting 中重复回车被状态防御忽略');
+  resolveConnect({});
+  await new Promise(setImmediate);
+});
+
+test('Enter reconnect is blocked by open modals', async () => {
+  const h = harness();
+  const s = h.createInputSession({ id: 'host-a', host: 'example.invalid', username: 'root', port: 22 });
+  h.state.activeId = s.sessionId;
+  s.status = 'disconnected';
+  h.setModal(true);
+  s.term.data('\r');
+  await new Promise(setImmediate);
+  assert.deepEqual(h.calls, []);
 });
 
 test('writable broadcast count excludes missing, disconnected and readonly selected targets', () => {
@@ -476,7 +576,7 @@ test('switching away and back via sessions, empty panes or chrome-only tab activ
 test('closed/replaced sessions, owners and reconnected transports cannot reuse a target', async () => {
   for (const mutation of ['close', 'replace-session', 'replace-tab', 'replace-pane', 'reconnect', 'epoch']) {
     const h = harness(), { s, target } = connectedTarget(h);
-    if (mutation === 'close') h.closeSession(s.sessionId);
+    if (mutation === 'close') { h.closeSession(s.sessionId); await Promise.resolve(); await Promise.resolve(); }
     if (mutation === 'replace-session') h.state.sessions.set(s.sessionId, { ...s });
     if (mutation === 'replace-tab') h.state.tabs.set(h.tab.id, { ...h.tab });
     if (mutation === 'replace-pane') h.tab.panes.set(s.paneId, { ...h.tab.panes.get(s.paneId) });
@@ -747,4 +847,17 @@ test('setAltScreen 幂等,仅进入备用屏幕时清 histBuf', () => {
   h.setAltScreen(s, false);  // 退出不动 histBuf(TUI 期间按键从未入库)
   assert.equal(s.inAltScreen, false);
   assert.equal(s.histBuf, 'stuck');
+});
+
+// 回归:创建文件分屏时 makePaneEl 必须先回填 pane.el 再调 buildFilePane。
+// 曾经 pane.el = makePaneEl(...) 在返回后才赋值,buildFilePane 读到空 el 直接
+// 返回 —— 文件分屏只剩 ✕/⤢ 两个按钮,内容永远空白(用户截图症状)。
+test('makePaneEl 构建文件分屏前已回填 pane.el', () => {
+  const h = harness();
+  const pane = { id: 'pane-file', kind: 'file' };
+  h.makePaneEl('pane-file', 'tab-a', 'file', pane);
+  assert.equal(h.__buildFilePaneCalls.length, 1);
+  assert.equal(h.__buildFilePaneCalls[0], true, 'buildFilePane 调用时 pane.el 必须已就绪');
+  assert.ok(pane.el, 'pane 对象应持有创建出的元素引用');
+  assert.equal(pane.el.dataset.pane, 'pane-file');
 });

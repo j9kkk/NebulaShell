@@ -162,6 +162,8 @@ pub async fn start_bridge(
                 let starts_with_return = trimmed.starts_with("return ")
                     || trimmed.starts_with("return(")
                     || trimmed == "return";
+                // auto_expr 的边界:多语句脚本即使不含分号/换行(如全在注释后),
+                // 也不能贸然包 return —— 原样交给 body 保留完整语义。
                 let auto_expr =
                     !starts_with_return && !trimmed.contains(';') && !trimmed.contains('\n');
                 let body = if trimmed.is_empty() {
@@ -174,7 +176,7 @@ pub async fn start_bridge(
                 // id 经 JSON 编码内嵌 —— 天然处理引号、反斜杠与换行,避免拼接破坏语法。
                 let id_literal = serde_json::to_string(&id).unwrap_or_else(|_| "\"\"".to_string());
                 let wrapped = format!(
-                    "(async () => {{\n  let v;\n  try {{\n    const r = await (async () => {{ {body} }})();\n    v = (r === undefined) ? 'undefined' : JSON.stringify(r);\n  }} catch (e) {{ v = 'ERR: ' + String((e && e.message) || e); }}\n  try {{ await window.__TAURI__.core.invoke('nebula_test_result', {{ id: {id_literal}, value: String(v) }}); }} catch (e2) {{}}\n}})()",
+                    "(async () => {{\n  let v;\n  const report = () => window.__TAURI__.core.invoke('nebula_test_result', {{ id: {id_literal}, value: String(v) }}).catch(() => {{}});\n  try {{\n    const r = await (async () => {{ {body} }})();\n    v = (r === undefined) ? 'undefined' : JSON.stringify(r);\n  }} catch (e) {{ v = 'ERR: ' + String((e && e.message) || e); }}\n  await report();\n}})()",
                     body = body,
                     id_literal = id_literal
                 );

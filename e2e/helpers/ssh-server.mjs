@@ -7,17 +7,26 @@ import net from 'node:net';
 const { Server } = ssh2;
 const { STATUS_CODE: SFTP_STATUS_CODE, OPEN_MODE: SFTP_OPEN_MODE } = ssh2.utils.sftp;
 
-// 内存文件系统：path -> { type: 'dir'|'file', data: Buffer, mtime }
+// 内存文件系统：path -> { type: 'dir'|'file'|'symlink', data: Buffer, mtime, target }
 function makeMemFs() {
   const tree = new Map();
   const now = Math.floor(Date.now() / 1000);
-  const put = (p, type, data = null) => tree.set(p, { type, data: data ? Buffer.from(data) : null, mtime: now });
+  const put = (p, type, data = null, target = null) => tree.set(p, { type, data: data ? Buffer.from(data) : null, mtime: now, target });
   put('/', 'dir');
   put('/home', 'dir');
   put('/home/user', 'dir');
   put('/home/user/README.md', 'file', 'hello from nebula sftp\n');
   put('/home/user/data', 'dir');
   put('/home/user/data/app.log', 'file', 'x'.repeat(4096));
+  // 跨主机复制夹具:单文件 + 嵌套目录(含空子目录/点文件)+ 符号链接
+  put('/home/user/copy-src.txt', 'file', 'copy me across hosts\n');
+  put('/home/user/srcdir', 'dir');
+  put('/home/user/srcdir/inner.txt', 'file', 'inner\n');
+  put('/home/user/srcdir/sub', 'dir');
+  put('/home/user/srcdir/sub/deep.txt', 'file', 'deep\n');
+  put('/home/user/srcdir/empty', 'dir');
+  put('/home/user/srcdir/.dotfile', 'file', 'dot\n');
+  put('/home/user/srcdir/link-dangling', 'symlink', null, '/nowhere-target');
   return tree;
 }
 
@@ -33,12 +42,24 @@ function memFsResolve(base, p) {
 }
 
 function memFsAttrs(node) {
+  const mode = node.type === 'dir' ? 0o040755 : node.type === 'symlink' ? 0o120777 : 0o100644;
   return {
-    mode: node.type === 'dir' ? 0o040755 : 0o100644,
+    mode,
     uid: 0, gid: 0,
     size: node.data ? node.data.length : 0,
     atime: node.mtime, mtime: node.mtime,
   };
+}
+
+/// STAT 跟随符号链接解析目标;LSTAT 不跟随(transfer 引擎靠它识别链接并跳过)
+function memFsStat(tree, rp) {
+  let node = tree.get(rp);
+  if (node && node.type === 'symlink') {
+    const target = memFsResolve(rp.replace(/\/[^/]*$/, ''), node.target);
+    node = tree.get(target);
+    if (!node) return null;
+  }
+  return node || null;
 }
 
 // 挂载最小 SFTP 服务端：REALPATH / OPENDIR / READDIR / OPEN / READ / WRITE / CLOSE / MKDIR / RMDIR / REMOVE / STAT
@@ -66,7 +87,7 @@ function attachMockSftp(session, tree, emit = () => {}) {
     });
     sftp.on('OPENDIR', (reqId, p) => {
       const rp = memFsResolve('/home/user', String(p || '.'));
-      const node = tree.get(rp);
+      const node = memFsStat(tree, rp) || tree.get(rp);
       if (!node || node.type !== 'dir') return fail(reqId, { code: 2 });
       sftp.handle(reqId, newHandle({ type: 'dir', path: rp, listed: false }));
     });
@@ -80,17 +101,27 @@ function attachMockSftp(session, tree, emit = () => {}) {
         .filter(([p]) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/'))
         .map(([p, n]) => ({
           filename: p.split('/').pop(),
-          longname: (n.type === 'dir' ? 'drwxr-xr-x' : '-rw-r--r--') + ' mock ' + (n.data ? n.data.length : 0),
+          longname: (n.type === 'dir' ? 'drwxr-xr-x' : n.type === 'symlink' ? 'lrwxrwxrwx' : '-rw-r--r--') + ' mock ' + (n.data ? n.data.length : 0),
           attrs: memFsAttrs(n),
         }));
       sftp.name(reqId, names);
     });
     sftp.on('OPEN', (reqId, p, flags, attrs) => {
       const rp = memFsResolve('/home/user', String(p));
-      const node = tree.get(rp);
+      let node = tree.get(rp);
       const wantRead = (flags & SFTP_OPEN_MODE.READ) !== 0;
       const wantWrite = (flags & SFTP_OPEN_MODE.WRITE) !== 0 || (flags & SFTP_OPEN_MODE.CREAT) !== 0;
       const trunc = (flags & SFTP_OPEN_MODE.TRUNC) !== 0;
+      // EXCLUDE(独占创建):已存在即失败 —— 后端靠它做"默认不覆盖"的
+      // 服务端守卫(上传冲突/复制临时文件分配)。
+      if ((flags & SFTP_OPEN_MODE.EXCLUDE) !== 0 && wantWrite && node) {
+        return fail(reqId, null);
+      }
+      // 符号链接按打开语义跟随(与真实 sftp-server 一致)
+      if (node && node.type === 'symlink') {
+        node = memFsStat(tree, rp);
+        if (!node) return fail(reqId, { code: 2 });
+      }
       if (wantRead && (!node || node.type !== 'file')) return fail(reqId, { code: 2 });
       if (wantWrite) {
         if (node && node.type === 'dir') return fail(reqId, null);
@@ -152,9 +183,28 @@ function attachMockSftp(session, tree, emit = () => {}) {
     });
     sftp.on('STAT', (reqId, p) => {
       const rp = memFsResolve('/home/user', String(p));
+      const node = memFsStat(tree, rp);
+      if (!node) return fail(reqId, { code: 2 });
+      sftp.attrs(reqId, memFsAttrs(node));
+    });
+    // LSTAT 不跟随符号链接:传输引擎用它区分链接/普通文件
+    sftp.on('LSTAT', (reqId, p) => {
+      const rp = memFsResolve('/home/user', String(p));
       const node = tree.get(rp);
       if (!node) return fail(reqId, { code: 2 });
       sftp.attrs(reqId, memFsAttrs(node));
+    });
+    // RENAME:POSIX 语义(目标存在则原子替换)—— 与 OpenSSH sftp-server 一致,
+    // 复制任务的"发布/安全覆盖"都走这条路。
+    sftp.on('RENAME', (reqId, from, to) => {
+      const rf = memFsResolve('/home/user', String(from));
+      const rt = memFsResolve('/home/user', String(to));
+      const node = tree.get(rf);
+      if (!node || rf === rt) return fail(reqId, { code: 2 });
+      tree.delete(rt);
+      tree.set(rt, node);
+      tree.delete(rf);
+      sftp.status(reqId, SFTP_STATUS_CODE.OK);
     });
     sftp.on('error', () => {});
   });

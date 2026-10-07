@@ -1,11 +1,12 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
 import { $, accel, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, isAppModifier, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
-import { DIVIDER_SIZE, layoutMinSize, paneCapacity, planGrid } from './terminal-layout.js';
+import { DIVIDER_SIZE, layoutMinSize, paneCapacity, paneMinSize, planGrid } from './terminal-layout.js';
 import { renderSplitTree, replaceLayoutContent } from './split-layout-renderer.js';
 import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, workspaceSignature } from './terminal-workspace.js';
 import { escapeHtml } from './hosts.js';
 import { closeSnippetMenu, renderMonitorBar } from './monitor.js';
-import { activeConnectedSession, beginFilePanelSession, initialFileDir, loadFileDir, renderFileTarget } from './sftp.js';
+import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSession } from './sftp.js';
+import { confirmTransferInterrupt } from './file-transfer.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -116,7 +117,7 @@ export function newTabWithPicker() {
   return tab;
 }
 
-/// 标签右键菜单:关闭类动作 + 重命名 + 复制地址 + 新建。
+/// 标签右键菜单:关闭类动作 + 重命名 + 复制地址 + 文件管理 + 新建。
 /// "关闭其他/右侧"按标签位置给出禁用态(已是唯一/最右时无意义),而不是藏起来 ——
 /// 菜单项位置固定,才不会每次弹出都变一串。
 export function openTabCtxMenu(x, y, tabId) {
@@ -137,6 +138,8 @@ export function openTabCtxMenu(x, y, tabId) {
         copyText(`${h.username}@${h.host}:${h.port}`).then((ok) => toast(ok ? '已复制主机地址' : '复制失败', ok ? 'success' : 'error'));
       },
     },
+    // 文件管理是标签内的分屏之一:与「新增分屏」对称的入口,可连续开多个
+    { label: '新增文件分屏', disabled: ![...state.sessions.values()].some((s) => s.tabId === tabId && s.status === 'connected'), run: () => addFilePane(tabId) },
     '-',
     { label: '新建标签', run: () => newTabWithPicker() },
   ]);
@@ -180,7 +183,7 @@ export function activateTab(tabId, focus = true) {
   if (changed && state.workspace?.mode !== 'tiled') renderLayout();
   closeCtxMenu();
   const empty = tab.activePaneId && tab.panes.get(tab.activePaneId);
-  if (empty && !empty.sessionId) activatePane(tab.id, empty.id, false);
+  if (empty && !empty.sessionId && empty.kind !== 'file') activatePane(tab.id, empty.id, false);
   else {
     const session = state.sessions.get(tab.sessionId)
       || [...state.sessions.values()].find((s) => s.tabId === tab.id && (!tab.zoomPaneId || s.paneId === tab.zoomPaneId));
@@ -203,6 +206,9 @@ export function paneOwner(paneId, tabId) {
 export function activatePane(tabId, paneId, focus = false) {
   const tab = state.tabs.get(tabId);
   const pane = tab?.panes.get(paneId);
+  // 文件分屏:只取"焦点窗格"身份(⌘A/上传/关闭作用于它),
+  // 不抢终端焦点、不动 activeId —— 两条焦点线完全解耦(见设计 7-1)。
+  if (pane?.kind === 'file') return activateFilePane(tabId, paneId);
   if (pane?.sessionId) return activateSession(pane.sessionId, { focus });
   if (!tab) return;
   const changed = state.activeTabId !== tabId;
@@ -216,7 +222,18 @@ export function activatePane(tabId, paneId, focus = false) {
   updateStatusbar(null);
   closeSnippetMenu();
   renderMonitorBar();
-  followFilePanel();
+}
+
+/// 文件分屏获得焦点:标记 .focused + 记为标签活动窗格,其余一概不动。
+function activateFilePane(tabId, paneId) {
+  const tab = state.tabs.get(tabId);
+  if (!tab || !tab.panes.get(paneId)) return;
+  const changed = state.activeTabId !== tabId;
+  setActiveTabId(tabId);
+  if (changed && state.workspace?.mode !== 'tiled') renderLayout();
+  if (tab.activePaneId !== paneId) { focusRevision++; tab.activePaneId = paneId; }
+  syncFocusedPane(tabId, paneId);
+  notifyTerminalStateChange();
 }
 
 function syncFocusedPane(tabId, paneId) {
@@ -225,35 +242,23 @@ function syncFocusedPane(tabId, paneId) {
   }
 }
 
-/// 文件面板跟随当前会话。
-/// 面板是全局单例,若不跟随,切标签后会显示上一台服务器的目录,而操作却落到
-/// 新会话上(看着 A 的目录删 B 的文件)。这里在切换后按"新会话"重新加载,
-/// 并用该会话上次访问过的目录(没记录则回到根)。
-export function followFilePanel() {
-  const panel = $('#file-panel');
-  if (!panel || panel.classList.contains('hidden')) return;
-  const s = activeConnectedSession();
-  if (!s) { beginFilePanelSession(null); return; }
-  if (state.file.sessionId === s.sessionId) { renderFileTarget(); return; }
-  beginFilePanelSession(s);
-  const remembered = s.lastFileDir;
-  if (remembered) {
-    loadFileDir(remembered, { sessionId: s.sessionId }).catch(() => {});
-    return;
-  }
-  // 首次浏览该会话:默认落到「当前主机命令执行路径」(shell 实时 cwd,
-  // 见 sftp.js initialFileDir),而不是家目录/根目录。
-  initialFileDir(s).then((dir) => { if (activeConnectedSession()?.sessionId === s.sessionId) return loadFileDir(dir, { sessionId: s.sessionId }).catch(() => {}); });
-}
-
-/// 关闭标签:释放该标签下所有会话
-export function closeTab(tabId) {
+/// 关闭标签:释放该标签下所有会话。
+/// 有传输任务借用标签内连接时,先经确认底座(一次汇总,不逐会话打断)。
+export async function closeTab(tabId) {
   const tab = state.tabs.get(tabId);
   if (!tab) return;
-  const wasActive = state.activeTabId === tabId;
+  if (tab.transferConfirming) return;
   const ids = [...state.sessions.values()].filter((s) => s.tabId === tabId).map((s) => s.sessionId);
+  if (ids.length && !tab.transferConfirmed) {
+    tab.transferConfirming = true;
+    let ok = false;
+    try { ok = await confirmTransferInterrupt(ids); } finally { tab.transferConfirming = false; }
+    if (!ok) return;
+    tab.transferConfirmed = true;
+  }
+  const wasActive = state.activeTabId === tabId;
   tab.closing = true;
-  for (const sid of ids) closeSession(sid);
+  for (const sid of ids) closeSession(sid, { checkTransfers: false });
   tab.el.remove();
   tab.workspaceTile?.remove();
   state.tabs.delete(tabId);
@@ -263,7 +268,6 @@ export function closeTab(tabId) {
     state.workspace = { mode: 'single', layout: null, fits: true };
     updateStatusbar(null);
     renderMonitorBar();
-    followFilePanel();
   } else if (wasActive) {
     state.activeId = null;
     setActiveTabId([...state.tabs.keys()][0]);
@@ -332,8 +336,9 @@ export function syncPaneButtons(tab = activeTab()) {
     const enlarged = tab.zoomPaneId === pane.id;
     if (close) { close.title = single ? '关闭标签' : '关闭该窗格'; close.setAttribute('aria-label', close.title); }
     if (zoom) {
-      zoom.disabled = single || !pane.sessionId;
-      zoom.title = single ? '只有一个窗格,无需放大' : !pane.sessionId ? '连接后可放大' : enlarged ? '还原分屏布局' : '放大该窗格';
+      const zoomable = !!pane.sessionId || pane.kind === 'file';
+      zoom.disabled = single || !zoomable;
+      zoom.title = single ? '只有一个窗格,无需放大' : !zoomable ? '连接后可放大' : enlarged ? '还原分屏布局' : '放大该窗格';
       zoom.setAttribute('aria-label', zoom.title);
       zoom.setAttribute('aria-pressed', String(enlarged));
       zoom.textContent = enlarged ? '⤡' : '⤢';
@@ -341,9 +346,10 @@ export function syncPaneButtons(tab = activeTab()) {
   }
 }
 
-export function makePaneEl(paneId, tabId = state.activeTabId) {
+export function makePaneEl(paneId, tabId = state.activeTabId, kind = 'term', paneObj = null) {
   const el = document.createElement('div');
-  el.className = 'term-pane';
+  // 文件分屏复用 .term-pane 的焦点/激活/布局契约,叠加 .file-pane 做内容与最小尺寸
+  el.className = kind === 'file' ? 'term-pane file-pane' : 'term-pane';
   el.dataset.pane = paneId;
   el.dataset.tab = tabId;
   const activate = (event) => {
@@ -353,6 +359,9 @@ export function makePaneEl(paneId, tabId = state.activeTabId) {
   };
   el.addEventListener('mousedown', activate);
   el.addEventListener('focusin', activate);
+  // 文件分屏的内部 DOM 需要 pane.el 才能渲染:先把元素回填到窗格对象,
+  // 否则 buildFilePane 读到 window.pane.el 为空直接返回,分屏永远空白。
+  if (kind === 'file' && paneObj) { paneObj.el = el; buildFilePane(paneObj); }
   appendPaneButtons(el, paneId, tabId);
   return el;
 }
@@ -371,7 +380,7 @@ export function togglePaneZoom(paneId, tabId) {
   if (tab.zoomPaneId === paneId) tab.zoomPaneId = null;
   else {
     const pane = tab.panes.get(paneId);
-    if (!pane?.sessionId) return toast('空窗格无需放大', 'error');
+    if (!pane?.sessionId && pane?.kind !== 'file') return toast('空窗格无需放大', 'error');
     if (leafCount(tab.layout) <= 1) return toast('当前只有一个窗格,无需放大', 'error');
     tab.zoomPaneId = paneId;
     // Remember a visible local target without changing the active workspace tile.
@@ -426,7 +435,8 @@ export function firstEmptyLeaf(node, tab = activeTab()) {
   if (!node || !tab) return null;
   if (isLeaf(node)) {
     const pane = tab.panes.get(node.paneId);
-    return pane && !pane.sessionId ? node.paneId : null;
+    // 文件分屏不是"空窗格":新会话绝不复用它的格子
+    return pane && !pane.sessionId && pane.kind !== 'file' ? node.paneId : null;
   }
   return firstEmptyLeaf(node.a, tab) || firstEmptyLeaf(node.b, tab);
 }
@@ -449,7 +459,13 @@ export function toggleTabTiling() {
 // only invalidation input: focusing a tile cannot cause a mount/observer loop.
 export function scheduleWorkspaceLayout() {
   if (workspaceLayoutFrame !== null) return;
-  workspaceLayoutFrame = requestAnimationFrame(() => {
+  // rAF + 定时器兜底:窗口被遮挡时 WKWebView 完全停摆 rAF,布局调度会
+  // 永远挂起(表现:改了面板尺寸但 fits/溢出提示永不更新)。兜底帧让
+  // 布局收敛不依赖前台状态;前台时 rAF 仍先到,行为不变。
+  let fired = false;
+  const run = () => {
+    if (fired) return;
+    fired = true;
     workspaceLayoutFrame = null;
     if (state.workspace?.mode === 'tiled') {
       const { width, height } = workspaceDimensions();
@@ -458,7 +474,9 @@ export function scheduleWorkspaceLayout() {
     }
     fitAllVisible();
     scheduleResizeSync();
-  });
+  };
+  workspaceLayoutFrame = requestAnimationFrame(run);
+  setTimeout(run, 120);
 }
 
 function workspaceDimensions() {
@@ -484,7 +502,7 @@ export function renderTabLayout(tab, root) {
       root.appendChild(renderSplitTree(tab.layout, {
         document,
         leaf: (node) => tab.panes.get(node.paneId)?.el || document.createElement('div'),
-        minimum: layoutMinSize,
+        minimum: (node) => paneMinSize(tab.panes.get(node.paneId)),
         divider: attachDivider,
       }));
     }
@@ -610,7 +628,7 @@ export function renderPickers(tab = activeTab()) {
   if (!tab) return;
   const tabId = tab.id;
   for (const [paneId, pane] of tab.panes) {
-    if (pane.sessionId || pane.pickerRendered) continue;
+    if (pane.sessionId || pane.kind === 'file' || pane.pickerRendered) continue;
     pane.pickerRendered = true;
     const picker = document.createElement('div');
     picker.className = 'pane-picker';
@@ -690,11 +708,52 @@ export function splitActive(dir) {
   return runSessionConnection(session);
 }
 
+/// 新增文件分屏:文件管理是标签内的分屏之一,与「新增分屏」(终端)完全对称。
+/// 前置(标签内有已连接会话)、容量、布局(活动分屏右侧分割 + 自动整理)同规则;
+/// 不创建会话 —— 传输通道在每次操作提交时解析(见 sftp.js paneSession)。
+export function addFilePane(tabId) {
+  const tab = tabId ? state.tabs.get(tabId) : activeTab();
+  if (!tab) return toast('没有可用标签', 'error');
+  const hasConnected = [...state.sessions.values()].some((s) => s.tabId === tab.id && s.status === 'connected');
+  if (!hasConnected) return toast('请先连接主机再新增文件分屏', 'error');
+  const cap = maxPaneCapacity();
+  if (tab.panes.size + 1 > cap) return toast(`当前窗口最多容纳 ${cap} 个分屏窗格`, 'error');
+  const paneId = newPaneId();
+  const pane = { id: paneId, kind: 'file', ...createFilePaneState() };
+  pane.el = makePaneEl(paneId, tab.id, 'file', pane);
+  tab.panes.set(paneId, pane);
+  if (!tab.layout) {
+    tab.layout = leaf(paneId);
+  } else {
+    // 落点:焦点窗格 > 标签主会话窗格 > 首个窗格;在锚点右侧一刀切出
+    const anchorPaneId = (tab.activePaneId && tab.panes.get(tab.activePaneId)) ? tab.activePaneId
+      : state.sessions.get(tab.sessionId)?.paneId
+      || state.sessions.get(state.activeId)?.paneId
+      || firstLeafPaneId(tab.layout);
+    const path = findLeafPath(tab.layout, anchorPaneId) || [];
+    const split = (node) => ({ type: 'h', ratio: 0.62, a: node, b: leaf(paneId) });
+    if (!path.length) tab.layout = split(tab.layout);
+    else {
+      const parent = nodeAt(tab.layout, path.slice(0, -1));
+      const key = path.at(-1);
+      parent[key] = split(parent[key]);
+    }
+  }
+  // 与终端分屏一致:新增后重排为均衡网格(内部已 renderLayout)
+  if (tab.panes.size > 1) reflowIfSplitting(undefined, tab);
+  else renderLayout();
+  activateFilePane(tab.id, paneId);
+  initFilePane(pane).catch(() => {});
+  notifyTerminalStateChange();
+  return pane;
+}
+
 export function reflowIfSplitting(dir, tab = activeTab()) {
   if (!tab || !tab.layout) return false;
   const ids = paneIdsInOrder(tab);
   const { width, height } = layoutDimensions(tab);
-  tab.layout = planGrid(ids, width, height, dir).layout;
+  // 按窗格类型取最小尺寸(终端 320×180 / 文件 300×220),混排时规划器据此分配
+  tab.layout = planGrid(ids, width, height, dir, { minimum: (id) => paneMinSize(tab.panes.get(id)) }).layout;
   tab.zoomPaneId = null;
   if (tab.id === state.activeTabId || state.workspace?.mode === 'tiled') renderLayout();
   return ids.length > 1;
@@ -718,7 +777,8 @@ export function buildGrid(paneIds, dir) {
 export function activeLeafPaneId() {
   if (state.activePaneId) {
     const p = state.panes.get(state.activePaneId);
-    if (p && !p.sessionId) return state.activePaneId;
+    // "空窗格复用"只认终端空窗格;文件分屏有自己的内容,绝不能被新会话顶掉
+    if (p && !p.sessionId && p.kind !== 'file') return state.activePaneId;
   }
   const s = state.sessions.get(state.activeId);
   if (s && s.paneId) return s.paneId;
@@ -752,7 +812,9 @@ export function focusedPaneId() {
 /// 就会先把正在用的连接关掉、把空窗格全留着 —— 与"撤销分屏"的意图正好相反。
 /// 空窗格用后进先出:连续点关闭就是逐个撤销刚才的分屏。
 export function pickPaneToClose(tab) {
-  const empties = [...tab.panes.values()].filter((p) => !p.sessionId);
+  // 空窗格优先仅针对无会话的终端窗格;文件分屏是内容不是分屏残留,
+  // 不能当"撤销分屏"的牺牲品(焦点落在它上面时才由关闭操作关闭)。
+  const empties = [...tab.panes.values()].filter((p) => !p.sessionId && p.kind !== 'file');
   if (empties.length) return empties[empties.length - 1].id;
   return focusedPaneId();
 }
@@ -794,7 +856,7 @@ export function autoLayoutTab() {
   const paneIds = paneIdsInOrder(tab);
   if (paneIds.length <= 1) return toast('只有一个窗格,无需整理', 'error');
   const { width, height } = layoutDimensions();
-  const plan = planGrid(paneIds, width, height);
+  const plan = planGrid(paneIds, width, height, undefined, { minimum: (id) => paneMinSize(tab.panes.get(id)) });
   tab.layout = plan.layout;
   tab.zoomPaneId = null;
   renderLayout();
@@ -865,7 +927,9 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   let tab = paneId ? paneOwner(paneId, tabId) : (tabId ? state.tabs.get(tabId) : activeTab());
   if ((paneId || tabId) && !tab) return null;
   if (!tab) tab = createTab();
-  if (paneId && tab.panes.get(paneId).sessionId) return null;
+  if (paneId && tab.panes.get(paneId)?.sessionId) return null;
+  // 文件分屏绝不能被终端会话占用(它有自己的内容与状态)
+  if (paneId && tab.panes.get(paneId)?.kind === 'file') return null;
   const sessionId = crypto.randomUUID();
   const shouldActivate = options.activate !== false;
   if (shouldActivate) setActiveTabId(tab.id);
@@ -925,9 +989,14 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   // 主线程掉帧,是终端输出流畅度的主要瓶颈。上下文丢失(GPU 重置/驱动切换、
   // GL 上下文数超限)时 dispose 自己,xterm 自动退回 DOM 渲染器,可用性不受影响。
   try {
-    const webgl = new WebglAddon();
-    webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* ignore */ } });
-    term.loadAddon(webgl);
+    // e2e 测试桥环境下禁用 WebGL:遮挡窗口的 WebGL 合成器暂停刷新,
+    // canvas 尺寸不随 fit 更新,布局审计会得到成片的假"裁切"。
+    // DOM 渲染器走主线程布局,无此问题;正常使用仍默认 WebGL。
+    if (!window.__NB_E2E__) {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* ignore */ } });
+      term.loadAddon(webgl);
+    }
   } catch { /* WebGL 不可用:保持 DOM 渲染器 */ }
   // innerHTML 清空会抹掉窗格按钮,重新挂回
   appendPaneButtons(pane, targetPaneId, tab.id);
@@ -935,7 +1004,13 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   // 输入:只读拦截(D9) / 广播分发(E5) / 命令历史采集(F2) / AI 诊断素材采集
   term.onData((d) => {
     const s = state.sessions.get(state.activeId);
-    if (!s || s.sessionId !== sessionId || s.status !== 'connected') return;
+    if (!s || s.sessionId !== sessionId) return;
+    // 未连接时回车=就地重连(横幅提示的唯一交互),其余输入丢弃。自动重连只覆盖
+    // 可重试的网络错误,认证失败/指纹变更仍走 reconnectSession 的原有确认路径。
+    if (s.status !== 'connected') {
+      if (d === '\r' && !hasOpenModal()) reconnectSession(sessionId);
+      return;
+    }
     if (s.readOnly || hasOpenModal()) return;
     consumeCommandKeys(s, d);
     const targets = state.broadcast && state.broadcast.has(sessionId)
@@ -1123,10 +1198,20 @@ export function activateSession(sessionId, { focus = true } = {}) {
   if (selectionChanged) loadSessionLogState(s);
   closeSnippetMenu();
   renderMonitorBar();
-  followFilePanel();
 }
 
-export function closeSession(sessionId) {
+/// 关闭会话。有传输任务借用该连接时,先经确认底座;closeTab 已做过
+/// 汇总确认,传 checkTransfers:false 直接进入关闭流程。
+export function closeSession(sessionId, opts = {}) {
+  if (!state.sessions.has(sessionId)) return;
+  if (opts.checkTransfers !== false) {
+    confirmTransferInterrupt([sessionId]).then((ok) => { if (ok) closeSessionNow(sessionId); });
+    return;
+  }
+  closeSessionNow(sessionId);
+}
+
+function closeSessionNow(sessionId) {
   const s = state.sessions.get(sessionId);
   if (!s) return;
   disconnectSession(sessionId);
@@ -1173,6 +1258,7 @@ export function closeSession(sessionId) {
 export function updateTab(session) {
   syncTabChrome();
   syncPaneButtons(state.tabs.get(session?.tabId) || activeTab());
+  syncPaneStatusBanner(session);
 }
 
 export function updateStatusbar(session, error = session?.lastError) {
@@ -1228,6 +1314,46 @@ export function updateStatusbar(session, error = session?.lastError) {
   }
 }
 
+// 窗格内的就地状态横幅:状态栏只反映活动会话,分屏里非活动窗格断开时终端画面
+// 静止、毫无反馈,用户甚至不知道哪一格死了。每个窗格底部悬浮一条说明(原因 +
+// 重连方式),connected 后移除。仅按 Enter 重连,见 createSession 的 onData 分流;
+// 横幅可接收悬停(完整错误进 title)但不拦截任何语义:点击会冒泡到窗格照常激活。
+export function syncPaneStatusBanner(session, error = session?.lastError) {
+  const pane = session?.pane;
+  if (!pane || typeof pane.querySelector !== 'function') return;
+  let el = pane.querySelector('.pane-status-banner');
+  if (session.status === 'connected') { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'pane-status-banner';
+    pane.appendChild(el);
+  }
+  const label = `${session.host.username}@${session.host.host}:${session.host.port}`;
+  const connecting = session.status === 'connecting';
+  const seconds = Math.max(0, Math.ceil(((session.reconnectDueAt || 0) - Date.now()) / 1000));
+  const retry = !connecting && session.reconnectScheduled ? ` · 自动重连 ${session.reconnectAttempt}/3（${seconds} 秒后）` : '';
+  // 手动断开没有"原因"可言,lastError 可能还是上一次失败的残留,一并隐去。
+  const displayError = !connecting && !session.manualDisconnect ? stripFpMark(error) : '';
+  const text = connecting ? `正在连接 ${label}…` : `已断开 ${label}` + (displayError ? `（${displayError}）` : '') + retry;
+  el.className = 'pane-status-banner' + (connecting ? ' connecting' : ' disconnected');
+  // 长错误在横幅里会省略号截断,完整原因放 title 悬停可读。
+  el.title = displayError || '';
+  el.replaceChildren();
+  const dot = document.createElement('span');
+  dot.className = 'psb-dot';
+  const body = document.createElement('span');
+  body.className = 'psb-text';
+  body.textContent = text;
+  el.appendChild(dot);
+  el.appendChild(body);
+  if (!connecting) {
+    const hint = document.createElement('span');
+    hint.className = 'psb-hint';
+    hint.textContent = session.reconnectScheduled ? '按 Enter 立即重连' : '按 Enter 重新连接';
+    el.appendChild(hint);
+  }
+}
+
 // 指纹变更:后端在连接错误里附加可机读标记 [NB-FP host:port|旧指纹|新指纹],
 // 解析见 core.js 的 parseFpError。这里是"变更后如何恢复"的交互。
 /// 指纹变更的一键恢复:确认后删除该记录并重连。
@@ -1272,6 +1398,8 @@ export async function disconnectSession(sessionId) {
     s.connectionEpoch = (s.connectionEpoch || 0) + 1;
     s.manualDisconnect = true;
     s.status = 'disconnected';
+    // 后端断连不发 ssh:status(事件只覆盖网络侧断开),这里直接同步文件分屏状态。
+    syncFilePanesForSession(sessionId);
     updateTab(s);
     if (state.activeId === sessionId) updateStatusbar(s);
     refreshBroadcast();
@@ -1494,6 +1622,8 @@ export function scheduleReconnect(sessionId, why) {
   s.reconnectDueAt = Date.now() + delay;
   s.reconnectCountdownTimer = setInterval(() => {
     if (state.activeId === sessionId) updateStatusbar(s, why);
+    // 倒计时也要推进非活动窗格的横幅,否则后台分屏显示的秒数会冻结。
+    syncPaneStatusBanner(s, why);
   }, 1000);
   s.reconnectTimer = setTimeout(() => {
     cancelReconnect(s);
@@ -1501,6 +1631,7 @@ export function scheduleReconnect(sessionId, why) {
     runSessionConnection(s, true);
   }, delay);
   if (state.activeId === sessionId) updateStatusbar(s, why);
+  syncPaneStatusBanner(s, why);
   return true;
 }
 

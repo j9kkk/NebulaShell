@@ -88,6 +88,7 @@ fn mock_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
 fn make_state(tag: &str) -> AppState {
     let dir = std::env::temp_dir().join(format!("nb-mon-store-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let dir2 = dir.clone();
     let store = Arc::new(Store::load_plain(dir));
     let remote_targets = nebulashell_lib::ssh::RemoteTargets::default();
     let ssh = Arc::new(nebulashell_lib::ssh::SshService::new(
@@ -95,9 +96,15 @@ fn make_state(tag: &str) -> AppState {
         remote_targets.clone(),
     ));
     AppState {
-        store,
-        ssh,
+        store: store.clone(),
+        ssh: ssh.clone(),
         forwards: ForwardService::new(remote_targets),
+        transfers: Arc::new(nebulashell_lib::transfer::TransferManager::new(
+            ssh.clone(),
+            dir2,
+        )),
+        transfer_aborts: Arc::new(Mutex::new(HashMap::new())),
+        force_exit: std::sync::atomic::AtomicBool::new(false),
         monitors: Mutex::new(HashMap::new()),
         logs: Mutex::new(HashMap::new()),
         ai_aborts: Arc::new(Mutex::new(HashMap::new())),

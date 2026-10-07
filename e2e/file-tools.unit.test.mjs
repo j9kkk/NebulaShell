@@ -14,6 +14,10 @@ class Element {
     this.value = '';
     this.textContent = '';
     this.disabled = false;
+    this.style = {};
+    this.offsetWidth = 420;
+    this.offsetHeight = 100;
+    this.getBoundingClientRect = () => ({ top: 1200, bottom: 1226, left: 1600, right: 1626 });
     this.classes = new Set();
     this.classList = {
       add: (...names) => names.forEach((n) => this.classes.add(n)),
@@ -28,7 +32,8 @@ class Element {
   }
   set innerHTML(value) { this.html = value; this.children = []; this.elements.clear(); }
   get innerHTML() { return this.html || ''; }
-  appendChild(child) { this.children.push(child); return child; }
+  appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+  append(...kids) { kids.forEach((k) => this.appendChild(k)); }
   replaceChildren(...children) { this.children = children; }
   querySelector(selector) {
     if (!this.elements.has(selector)) this.elements.set(selector, new Element());
@@ -55,7 +60,7 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
   const state = {
     sessions: new Map(), activeId: null, hosts: [], historyOpen: true,
     settings: { snippets: [] },
-    file: { sessionId: null, cwd: null, entries: [], hist: [], histIdx: -1, histSid: null },
+    tabs: new Map(), activeTabId: 'tab-1', tabSeq: 0, paneSeq: 0,
   };
   const calls = [];
   const api = async (channel, payload) => {
@@ -63,18 +68,48 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     return invoke(channel, payload);
   };
   const events = new Map();
-  const document = { createElement: () => new Element(), body: new Element() };
+  const document = { createElement: () => new Element(), body: new Element(), getElementById: () => null, addEventListener: () => {}, dispatchEvent: () => {} };
   const context = vm.createContext({
     console, document, setTimeout, clearTimeout, Blob, URL,
-    window: { nebula: { on: (name, fn) => { events.set(name, fn); return () => events.delete(name); } } },
+    crypto: { randomUUID: () => 'test-uuid-' + Math.random() },
+    Event: class { constructor(type) { this.type = type; } },
+    window: {
+      nebula: { on: (name, fn) => { events.set(name, fn); return () => events.delete(name); } },
+      innerWidth: 1700, innerHeight: 1300,
+      addEventListener: () => {},
+    },
   });
   const imports = {
-    './core.js': { $, api, state, askConfirm: confirm, copyText: async () => true, toast: () => {},
+    './core.js': { $, api, state, askConfirm: confirm, askPrompt: async () => null, copyText: async () => true, toast: () => {},
       showCtxMenu: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
       setModalDismissHandler: (element, handler) => { element.dismiss = handler; },
-      stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim() },
+      hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim() },
     './hosts.js': { escapeHtml: (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;') },
     './terminal.js': { writeSessionInput: write },
+    // file-transfer.js 由 e2e 覆盖真实链路;单测里用记录型桩,断言任务注册发生过
+    './file-transfer.js': {
+      registerUploadTask: ({ names }) => {
+        calls.push({ channel: 'task:registerUpload', payload: { names } });
+        return { taskId: 'up-stub', isCancelled: () => false, cancelRest: () => {}, mark: () => {}, finish: () => {} };
+      },
+      registerDownloadTask: ({ name }) => {
+        calls.push({ channel: 'task:registerDownload', payload: { name } });
+        return { taskId: 'dl-stub', done: () => {}, failed: () => {}, cancelled: () => {} };
+      },
+      registerTreeDownloadTask: ({ names, localRoot }) => {
+        calls.push({ channel: 'task:registerTreeDownload', payload: { names, localRoot } });
+        return { taskId: 'dt-stub', isCancelled: () => false, finish: () => {}, failed: () => {}, cancelled: () => {} };
+      },
+      taskProgressFromEvent: () => false,
+      wasRecentDrag: () => false,
+      submitCopyTask: async (params) => { calls.push({ channel: 'task:submitCopy', payload: params }); return {}; },
+    },
+    './interaction.js': { popupPosition: () => ({ left: 100, top: 200 }) },
+    // file-transfer.js 引 sftp.js 的窗格查找;任务中心单测用不到,给空实现
+    './sftp.js': {
+      findFilePane: () => null, filePaneFromEl: () => null,
+      paneSession: () => null, refreshFilePanesFor: () => {},
+    },
   };
   const module = new vm.SourceTextModule(await readFile(new URL(`../src/modules/${moduleName}.js`, import.meta.url), 'utf8'), { context });
   await module.link(async (specifier) => {
@@ -85,14 +120,36 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     }, { context });
   });
   await module.evaluate();
+  const ElementClass = Element;
   const connect = (id, cwd = '/') => {
-    const session = { sessionId: id, status: 'connected', host: { id, name: id, username: 'u', host: id, port: 22 } };
+    const session = { sessionId: id, status: 'connected', host: { id, name: id, username: 'u', host: id, port: 22 }, lastFileDir: cwd, tabId: 'tab-' + id };
     state.sessions.set(id, session);
     state.activeId = id;
-    Object.assign(state.file, { sessionId: id, cwd, entries: [], loading: false, hist: [cwd], histIdx: 0, histSid: id });
+    // 每个会话一个标签(与真实模型一致:一个标签 = 一台主机;分屏同属一个标签)
+    if (!state.tabs.has(session.tabId)) {
+      state.tabs.set(session.tabId, { id: session.tabId, el: new Element(), panes: new Map(), layout: null, activePaneId: null, zoomPaneId: null, sessionId: id });
+    }
     return session;
   };
-  return { module: module.namespace, state, $, calls, events, connect, document };
+  /// 建一个文件分屏(浏览状态直接长在窗格对象上;el 为桩 Element,
+  /// querySelector 按选择器自动建子元素,渲染断言读这些桩)
+  const mkPane = (sessionId, { cwd = null, entries = [], hist = cwd ? [cwd] : [], loading = false, stale = false } = {}) => {
+    const tab = state.tabs.get('tab-' + sessionId)
+      || state.tabs.get([...state.tabs.keys()][0]);
+    assert.ok(tab, `tab for session ${sessionId}`);
+    const pane = {
+      id: 'fp-' + (++state.paneSeq),
+      kind: 'file',
+      el: new Element(),
+      tabId: tab.id,
+      ...module.namespace.createFilePaneState(),
+    };
+    Object.assign(pane, { cwd, entries, hist, histIdx: hist.length - 1, loading, stale, lastSessionId: sessionId });
+    tab.panes.set(pane.id, pane);
+    tab.activePaneId = pane.id;
+    return pane;
+  };
+  return { module: module.namespace, state, $, calls, events, connect, mkPane, document, Element: ElementClass };
 }
 
 const deferred = () => {
@@ -101,39 +158,39 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-test('directory switch clears identity/cwd until success; failed switch leaves no usable target', async () => {
+test('directory switch keeps committed cwd until success; loading pane rejects destructive ops', async () => {
   const list = deferred();
   const h = await harness('sftp', { invoke: (channel) => channel === 'sftp:list' ? list.promise : [] });
   h.connect('a', '/old-a');
-  const b = h.connect('b', '/old-a');
-  h.state.file.sessionId = 'a';
-  const loading = h.module.loadFileDir('/new-b', { sessionId: b.sessionId });
-  assert.equal(h.state.file.cwd, null);
-  assert.equal(h.state.file.sessionId, null);
-  assert.equal(h.module.filePanelSession(), null);
+  const pane = h.mkPane('a', { cwd: '/old-a' });
+  const target = h.module.paneSnapshot(pane);
+  assert.equal(target.sessionId, 'a');
+  // 目录切换成功提交前,浏览状态不被半途清空,破坏性操作禁用
+  const loading = h.module.loadFileDir(pane, '/new-a');
+  await Promise.resolve();
+  assert.equal(pane.cwd, '/old-a', '旧目录保留到新目录提交');
+  assert.equal(h.module.isFilePaneCurrent(target), false, '加载中禁用破坏性操作');
   list.reject(new Error('denied'));
   assert.equal(await loading, false);
-  assert.equal(h.state.file.cwd, null);
-  assert.equal(h.module.filePanelSession(), null);
+  assert.equal(pane.cwd, '/old-a', '失败后保留原目录');
+  assert.equal(h.module.isFilePaneCurrent(h.module.paneSnapshot(pane)), true, '失败回退后原目录仍可用');
 });
 
-test('out-of-order same-session listings and stale cwd probes cannot overwrite latest transaction', async () => {
+test('out-of-order listings commit to the latest transaction only (per pane)', async () => {
   const requests = [];
   const h = await harness('sftp', { invoke: (channel) => {
     if (channel !== 'sftp:list') return [];
     const request = deferred(); requests.push(request); return request.promise;
   } });
   h.connect('a', '/');
-  const first = h.module.loadFileDir('/first');
-  const second = h.module.loadFileDir('/second');
+  const pane = h.mkPane('a', { cwd: '/' });
+  const first = h.module.loadFileDir(pane, '/first');
+  const second = h.module.loadFileDir(pane, '/second');
   requests[1].resolve({ path: '/second', entries: [] });
   assert.equal(await second, true);
   requests[0].resolve({ path: '/first', entries: [] });
   assert.equal(await first, false);
-  assert.equal(h.state.file.cwd, '/second');
-  h.connect('b', '/');
-  assert.equal(await h.module.loadFileDir('/a-probed', { sessionId: 'a' }), false);
-  assert.equal(requests.length, 2);
+  assert.equal(pane.cwd, '/second');
 });
 
 test('failed history navigation rolls back the cursor and preserves committed directory', async () => {
@@ -142,11 +199,10 @@ test('failed history navigation rolls back the cursor and preserves committed di
     return [];
   } });
   h.connect('a', '/two');
-  h.state.file.hist = ['/one', '/two'];
-  h.state.file.histIdx = 1;
-  assert.equal(await h.module.fileNavBack(), false);
-  assert.equal(h.state.file.histIdx, 1);
-  assert.equal(h.state.file.cwd, '/two');
+  const pane = h.mkPane('a', { cwd: '/two', hist: ['/one', '/two'] });
+  assert.equal(await h.module.fileNavBack(pane), false);
+  assert.equal(pane.histIdx, 1);
+  assert.equal(pane.cwd, '/two');
 });
 
 test('upload queue freezes paths, session and cwd across awaits and serializes queues', async () => {
@@ -157,12 +213,17 @@ test('upload queue freezes paths, session and cwd across awaits and serializes q
     return [];
   } });
   h.connect('a', '/dest-a');
+  h.connect('b', '/dest-b');
+  const paneA = h.mkPane('a', { cwd: '/dest-a' });
   const paths = ['/local/one', '/local/two'];
-  const first = h.module.uploadLocalPaths(paths);
+  const targetA = h.module.paneSnapshot(paneA);
+  assert.equal(targetA.sessionId, 'a');
+  const first = h.module.uploadLocalPaths(paths, targetA);
   paths[1] = '/mutated';
   await Promise.resolve();
-  h.connect('b', '/dest-b');
-  const second = h.module.uploadLocalPaths(['/local/three']);
+  // 第二个队列固定到另一台主机的分屏:队列互不串目标(分屏各属各标签)
+  const paneB = h.mkPane('b', { cwd: '/dest-b' });
+  const second = h.module.uploadLocalPaths(['/local/three'], h.module.paneSnapshot(paneB));
   gate.resolve();
   await first;
   await second;
@@ -170,10 +231,11 @@ test('upload queue freezes paths, session and cwd across awaits and serializes q
   assert.deepEqual(sent.map((p) => [p.sessionId, p.remoteDir, p.localPath, p.conflictPolicy]), [
     ['a', '/dest-a', '/local/one', 'error'], ['a', '/dest-a', '/local/two', 'error'], ['b', '/dest-b', '/local/three', 'error'],
   ]);
+  // 两个目标分屏都仍然有效:各刷新一次,且刷新只落在自己的目标上
   const refreshed = h.calls.filter((c) => c.channel === 'sftp:list');
-  assert.equal(refreshed.length, 1);
-  assert.equal(refreshed[0].payload.sessionId, 'b', 'never refresh the switched-away queue target');
-  assert.equal(refreshed[0].payload.path, '/dest-b');
+  assert.deepEqual(refreshed.map((c) => [c.payload.sessionId, c.payload.path]), [['a', '/dest-a'], ['b', '/dest-b']]);
+  // 每个队列都注册了任务中心条目
+  assert.equal(h.calls.filter((c) => c.channel === 'task:registerUpload').length, 2);
 });
 
 test('upload conflicts offer explicit overwrite/rename/skip and cancel the remaining snapshot queue', async () => {
@@ -184,14 +246,15 @@ test('upload conflicts offer explicit overwrite/rename/skip and cancel the remai
       return { skipped: payload.conflictPolicy === 'skip', remotePath: '/dest/a' };
     } });
     h.connect('a', '/dest');
-    const upload = h.module.uploadLocalPaths(['/local/one', '/local/two']);
+    const pane = h.mkPane('a', { cwd: '/dest' });
+    const upload = h.module.uploadLocalPaths(['/local/one', '/local/two'], h.module.paneSnapshot(pane));
     for (let i = 0; i < 20 && !h.document.body.children.length; i++) await Promise.resolve();
     const sheet = h.document.body.children[0];
     assert.ok(sheet, `sheet created for ${policy}`);
     const buttons = sheet.querySelector('.modal-foot').children;
     assert.equal(buttons[0].dataset.policy, 'skip');
     sheet.querySelector('input').checked = true;
-    // Switching tabs while choosing a conflict cannot change the queued destination.
+    // 决策期间连接其它主机不能改投目标(快照固定 sessionId/cwd)
     h.connect('b', '/other');
     await buttons.find((b) => b.dataset.policy === policy).fire('click');
     const results = await upload;
@@ -208,23 +271,16 @@ test('upload conflicts offer explicit overwrite/rename/skip and cancel the remai
   }
 });
 
-test('upload file-picker and delete confirmation snapshot the original target', async () => {
-  const picker = deferred();
+test('delete confirmation resolves transport from the pane, not from global focus', async () => {
   const confirmation = deferred();
-  const h = await harness('sftp', { confirm: () => confirmation.promise, invoke: async (channel) => {
-    if (channel === 'dialog:pickAnyFile') return picker.promise;
-    return { skipped: false };
-  } });
+  const h = await harness('sftp', { confirm: () => confirmation.promise, invoke: async () => ({ skipped: false }) });
   h.connect('a', '/original');
-  const upload = h.module.fileUpload();
-  const remove = h.module.removeEntry({ name: 'delete.txt', dir: false });
   h.connect('b', '/unrelated');
-  picker.resolve(['/local/upload.txt']);
+  const pane = h.mkPane('a', { cwd: '/original' });
+  // 活动会话是 b,但分屏在 a 的标签里:通道解析必须落回 a(同标签回退)
+  const remove = h.module.removeEntry({ name: 'delete.txt', dir: false }, pane);
   confirmation.resolve(true);
-  await Promise.all([upload, remove]);
-  const sent = h.calls.find((c) => c.channel === 'sftp:upload').payload;
-  assert.equal(sent.sessionId, 'a');
-  assert.equal(sent.remoteDir, '/original');
+  await remove;
   const deleted = h.calls.find((c) => c.channel === 'sftp:remove').payload;
   assert.equal(deleted.sessionId, 'a');
   assert.equal(deleted.path, '/original/delete.txt');
@@ -233,13 +289,110 @@ test('upload file-picker and delete confirmation snapshot the original target', 
 test('rename integration rejects switched targets and traversal names', async () => {
   const h = await harness('sftp');
   h.connect('a', '/original');
-  h.module.startRename({ name: 'source' });
-  await assert.rejects(h.module.commitFileRename('../escape'), /名称/);
-  h.connect('b', '/other');
-  await assert.rejects(h.module.commitFileRename('new'), /目录已切换/);
+  const pane = h.mkPane('a', { cwd: '/original' });
+  h.module.startRename({ name: 'source' }, pane);
+  await assert.rejects(h.module.commitFileRename('../escape', pane), /名称/);
+  // 分屏切换目录后,针对旧目录的重命名必须拒绝(目标快照失效)
+  pane.cwd = '/other';
+  await assert.rejects(h.module.commitFileRename('new', pane), /目录已切换/);
   assert.equal(h.calls.length, 0);
   assert.equal(h.module.validEntryName('a\\b'), false);
   assert.equal(h.module.validEntryName('a\0b'), false);
+});
+
+test('panes of the same session are isolated viewports: concurrent listings commit to their own pane only', async () => {
+  const requests = [];
+  const h = await harness('sftp', { invoke: (channel) => {
+    if (channel !== 'sftp:list') return [];
+    const request = deferred(); requests.push(request); return request.promise;
+  } });
+  h.connect('a', '/a-dir');
+  const pa = h.mkPane('a', { cwd: '/a-dir' });
+  const pb = h.mkPane('a', { cwd: '/a-dir' });
+  // 同标签内两个文件分屏并发列目录,响应乱序:各自提交到自己的窗格
+  const la = h.module.loadFileDir(pa, '/x');
+  const lb = h.module.loadFileDir(pb, '/y');
+  assert.equal(requests.length, 2);
+  requests[1].resolve({ path: '/y', entries: [{ name: 'b-file', dir: false, size: 1 }] });
+  requests[0].resolve({ path: '/x', entries: [{ name: 'a-file', dir: false, size: 2 }] });
+  assert.equal(await la, true);
+  assert.equal(await lb, true);
+  assert.deepEqual(pa.entries.map((e) => e.name), ['a-file']);
+  assert.deepEqual(pb.entries.map((e) => e.name), ['b-file']);
+  assert.equal(pa.cwd, '/x');
+  assert.equal(pb.cwd, '/y');
+});
+
+test('browse state lives on the pane: navigating one pane never touches another; lastFileDir tracks the session', async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const h = await harness('sftp', { invoke: async (channel, payload) => {
+    if (channel === 'sftp:list') return { path: payload.path, entries: [] };
+    return [];
+  } });
+  const s = h.connect('a', '/a-dir');
+  const pa = h.mkPane('a', { cwd: '/a-dir', hist: ['/', '/a-dir'] });
+  const pb = h.mkPane('a', { cwd: '/a-dir' });
+  // 在 pa 上导航:pb 的浏览状态不受影响(状态长在窗格上)
+  await h.module.loadFileDir(pa, '/a-dir/child');
+  await tick();
+  assert.equal(pa.cwd, '/a-dir/child');
+  assert.equal(pb.cwd, '/a-dir');
+  assert.deepEqual(pb.hist, ['/a-dir']);
+  // 会话记忆目录由提交写入(新开分屏的初始目录来源)
+  assert.equal(s.lastFileDir, '/a-dir/child');
+});
+
+test('progress events route to the matching pane and never leak across panes', async () => {
+  const h = await harness('sftp', { invoke: async () => ({ path: '/', entries: [] }) });
+  h.connect('a', '/da');
+  h.connect('b', '/db');
+  const pa = h.mkPane('a', { cwd: '/da' });
+  const pb = h.mkPane('b', { cwd: '/db' });
+  h.module.routeProgress({ sessionId: 'a', op: 'upload', name: 'f.bin', remoteDir: '/da', pct: 42 });
+  const statusOf = (pane) => pane.el.querySelector('.file-status').textContent;
+  assert.equal(statusOf(pa), '上传 f.bin 42%');
+  assert.equal(statusOf(pb), '');
+  // 目录不匹配(pb 正看着 /db)的进度不写入
+  h.module.routeProgress({ sessionId: 'b', op: 'upload', name: 'x', remoteDir: '/elsewhere', pct: 10 });
+  assert.equal(statusOf(pb), '');
+});
+
+test('all sessions of a tab down -> pane grays out; any session back -> auto refresh', async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const h = await harness('sftp', { invoke: async (channel, payload) => {
+    if (channel === 'sftp:list') return { path: payload.path, entries: [{ name: 'rebuilt', dir: false, size: 1 }] };
+    return [];
+  } });
+  const s = h.connect('a', '/dir');
+  const pane = h.mkPane('a', { cwd: '/dir' });
+  const tab = h.state.tabs.get('tab-a');
+  // 标签内会话断开(手动断开路径也走 syncFilePanesForSession)
+  s.status = 'disconnected';
+  h.module.syncFilePanesForSession('a');
+  assert.equal(pane.stale, true);
+  assert.match(pane.statusText, /已断开/);
+  // 重连:清灰显并按原目录自动刷新
+  s.status = 'connected';
+  h.module.syncFilePanesForSession('a');
+  await tick();
+  assert.equal(pane.stale, false);
+  assert.equal(pane.cwd, '/dir');
+  assert.deepEqual(pane.entries.map((e) => e.name), ['rebuilt']);
+});
+
+test('task terminal state refreshes only panes still browsing the target dir', async () => {
+  const requests = [];
+  const h = await harness('sftp', { invoke: (channel, payload) => {
+    if (channel !== 'sftp:list') return [];
+    const request = deferred(); requests.push(request); return request.promise;
+  } });
+  h.connect('a', '/same');
+  const pSame = h.mkPane('a', { cwd: '/same' });
+  const pOther = h.mkPane('a', { cwd: '/other' });
+  h.module.refreshFilePanesFor('a', '/same');
+  // 只有仍在浏览目标目录的分屏被刷新
+  assert.equal(requests.length, 1);
+  assert.equal(h.calls.find((c) => c.channel === 'sftp:list').payload.path, '/same');
 });
 
 test('snippet menu stays open if terminal shared write helper declines readonly input', async () => {
@@ -335,4 +488,90 @@ test('forward runtime state shows actual ephemeral address, treats stopped objec
   assert.equal(actual.running, true);
   assert.equal(h.module.forwardRuntimeView(rule, { running: false }).running, false);
   assert.match(h.module.forwardRuntimeView(rule, true).address, /实际端口未知/);
+});
+
+test('multi-select: click/cmd/shift semantics and selection survives refresh intersection', async () => {
+  const h = await harness('sftp', { invoke: async (channel, payload) => {
+    if (channel === 'sftp:list') return { path: payload.path, entries: payload.path === '/d' ? [{ name: 'a.txt', dir: false, size: 1 }, { name: 'b.txt', dir: false, size: 2 }, { name: 'c', dir: true, size: 0 }] : [{ name: 'a.txt', dir: false, size: 1 }, { name: 'c', dir: true, size: 0 }] };
+    return [];
+  } });
+  h.connect('a', '/d');
+  const pane = h.mkPane('a', { cwd: '/d', hist: ['/d'], entries: [{ name: 'a.txt', dir: false, size: 1 }, { name: 'b.txt', dir: false, size: 2 }, { name: 'c', dir: true, size: 0 }] });
+  // 单击 = 单选,锚点更新
+  h.module.selectEntries(pane, pane.entries[0], 0, {});
+  assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['a.txt']));
+  // ⌘ 点第三项 = 追加
+  h.module.selectEntries(pane, pane.entries[2], 2, { metaKey: true });
+  assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['a.txt', 'c']));
+  // Shift 从锚点(⌘ 点选后为 2)到 1 = 区间 [b.txt, c]
+  h.module.selectEntries(pane, pane.entries[1], 1, { shiftKey: true });
+  assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['b.txt', 'c']));
+  // 无修饰单击重置单选并把锚点移到该项;再 Shift 即从新锚点取区间
+  h.module.selectEntries(pane, pane.entries[0], 0, {});
+  h.module.selectEntries(pane, pane.entries[1], 1, { shiftKey: true });
+  assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['a.txt', 'b.txt']));
+  // 全选 + 刷新交集:目录响应里没有 b.txt,选中集收缩
+  h.module.selectAllEntries(pane);
+  assert.equal(pane.selectedNames.length, 3);
+  await h.module.loadFileDir(pane, '/other');
+  assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['a.txt', 'c']));
+});
+
+test('multi-download routes single files to save dialog and batches to folder picker', async () => {
+  const pickDir = deferred();
+  const h = await harness('sftp', { invoke: async (channel, payload) => {
+    if (channel === 'dialog:saveFile') return '/tmp/saved-single.bin';
+    if (channel === 'dialog:pickDirectory') return pickDir.promise;
+    if (channel === 'sftp:download') return { localPath: payload.localPath };
+    if (channel === 'sftp:downloadTree') return { done: 2, skipped: 1, failed: 0, cancelled: false };
+    return [];
+  } });
+  h.connect('a', '/d');
+  const pane = h.mkPane('a', { cwd: '/d' });
+  // 单文件 → 旧链路(sftp:download),不弹目录选择
+  await h.module.downloadEntry({ name: 'a.txt', dir: false }, pane);
+  assert.ok(h.calls.some((c) => c.channel === 'sftp:download' && c.payload.remotePath === '/d/a.txt'));
+  assert.ok(!h.calls.some((c) => c.channel === 'sftp:downloadTree'));
+  // 多选(含目录) → 目录选择 + downloadTree 逐项;任务中心注册了批量条目
+  Object.assign(pane, { selectedNames: ['a.txt', 'c'], entries: [{ name: 'a.txt', dir: false, size: 1 }, { name: 'c', dir: true, size: 0 }] });
+  const batch = h.module.downloadEntry(null, pane);
+  pickDir.resolve('/tmp/dl-root');
+  await batch;
+  const trees = h.calls.filter((c) => c.channel === 'sftp:downloadTree');
+  assert.deepEqual(trees.map((c) => c.payload.remotePath), ['/d/a.txt', '/d/c']);
+  assert.ok(trees.every((c) => c.payload.localPath === '/tmp/dl-root'));
+  assert.ok(h.calls.some((c) => c.channel === 'task:registerTreeDownload' && c.payload.names.join() === 'a.txt,c'));
+  // 删除也支持多选
+  pane.selectedNames = ['a.txt', 'c'];
+  const removed = h.module.removeEntry(null, pane);
+  await removed;
+  const removes = h.calls.filter((c) => c.channel === 'sftp:remove');
+  assert.equal(JSON.stringify(removes.map((c) => [c.payload.path, c.payload.isDir])), JSON.stringify([['/d/a.txt', false], ['/d/c', true]]));
+});
+
+// 回归:任务中心浮层必须挂在 body 上(fixed 定位),不能留在 #statusbar 里 ——
+// #statusbar 有 overflow-y:hidden 且是定位锚,浮层弹到状态栏上方会被整体裁掉,
+// 表现为"点击 ⇅ 无反应"。⇅ 按钮宽度也要能容纳"图标+徽标"。
+test('task popover re-parents to body, positions on open, toggles with tasks', async () => {
+  const h = await harness('file-transfer');
+  h.module.bindTransferUi();
+  const pop = h.$('#file-task-popover');
+  assert.equal(pop.parentElement, h.document.body, '浮层必须移出状态栏挂到 body');
+  assert.ok(h.$('#btn-file-tasks-status').classes.has('hidden'), '无任务时入口按钮隐藏');
+  h.module.registerUploadTask({ paneId: 'p1', sessionId: 'host-a', dstDir: '/', names: ['f.txt'] });
+  assert.ok(!h.$('#btn-file-tasks-status').classes.has('hidden'), '有任务时入口按钮显示');
+  assert.equal(h.$('#file-task-badge').textContent, '1');
+  h.module.toggleTaskPopover(true);
+  assert.ok(!pop.classes.has('hidden'), '有任务时浮层可打开');
+  assert.equal(pop.style.left, '100px', '打开时按锚点定位');
+  assert.equal(pop.style.top, '200px');
+  h.module.toggleTaskPopover();
+  assert.ok(pop.classes.has('hidden'), '再次点击收起');
+  // 再加一个任务徽标计数 +1;完成后不再计入(徽标=进行中+需注意)
+  h.module.toggleTaskPopover(true);
+  assert.ok(!pop.classes.has('hidden'));
+  const t2 = h.module.registerUploadTask({ paneId: 'p1', sessionId: 'host-a', dstDir: '/', names: ['g.txt'] });
+  assert.equal(h.$('#file-task-badge').textContent, '2');
+  t2.finish('done');
+  assert.equal(h.$('#file-task-badge').textContent, '1');
 });

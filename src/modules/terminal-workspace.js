@@ -1,5 +1,5 @@
 // Outer tab geometry and mounting. Inner trees and terminal instances are never rewritten.
-import { layoutMinSize, planGrid } from './terminal-layout.js';
+import { layoutMinSize, paneMinSize, planGrid } from './terminal-layout.js';
 import { renderSplitTree } from './split-layout-renderer.js';
 
 export const TILE_HEADER_HEIGHT = 28;
@@ -7,7 +7,8 @@ export const TILE_BORDER_SIZE = 2;
 
 export function tabMinimum(tab) {
   // Deliberately use the underlying tree, even when a pane is locally zoomed.
-  const minimum = layoutMinSize(tab.layout || { type: 'leaf' });
+  // 叶子按窗格类型取最小尺寸(终端/文件分屏),平铺时标签据此分配空间。
+  const minimum = layoutMinSize(tab.layout || { type: 'leaf' }, (leaf) => paneMinSize(tab.panes?.get(leaf.paneId)));
   return { width: minimum.width + TILE_BORDER_SIZE, height: minimum.height + TILE_HEADER_HEIGHT + TILE_BORDER_SIZE };
 }
 

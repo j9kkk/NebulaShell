@@ -102,6 +102,11 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub ssh: Arc<SshService>,
     pub forwards: ForwardService,
+    pub transfers: Arc<crate::transfer::TransferManager>,
+    /// 上传/下载按 taskId 的取消标记(任务中心可取消在途传输)
+    pub transfer_aborts: AbortRegistry,
+    /// 「强制退出」标记:窗口关闭请求被传输任务拦截后,用户确认退出即置位
+    pub force_exit: AtomicBool,
     pub monitors: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
     pub logs: Mutex<HashMap<String, Arc<LogEntry>>>,
     pub ai_aborts: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
@@ -334,6 +339,22 @@ pub async fn nebula_invoke(
                     // 监控任务随连接启动(批量会话除外)
                     if !session_id.starts_with("batch-") {
                         state.start_monitor(&app, &session_id);
+                        // 清理台账:该主机上可能还挂着上次传输任务的临时文件
+                        state
+                            .transfers
+                            .clone()
+                            .on_session_connected(session_id.clone());
+                        // 后台预热 SFTP 通道:把 channel_open + 子系统协商 + INIT
+                        // 的往返挪出文件面板首次列目录的关键路径。失败静默
+                        //(服务器禁 sftp 子系统不影响终端连接);与首个
+                        // sftp:list 的并发由 open_sftp 的按会话协商锁去重。
+                        {
+                            let ssh = state.ssh.clone();
+                            let sid = session_id.clone();
+                            tokio::spawn(async move {
+                                let _ = ssh.open_sftp(&sid).await;
+                            });
+                        }
                         let rules: Vec<Value> = {
                             let data = state.store.data.lock().unwrap();
                             data["forwards"].as_array().cloned().unwrap_or_default()
@@ -504,7 +525,18 @@ pub async fn nebula_invoke(
             .await
         }
         "sftp:upload" => {
-            sftp_op(
+            // taskId 存在时登记取消标记:任务中心的「取消」在数据块间生效;
+            // Registration 存活到上传结束,重复 taskId 的并发提交会被拒绝。
+            let reg = match payload["taskId"].as_str() {
+                Some(id) if !id.is_empty() => Some(RequestRegistration::new(
+                    state.transfer_aborts.clone(),
+                    id.to_string(),
+                    "任务正在执行",
+                )?),
+                _ => None,
+            };
+            let cancel = reg.as_ref().map(|r| r.flag.clone());
+            let r = sftp_op(
                 &state,
                 app.clone(),
                 &payload,
@@ -517,14 +549,27 @@ pub async fn nebula_invoke(
                         p["remoteDir"].as_str().unwrap_or(""),
                         p["remoteName"].as_str(),
                         p["conflictPolicy"].as_str().unwrap_or("error"),
+                        p["taskId"].as_str(),
+                        cancel,
                     )
                     .await
                 },
             )
-            .await
+            .await;
+            drop(reg);
+            r
         }
         "sftp:download" => {
-            sftp_op(
+            let reg = match payload["taskId"].as_str() {
+                Some(id) if !id.is_empty() => Some(RequestRegistration::new(
+                    state.transfer_aborts.clone(),
+                    id.to_string(),
+                    "任务正在执行",
+                )?),
+                _ => None,
+            };
+            let cancel = reg.as_ref().map(|r| r.flag.clone());
+            let r = sftp_op(
                 &state,
                 app.clone(),
                 &payload,
@@ -536,11 +581,47 @@ pub async fn nebula_invoke(
                         p["remotePath"].as_str().unwrap_or(""),
                         p["localPath"].as_str().unwrap_or(""),
                         "download",
+                        p["taskId"].as_str(),
+                        cancel,
                     )
                     .await
                 },
             )
-            .await
+            .await;
+            drop(reg);
+            r
+        }
+        // 目录/批量递归下载:编排与字节都在后端,进度经 sftp:progress 归属任务
+        "sftp:downloadTree" => {
+            let reg = match payload["taskId"].as_str() {
+                Some(id) if !id.is_empty() => Some(RequestRegistration::new(
+                    state.transfer_aborts.clone(),
+                    id.to_string(),
+                    "任务正在执行",
+                )?),
+                _ => None,
+            };
+            let cancel = reg.as_ref().map(|r| r.flag.clone());
+            let r = sftp_op(
+                &state,
+                app.clone(),
+                &payload,
+                |sftp, app, sid, p| async move {
+                    crate::sftp::download_tree(
+                        &sftp,
+                        app,
+                        sid,
+                        p["remotePath"].as_str().unwrap_or(""),
+                        p["localPath"].as_str().unwrap_or(""),
+                        p["taskId"].as_str(),
+                        cancel,
+                    )
+                    .await
+                },
+            )
+            .await;
+            drop(reg);
+            r
         }
         // 右键「打开」:下载到临时目录后交系统默认程序(test_mode 只落盘不拉起)
         "sftp:openRemote" => {
@@ -562,6 +643,94 @@ pub async fn nebula_invoke(
             )
             .await
         }
+        // 会话端点(代次 + 展示名 + 主机摘要):文件面板/传输任务锁定真实连接
+        "session:endpoint" => {
+            let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
+            match state.ssh.session_endpoint(&sid).await {
+                Some(e) => ok(json!({
+                    "sessionId": e.session_id, "epoch": e.epoch, "label": e.label, "summary": e.summary,
+                })),
+                None => ok(json!(null)),
+            }
+        }
+        // 跨主机复制:提交即返回任务号,编排与进度在后端
+        "transfer:copy" => {
+            let items: Vec<String> = payload["items"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            match state
+                .transfers
+                .submit_copy(
+                    app,
+                    payload["srcSessionId"].as_str().unwrap_or(""),
+                    payload["srcDir"].as_str().unwrap_or(""),
+                    payload["srcEpoch"].as_u64(),
+                    payload["dstSessionId"].as_str().unwrap_or(""),
+                    payload["dstDir"].as_str().unwrap_or(""),
+                    payload["dstEpoch"].as_u64(),
+                    items,
+                    payload["batchId"].as_str().unwrap_or(""),
+                    payload["autoRename"].as_bool().unwrap_or(false),
+                )
+                .await
+            {
+                Ok(v) => ok(v),
+                Err(e) => err_msg(e),
+            }
+        }
+        "transfer:cancel" => ok(state
+            .transfers
+            .cancel(payload["taskId"].as_str().unwrap_or(""))?),
+        "transfer:resolve" => {
+            let r = state
+                .transfers
+                .resolve_conflict(
+                    payload["taskId"].as_str().unwrap_or(""),
+                    payload["conflictId"].as_str().unwrap_or(""),
+                    payload["decision"].clone(),
+                )
+                .await;
+            ok(r?)
+        }
+        "transfer:list" => ok(json!(state.transfers.list())),
+        "transfer:activeFor" => {
+            let sids: Vec<String> = payload["sessionIds"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ok(json!(state.transfers.active_for_sessions(&sids)))
+        }
+        // 取消在途上传/下载(按 taskId)
+        "sftp:cancel" => {
+            let id = payload["taskId"].as_str().unwrap_or("");
+            if id.is_empty() {
+                return err_msg("缺少 taskId");
+            }
+            let flag = state.transfer_aborts.lock().unwrap().get(id).cloned();
+            match flag {
+                Some(flag) => {
+                    flag.store(true, Ordering::Release);
+                    ok(json!({ "ok": true }))
+                }
+                None => ok(json!({ "ok": false, "gone": true })),
+            }
+        }
+        // 传输任务存在时的退出确认链路:前端确认后置 force_exit 再退
+        "app:exit" => {
+            state.force_exit.store(true, Ordering::SeqCst);
+            app.exit(0);
+            ok(json!(null))
+        }
+
         // 文件面板首次打开的初始目录:探测交互 shell 的实时 cwd(见 ssh.rs probe_cwd)
         "ssh:probeCwd" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
@@ -1152,6 +1321,22 @@ pub async fn nebula_invoke(
             match rfd::AsyncFileDialog::new()
                 .set_file_name(default_name)
                 .save_file()
+                .await
+            {
+                Some(f) => ok(json!(f.path().to_string_lossy().to_string())),
+                None => ok(json!(null)),
+            }
+        }
+        // 选择目录(文件夹下载/批量下载的目标根目录)
+        "dialog:pickDirectory" => {
+            if state.test_mode {
+                if let Ok(p) = std::env::var("NEBULA_TEST_PICK_DIR") {
+                    return ok(json!(p));
+                }
+            }
+            match rfd::AsyncFileDialog::new()
+                .set_title("选择下载目标文件夹")
+                .pick_folder()
                 .await
             {
                 Some(f) => ok(json!(f.path().to_string_lossy().to_string())),

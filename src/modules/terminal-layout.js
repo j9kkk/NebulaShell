@@ -20,6 +20,14 @@ function leafMinSize(minimum) {
   };
 }
 
+/// 按窗格类型的最小尺寸:终端 320×180(PTY 可用底线),
+/// 文件分屏 300×220(文件浏览器需要的最小操作宽度)。
+export function paneMinSize(pane) {
+  return pane && pane.kind === 'file'
+    ? { width: 300, height: 220 }
+    : { width: MIN_PANE_WIDTH, height: MIN_PANE_HEIGHT };
+}
+
 // The resolver receives a leaf node, not its ID: tab leaves can resolve their
 // minimum from a nested pane layout without changing either tree's shape.
 export function layoutMinSize(node, leafMinimum) {

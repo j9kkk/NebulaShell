@@ -12,6 +12,8 @@
         channel: map(channel),
         payload: payload === undefined ? null : payload,
       }),
+    // 仅测试模式:主窗口跟随所有 Space 并聚焦(e2e 可见性预检用)
+    testPinWindow: () => tauri.core.invoke('nebula_test_pin_window'),
     on: (channel, cb) => {
       let un = null;
       tauri.event.listen(map(channel), (e) => cb(e.payload)).then((u) => { un = u; });

@@ -2,7 +2,7 @@
 use russh::client::{self, Handle};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
@@ -364,7 +364,7 @@ impl PendingConnection {
 
 pub struct Session {
     /// Handle 不可 Clone(内含 receiver),tcpip_forward 需要 &mut 而其余方法
-    /// 只要 &self,故以 Arc<tokio::Mutex<_>> 共享:exec/open_sftp/转发只在
+    /// 只要 &self,故以 Arc<tokio::sync::Mutex<_>> 共享:exec/open_sftp/转发只在
     /// "开通道/子系统/转发请求"这一个往返期间持互斥,数据读写不经过它,
     /// 不会阻塞终端热路径。
     pub handle: Arc<tokio::sync::Mutex<Handle<SshHandler>>>,
@@ -377,7 +377,17 @@ pub struct Session {
     /// 远端关闭后的自回收(数据泵收尾)。热路径上只做原子读。
     pub alive: AtomicBool,
     pub read_only: AtomicBool,
+    /// 单调连接代次:同 sessionId 重连/换端点后必然 +1。文件面板与传输任务
+    /// 以 (sessionId, epoch) 二元组锁定真实连接,旧代次的响应/进度/清理
+    /// 不得作用于新连接。
+    pub epoch: u64,
     generation: Arc<PendingConnection>,
+}
+
+static EPOCH_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_epoch() -> u64 {
+    EPOCH_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A remote registration owns the exact transport that accepted it. Session IDs
@@ -401,13 +411,18 @@ pub struct SshService {
     /// 数据泵持有同代 Arc 做存活判断,均不长期占用这张表。
     pub sessions: AsyncMutex<std::collections::HashMap<String, Arc<Session>>>,
     pending: AsyncMutex<HashMap<String, Arc<PendingConnection>>>,
-    /// 按 sessionId 缓存的 SFTP 会话。
+    /// 按 sessionId 缓存的 SFTP 会话(值含建立该通道时的连接代次)。
     ///
     /// 每次 SFTP 操作都新开一条通道要付"channel_open_session + sftp 子系统协商"
     /// 的往返成本;文件面板的每次列目录/上传/下载都会用到它。
     /// 连接被替换/回收/断开时必须清理,否则残留通道挂在已废弃的 SSH 连接上。
     pub sftp_sessions:
-        AsyncMutex<std::collections::HashMap<String, Arc<russh_sftp::client::SftpSession>>>,
+        AsyncMutex<std::collections::HashMap<String, (u64, Arc<russh_sftp::client::SftpSession>)>>,
+    /// 按 sessionId 的协商互斥:open_sftp 缓存未命中后先取本会话的锁再协商。
+    /// 连接预热(连接成功即后台 open_sftp)与首个 sftp:list 并发未命中时,
+    /// 只有持锁者真正协商,其余等锁后直接命中缓存,不会各开一条通道。
+    /// 外层 std Mutex 只保护表本身;内层锁跨 await 持有。
+    sftp_open_locks: std::sync::Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     pub store: Arc<crate::config::Store>,
     pub remote_targets: RemoteTargets,
 }
@@ -464,6 +479,7 @@ impl SshService {
             sessions: AsyncMutex::new(std::collections::HashMap::new()),
             pending: AsyncMutex::new(HashMap::new()),
             sftp_sessions: AsyncMutex::new(std::collections::HashMap::new()),
+            sftp_open_locks: std::sync::Mutex::new(HashMap::new()),
             store,
             remote_targets,
         }
@@ -474,6 +490,7 @@ impl SshService {
             sessions: AsyncMutex::new(std::collections::HashMap::new()),
             pending: AsyncMutex::new(HashMap::new()),
             sftp_sessions: AsyncMutex::new(std::collections::HashMap::new()),
+            sftp_open_locks: std::sync::Mutex::new(HashMap::new()),
             store: self.store.clone(),
             remote_targets: self.remote_targets.clone(),
         })
@@ -482,6 +499,40 @@ impl SshService {
     /// 丢弃指定会话的 SFTP 缓存(连接被替换/回收/断开时调用)
     pub async fn forget_sftp(&self, session_id: &str) {
         self.sftp_sessions.lock().await.remove(session_id);
+        self.sftp_open_locks.lock().unwrap().remove(session_id);
+    }
+
+    /// 会话当前连接代次;会话不存在/已断开返回 None。
+    pub async fn session_epoch(&self, session_id: &str) -> Option<u64> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .filter(|s| s.alive.load(Ordering::Relaxed))
+            .map(|s| s.epoch)
+    }
+
+    /// 文件面板/传输任务使用的端点描述:代次 + 展示名 + 主机摘要。
+    pub async fn session_endpoint(&self, session_id: &str) -> Option<crate::transfer::Endpoint> {
+        let sessions = self.sessions.lock().await;
+        let s = sessions.get(session_id)?;
+        if !s.alive.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(crate::transfer::Endpoint {
+            session_id: session_id.to_string(),
+            epoch: s.epoch,
+            label: crate::transfer::label_of(&s.host),
+            summary: crate::transfer::host_summary_of(&s.host),
+        })
+    }
+
+    /// 已连接会话的主机摘要(user@host:port),清理台账按它配对。
+    pub async fn session_summary(&self, session_id: &str) -> Option<String> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .filter(|s| s.alive.load(Ordering::Relaxed))
+            .map(|s| crate::transfer::host_summary_of(&s.host))
     }
 
     fn make_config() -> Arc<client::Config> {
@@ -753,6 +804,7 @@ impl SshService {
             jump_handles: std::mem::take(&mut setup.0),
             alive: AtomicBool::new(true),
             read_only: AtomicBool::new(false),
+            epoch: next_epoch(),
             generation: token.clone(),
         });
         let replaced = {
@@ -1012,30 +1064,54 @@ impl SshService {
         Ok((code, text, truncated, original_bytes))
     }
 
+    /// 命中且代次仍一致的缓存通道;不一致(被重连/替换)视为未命中。
+    async fn cached_sftp(&self, session_id: &str) -> Option<Arc<russh_sftp::client::SftpSession>> {
+        let (cache, sessions) = tokio::join!(self.sftp_sessions.lock(), self.sessions.lock());
+        let (epoch, s) = cache.get(session_id)?;
+        let current = sessions
+            .get(session_id)
+            .filter(|s| s.alive.load(Ordering::Relaxed))
+            .map(|s| s.epoch)?;
+        (current == *epoch).then(|| s.clone())
+    }
+
     /// 取该会话的 SFTP 通道(优先复用缓存)。
     ///
     /// 旧实现每次调用都新开通道 + 子系统协商;文件面板的每次列目录/上传/下载
     /// 都走这里,按 sessionId 复用可省掉反复协商的往返与通道开销。
+    /// 缓存携带连接代次:命中时校验会话仍存活且代次一致(协商期间连接被
+    /// 重连/替换的旧通道不得重新入缓存),不一致即丢弃重建。
     /// 连接失效时缓存由 forget_sftp 清理。
+    /// 同会话并发未命中由协商锁去重:连接预热与首次列目录同时到达时,
+    /// 只有持锁者真正协商,其余等锁后直接命中缓存。
     pub async fn open_sftp(
         &self,
         session_id: &str,
     ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
-        {
-            let cache = self.sftp_sessions.lock().await;
-            if let Some(s) = cache.get(session_id) {
-                return Ok(s.clone());
-            }
+        if let Some(s) = self.cached_sftp(session_id).await {
+            return Ok(s);
+        }
+        let lock = {
+            let mut locks = self.sftp_open_locks.lock().unwrap();
+            locks
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _negotiating = lock.lock().await;
+        if let Some(s) = self.cached_sftp(session_id).await {
+            return Ok(s);
         }
         // 通道协商(channel_open + 子系统 + SFTP 握手)在高 RTT 下要好几个往返,
         // 与 exec 同理:取 Handle 副本后立刻放锁,不阻塞终端输入/输出。
-        let handle = {
+        // epoch 必须在取 Handle 的同一临界区内捕获,后续校验才有意义。
+        let (handle, epoch) = {
             let sessions = self.sessions.lock().await;
-            sessions
-                .get(session_id)
-                .ok_or("会话不存在或已断开")?
-                .handle
-                .clone()
+            let s = sessions.get(session_id).ok_or("会话不存在或已断开")?;
+            if !s.alive.load(Ordering::Relaxed) {
+                return Err("会话不存在或已断开".into());
+            }
+            (s.handle.clone(), s.epoch)
         };
         let sftp = {
             let channel = {
@@ -1053,10 +1129,19 @@ impl SshService {
                     .map_err(|e| format!("打开 SFTP 通道失败: {}", e))?,
             )
         };
-        // entry().or_insert:并发首次调用时双方都会建通道,后完成者复用先完成者
-        // 的缓存,避免重复通道挂在连接上。
         let mut cache = self.sftp_sessions.lock().await;
-        Ok(cache.entry(session_id.to_string()).or_insert(sftp).clone())
+        // 协商期间连接被替换/断开:这条通道挂在废弃的 SSH 连接上,直接报错,
+        // 让调用方(及下一轮调用)重建,绝不入缓存。
+        if self.session_epoch(session_id).await != Some(epoch) {
+            let _ = sftp.close().await;
+            return Err("会话连接已变化,请重试".into());
+        }
+        Ok(cache
+            .entry(session_id.to_string())
+            .and_modify(|(e, _)| *e = epoch)
+            .or_insert((epoch, sftp))
+            .1
+            .clone())
     }
 
     pub async fn direct_tcpip(
@@ -1160,7 +1245,13 @@ impl SshService {
     /// 返回 None 表示探测不可用(非类 Unix/受限环境),由前端回落到
     /// OSC7 记录或家目录;这里不把"探测不出"当错误。
     pub async fn probe_cwd(&self, session_id: &str) -> Result<Option<String>, String> {
-        if let Ok((_, out)) = self.exec(session_id, Self::CWD_PROBE).await {
+        // 探针在服务器上跑 ps/lsof,负载高的机器上 lsof 可达秒级甚至卡死,
+        // 而 exec_limited 等 Close 无限期 —— 不加超时,文件面板首开会跟着挂起。
+        // 超时按探测失败处理,兜底链路(pwd → None)不变。
+        const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        if let Ok(Ok((_, out))) =
+            tokio::time::timeout(PROBE_TIMEOUT, self.exec(session_id, Self::CWD_PROBE)).await
+        {
             for line in out.lines().rev() {
                 if let Some(rest) = line.trim_start().strip_prefix("NB_CWD ") {
                     let p = rest.trim();
@@ -1171,7 +1262,9 @@ impl SshService {
             }
         }
         // 兜底:exec 通道里 pwd = 登录家目录(shell 实时 cwd 拿不到时的下限)
-        if let Ok((code, out)) = self.exec(session_id, "pwd").await {
+        if let Ok(Ok((code, out))) =
+            tokio::time::timeout(PROBE_TIMEOUT, self.exec(session_id, "pwd")).await
+        {
             if code == 0 {
                 for line in out.lines().rev() {
                     let l = line.trim();
@@ -1271,6 +1364,7 @@ mod lifecycle_tests {
             jump_handles: Vec::new(),
             alive: AtomicBool::new(true),
             read_only: AtomicBool::new(false),
+            epoch: next_epoch(),
             generation: Arc::new(PendingConnection::default()),
         })
     }

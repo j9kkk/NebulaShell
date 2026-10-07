@@ -1,6 +1,6 @@
 [package]
 name = "nebulashell"
-version = "0.1.4"
+version = "0.1.5"
 description = "NebulaShell 星云终端 — Tauri 版"
 edition = "2021"
 
@@ -55,3 +55,8 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.hmac]
 opt-level = 3
+
+# vendored russh-sftp 2.4.0:read_dir 底层改为滑窗流水线 READDIR(见 vendor/README.md)。
+# 上游 PR 合并发布后,删除本段与 vendor/ 副本即可回到 crates.io 版本。
+[patch.crates-io]
+russh-sftp = { path = "vendor/russh-sftp" }

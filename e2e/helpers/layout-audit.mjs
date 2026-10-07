@@ -1,14 +1,23 @@
 // These functions run inside the WebView; keep them independent of module state.
 export async function auditNarrowPanels() {
-  const panels = [...document.querySelectorAll('#sidebar, #ai-panel, #file-panel')];
-  const controls = [...document.querySelectorAll('#file-mkdir-row, #file-chmod-row, #ai-send')];
+  // 文件分屏是布局树窗格(非可拖宽侧板),宽度档位审计只覆盖侧栏/AI 面板;
+  // 文件分屏控件的最小尺寸由布局规划器(paneMinSize)保证。
+  const panels = [...document.querySelectorAll('#sidebar, #ai-panel')];
+  const controls = [...document.querySelectorAll('#ai-send')];
   const saved = [...panels, ...controls].map(el => ({ el, style: el.style.cssText, className: el.className }));
   const select = document.querySelector('#ai-model-switch');
   const options = select.innerHTML;
   const selected = select.value;
   const issues = [];
   let samples = 0;
-  const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  // rAF 双帧等待 + 定时器兜底:窗口被遮挡时 WKWebView 可能完全停摆 rAF,
+  // 纯 rAF 等待会让审计永远挂起 —— 兜底牺牲一点布局稳定性换取可结束性。
+  const frame = () => new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 120);
+  });
   const audit = (root, width) => {
     const box = root.getBoundingClientRect();
     const children = root.querySelectorAll('button, input, textarea, select, .ai-title, .file-toolbar-hint');
@@ -48,8 +57,8 @@ export async function auditNarrowPanels() {
     }
     const footer = document.querySelector('.side-foot').getBoundingClientRect();
     const status = document.querySelector('#statusbar').getBoundingClientRect();
-    const file = document.querySelector('#file-status').getBoundingClientRect();
-    if (Math.abs(footer.top - status.top) > 1 || Math.abs(file.top - status.top) > 1) issues.push({ kind: 'footer-misaligned', sidebar: footer.top, main: status.top, file: file.top });
+    // 底栏对齐契约:侧栏底部与主状态栏顶对齐(文件分屏已并入布局树,无独立底栏)
+    if (Math.abs(footer.top - status.top) > 1) issues.push({ kind: 'footer-misaligned', sidebar: footer.top, main: status.top });
     document.querySelector('#sidebar').classList.add('collapsed');
     await frame();
     audit(document.querySelector('#sidebar'), 40);
@@ -75,7 +84,9 @@ export async function auditTerminalViewport() {
       stack.style.width = width + 'px';
       stack.style.flex = '0 0 ' + height + 'px';
       stack.style.height = height + 'px';
-      await new Promise(resolve => setTimeout(resolve, 80));
+      // 应用侧布局调度是 rAF + 120ms 定时器兜底(失焦窗口 rAF 停摆),
+      // 这里必须等过兜底窗口,否则 fit 尚未执行就量几何 —— 全是假裁切。
+      await new Promise(resolve => setTimeout(resolve, 300));
       for (const pane of root.querySelectorAll('.term-pane')) {
         const screen = pane.querySelector('.xterm-screen');
         const viewport = pane.querySelector('.xterm-viewport');
@@ -91,6 +102,6 @@ export async function auditTerminalViewport() {
     return { samples, issues };
   } finally {
     stack.style.cssText = saved;
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await new Promise(resolve => setTimeout(resolve, 300));
   }
 }

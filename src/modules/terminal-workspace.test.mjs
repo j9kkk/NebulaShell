@@ -30,7 +30,7 @@ function matches(element, selector) {
 }
 
 async function fixture() {
-  const timers = new Map(), frames = new Map(), calls = [], fileTargets = [], focusCalls = [];
+  const timers = new Map(), frames = new Map(), calls = [], focusCalls = [];
   let sequence = 0, ipc = async () => ({});
   const document = { activeElement: null, events: [], listeners: new Map(),
     dispatchEvent(event) { this.events.push(event.type); for (const fn of this.listeners.get(event.type) || []) fn(event); },
@@ -154,7 +154,9 @@ async function fixture() {
     './monitor.js': { closeSnippetMenu() {}, renderMonitorBar() {} },
     './sftp.js': {
       activeConnectedSession: () => { const s = state.sessions.get(state.activeId); return s?.status === 'connected' ? s : null; },
-      beginFilePanelSession: (session) => { fileTargets.push(session?.sessionId || null); state.file.sessionId = session?.sessionId || null; },
+      filePaneFromEl: () => null, findFilePane: () => null, paneSession: () => null, refreshFilePanesFor() {},
+      syncFilePanesForSession() {},
+      buildFilePane() {}, initFilePane: async () => {}, createFilePaneState: () => ({}),
       initialFileDir: async () => '/', loadFileDir: async () => {}, renderFileTarget() {},
     },
     '@xterm/xterm': { Terminal }, '@xterm/addon-fit': { FitAddon },
@@ -190,7 +192,7 @@ async function fixture() {
     await new Promise(setImmediate);
   };
   const frame = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
-  return { subject, state, root, stack, hint, calls, timers, frames, focusCalls, document, fileTargets, input,
+  return { subject, state, root, stack, hint, calls, timers, frames, focusCalls, document, input,
     session, empty, host, tick, frame, setIPC: (fn) => { ipc = fn; },
   };
 }
@@ -242,7 +244,6 @@ test('inactive tiled terminal, header, tabbar and empty focus activate without r
   tab.panes.get(emptyId).el.querySelector('input').focus();
   assert.equal(h.state.activeId, null); assert.equal(h.state.activeTabId, a.tabId);
   assert.equal(h.state.activePaneId, emptyId); assert.equal(h.subject.focusedPaneId(), emptyId);
-  assert.equal(h.fileTargets.at(-1), null);
   assert.equal(h.document.querySelector('#btn-disconnect').disabled, true);
   assert.equal(h.root.replacements, replacements); assert.equal(h.state.workspace.layout, outer);
   assert.equal(h.root.querySelectorAll('.term-pane.focused').length, 1);
@@ -259,14 +260,17 @@ test('inactive owner close/zoom controls never target or steal focus from active
   assert.equal(tab.layout, underlying); assert.deepEqual(tabMinimum(tab), minimum);
   assert.deepEqual([...h.subject.visibleSessions()], [b, second]);
   second.pane.querySelector('.pane-close-btn').dispatchEvent({ type: 'click' });
+  await h.tick(); await h.tick();
   assert.equal(h.state.sessions.has(second.sessionId), false); assert.equal(h.state.sessions.has(b.sessionId), true);
   assert.equal(h.state.activeId, b.sessionId);
   tab.workspaceTile.querySelector('.workspace-tile-close').dispatchEvent({ type: 'click' });
+  await h.tick(); await h.tick();
   assert.equal(h.state.tabs.has(a.tabId), false); assert.equal(h.state.activeId, b.sessionId);
   assert.equal(h.document.activeElement, b.term.input, 'synchronous remount preserves only the actually focused active input');
   assert.equal(h.state.workspace.mode, 'tiled'); assert.deepEqual(leaves(h.state.workspace.layout), [b.tabId]);
   assert.equal(h.state.tabs.get(b.tabId).workspaceTile.style.flex, '');
-  h.subject.closeTab(b.tabId);
+  await h.subject.closeTab(b.tabId);
+  await h.tick(); await h.tick();
   assert.equal(h.state.workspace.mode, 'single'); assert.equal(h.state.workspace.layout, null);
   assert.equal(h.state.activeId, null); assert.equal(h.root.children.length, 0);
   assert.equal(h.document.querySelector('#welcome').classList.contains('hidden'), false);
@@ -334,7 +338,8 @@ test('tiling requires two tabs initially, new tabs reflow and status/header chro
   assert.deepEqual(leaves(h.state.workspace.layout), [a.tabId, b.tabId, emptyTab.id]);
   assert.equal(h.state.tabs.get(a.tabId).layout, tree);
   assert.equal(h.root.querySelectorAll('.workspace-tile').length, 3);
-  h.subject.closeTab(a.tabId); h.subject.closeTab(b.tabId);
+  await h.subject.closeTab(a.tabId); await h.subject.closeTab(b.tabId);
+  await h.tick(); await h.tick();
   assert.equal(h.state.workspace.mode, 'tiled'); assert.equal(h.subject.toggleTabTiling(), false);
   assert.equal(h.state.workspace.mode, 'single'); assert.equal(h.subject.toggleTabTiling(), false);
 });

@@ -4,11 +4,12 @@ mod cloud;
 pub mod commands;
 pub mod config;
 pub mod forward;
-pub mod monitor;
+mod monitor;
 mod session_log;
 pub mod sftp;
 pub mod signing;
 pub mod ssh;
+pub mod transfer;
 
 #[cfg(test)]
 mod cloud_test;
@@ -24,6 +25,7 @@ mod store_test;
 use commands::AppState;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -47,6 +49,12 @@ pub fn run() {
         store: store.clone(),
         ssh: ssh.clone(),
         forwards: forward::ForwardService::new(remote_targets),
+        transfers: Arc::new(transfer::TransferManager::new(
+            ssh.clone(),
+            data_dir.clone(),
+        )),
+        transfer_aborts: Arc::new(Mutex::new(HashMap::new())),
+        force_exit: AtomicBool::new(false),
         monitors: Mutex::new(HashMap::new()),
         logs: Mutex::new(HashMap::new()),
         ai_aborts: Arc::new(Mutex::new(HashMap::new())),
@@ -57,7 +65,61 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(state)
-        .invoke_handler(tauri::generate_handler![nebula_invoke, nebula_test_result])
+        .invoke_handler(tauri::generate_handler![
+            nebula_invoke,
+            nebula_test_result,
+            nebula_test_pin_window
+        ])
+        // 有未完成传输任务时拦截窗口关闭:emit 询问事件,由前端确认底座
+        // 决定退出(app:exit 置 force_exit 后放行)。无任务时保持原有关闭手感。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let allow = window
+                    .app_handle()
+                    .try_state::<AppState>()
+                    .map(|state| {
+                        let active = state.transfers.list().iter().any(|t| {
+                            !matches!(
+                                t["stage"].as_str().unwrap_or(""),
+                                "done"
+                                    | "done-partial"
+                                    | "partial"
+                                    | "failed"
+                                    | "cancelled"
+                                    | "interrupted"
+                            )
+                        });
+                        state.force_exit.load(std::sync::atomic::Ordering::SeqCst) || !active
+                    })
+                    .unwrap_or(true);
+                if !allow {
+                    api.prevent_close();
+                    let count = window
+                        .app_handle()
+                        .state::<AppState>()
+                        .transfers
+                        .list()
+                        .iter()
+                        .filter(|t| {
+                            !matches!(
+                                t["stage"].as_str().unwrap_or(""),
+                                "done"
+                                    | "done-partial"
+                                    | "partial"
+                                    | "failed"
+                                    | "cancelled"
+                                    | "interrupted"
+                            )
+                        })
+                        .count();
+                    ai::emit_evt(
+                        window.app_handle(),
+                        "app:closeRequest",
+                        json!({ "count": count }),
+                    );
+                }
+            }
+        })
         .setup(move |app| {
             let handle = app.handle().clone();
             if test_mode {
@@ -124,6 +186,30 @@ fn nebula_test_result(
     value: String,
 ) -> Result<(), String> {
     state.test_results.lock().unwrap().insert(id, value);
+    Ok(())
+}
+
+/// 仅测试模式:主窗口设为"所有 Space 可见"并聚焦。
+/// e2e 从后台会话拉起被测实例时,宿主的全屏应用会占住当前 Space,窗口被压在
+/// 其它 Space 上(AX `set frontmost` 静默失效,visibilityState 恒为 hidden)
+/// —— 窗口跟随所有 Space 后任何桌面状态下可见。独立 command(不进
+/// nebula_invoke 的巨型 match):那个 match 里出现新的窗口 drop glue 会把
+/// objc2 类型求解推过 trait 递归上限(E0275)。
+#[tauri::command]
+fn nebula_test_pin_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if !state.test_mode {
+        return Err("仅测试模式可用".into());
+    }
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())?;
+    let _ = win.set_visible_on_all_workspaces(true);
+    let _ = win.show();
+    let _ = win.unminimize();
+    let _ = win.set_focus();
     Ok(())
 }
 

@@ -45,11 +45,6 @@ export const state = {
   aiReq: null,
   metrics: new Map(), // sessionId -> 最近一次 ssh:metrics
   metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
-  // 文件面板:显示的是"哪个会话"的目录必须显式记录 —— 面板是全局单例,
-  // 若只靠 activeId,切标签后会出现"显示 A 的目录、操作落到 B"的误删风险。
-  // hist/histIdx 是浏览器式导航历史(后退/前进),histSid 标记历史属于哪个
-  // 会话 —— 换目标会话时历史必须作废,否则会后退到另一台机器的路径上。
-  file: { sessionId: null, cwd: null, entries: [], selected: null, chmodTarget: null, renameMode: null, hist: [], histIdx: -1, histSid: null, lastOpen: null },
   // 标签页(E1)与窗格(E3):每个标签页持有独立的布局树与窗格集合,
   // 切换标签只渲染该标签的窗格;其余标签的终端对象保留在内存中(不销毁),
   // 切回时重新挂载并 refresh。state.layout/panes/zoomPaneId/activePaneId

@@ -1,4 +1,5 @@
-// SFTP 操作:列目录/建目录/删除/重命名/权限/上传/下载(带进度)
+// SFTP 操作:列目录/建目录/删除/重命名/权限/上传/下载(带进度)/递归目录下载
+use crate::ai::emit_evt;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,6 +12,31 @@ fn attr_val(e: &russh_sftp::protocol::FileAttributes) -> (bool, u64, u64) {
     )
 }
 
+/// 绝对路径词法规范化:折叠 `//`、解析 `.` / `..`、去掉尾斜杠。
+/// 纯字符串操作不占往返;符号链接分量有意不解析(用户输入什么显示什么,
+/// 面板提交的 cwd 与输入一致,语义同 Explorer/Nautilus)。
+fn normalize_abs(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        return "/".to_string();
+    }
+    let mut out = String::with_capacity(p.len() + 1);
+    for seg in &parts {
+        out.push('/');
+        out.push_str(seg);
+    }
+    out
+}
+
 pub async fn list(
     sftp: &russh_sftp::client::SftpSession,
     dir: Option<String>,
@@ -18,6 +44,8 @@ pub async fn list(
     // 路径栏允许手输后,`~` / `~/x` 是高频写法,而 SFTP 协议不认波浪号
     // (那是 shell 的展开)。canonicalize(".") = SFTP 会话登录用户的家目录,
     // 在客户端展开成绝对路径;展开不了时让 read_dir 的报错照常透出。
+    // 前端导航(双击/后退/书签)永远发绝对路径,词法规范化后直接列目录,
+    // 不再每次 REALPATH —— 高 RTT 链路上这是每次导航省一个往返。
     let base = match dir.as_deref() {
         Some(d) if !d.is_empty() && d != "~" => {
             if d == "~/" || d.starts_with("~/") {
@@ -28,19 +56,20 @@ pub async fn list(
                     .trim_end_matches('/')
                     .to_string();
                 let rest = d[1..].trim_start_matches('/');
-                if rest.is_empty() {
+                normalize_abs(&if rest.is_empty() {
                     home
                 } else {
                     format!("{}/{}", home, rest)
-                }
+                })
+            } else if d.starts_with('/') {
+                normalize_abs(d)
             } else {
-                d.to_string()
+                // 相对路径按服务器 cwd 解析,仍需 REALPATH 提交绝对 cwd
+                sftp.canonicalize(d).await.map_err(|e| e.to_string())?
             }
         }
         _ => sftp.canonicalize(".").await.map_err(|e| e.to_string())?,
     };
-    // Commit a canonical absolute cwd to the panel, including relative path input.
-    let base = sftp.canonicalize(&base).await.map_err(|e| e.to_string())?;
     let entries = sftp.read_dir(&base).await.map_err(|e| e.to_string())?;
     let mut list: Vec<Value> = entries
         .into_iter()
@@ -112,16 +141,21 @@ pub async fn upload<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Syn
     local_path: &str,
     remote_dir: &str,
 ) -> Result<Value, String> {
-    upload_with_policy(sftp, app, session_id, local_path, remote_dir, None, "error").await
+    upload_with_policy(
+        sftp, app, session_id, local_path, remote_dir, None, "error", None, None,
+    )
+    .await
 }
 
 fn upload_flags(policy: &str) -> Result<russh_sftp::protocol::OpenFlags, String> {
     use russh_sftp::protocol::OpenFlags;
     match policy {
-        "error" | "skip" | "rename" => {
+        "error" | "skip" | "rename" | "overwrite" => {
+            // 所有策略都先写任务私有 .nbpart 临时文件(独占创建),成功后
+            // rename 发布 —— 绝不直接写正式路径,取消/失败不留半截文件,
+            // 覆盖也不再提前 TRUNCATE 原文件(rename 即原子替换)。
             Ok(OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE)
         }
-        "overwrite" => Ok(OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE),
         _ => Err("未知上传冲突策略".into()),
     }
 }
@@ -144,6 +178,7 @@ fn renamed_upload_name(name: &str, index: usize) -> String {
 
 /// Exclusive CREATE is the backend guard, including a race after a frontend list.
 /// Only the explicitly selected overwrite policy can ever request TRUNCATE.
+/// task_id/cancel:任务中心归属与在途取消;取消返回 cancelled 而非报错。
 pub async fn upload_with_policy<
     R: tauri::Runtime,
     E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
@@ -155,8 +190,10 @@ pub async fn upload_with_policy<
     remote_dir: &str,
     remote_name: Option<&str>,
     conflict_policy: &str,
+    task_id: Option<&str>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Value, String> {
-    let flags = upload_flags(conflict_policy)?;
+    use std::sync::atomic::Ordering;
     let default_name = PathBuf::from(local_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -176,49 +213,92 @@ pub async fn upload_with_policy<
     let mut chosen_name = name.to_string();
     let mut remote_path;
     let mut attempt = 0;
-    let mut remote = loop {
-        remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), chosen_name);
-        if conflict_policy == "overwrite" {
-            // Do not intentionally truncate a directory or follow an existing symlink.
-            if let Ok(meta) = sftp.symlink_metadata(&remote_path).await {
-                if meta.is_dir() || meta.is_symlink() {
-                    return Err("不能覆盖目录或符号链接".into());
+    // 冲突探测循环:确定一个"不存在(skip 除外)或允许覆盖"的最终名字
+    if conflict_policy != "overwrite" {
+        loop {
+            remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), chosen_name);
+            match sftp
+                .open_with_flags(&remote_path, upload_flags(conflict_policy)?)
+                .await
+            {
+                // 独占创建成功 = 名字可用,先关掉;真正写入在 .part 上进行
+                Ok(f) => {
+                    let _ = f.close().await;
+                    break;
                 }
-            }
-        }
-        match sftp.open_with_flags(&remote_path, flags).await {
-            Ok(file) => break file,
-            Err(e) if conflict_policy != "overwrite" => {
-                // SFTP v3 servers commonly report generic Failure for EEXIST.
-                // lstat distinguishes a collision from permissions/transport failures.
-                if sftp.symlink_metadata(&remote_path).await.is_err() {
-                    return Err(e.to_string());
-                }
-                match conflict_policy {
-                    "skip" => return Ok(json!({ "remotePath": remote_path, "skipped": true })),
-                    "rename" if attempt < 1000 => {
-                        attempt += 1;
-                        chosen_name = renamed_upload_name(name, attempt);
+                Err(e) => {
+                    // SFTP v3 servers commonly report generic Failure for EEXIST.
+                    // lstat distinguishes a collision from permissions/transport failures.
+                    if sftp.symlink_metadata(&remote_path).await.is_err() {
+                        return Err(e.to_string());
                     }
-                    "rename" => return Err("找不到可用的上传文件名(已尝试 1000 个)".into()),
-                    _ => return Ok(json!({ "remotePath": remote_path, "conflict": true })),
+                    match conflict_policy {
+                        "skip" => return Ok(json!({ "remotePath": remote_path, "skipped": true })),
+                        "rename" if attempt < 1000 => {
+                            attempt += 1;
+                            chosen_name = renamed_upload_name(name, attempt);
+                        }
+                        "rename" => return Err("找不到可用的上传文件名(已尝试 1000 个)".into()),
+                        _ => return Ok(json!({ "remotePath": remote_path, "conflict": true })),
+                    }
                 }
             }
-            Err(e) => return Err(e.to_string()),
         }
+    } else {
+        // 覆盖:发布前确认目标不是目录/符号链接 —— rename 到这些对象上
+        // 会失败或造成替换语义错误,提前如实报错。
+        remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), chosen_name);
+        if let Ok(meta) = sftp.symlink_metadata(&remote_path).await {
+            if meta.is_dir() || meta.is_symlink() {
+                return Err("不能覆盖目录或符号链接".into());
+            }
+        }
+    }
+    // 写入任务私有的 .nbpart 临时文件:取消/失败/断连都只留临时文件,
+    // 正式路径永远看不到半成品(与跨主机复制、目录下载同一契约)。
+    let final_path = remote_path.clone();
+    let part_path = format!(
+        "{}/.{}.nbpart-{}",
+        remote_dir.trim_end_matches('/'),
+        chosen_name,
+        &uuid::Uuid::new_v4().to_string()[..8]
+    );
+    let mut remote = match sftp
+        .open_with_flags(&part_path, upload_flags(conflict_policy)?)
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => return Err(e.to_string()),
     };
     let mut buf = vec![0u8; 64 * 1024];
     let mut sent: u64 = 0;
     let mut last_pct = -1;
+    let mut cancelled = false;
     loop {
-        let n = local.read(&mut buf).await.map_err(|e| e.to_string())?;
+        if cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::Acquire))
+            .unwrap_or(false)
+        {
+            cancelled = true;
+            break;
+        }
+        let n = match local.read(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => {
+                drop(remote);
+                let _ = sftp.remove_file(&part_path).await;
+                return Err(e.to_string());
+            }
+        };
         if n == 0 {
             break;
         }
-        remote
-            .write_all(&buf[..n])
-            .await
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = remote.write_all(&buf[..n]).await {
+            drop(remote);
+            let _ = sftp.remove_file(&part_path).await;
+            return Err(e.to_string());
+        }
         sent += n as u64;
         if total > 0 {
             let pct = (sent * 100 / total) as i64;
@@ -227,16 +307,30 @@ pub async fn upload_with_policy<
                 crate::ai::emit_evt(
                     &app,
                     "sftp:progress",
-                    json!({ "sessionId": session_id, "op": "upload", "name": chosen_name, "remoteDir": remote_dir, "remotePath": remote_path, "pct": pct }),
+                    json!({ "sessionId": session_id, "taskId": task_id, "op": "upload", "name": chosen_name, "remoteDir": remote_dir, "remotePath": final_path, "pct": pct }),
                 );
             }
         }
     }
-    remote.shutdown().await.map_err(|e| e.to_string())?;
-    Ok(json!({ "remotePath": remote_path, "renamed": chosen_name != name, "skipped": false }))
+    if cancelled {
+        remote.shutdown().await.ok();
+        let _ = sftp.remove_file(&part_path).await;
+        return Ok(json!({ "remotePath": final_path, "cancelled": true }));
+    }
+    if let Err(e) = remote.shutdown().await {
+        let _ = sftp.remove_file(&part_path).await;
+        return Err(e.to_string());
+    }
+    // 发布:rename(OpenSSH = 原子替换)。覆盖时旧文件在替换瞬间前仍完整。
+    if let Err(e) = sftp.rename(&part_path, &final_path).await {
+        let _ = sftp.remove_file(&part_path).await;
+        return Err(format!("发布上传文件失败: {e}"));
+    }
+    Ok(json!({ "remotePath": final_path, "renamed": chosen_name != name, "skipped": false }))
 }
 
 /// op 用于进度事件的文案(前端按 op 显示「下载/打开 x 42%」);普通下载传 "download"。
+/// task_id/cancel:任务中心归属与在途取消;取消时删除半成品本地文件。
 pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
     sftp: &russh_sftp::client::SftpSession,
     app: E,
@@ -244,7 +338,10 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
     remote_path: &str,
     local_path: &str,
     op: &str,
+    task_id: Option<&str>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Value, String> {
+    use std::sync::atomic::Ordering;
     let name = PathBuf::from(remote_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -262,14 +359,27 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
     let mut got: u64 = 0;
     let mut last_pct = -1;
     loop {
-        let n = remote.read(&mut buf).await.map_err(|e| e.to_string())?;
+        if cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::Acquire))
+            .unwrap_or(false)
+        {
+            drop(local);
+            let _ = tokio::fs::remove_file(local_path).await;
+            return Ok(json!({ "localPath": local_path, "cancelled": true }));
+        }
+        let n = remote.read(&mut buf).await.map_err(|e| {
+            // 失败不留半截:正式路径上的截断文件比"没有文件"更危险
+            let _ = tokio::fs::remove_file(local_path);
+            e.to_string()
+        })?;
         if n == 0 {
             break;
         }
-        local
-            .write_all(&buf[..n])
-            .await
-            .map_err(|e| e.to_string())?;
+        local.write_all(&buf[..n]).await.map_err(|e| {
+            let _ = tokio::fs::remove_file(local_path);
+            e.to_string()
+        })?;
         got += n as u64;
         if total > 0 {
             let pct = (got * 100 / total) as i64;
@@ -278,7 +388,7 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
                 crate::ai::emit_evt(
                     &app,
                     "sftp:progress",
-                    json!({ "sessionId": session_id, "op": op, "name": name, "pct": pct }),
+                    json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct }),
                 );
             }
         }
@@ -324,7 +434,17 @@ pub async fn open_remote<
     let local = dir.join(&name);
     let local_str = local.to_string_lossy().to_string();
     // 复用 download 的搬运与进度上报,op 用 "open":前端状态栏显示「打开 x 42%」
-    download(sftp, app, session_id, remote_path, &local_str, "open").await?;
+    download(
+        sftp,
+        app,
+        session_id,
+        remote_path,
+        &local_str,
+        "open",
+        None,
+        None,
+    )
+    .await?;
     if test_mode {
         return Ok(json!({ "localPath": local_str, "opened": false }));
     }
@@ -396,15 +516,14 @@ mod upload_policy_tests {
     use russh_sftp::protocol::OpenFlags;
 
     #[test]
-    fn upload_default_and_collision_policies_are_exclusive_not_truncating() {
-        for policy in ["error", "skip", "rename"] {
+    fn upload_policies_all_use_exclusive_part_writes_never_truncate() {
+        // 覆盖也走 .part 临时文件 + rename 原子替换:没有任何策略允许
+        // 直接 TRUNCATE 正式路径(取消/失败不留半截文件)
+        for policy in ["error", "skip", "rename", "overwrite"] {
             let flags = upload_flags(policy).unwrap();
             assert!(flags.contains(OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE));
             assert!(!flags.contains(OpenFlags::TRUNCATE));
         }
-        assert!(upload_flags("overwrite")
-            .unwrap()
-            .contains(OpenFlags::TRUNCATE));
         assert!(upload_flags("unknown").is_err());
     }
 
@@ -427,6 +546,24 @@ mod upload_policy_tests {
     }
 }
 
+#[cfg(test)]
+mod list_path_tests {
+    use super::normalize_abs;
+
+    #[test]
+    fn lexical_normalization_matches_realpath_for_plain_paths() {
+        assert_eq!(normalize_abs("/"), "/");
+        assert_eq!(normalize_abs("//"), "/");
+        assert_eq!(normalize_abs("/var/www/"), "/var/www");
+        assert_eq!(normalize_abs("/var//www"), "/var/www");
+        assert_eq!(normalize_abs("/var/./www"), "/var/www");
+        assert_eq!(normalize_abs("/var/www/../log"), "/var/log");
+        assert_eq!(normalize_abs("/var/www/../.."), "/");
+        assert_eq!(normalize_abs("/../etc"), "/etc");
+        assert_eq!(normalize_abs("/中文/目录"), "/中文/目录");
+    }
+}
+
 /// 清理 open 目录下超过 24h 的旧副本(尽力而为,失败忽略;
 /// 正在被本地程序使用的副本一般不会留到明天)。
 async fn cleanup_open_dir(root: &std::path::Path) {
@@ -443,5 +580,345 @@ async fn cleanup_open_dir(root: &std::path::Path) {
         if age.map_or(false, |d| d > std::time::Duration::from_secs(24 * 3600)) {
             let _ = tokio::fs::remove_dir_all(e.path()).await;
         }
+    }
+}
+
+/// 目录/批量递归下载引擎(任务中心编排,文件字节不进 JS)。
+/// - local_root 必须已存在:多选/目录下载共用,逐项写入其下;
+/// - 单文件/空目录逐项执行,子项失败不中断其它项,任务级计数由前端按事件聚合;
+/// - 每文件先写 <name>.nbpart-<tag> 再 rename,取消/失败不留半成品;
+/// - 符号链接与特殊文件(lstat 类型位)按策略跳过并上报 skip;
+/// - cancel 检查在枚举与逐文件边界,取消返回 cancelled 计数。
+pub async fn download_tree<
+    R: tauri::Runtime,
+    E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+>(
+    sftp: &russh_sftp::client::SftpSession,
+    app: E,
+    session_id: String,
+    remote_root: &str,
+    local_root: &str,
+    task_id: Option<&str>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<Value, String> {
+    use std::sync::atomic::Ordering;
+    if !local_root.starts_with('/') || local_root.contains('\0') {
+        return Err("本地目标必须是绝对路径".into());
+    }
+    let cancelled = || {
+        cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::Acquire))
+            .unwrap_or(false)
+    };
+    let mut done: u64 = 0;
+    let mut skipped: u64 = 0;
+    let mut failed: u64 = 0;
+    let mut last_error: Option<String> = None;
+    // (remote_dir, local_dir, display) 栈式遍历,避免 async 递归装箱
+    // 顶层项先 lstat 分型:单文件直接 download_one,目录才入栈遍历
+    // (copy 一个文件时 remote_root 本身是文件,readdir 必然失败)
+    let root_path = remote_root.trim_end_matches('/').to_string();
+    let root_meta = sftp
+        .symlink_metadata(&root_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let root_is_symlink =
+        root_meta.is_symlink() || root_meta.permissions.map(|p| (p >> 12) & 0xf) == Some(0xa);
+    let root_name = root_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&root_path)
+        .to_string();
+    if root_is_symlink {
+        return Ok(
+            json!({ "cancelled": false, "done": 0, "skipped": 1, "failed": 0, "lastError": None::<String> }),
+        );
+    }
+    if !root_meta.is_dir() {
+        let local_target = std::path::PathBuf::from(local_root).join(&root_name);
+        if let Err(e) = tokio::fs::create_dir_all(local_root).await {
+            return Err(format!("创建本地目标目录失败: {e}"));
+        }
+        return match download_one(
+            sftp,
+            &app,
+            &session_id,
+            &root_path,
+            &local_target,
+            &root_name,
+            task_id,
+            cancel.as_ref(),
+        )
+        .await
+        {
+            Ok(()) => Ok(
+                json!({ "cancelled": false, "done": 1, "skipped": 0, "failed": 0, "lastError": None::<String> }),
+            ),
+            Err(e) if e == "__cancelled__" => Ok(
+                json!({ "cancelled": true, "done": 0, "skipped": 0, "failed": 0, "lastError": None::<String> }),
+            ),
+            Err(e) => Ok(
+                json!({ "cancelled": false, "done": 0, "skipped": 0, "failed": 1, "lastError": Some(format!("{root_name}: {e}")) }),
+            ),
+        };
+    }
+    // 目录项复制到 local_root/<目录名>/ 下(与复制语义一致:复制 assets
+    // 得到 目标/assets,而不是把内容散落目标根)
+    let root_local_dir = std::path::PathBuf::from(local_root).join(&root_name);
+    let mut stack: Vec<(String, std::path::PathBuf, String)> =
+        vec![(root_path, root_local_dir, String::new())];
+    while let Some((remote_dir, local_dir, display)) = stack.pop() {
+        if cancelled() {
+            return Ok(
+                json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed }),
+            );
+        }
+        if let Err(e) = tokio::fs::create_dir_all(&local_dir).await {
+            failed += 1;
+            emit_evt(
+                &app,
+                "sftp:progress",
+                json!({
+                    "sessionId": session_id, "taskId": task_id, "op": "download",
+                    "name": if display.is_empty() { remote_dir.clone() } else { display.clone() },
+                    "stage": "mkdir-failed", "error": e.to_string(),
+                }),
+            );
+            continue;
+        }
+        let entries = match sftp.read_dir(&remote_dir).await {
+            Ok(e) => e,
+            Err(e) => {
+                failed += 1;
+                emit_evt(
+                    &app,
+                    "sftp:progress",
+                    json!({
+                        "sessionId": session_id, "taskId": task_id, "op": "download",
+                        "name": if display.is_empty() { remote_dir.clone() } else { display.clone() },
+                        "stage": "readdir-failed", "error": e.to_string(),
+                    }),
+                );
+                continue;
+            }
+        };
+        for entry in entries {
+            if cancelled() {
+                return Ok(
+                    json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed }),
+                );
+            }
+            let child = entry.file_name();
+            if child == "." || child == ".." {
+                continue;
+            }
+            let meta = entry.metadata();
+            let remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), child);
+            let display = if display.is_empty() {
+                child.clone()
+            } else {
+                format!("{display}/{child}")
+            };
+            // 类型判定与 transfer::classify 同口径:类型位缺失按普通文件兜底
+            let is_symlink =
+                meta.is_symlink() || meta.permissions.map(|p| (p >> 12) & 0xf) == Some(0xa);
+            let is_dir = meta.is_dir();
+            if is_symlink {
+                skipped += 1;
+                emit_evt(
+                    &app,
+                    "sftp:progress",
+                    json!({
+                        "sessionId": session_id, "taskId": task_id, "op": "download",
+                        "name": display, "stage": "skip", "why": "symlink",
+                    }),
+                );
+                continue;
+            }
+            if is_dir {
+                stack.push((remote_path, local_dir.join(&child), display));
+                continue;
+            }
+            match download_one(
+                &sftp,
+                &app,
+                &session_id,
+                &remote_path,
+                &local_dir.join(&child),
+                &display,
+                task_id,
+                cancel.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => done += 1,
+                Err(e) if e == "__cancelled__" => {
+                    return Ok(
+                        json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed }),
+                    );
+                }
+                Err(e) => {
+                    failed += 1;
+                    emit_evt(
+                        &app,
+                        "sftp:progress",
+                        json!({
+                            "sessionId": session_id, "taskId": task_id, "op": "download",
+                            "name": display, "stage": "file-failed", "error": e,
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    Ok(
+        json!({ "cancelled": false, "done": done, "skipped": skipped, "failed": failed, "lastError": last_error }),
+    )
+}
+
+/// 单文件下载(带 .part 原子发布):download 的原子化变体,进度事件带 display。
+/// 事件补 remoteDir(源文件父目录),前端按 (sessionId, cwd) 归属,不再串台。
+fn remote_dir_of(path: &str) -> &str {
+    let t = path.trim_end_matches('/');
+    match t.rfind('/') {
+        Some(0) | None => "/",
+        Some(i) => &t[..i],
+    }
+}
+
+async fn download_one<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
+    sftp: &russh_sftp::client::SftpSession,
+    app: &E,
+    session_id: &str,
+    remote_path: &str,
+    local_path: &std::path::Path,
+    display: &str,
+    task_id: Option<&str>,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    const CHUNK: usize = 64 * 1024;
+    let cancelled = || cancel.map(|c| c.load(Ordering::Acquire)).unwrap_or(false);
+    if cancelled() {
+        return Err("__cancelled__".into());
+    }
+    let name = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file.bin".into());
+    // 已存在的本地文件加 (1) 后缀,不静默覆盖用户文件
+    let mut final_path = local_path.to_path_buf();
+    let mut attempt = 0;
+    while final_path.exists() {
+        attempt += 1;
+        if attempt > 1000 {
+            return Err("找不到可用的本地文件名(已尝试 1000 个)".into());
+        }
+        final_path = match name.rfind('.').filter(|i| *i > 0) {
+            Some(i) => {
+                local_path.with_file_name(format!("{} ({}){}", &name[..i], attempt, &name[i..]))
+            }
+            None => local_path.with_file_name(format!("{name} ({attempt})")),
+        };
+    }
+    let part_path = final_path.with_file_name(format!(
+        ".{}.nbpart-{}",
+        name,
+        &uuid::Uuid::new_v4().to_string()[..8]
+    ));
+    let meta = sftp
+        .metadata(remote_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let total = meta.size.unwrap_or(0);
+    let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
+    let mut local = tokio::fs::File::create(&part_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; CHUNK];
+    let mut got: u64 = 0;
+    let mut last_pct = -1;
+    loop {
+        if cancelled() {
+            drop(local);
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err("__cancelled__".into());
+        }
+        let n = remote.read(&mut buf).await.map_err(|e| {
+            let _ = tokio::fs::remove_file(&part_path);
+            e.to_string()
+        })?;
+        if n == 0 {
+            break;
+        }
+        if let Err(e) = local.write_all(&buf[..n]).await {
+            let _ = tokio::fs::remove_file(&part_path);
+            return Err(e.to_string());
+        }
+        got += n as u64;
+        if total > 0 {
+            let pct = (got * 100 / total) as i64;
+            if pct != last_pct {
+                last_pct = pct;
+                emit_evt(
+                    app,
+                    "sftp:progress",
+                    json!({
+                        "sessionId": session_id, "taskId": task_id, "op": "download",
+                        "name": display, "remoteDir": remote_dir_of(remote_path), "pct": pct,
+                    }),
+                );
+            }
+        }
+    }
+    if let Err(e) = local.flush().await {
+        let _ = tokio::fs::remove_file(&part_path);
+        return Err(e.to_string());
+    }
+    drop(local);
+    if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
+        let _ = tokio::fs::remove_file(&part_path);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod download_tree_tests {
+    /// 本地同名避让与 .part 命名是批量下载的两个本地安全契约:
+    /// 绝不覆盖用户已有文件,且临时文件不与正式文件同名。
+    #[test]
+    fn local_collision_naming_never_overwrites_and_preserves_extension() {
+        let base = std::path::Path::new("/tmp/dl-root/report.pdf");
+        let name = "report.pdf";
+        let mut final_path = base.to_path_buf();
+        let mut attempt = 0;
+        let exists = |p: &std::path::Path| {
+            p == std::path::Path::new("/tmp/dl-root/report.pdf")
+                || p == std::path::Path::new("/tmp/dl-root/report (1).pdf")
+        };
+        while exists(&final_path) {
+            attempt += 1;
+            assert!(attempt <= 1000);
+            final_path = match name.rfind('.').filter(|i| *i > 0) {
+                Some(i) => {
+                    base.with_file_name(format!("{} ({}){}", &name[..i], attempt, &name[i..]))
+                }
+                None => base.with_file_name(format!("{name} ({attempt})")),
+            };
+        }
+        assert_eq!(
+            final_path,
+            std::path::Path::new("/tmp/dl-root/report (2).pdf")
+        );
+        // 点文件:整体加后缀,不动"扩展名"
+        let dot = std::path::Path::new("/tmp/dl-root/.env");
+        let dot_name = ".env";
+        let renamed = match dot_name.rfind('.').filter(|i| *i > 0) {
+            Some(_) => dot.with_file_name(".env (1)"),
+            None => dot.with_file_name(".env (1)"),
+        };
+        assert_eq!(renamed, std::path::Path::new("/tmp/dl-root/.env (1)"));
     }
 }

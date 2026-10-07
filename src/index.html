@@ -48,11 +48,11 @@
             <div class="mm-head">布局</div>
             <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi">▦</span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
             <button id="btn-auto-layout" class="btn small" data-command="pane.reflow"><span class="mi">▦</span><span class="mm-label">整理当前标签分屏</span></button>
+            <button id="btn-files" class="btn small" data-command="tab.file.add"><span class="mi">📁</span><span class="mm-label">新增文件分屏</span></button>
             <button id="btn-zoom-pane" class="btn small" data-command="pane.zoom" data-title="放大/还原当前窗格(%1)" data-accel="mod+shift+Enter"><span class="mi">⤢</span><span class="mm-label">放大当前窗格</span><span class="mm-key"></span></button>
             <button id="btn-close-pane" class="btn small danger" data-command="workspace.close" data-title="关闭当前窗格或标签(%1)" data-accel="mod+W"><span class="mi">✕</span><span class="mm-label">关闭当前窗格</span><span class="mm-key"></span></button>
             <div class="mm-head">面板</div>
             <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi">◧</span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
-            <button id="btn-files" class="btn small" data-command="panel.files"><span class="mi">📁</span><span class="mm-label">文件管理</span><span class="mm-state"></span></button>
             <button id="btn-ai-menu" class="btn small" data-command="panel.ai"><span class="mi">✨</span><span class="mm-label">AI 助手</span><span class="mm-state"></span></button>
             <button id="btn-history" class="btn small" data-command="panel.history"><span class="mi">🕘</span><span class="mm-label">命令历史</span><span class="mm-state"></span></button>
             <button id="btn-snippets" class="btn small" data-command="panel.snippets"><span class="mi">⚡</span><span class="mm-label">常用片段</span><span class="mm-state"></span></button>
@@ -137,6 +137,8 @@
           <span id="mon-note" class="muted"></span>
         </span>
         <span class="spacer"></span>
+        <!-- 传输任务中心(状态栏入口):文件分屏方案下任务与布局解耦,常驻在此 -->
+        <button id="btn-file-tasks-status" class="btn small icon-tb hidden" title="传输任务">⇅<span id="file-task-badge" class="fp-badge hidden">0</span></button>
         <!-- 状态栏按钮一律常驻(禁用态表达可用性,禁用原因写进 title),
               不再随连接状态显隐 —— 此前"断开↔重连"互换会让整排按钮跳动。
               图标化 + tooltip,给监控和状态文字让出宽度(收缩契约见 style.css)。 -->
@@ -174,49 +176,6 @@
       </div>
     </aside>
 
-    <!-- SFTP 文件面板 -->
-    <div id="file-resizer" class="resizer hidden" title="拖动调整文件管理面板宽度"></div>
-    <aside id="file-panel" class="hidden">
-      <div class="ai-header">
-        <div class="fp-head">
-          <span class="ai-title">📁 文件管理</span>
-          <span id="file-target" class="fp-target muted" title="当前操作的目标服务器">未连接</span>
-        </div>
-        <span class="spacer"></span>
-        <button id="btn-file-close" class="btn icon" title="收起">✕</button>
-      </div>
-      <div class="file-toolbar">
-        <!-- 导航三连:后退 / 前进 / 上一级(资源管理器同款逻辑,历史记录在 sftp.js 维护,
-             可用态与悬停提示由 renderFileNav 刷新) -->
-        <button id="btn-file-back" class="btn icon" title="后退">←</button>
-        <button id="btn-file-forward" class="btn icon" title="前进">→</button>
-        <button id="btn-file-up" class="btn icon" title="上一级">↑</button>
-        <button id="btn-file-refresh" class="btn icon" title="刷新当前目录">↻</button>
-        <button id="btn-file-bookmark" class="btn icon" title="收藏当前目录" aria-label="收藏当前目录">★</button>
-        <button id="btn-file-mkdir" class="btn icon" title="新建文件夹">＋</button>
-        <!-- 上传图标用「📤」:此前是「⬆」,和「↑ 上一级」几乎一样,极易误触 -->
-        <button id="btn-file-upload" class="btn icon" title="上传文件(也可直接把文件拖进本面板)">📤</button>
-        <span class="spacer"></span>
-        <span class="file-toolbar-hint muted">右键文件可打开 / 下载 / 重命名 / 删除</span>
-      </div>
-      <div id="file-bookmarks" class="file-bookmarks"></div>
-      <div id="file-mkdir-row" class="hidden">
-        <input id="file-mkdir-name" type="text" placeholder="名称(新建文件夹 / 重命名)" />
-        <button id="btn-file-mkdir-ok" class="btn small primary">确定</button>
-        <button id="btn-file-mkdir-cancel" class="btn small">取消</button>
-      </div>
-      <div id="file-chmod-row" class="hidden">
-        <span class="muted">权限(owner/group/other × rwx):</span>
-        <input id="file-chmod-octal" type="text" maxlength="4" placeholder="0644" style="width:70px;" />
-        <button id="btn-file-chmod-ok" class="btn small primary">应用</button>
-        <button id="btn-file-chmod-cancel" class="btn small">取消</button>
-      </div>
-      <!-- 路径栏是输入框:回车跳转、Esc/失焦还原(绑定见 entry.js);右键可收藏当前目录 -->
-      <input id="file-path" class="file-path" type="text" spellcheck="false" autocomplete="off" />
-      <div id="file-list"></div>
-      <div id="file-status" class="muted"></div>
-      <div id="file-drop-hint" class="file-drop-hint hidden">⬇ 松开即上传到当前目录</div>
-    </aside>
   </div>
 
   <!-- 主机编辑弹窗 -->
@@ -569,6 +528,11 @@
 
   <div id="toasts"></div>
   <div id="ctx-menu" class="hidden"></div>
+  <!-- 任务中心浮层:点击状态栏 ⇅ 向上弹出(见 file-transfer.js renderTaskCenter)。
+       必须挂在 body:留在 #statusbar 里会被其 overflow-y:hidden 整体裁掉(开了也看不见) -->
+  <div id="file-task-popover" class="task-popover hidden">
+    <div id="file-task-list" class="file-task-list hidden"></div>
+  </div>
   <script src="./nebula-shim.js"></script>
   <script src="./app.js"></script>
 </body>
