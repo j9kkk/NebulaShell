@@ -10,14 +10,14 @@
   <div id="app">
     <!-- 侧边栏：主机列表 -->
     <aside id="sidebar">
-      <div class="side-header">
+      <div class="side-header" data-tauri-drag-region>
         <div class="logo">✦ <span class="logo-text">NebulaShell</span></div>
         <div class="logo-sub">星云终端 · SSH Client</div>
         <div class="side-actions">
           <!-- 图标与文字分 span:收起态窄条里 .lbl 隐藏,只留 .mi 图标(见 style.css 收起态) -->
-          <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi">＋</span><span class="lbl">新建主机</span></button>
-          <button id="btn-cloud-import" class="btn small" title="从腾讯云 / 阿里云导入主机"><span class="mi">☁</span><span class="lbl">云导入</span></button>
-          <button id="btn-batch" class="btn small" title="多主机批量执行命令"><span class="mi">⏏</span><span class="lbl">批量</span></button>
+          <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建主机</span></button>
+          <button id="btn-cloud-import" class="btn small" title="从腾讯云 / 阿里云导入主机"><span class="mi" data-icon="cloud"></span><span class="lbl">云导入</span></button>
+          <button id="btn-batch" class="btn small" title="多主机批量执行命令"><span class="mi" data-icon="eject"></span><span class="lbl">批量</span></button>
         </div>
         <input id="host-search" type="text" placeholder="搜索主机名称 / IP…" />
       </div>
@@ -25,7 +25,7 @@
       <!-- 折叠态保留底部开关，不随主机列表滚动。 -->
       <div class="side-foot">
         <button id="btn-sidebar-toggle" class="btn small side-foot-toggle" title="收起/展开主机侧边栏">
-          <span class="mi" id="sidebar-toggle-icon">☰</span><span id="sidebar-toggle-text">收起侧边栏</span>
+          <span class="mi" id="sidebar-toggle-icon" data-icon="panelLeft"></span><span id="sidebar-toggle-text">收起侧边栏</span>
         </button>
       </div>
     </aside>
@@ -36,51 +36,62 @@
       <!-- 快捷键提示按平台渲染:data-title 是文案模板(%1/%2 为占位符),
            data-accel 用 | 分隔快捷键,由 core.js 的 applyAccelTitles() 按
            macOS(⌘⇧⌥)/ Windows·Linux(Ctrl+Shift+Alt)重写为 title。
+           取值优先写 keymap 动作名(自定义键位生效),也兼容裸 spec。
            不再写死 ⌘ —— 在 Windows/Linux 上那是错的提示。 -->
-      <div id="tabbar">
-        <div id="tabs"></div>
-        <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="mod+T">＋</button>
-        <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="mod+D">⛶</button>
+      <!-- decorations:false 后本行是窗口唯一的"标题栏":空白处可拖拽/双击最大化
+           (data-tauri-drag-region 只在点按元素本身时生效,不影响子按钮),
+           行尾是最小化/最大化/关闭窗口控制按钮(见 modules/window-controls.js)。 -->
+      <div id="tabbar" data-tauri-drag-region>
+        <div id="tabs" data-tauri-drag-region></div>
+        <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
+        <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
         <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
         <button id="btn-more" class="btn icon-tb" title="更多工具">⋯</button>
         <div id="more-menu" class="hidden" aria-label="工具菜单">
           <div class="mm-page" data-page="root">
             <div class="mm-head">布局</div>
-            <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi">▦</span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
-            <button id="btn-auto-layout" class="btn small" data-command="pane.reflow"><span class="mi">▦</span><span class="mm-label">整理当前标签分屏</span></button>
-            <button id="btn-files" class="btn small" data-command="tab.file.add"><span class="mi">📁</span><span class="mm-label">新增文件分屏</span></button>
-            <button id="btn-zoom-pane" class="btn small" data-command="pane.zoom" data-title="放大/还原当前窗格(%1)" data-accel="mod+shift+Enter"><span class="mi">⤢</span><span class="mm-label">放大当前窗格</span><span class="mm-key"></span></button>
-            <button id="btn-close-pane" class="btn small danger" data-command="workspace.close" data-title="关闭当前窗格或标签(%1)" data-accel="mod+W"><span class="mi">✕</span><span class="mm-label">关闭当前窗格</span><span class="mm-key"></span></button>
+            <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi" data-icon="layout"></span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
+            <button id="btn-auto-layout" class="btn small" data-command="pane.reflow"><span class="mi" data-icon="layout"></span><span class="mm-label">整理当前标签分屏</span></button>
+            <button id="btn-files" class="btn small" data-command="tab.file.add"><span class="mi" data-icon="folder"></span><span class="mm-label">新增文件分屏</span></button>
+            <button id="btn-zoom-pane" class="btn small" data-command="pane.zoom" data-title="放大/还原当前窗格(%1)" data-accel="pane.zoom"><span class="mi" data-icon="zoom"></span><span class="mm-label">放大当前窗格</span><span class="mm-key"></span></button>
+            <button id="btn-close-pane" class="btn small danger" data-command="workspace.close" data-title="关闭当前窗格或标签(%1)" data-accel="workspace.close"><span class="mi" data-icon="x"></span><span class="mm-label">关闭当前窗格</span><span class="mm-key"></span></button>
             <div class="mm-head">面板</div>
-            <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi">◧</span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
-            <button id="btn-ai-menu" class="btn small" data-command="panel.ai"><span class="mi">✨</span><span class="mm-label">AI 助手</span><span class="mm-state"></span></button>
-            <button id="btn-history" class="btn small" data-command="panel.history"><span class="mi">🕘</span><span class="mm-label">命令历史</span><span class="mm-state"></span></button>
-            <button id="btn-snippets" class="btn small" data-command="panel.snippets"><span class="mi">⚡</span><span class="mm-label">常用片段</span><span class="mm-state"></span></button>
+            <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi" data-icon="panelLeft"></span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
+            <button id="btn-ai-menu" class="btn small" data-command="panel.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 助手</span><span class="mm-state"></span></button>
+            <button id="btn-history" class="btn small" data-command="panel.history"><span class="mi" data-icon="clock"></span><span class="mm-label">命令历史</span><span class="mm-state"></span></button>
+            <button id="btn-snippets" class="btn small" data-command="panel.snippets"><span class="mi" data-icon="zap"></span><span class="mm-label">常用片段</span><span class="mm-state"></span></button>
             <div class="mm-sep"></div>
-            <button class="btn small" data-menu-page="session"><span class="mi">⌁</span><span class="mm-label">会话工具</span><span class="mm-key">›</span></button>
-            <button class="btn small" data-menu-page="settings"><span class="mi">⚙</span><span class="mm-label">设置与管理</span><span class="mm-key">›</span></button>
+            <button class="btn small" data-menu-page="session"><span class="mi" data-icon="plug"></span><span class="mm-label">会话工具</span><span class="mm-key">›</span></button>
+            <button class="btn small" data-menu-page="settings"><span class="mi" data-icon="settings"></span><span class="mm-label">设置与管理</span><span class="mm-key">›</span></button>
           </div>
           <div class="mm-page hidden" data-page="session">
             <button class="btn small mm-back" data-menu-back><span class="mi">‹</span><span class="mm-label">返回 · 会话工具</span></button>
             <div class="mm-head">当前会话</div>
-            <button id="btn-reconnect-menu" class="btn small" data-command="session.reconnect"><span class="mi">↻</span><span class="mm-label">重连当前会话</span></button>
-            <button id="btn-readonly-menu" class="btn small" data-command="session.readonly"><span class="mi">🔒</span><span class="mm-label">只读模式</span><span class="mm-state"></span></button>
-            <button id="btn-log-menu" class="btn small" data-command="session.log"><span class="mi">⏺</span><span class="mm-label">记录会话日志</span><span class="mm-state"></span></button>
-            <button id="btn-forwards" class="btn small" data-command="tools.forwards"><span class="mi">🔀</span><span class="mm-label">端口转发</span></button>
+            <button id="btn-reconnect-menu" class="btn small" data-command="session.reconnect"><span class="mi" data-icon="rotate"></span><span class="mm-label">重连当前会话</span></button>
+            <button id="btn-readonly-menu" class="btn small" data-command="session.readonly"><span class="mi" data-icon="lock"></span><span class="mm-label">只读模式</span><span class="mm-state"></span></button>
+            <button id="btn-log-menu" class="btn small" data-command="session.log"><span class="mi" data-icon="circleDot"></span><span class="mm-label">记录会话日志</span><span class="mm-state"></span></button>
+            <button id="btn-forwards" class="btn small" data-command="tools.forwards"><span class="mi" data-icon="shuffle"></span><span class="mm-label">端口转发</span></button>
             <div class="mm-head">多主机工具</div>
-            <button id="btn-broadcast" class="btn small" data-command="tools.broadcast"><span class="mi">📢</span><span class="mm-label">广播输入</span><span class="mm-state"></span></button>
-            <button id="btn-batch-menu" class="btn small" data-command="tools.batch"><span class="mi">⏏</span><span class="mm-label">批量执行</span></button>
+            <button id="btn-broadcast" class="btn small" data-command="tools.broadcast"><span class="mi" data-icon="megaphone"></span><span class="mm-label">广播输入</span><span class="mm-state"></span></button>
+            <button id="btn-batch-menu" class="btn small" data-command="tools.batch"><span class="mi" data-icon="eject"></span><span class="mm-label">批量执行</span></button>
           </div>
           <div class="mm-page hidden" data-page="settings">
             <button class="btn small mm-back" data-menu-back><span class="mi">‹</span><span class="mm-label">返回 · 设置与管理</span></button>
-            <button id="btn-term-settings" class="btn small" data-command="settings.terminal"><span class="mi">⚙</span><span class="mm-label">终端设置</span></button>
-            <button id="btn-ai-settings-menu" class="btn small" data-command="settings.ai"><span class="mi">✨</span><span class="mm-label">AI 配置</span></button>
+            <button id="btn-term-settings" class="btn small" data-command="settings.terminal"><span class="mi" data-icon="settings"></span><span class="mm-label">终端设置</span></button>
+            <button id="btn-ai-settings-menu" class="btn small" data-command="settings.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 配置</span></button>
             <div class="mm-sep"></div>
-            <button id="btn-hosts-import" class="btn small"><span class="mi">📥</span><span class="mm-label">导入主机</span></button>
-            <button id="btn-hosts-export" class="btn small"><span class="mi">📤</span><span class="mm-label">导出主机</span></button>
-            <button id="btn-fingerprints" class="btn small" data-command="settings.fingerprints"><span class="mi">🔑</span><span class="mm-label">主机指纹</span></button>
-            <button id="btn-about" class="btn small" data-command="app.about"><span class="mi">ℹ</span><span class="mm-label">关于</span></button>
+            <button id="btn-hosts-import" class="btn small"><span class="mi" data-icon="import"></span><span class="mm-label">导入主机</span></button>
+            <button id="btn-hosts-export" class="btn small"><span class="mi" data-icon="export"></span><span class="mm-label">导出主机</span></button>
+            <button id="btn-fingerprints" class="btn small" data-command="settings.fingerprints"><span class="mi" data-icon="key"></span><span class="mm-label">主机指纹</span></button>
+            <button id="btn-about" class="btn small" data-command="app.about"><span class="mi" data-icon="info"></span><span class="mm-label">关于</span></button>
           </div>
+        </div>
+        <!-- 窗口控制:最小化 / 最大化(还原) / 关闭。图标由 window-controls.js
+             按平台与最大化状态写入;关闭 hover 红色。 -->
+        <div id="win-controls" role="group" aria-label="窗口控制">
+          <button id="btn-win-min" class="win-ctl" title="最小化" aria-label="最小化"></button>
+          <button id="btn-win-max" class="win-ctl" title="最大化" aria-label="最大化"></button>
+          <button id="btn-win-close" class="win-ctl win-ctl-close" title="关闭" aria-label="关闭"></button>
         </div>
       </div>
       <div id="snippet-menu" class="hidden">
@@ -138,15 +149,16 @@
         </span>
         <span class="spacer"></span>
         <!-- 传输任务中心(状态栏入口):文件分屏方案下任务与布局解耦,常驻在此 -->
-        <button id="btn-file-tasks-status" class="btn small icon-tb hidden" title="传输任务">⇅<span id="file-task-badge" class="fp-badge hidden">0</span></button>
+        <button id="btn-file-tasks-status" class="btn small icon-tb hidden" title="传输任务"><span class="mi" data-icon="transfer"></span><span id="file-task-badge" class="fp-badge hidden">0</span></button>
         <!-- 状态栏按钮一律常驻(禁用态表达可用性,禁用原因写进 title),
               不再随连接状态显隐 —— 此前"断开↔重连"互换会让整排按钮跳动。
               图标化 + tooltip,给监控和状态文字让出宽度(收缩契约见 style.css)。 -->
-        <button id="btn-log-toggle" class="btn small icon-tb" disabled title="记录会话日志到文件">⏺</button>
-        <button id="btn-clear" class="btn small icon-tb" disabled title="清屏并清空回滚">🧹</button>
-        <button id="btn-readonly" class="btn small icon-tb" disabled title="只读模式,防止误触">🔒</button>
-        <button id="btn-reconnect" class="btn small icon-tb" disabled title="重连">↻</button>
-        <button id="btn-disconnect" class="btn small icon-tb" disabled title="断开连接">⏻</button>
+        <button id="btn-log-toggle" class="btn small icon-tb" disabled title="记录会话日志到文件"><span class="mi" data-icon="circleDot"></span></button>
+        <button id="btn-clear" class="btn small icon-tb" disabled title="清屏并清空回滚"><span class="mi" data-icon="broom"></span></button>
+        <button id="btn-readonly" class="btn small icon-tb" disabled title="只读模式,防止误触"><span class="mi" data-icon="lock"></span></button>
+        <button id="btn-reconnect" class="btn small icon-tb" disabled title="重连"><span class="mi" data-icon="rotate"></span></button>
+        <!-- U+23FB ⏻ 在 Windows 默认字体无字形(渲染为方框),故用内联 SVG -->
+        <button id="btn-disconnect" class="btn small icon-tb" disabled title="断开连接"><span class="mi" data-icon="power"></span></button>
       </div>
     </main>
 
@@ -156,23 +168,37 @@
       <div class="ai-header">
         <span class="ai-title">✨ AI 助手</span>
         <span class="spacer"></span>
-        <select id="ai-model-switch" class="ai-model-switch" title="切换模型"></select>
         <button id="ai-settings-open" class="btn icon" title="AI 设置">⚙</button>
         <button id="btn-ai-close" class="btn icon" title="收起">✕</button>
       </div>
-      <div class="ai-quick">
-        <button id="btn-ai-explain" class="btn small">🔍 解释选中内容</button>
-        <button id="btn-ai-diagnose" class="btn small" title="只取最后一次输入的命令及其控制台输出,让 AI 诊断">🩺 诊断报错</button>
-      </div>
+      <!-- 快捷操作已迁移(2026-10-08):「解释选中内容」→ 终端选区末尾的悬浮 🔍
+           按钮(terminal.js bindSelectionExplain);「诊断报错」→ 终端右键菜单。
+           .ai-quick 行随之移除,消息区上移。 -->
       <div class="ai-messages-wrap">
         <div id="ai-messages"></div>
         <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
         <button id="ai-scroll-bottom" class="ai-scroll-bottom" type="button" title="回到底部" aria-label="回到底部">↓</button>
       </div>
+      <!-- 输入区 composer:上边框刻意去掉,视觉与消息区连续;外框(圆角边框)
+             把 textarea 与工具行包成一体,textarea 自身无边框。
+             底边与状态栏共享面板边缘,无需锁高对齐。 -->
       <div class="ai-input-row">
-        <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
-        <!-- 发送/停止同钮双状态:流式期间切换为"⏹ 停止"(见 ai.js setAiBusy),不用两颗按钮占位 -->
-        <button id="ai-send" class="btn primary" type="button" title="发送">发送</button>
+        <div class="ai-composer">
+          <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
+          <div class="ai-composer-tools">
+            <!-- 左侧预留位(将来附件/上下文模式),布局与参考稿同构 -->
+            <span class="spacer"></span>
+            <!-- 模型选择:无边框触发钮 + 自定义浮层菜单(列已启用模型 + 管理模型入口)。
+                 不用原生 <select>:要展示"管理模型"入口与选中 ✓,原生下拉做不到。 -->
+            <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
+              <span class="ai-model-dot" aria-hidden="true"></span>
+              <span id="ai-model-name">未启用模型</span>
+              <span class="ai-model-caret" aria-hidden="true">⌄</span>
+            </button>
+            <!-- 发送/停止同钮双状态:空闲=↑ 发送,流式=■ 停止(见 ai.js setAiBusy) -->
+            <button id="ai-send" class="btn primary ai-send" type="button" title="发送"></button>
+          </div>
+        </div>
       </div>
     </aside>
 
@@ -206,7 +232,7 @@
           <label for="host-passphrase">私钥口令</label><div class="secret-field"><input id="host-passphrase" type="password" placeholder="无则留空" autocomplete="off" /><label class="secret-control" for="host-clear-passphrase"><input id="host-clear-passphrase" type="checkbox" />忘记已保存口令</label></div>
         </div>
         <label>跳板机</label>
-        <select id="host-jump" multiple size="1" data-title="按住 %1 多选,自上而下形成跳板链" data-accel="mod"><option value="">(无)</option></select>
+        <select id="host-jump" multiple size="1" data-title="按住 %1 点选,自上而下形成跳板链" data-accel="files.selectAll"><option value="">(无)</option></select>
         <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />
         <label for="host-tags">标签</label><input id="host-tags" type="text" placeholder="多个标签以逗号分隔" />
@@ -481,8 +507,9 @@
           <option value="forest">森林绿</option>
         </select>
         <label>回滚行数</label><input id="term-scrollback" type="number" min="1000" max="20000" step="1000" value="2000" />
+        <label>双击打开缓存目录</label><input id="term-open-tempdir" type="text" placeholder="留空 = 系统临时目录（默认）" style="width:100%;" spellcheck="false" autocomplete="off" />
       </div>
-      <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。</p>
+      <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。「双击打开缓存目录」是文件管理双击打开文件时临时副本的存放位置，留空用系统临时目录。</p>
       <div class="modal-actions">
         <button id="btn-term-cancel" class="btn">取消</button>
         <button id="btn-term-save" class="btn primary">保存</button>
@@ -527,6 +554,13 @@
   </div>
 
   <div id="toasts"></div>
+  <!-- 模型菜单浮层:必须挂 body —— 面板 slide-in 动画期间 transform 会成为
+       fixed 的包含块,菜单定位会整体偏移一个面板宽度。 -->
+  <div id="ai-model-menu" class="ai-model-menu hidden" role="menu" aria-label="切换模型">
+    <div id="ai-model-menu-list" role="menu"></div>
+    <div class="ai-model-menu-sep"></div>
+    <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型</button>
+  </div>
   <div id="ctx-menu" class="hidden"></div>
   <!-- 任务中心浮层:点击状态栏 ⇅ 向上弹出(见 file-transfer.js renderTaskCenter)。
        必须挂在 body:留在 #statusbar 里会被其 overflow-y:hidden 整体裁掉(开了也看不见) -->

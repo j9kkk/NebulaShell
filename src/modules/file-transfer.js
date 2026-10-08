@@ -9,6 +9,8 @@
 // - 上传/下载以 taskId 注册进任务中心:进度按任务归属,可取消在途传输。
 
 import { $, api, askConfirm, hasOpenModal, state, toast } from './core.js';
+import { icon } from '../shared/icons.js';
+import { escapeHtml } from './hosts.js';
 import { findFilePane, filePaneFromEl, paneSession, refreshFilePanesFor } from './sftp.js';
 import { popupPosition } from './interaction.js';
 
@@ -23,6 +25,20 @@ const STAGE_TEXT = {
   failed: '失败',
   cancelled: '已取消',
   interrupted: '已中断',
+};
+
+/// 终态/运行态用图标直观区分;title 仍保留文字说明。
+const STAGE_ICON = {
+  queued: { glyph: 'dots', cls: 'muted' },
+  transferring: { glyph: 'transfer', cls: 'run' },
+  waiting: { glyph: 'question', cls: 'warn' },
+  cancelling: { glyph: 'transfer', cls: 'run' },
+  done: { glyph: 'checkCircle', cls: 'ok' },
+  'done-partial': { glyph: 'alert', cls: 'warn' },
+  partial: { glyph: 'alert', cls: 'warn' },
+  failed: { glyph: 'xCircle', cls: 'bad' },
+  cancelled: { glyph: 'x', cls: 'muted' },
+  interrupted: { glyph: 'zap', cls: 'bad' },
 };
 
 const TERMINAL_STAGES = ['done', 'done-partial', 'partial', 'failed', 'cancelled', 'interrupted'];
@@ -334,14 +350,6 @@ function openConflictDialog(task, conflict) {
 
 /* ---------------- 任务中心 UI ---------------- */
 
-function stageClass(stage) {
-  if (stage === 'done') return 'ok';
-  if (stage === 'done-partial') return 'warn';
-  if (['partial', 'failed', 'interrupted'].includes(stage)) return 'bad';
-  if (stage === 'cancelled') return 'muted';
-  return 'run';
-}
-
 let taskPopoverOpen = false;
 
 /// 浮层挂 body + fixed 定位:以状态栏 ⇅ 为锚,空间不足时 popupPosition 自动翻到上方。
@@ -387,8 +395,11 @@ function renderTaskCenter() {
     row.className = 'fp-task';
     const head = document.createElement('div');
     head.className = 'fp-task-head';
+    // 状态图标替代圆点:图形即状态,title 保留文字说明
+    const si = STAGE_ICON[t.stage] || { glyph: 'circleDot', cls: 'muted' };
     const dot = document.createElement('span');
-    dot.className = 'fp-task-dot ' + stageClass(t.stage);
+    dot.className = 'fp-task-dot ' + si.cls;
+    dot.innerHTML = icon(si.glyph);
     dot.title = STAGE_TEXT[t.stage] || t.stage;
     const name = document.createElement('span');
     name.className = 'fp-task-label';
@@ -408,7 +419,7 @@ function renderTaskCenter() {
       if (t.total > 0) bits.push(`${fmtBytes(t.bytes)} / ${fmtBytes(t.total)}`);
       if (t.current) bits.push(t.current);
     } else if (isTerminal(t)) {
-      bits.push(`✓ ${t.files.done} · 跳 ${t.files.skipped} · 败 ${t.files.failed} · 消 ${t.files.cancelled}`);
+      bits.push(`✔ ${t.files.done} · ⃠ ${t.files.skipped} · ✖ ${t.files.failed} · 🗑 ${t.files.cancelled}`);
       if (t.dirs.done) bits.push(`目录 ${t.dirs.done}`);
     } else if (t.kind === 'upload' || t.kind === 'download') {
       const total = t.items.length;
@@ -417,10 +428,21 @@ function renderTaskCenter() {
       if (t.current) bits.push(t.current);
       if (counts && t.kind !== 'upload' && t.kind !== 'download') bits.push(`${counts} 项`);
     }
-    if (t.error) bits.push(t.error);
-    if (t.truncated) bits.push('已达递归上限,部分内容未执行');
     sub.textContent = bits.filter(Boolean).join(' · ');
     row.appendChild(sub);
+    // 具体失败原因独立成行:醒目、完整展示,不与计数挤在一行被截断
+    if (t.error) {
+      const err = document.createElement('div');
+      err.className = 'fp-task-error';
+      err.textContent = '✖ ' + t.error;
+      row.appendChild(err);
+    }
+    if (t.truncated) {
+      const tn = document.createElement('div');
+      tn.className = 'fp-task-error warn-text';
+      tn.textContent = '⚠ 已达递归上限,部分内容未执行';
+      row.appendChild(tn);
+    }
     if ((t.stage === 'transferring' || t.stage === 'waiting') && t.pct != null && t.pct >= 0 && (t.kind === 'upload' || t.kind === 'download')) {
       const track = document.createElement('div');
       track.className = 'fp-task-track';
@@ -575,7 +597,7 @@ function startDrag(press) {
   dragActive = true;
   const ghost = document.createElement('div');
   ghost.className = 'file-drag-ghost';
-  ghost.textContent = `${press.isDir ? '📁' : '📄'} ${press.name}`;
+  ghost.innerHTML = `${icon(press.isDir ? 'folder' : 'file')} ${escapeHtml(press.name)}`;
   document.body.appendChild(ghost);
   press.ghost = ghost;
   // 收集合法落点:所有可见文件分屏的空白(=该屏 cwd)+ 目录行(=进入该目录)。

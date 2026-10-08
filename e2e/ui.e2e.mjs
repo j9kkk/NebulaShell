@@ -1173,36 +1173,34 @@ async function main() {
     JSON.stringify(applied));
 
   await evalJs(`document.querySelector('#btn-ai-save').click(); return 1`);
-  // 保存后"模型切换"下拉只列已启用模型,且选中已保存的生效模型
-  await waitEval(`return document.querySelector('#ai-model-switch').value`, 'mock-model-2', 15000);
+  // 保存后"模型切换"菜单(触发钮 + 自定义浮层)只列已启用模型,且选中已保存的生效模型
+  await waitEval(`return window.__nbTest.modelSwitchValue()`, 'mock-model-2', 15000);
   const switchState = asObj(await evalJs(`return JSON.stringify({
     options: window.__nbTest.modelSwitchOptions(),
-    value: document.querySelector('#ai-model-switch').value,
+    value: window.__nbTest.modelSwitchValue(),
+    triggerName: document.querySelector('#ai-model-name').textContent,
   })`));
-  check('T9l 对话页模型下拉只含已勾选模型',
+  check('T9l 对话页模型菜单只含已勾选模型',
     switchState.options.length === 2
     && switchState.options.includes('mock-model-2') && switchState.options.includes('mock-model-3')
     && !switchState.options.includes('mock-model-1')
-    && switchState.value === 'mock-model-2',
+    && switchState.value === 'mock-model-2'
+    && switchState.triggerName === 'mock-model-2',
     JSON.stringify(switchState));
 
   // 温度设置已移除
   const tempGone = await evalJs(`return window.__nbTest.hasTempField() ? 1 : 0`);
   check('T9m 温度设置已从 AI 设置移除', tempGone === 0, String(tempGone));
 
-  // 拉取按钮与"模型"一栏等高(第 4 条)
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
-  await sleep(200);
-  const rowH = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiRowHeights())`));
-  check('T9n 模型栏与"拉取模型"按钮等高', Math.abs(rowH.btn - rowH.chips) <= 1, JSON.stringify(rowH));
+  // (T9n「模型栏与拉取模型按钮等高」已移除:model-chip 重设计后 chips 为多行
+  // 布局,与单颗按钮等高的旧契约不再成立,断言口径待重设计收尾后重定。)
   await evalJs(`document.querySelector('#btn-ai-cancel').click(); return 1`);
   await sleep(200);
 
-  // AI 头部:设置/关闭按钮有间距(第 6 条),模型下拉与按钮等高(第 7 条)
+  // AI 头部:设置/关闭按钮有间距且等高(第 6 条;模型选择已移入 composer)
   const headGeom = asObj(await evalJs(`return JSON.stringify({ gap: window.__nbTest.aiHeaderGap(), h: window.__nbTest.aiHeaderHeights() })`));
-  check('T9o AI 头部:设置与关闭按钮留间距，模型下拉与按钮等高',
-    headGeom.gap >= 6
-    && headGeom.h.select === headGeom.h.settings && headGeom.h.select === headGeom.h.close,
+  check('T9o AI 头部:设置与关闭按钮留间距且等高',
+    headGeom.gap >= 6 && headGeom.h.settings === headGeom.h.close,
     JSON.stringify(headGeom));
 
   // 流式渲染:先出现"正在思考…"等待态,再逐段落地为正文。
@@ -1251,9 +1249,12 @@ async function main() {
   const genGone = asObj(await evalJs(`return JSON.stringify({ gone: window.__nbTest.genButtonGone(), noTemp: !window.__nbTest.hasTempField() })`));
   check('T9s 生成命令按钮已移除', genGone.gone === true && genGone.noTemp === true, JSON.stringify(genGone));
 
-  // 发送按钮与输入框等高(用户第 2 条:此前按钮比两行的输入框矮一截)
+  // composer 形态(2026-10-08 重构后):发送钮是 30px 方形图标钮,textarea
+  // 内距加大后两行内容不出现滚动条(scrollHeight <= clientHeight)。
   const inRow = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiInputHeights())`));
-  check('T9t 发送按钮与输入框等高', Math.abs(inRow.input - inRow.send) <= 1, JSON.stringify(inRow));
+  check('T9t 发送钮为 30px 方形图标钮,输入框无滚动条',
+    inRow.send === 30 && inRow.sendW === 30 && inRow.inputScroll <= inRow.inputClient,
+    JSON.stringify(inRow));
 
   // Markdown 渲染 + 每条消息一键复制
   const bootMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
@@ -1510,15 +1511,18 @@ async function main() {
   check('T54b 右键删除的确认框指向右键的那一行', delMsg.includes('README.md'), delMsg);
   await evalJs(`window.__nbTest.confirmClickCancel(); return 1`); // 不真删(后面用例还要用)
 
-  // —— 右键「打开」:下载临时副本 + 交系统默认程序(test_mode 只落盘不拉起,
+  // —— 双击文件「打开」:下载临时副本 + 交系统默认程序(test_mode 只落盘不拉起,
   //    否则会在测试机上真的弹开一个编辑器窗口) ——
+  // 右键菜单不再有「打开(临时副本)」;打开统一走双击
   const openMenu = asObj(await evalJs(`return JSON.stringify(window.__nbTest.fileCtxMenu('README.md'))`));
   check(
-    'T54c 右键文件菜单含「打开(临时副本)」',
-    openMenu.some((i) => i.label === '打开(临时副本)') && openMenu.some((i) => i.label === '下载…'),
+    'T54c 右键文件菜单不再含「打开(临时副本)」,含「下载…」',
+    !openMenu.some((i) => i.label === '打开(临时副本)') && openMenu.some((i) => i.label === '下载…'),
     JSON.stringify(openMenu.map((i) => i.label)),
   );
-  await evalJs(`window.__nbTest.ctxItemClick('打开(临时副本)'); return 1`);
+  await evalJs(`const pane = document.querySelector('.term-pane.file-pane');
+    const row = [...pane.querySelectorAll('.file-row')].find((r) => r.dataset.name === 'README.md');
+    row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return 1`);
   await waitEval(`return window.__nbTest.filePanel(0).status`, '已用本地程序打开', 25000);
   const openInfo = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel(0).lastOpen)`));
   const tmpOk = !!(openInfo && openInfo.localPath && fs.existsSync(openInfo.localPath))
@@ -1618,6 +1622,22 @@ async function main() {
   await evalJs(`[...document.querySelectorAll('.upload-conflict .modal-foot .btn')].find((b) => b.textContent.includes('自动重命名')).click(); return 1`);
   await waitEval(`return (function(){ const t = window.__nbTest.fileTasks(); return 'T[' + t.tasks.map((x) => x.stage + '|' + x.sub).join(' ;; ') + '] TOASTS[' + document.querySelector('#toasts').textContent + '] N[' + JSON.stringify(window.__nbTest.filePanel(1).names) + ']'; })()`, 'copy-src (1).txt', 30000);
   check('FM5b 冲突自动重命名发布为目标目录新文件', true);
+
+  // FM5c 冲突覆盖:再拖 copy-src.txt → 选「覆盖」→ posix-rename 原子替换,
+  // 目标文件时间更新(此前普通 RENAME 遇已存在目标被 OpenSSH 拒绝,
+  // 任务报「发布 xxx 失败: Failure」且目标文件未变)
+  await evalJs(`window.__nbTest.fileDragTo('copy-src.txt', 'pane:1'); return 1`);
+  await waitEval(`return String(document.querySelector('.upload-conflict') !== null)`, 'true', 20000);
+  await evalJs(`[...document.querySelectorAll('.upload-conflict .modal-foot .btn')].find((b) => b.textContent.includes('覆盖')).click(); return 1`);
+  await waitEval(`return (function(){ const rows = [...document.querySelectorAll('#file-task-list .fp-task')]; return rows.some((r) => r.querySelector('.fp-task-stage')?.textContent === '已完成') ? 'DONE' : 'WAIT'; })()`, 'DONE', 30000);
+  const fm5c = asObj(await evalJs(`return JSON.stringify({
+    tasks: window.__nbTest.fileTasks().tasks,
+    names: window.__nbTest.filePanel(1).names,
+  })`));
+  const fm5cDone = (fm5c.tasks || []).find((x) => x.stage === '已完成' || x.stage === '失败');
+  check('FM5c 冲突覆盖发布成功(无 Failure,目标列表仍含该文件)',
+    fm5cDone && fm5cDone.stage === '已完成' && (fm5c.names || []).includes('copy-src.txt'),
+    JSON.stringify(fm5c));
 
   // FM6 收尾:清除全部任务记录 → 状态栏任务入口隐藏;关闭第二个文件分屏
   // → 布局自动回填,屏0 浏览状态保留
@@ -1918,11 +1938,18 @@ async function main() {
     && !diagSrc.output.includes('Welcome to NebulaShell'),
     JSON.stringify(diagSrc));
 
-  // 点「诊断报错」:AI 提问里应带上这条命令,而不带整屏历史
+  // 点「诊断报错」(入口已迁移至终端右键菜单):AI 提问里应带上这条命令,而不带整屏历史
   await evalJs(`
     if (document.querySelector('#ai-panel').classList.contains('hidden')) document.querySelector('#btn-ai-toggle').click();
     return 1`);
-  await evalJs(`document.querySelector('#btn-ai-diagnose').click(); return 1`);
+  await evalJs(`
+    window.__nbTest.ctxMenuOpen = false;
+    document.querySelector('[data-session] .xterm, [data-session]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 300 }));
+    return 1`);
+  await waitEval(`return !document.querySelector('#ctx-menu').classList.contains('hidden')`, 'true', 8000);
+  await evalJs(`
+    const btn = [...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.textContent.includes('诊断报错'));
+    btn.click(); return 1`);
   await waitEval(`return document.querySelector('#ai-messages').textContent`, 'NB_DIAG_MARK_42', 20000);
   const diagMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
   const diagUser = [...diagMsgs].reverse().find((m) => m.role === 'user');
@@ -1930,6 +1957,22 @@ async function main() {
     diagUser && diagUser.text.includes('NB_DIAG_MARK_42')
     && !diagUser.text.includes('Welcome to NebulaShell mock sshd'),
     JSON.stringify(diagUser));
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+
+  // 「解释选中内容」悬浮按钮:选中终端内容 → 🔍 浮现在选区末尾;点击发出解释提问。
+  // (入口已从 AI 面板快捷按钮迁移,见 terminal.js bindSelectionExplain)
+  const bubble = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.explainBubble())`));
+  check('T9z 选中内容后悬浮 🔍 按钮出现在选区末尾',
+    bubble.hasBubble && bubble.shown && bubble.top > 0 && bubble.left > 0,
+    JSON.stringify(bubble));
+  await evalJs(`document.querySelector('#ai-explain-bubble').click(); return 1`);
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+  const explainMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
+  const explainUser = [...explainMsgs].reverse().find((m) => m.role === 'user');
+  // 气泡渲染的是选区原文(包装后的解释 prompt 只进请求体),断言以选区文本为准
+  check('T9z2 点击悬浮按钮发出解释提问(气泡为选区内容且得到回复)',
+    explainUser && /Welcome to NebulaShell|PROBE-OK/.test(explainUser.text),
+    JSON.stringify(explainUser || {}).slice(0, 200));
   await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
 
   // 放大按钮回归:单窗格时不得进入"已放大"态(视觉无变化,角标让用户以为按钮失效)
@@ -2663,7 +2706,7 @@ async function main() {
         const vw = document.querySelector('#app').getBoundingClientRect().right;
         // 只扫可视布局区的浅层(状态栏/标签栏/侧栏/面板头/终端窗格),全 body
         // querySelectorAll('*') 会带出 xterm 上万节点导致 eval 超时。
-        const roots = ['#statusbar', '#tabbar', '#sidebar', '.ai-header', '.ai-quick', '.ai-input-row',
+        const roots = ['#statusbar', '#tabbar', '#sidebar', '.ai-header', '.ai-input-row',
           '.file-toolbar', '#file-mkdir-row', '#file-chmod-row', '#file-bookmarks', '#file-status',
           '#more-menu', '#welcome', '.pane-picker'];
         const seen = new Set();
@@ -3161,6 +3204,7 @@ async function main() {
 main().catch(async (e) => {
   clearTimeout(watchdog);
   console.error(`\n${FAIL} UI e2e 失败: ${e.message}`);
+  console.error(e.stack);
   if (appLogs.length) console.error('--- 应用日志 ---\n' + appLogs.join('').slice(-1200));
   await cleanup();
   process.exit(1);

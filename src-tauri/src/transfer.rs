@@ -902,7 +902,7 @@ impl TransferManager {
                             break;
                         }
                     }
-                    match df.rename(&part, &final_dst).await {
+                    match df.posix_rename(&part, &final_dst).await {
                         Ok(()) => {
                             task.temps.lock().unwrap().retain(|p| *p != part);
                             self.ledger_remove(&task.dst.summary, &part);

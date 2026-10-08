@@ -11,7 +11,10 @@
 // - 所有远端操作以提交时的快照(paneId+sessionId+cwd)为准,确认框期间
 //   切换目录不改投目标;后端再做 epoch 校验。
 
-import { $, api, askConfirm, askPrompt, copyText, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, api, applyAccelTitles, askConfirm, askPrompt, copyText, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { icon } from '../shared/icons.js';
+import { accelOf } from './keymap.js';
+import { escapeHtml } from './hosts.js';
 import { registerUploadTask, registerDownloadTask, registerTreeDownloadTask, taskProgressFromEvent, wasRecentDrag, submitCopyTask } from './file-transfer.js';
 
 export function fileParent(p) {
@@ -156,16 +159,16 @@ export function buildFilePane(pane) {
   elp.dataset.fpBuilt = '1';
   elp.innerHTML = `
     <div class="file-toolbar">
-      <button class="btn icon fp-back" title="后退">←</button>
-      <button class="btn icon fp-forward" title="前进">→</button>
-      <button class="btn icon fp-up" title="上一级">↑</button>
-      <button class="btn icon fp-refresh" title="刷新当前目录">↻</button>
-      <button class="btn icon fp-bookmark" title="收藏当前目录" aria-label="收藏当前目录">★</button>
-      <button class="btn icon fp-mkdir" title="新建文件夹">＋</button>
-      <button class="btn icon fp-selectall" title="全选当前目录(可多选后批量下载/复制/删除)">☑</button>
-      <button class="btn icon fp-upload" title="上传文件(也可直接把文件拖进本分屏)">📤</button>
+      <button class="btn icon fp-back" title="后退">${icon('arrowLeft')}</button>
+      <button class="btn icon fp-forward" title="前进">${icon('arrowRight')}</button>
+      <button class="btn icon fp-up" title="上一级">${icon('arrowUp')}</button>
+      <button class="btn icon fp-refresh" title="刷新当前目录">${icon('refresh')}</button>
+      <button class="btn icon fp-bookmark" title="收藏当前目录" aria-label="收藏当前目录">${icon('star')}</button>
+      <button class="btn icon fp-mkdir" title="新建文件夹">${icon('folderPlus')}</button>
+      <button class="btn icon fp-selectall" title="全选/全不选(已全选时点击清空;右键=反选)" aria-label="全选或反选">${icon('listChecks')}</button>
+      <button class="btn icon fp-upload" title="上传文件(也可直接把文件拖进本分屏)" aria-label="上传文件">${icon('upload')}</button>
       <span class="spacer"></span>
-      <span class="file-toolbar-hint muted">可多选:⌘点选/Shift 区间,右键批量下载 / 复制 / 删除</span>
+      <span class="file-toolbar-hint muted" data-title="可多选:%1点选/Shift 区间,右键批量下载 / 复制 / 删除" data-accel="term.copy"></span>
     </div>
     <div class="fp-input-row fp-mkdir-row hidden">
       <input class="fp-mkdir-name" type="text" placeholder="名称(新建文件夹 / 重命名)" />
@@ -183,15 +186,36 @@ export function buildFilePane(pane) {
     <div class="file-bookmarks"></div>
     <div class="file-list"></div>
     <div class="file-status muted"></div>
-    <div class="file-drop-hint hidden">⬇ 松开即上传到当前目录</div>
+    <div class="file-drop-hint hidden">松开即上传到当前目录</div>
   `;
+  // 提示里的快捷键按平台渲染(动作名查 keymap):buildFilePane 是动态创建,
+  // boot 的 applyAccelTitles 扫不到,必须在模板写入后补一次。
+  applyAccelTitles(elp);
   const q = (sel) => elp.querySelector(sel);
   q('.fp-back').addEventListener('click', () => fileNavBack(pane));
   q('.fp-forward').addEventListener('click', () => fileNavForward(pane));
   q('.fp-up').addEventListener('click', () => fileNavUp(pane));
   q('.fp-refresh').addEventListener('click', () => fileRefresh(pane));
   q('.fp-bookmark').addEventListener('click', () => addBookmark(pane));
-  q('.fp-selectall').addEventListener('click', () => selectAllEntries(pane));
+  // 全选/反选一体:单击 ☑ = 智能切换(全选 ↔ 全不选),右键 = 反选。
+  // 选中数与条目数相同即视为"已全选",再点一次清空 —— 与资源管理器惯例一致。
+  const selectAllBtn = q('.fp-selectall');
+  selectAllBtn.addEventListener('click', () => {
+    const total = pane.entries.length;
+    const picked = (pane.selectedNames || []).length;
+    if (total > 0 && picked === total) {
+      pane.selectedNames = [];
+      pane.anchorIdx = null;
+      renderFileList(pane);
+    } else {
+      selectAllEntries(pane);
+    }
+  });
+  selectAllBtn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    invertSelection(pane);
+  });
   q('.fp-mkdir').addEventListener('click', () => {
     const target = paneSnapshot(pane);
     if (!target) return toast('请先连接并打开目录', 'error');
@@ -361,6 +385,15 @@ export function selectAllEntries(pane) {
   renderFileList(pane);
 }
 
+/// 反选:选中集与当前目录条目互换(`..` 行本就不在 selectedNames 语义内)
+export function invertSelection(pane) {
+  if (!pane) return;
+  const set = new Set(pane.selectedNames || []);
+  pane.selectedNames = pane.entries.map((x) => x.name).filter((n) => !set.has(n));
+  pane.anchorIdx = null;
+  renderFileList(pane);
+}
+
 /// 当前选中的条目对象(按窗格当前 entries 解析,`..` 行不参与)
 export function selectedEntryObjects(pane) {
   const set = new Set(pane.selectedNames || []);
@@ -386,7 +419,7 @@ function renderFileList(pane) {
   if (cwd && fileParent(cwd) !== cwd) {
     const upRow = document.createElement('div');
     upRow.className = 'file-row';
-    upRow.innerHTML = `<span>📁</span><span class="f-name">..</span>`;
+    upRow.innerHTML = `<span class="f-ic">${icon('folder')}</span><span class="f-name">..</span>`;
     upRow.addEventListener('click', () => loadFileDir(pane, fileParent(cwd)));
     box.appendChild(upRow);
   }
@@ -396,7 +429,7 @@ function renderFileList(pane) {
     row.dataset.name = en.name;
     row.dataset.dir = en.dir ? '1' : '0';
     row.dataset.idx = String(idx);
-    row.innerHTML = `<span>${en.dir ? '📁' : '📄'}</span><span class="f-name"></span><span class="f-size"></span>`;
+    row.innerHTML = `<span class="f-ic">${icon(en.dir ? 'folder' : 'file')}</span><span class="f-name"></span><span class="f-size"></span>`;
     row.querySelector('.f-name').textContent = en.name;
     row.querySelector('.f-size').textContent = en.dir ? '' : fmtSize(en.size);
     row.title = en.dir ? `${en.name}/` : `${en.name}  ${fmtSize(en.size)}`;
@@ -407,6 +440,7 @@ function renderFileList(pane) {
     row.addEventListener('dblclick', () => {
       if (wasRecentDrag()) return;
       if (en.dir) loadFileDir(pane, (cwd === '/' ? '' : cwd) + '/' + en.name);
+      else openRemoteEntry(en, pane);
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -529,8 +563,9 @@ export async function loadFileDir(pane, dir, opts = {}) {
   pane.loading = true;
   pane.lastSessionId = s.sessionId;
   const list = q(pane, '.file-list');
-  if (list && !pane.cwd) list.innerHTML = '<div class="file-empty">加载中…</div>';
-  pane.statusText = '加载中…';
+  // 加载提示只留列表区居中的一份,状态栏不再重复显示同样的「加载中…」
+  if (list) list.innerHTML = '<div class="file-empty">加载中…</div>';
+  pane.statusText = '';
   renderFileStatus(pane);
   for (const sel of ['.fp-mkdir-row', '.fp-chmod-row']) q(pane, sel)?.classList.add('hidden');
   try {
@@ -582,9 +617,8 @@ export function openFileCtxMenu(x, y, en, pane) {
     : null;
   const batchLabel = group ? `(${group.length} 项)` : '';
   showCtxMenu(x, y, [
-    en.dir
-      ? { label: '打开目录', disabled: !connected, run: guarded((p) => loadFileDir(p, full)) }
-      : { label: '打开(临时副本)', disabled: !connected || !!group, run: guarded((p) => openRemoteEntry(en, p)) },
+    // 文件「打开(临时副本)」已移除:打开统一走双击
+    ...(en.dir ? [{ label: '打开目录', disabled: !connected, run: guarded((p) => loadFileDir(p, full)) }] : []),
     { label: group ? `下载${batchLabel}…` : '下载…', disabled: !connected, run: guarded((p) => downloadEntry(en, p, group)) },
     '-',
     { label: group ? `复制到…${batchLabel}` : '复制到…', disabled: !connected, run: guarded((p) => copyEntriesToHost(group || [en], p)) },
@@ -592,7 +626,8 @@ export function openFileCtxMenu(x, y, en, pane) {
     '-',
     { label: '重命名…', disabled: !connected || !!group, run: guarded((p) => startRename(en, p)) },
     { label: '权限…', disabled: !connected || !!group, run: guarded((p) => startChmod(en, p)) },
-    ...(group ? [{ label: '全选(⌘A 范围内)', run: () => selectAllEntries(pane) }] : []),
+    ...(group ? [{ label: `全选(${accelOf('files.selectAll')} 范围内)`, run: () => selectAllEntries(pane) }] : []),
+    { label: '反选', run: () => invertSelection(pane) },
     '-',
     { label: '复制名称', run: () => { const names = group ? group.map((g) => g.name) : [en.name]; copyText(names.join('\n')).then((ok) => toast(ok ? `已复制 ${names.length} 个名称` : '复制失败', ok ? 'success' : 'error')); } },
     { label: '复制完整路径', run: () => { const paths = group ? group.map((g) => remoteEntryPath(pane.cwd, g.name)) : [full]; copyText(paths.join('\n')).then((ok) => toast(ok ? `已复制 ${paths.length} 个路径` : '复制失败', ok ? 'success' : 'error')); } },
@@ -842,7 +877,7 @@ export async function renderFileBookmarks(pane) {
   for (const b of mine) {
     const chip = document.createElement('span');
     chip.className = 'bm-chip';
-    chip.textContent = '★ ' + b.path;
+    chip.innerHTML = icon('star') + ' ' + escapeHtml(b.path);
     chip.title = `跳转到 ${b.path}(右键移除书签)`;
     chip.addEventListener('click', () => loadFileDir(pane, b.path));
     chip.addEventListener('contextmenu', (e) => {

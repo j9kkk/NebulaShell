@@ -1,12 +1,12 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, accel, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, isAppModifier, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, isAppModifier, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
 import { bindCommandButtons, executeCommand, refreshCommandStates, registerCommand } from './commands.js';
 import { bindMoreMenu, closeMoreMenu } from './menu.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, autoLayoutTab, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, saveAiSettings, setAiBody, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
 import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
 import {
   filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -15,6 +15,9 @@ import {
 import { bindTransferUi, confirmTransferInterrupt } from './file-transfer.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
 import { bindBatchUi, openBatchModal, openForwardModal, saveForwardRule, toggleHistory } from './tools.js';
+import { matchAction, accelOf, accelSpec } from './keymap.js';
+import { bindWindowControls } from './window-controls.js';
+import { hydrateIcons } from '../shared/icons.js';
 
 export function termFromEvent(e) {
   const paneEl = e.target && e.target.closest ? e.target.closest('.term-pane') : null;
@@ -31,13 +34,15 @@ export function openTermCtxMenu(e, session) {
   // (用户视角的"复制无效/复制错内容")。
   const selText = (() => { try { return term.getSelection() || ''; } catch { return ''; } })();
   showCtxMenu(e.clientX, e.clientY, [
-    { label: '复制', key: accel('mod+C'), disabled: !selText, run: () => {
+    { label: '复制', key: accelOf('term.copy'), disabled: !selText, run: () => {
       copyText(selText).then((ok) => toast(ok ? `已复制 ${selText.length} 个字符` : '复制失败：剪贴板不可用', ok ? 'success' : 'error'));
     } },
-    { label: '粘贴', key: accel('mod+V'), run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
-    { label: '全选', key: accel('mod+A'), run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
+    { label: '粘贴', key: accelOf('term.paste'), run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
+    { label: '全选', key: accelOf('term.selectAll'), run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
     '-',
-    { label: '搜索…', key: accel('mod+F'), run: () => { activateSession(session.sessionId); openTermSearch(); } },
+    { label: '搜索…', key: accelOf('session.search'), run: () => { activateSession(session.sessionId); openTermSearch(); } },
+    // 「诊断报错」入口从 AI 面板快捷按钮迁移至此;tips 与原按钮 title 一致。
+    { label: '🩺 诊断报错', title: '只取最后一次输入的命令及其控制台输出,让 AI 诊断', run: () => { activateSession(session.sessionId); aiDiagnose(); } },
     { label: '清屏', run: () => { activateSession(session.sessionId); clearActiveTerm(); } },
     { label: session.readOnly ? '关闭只读' : '设为只读', run: () => { activateSession(session.sessionId); toggleReadonly(); } },
     '-',
@@ -313,8 +318,27 @@ export function bindEvents() {
     else if (e.key === ' ') { e.preventDefault(); togglePickerFocus(); }
     else if (e.key === 'Enter') { e.preventDefault(); confirmModelPicker(); }
   });
-  $('#ai-model-switch').addEventListener('change', (e) => switchModel(e.target.value).then(renderModelSwitch).catch(() => {}));
-  $('#btn-ai-diagnose').addEventListener('click', aiDiagnose);
+  // 模型选择:触发钮开菜单,菜单项切换,「管理模型」进 AI 设置;
+  // 面板外点击/Esc 关闭。菜单定位 fixed,不随面板滚动。
+  $('#ai-model-trigger').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#ai-model-menu');
+    if (menu.classList.contains('hidden')) openModelMenu(); else closeModelMenu();
+  });
+  $('#ai-model-menu-list').addEventListener('click', (e) => {
+    const item = e.target.closest('.ai-model-menu-item');
+    if (!item) return;
+    closeModelMenu();
+    switchModel(item.dataset.model).then(renderModelSwitch).catch(() => {});
+  });
+  $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openAiSettings(); });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#ai-model-menu, #ai-model-trigger')) closeModelMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModelMenu();
+  });
+  // 「诊断报错」按钮已移除:入口迁移至终端右键菜单(openTermCtxMenu)。
 
   setupWorkspaceCommands();
   bindMoreMenu();
@@ -338,12 +362,8 @@ export function bindEvents() {
     if (ok) await api('app:exit');
   });
 
-  $('#btn-ai-explain').addEventListener('click', () => {
-    const s = state.sessions.get(state.activeId);
-    const sel = s && s.term.getSelection();
-    if (!sel) return toast('请先在终端中选中要解释的内容', 'error');
-    aiSend(sel, 'explain');
-  });
+  // 「解释选中内容」按钮已移除:入口迁移为终端选区末尾的悬浮 🔍 按钮
+  // (terminal.js bindSelectionExplain)。
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
   $('#ai-send').addEventListener('click', () => (state.aiReq ? stopAiGeneration() : aiSend()));
   $('#ai-input').addEventListener('keydown', (e) => {
@@ -447,23 +467,29 @@ export function bindEvents() {
     const terminalInput = !!e.target.closest?.('.term-pane');
     if (isEditableTarget(e.target) && !terminalInput) return;
     if (isAppModifier(e)) {
-      const key = e.key.toLowerCase();
-      const command = e.shiftKey
-        ? (key === 'enter' ? 'pane.zoom' : null)
-        : ({ f: 'session.search', w: 'workspace.close', t: 'tab.new', d: 'pane.split' }[key]);
-      if (command) { e.preventDefault(); executeCommand(command); return; }
-      // 文件分屏内的 ⌘A = 全选焦点分屏的列表(焦点在路径栏等输入框时
-      // 由上面的 isEditableTarget 早退,是输入框原生全选,不抢)
-      if (key === 'a' && !terminalInput && document.activeElement?.closest?.('.term-pane.file-pane')) {
-        e.preventDefault();
-        import('./sftp.js').then((m) => { const p = m.focusedFilePane(); if (p) m.selectAllEntries(p); });
-        return;
-      }
-      if (!e.shiftKey && /^[1-9]$/.test(e.key)) {
-        e.preventDefault();
-        const target = [...state.tabs.keys()][Number(e.key) - 1];
-        if (target) activateTab(target);
-        return;
+      // 键位从 keymap 匹配:绑定与提示共用同一张表(action → spec),
+      // 自定义键位(settings.keybindings)对两者同时生效。
+      const appMod = isAppModifier(e);
+      if (e.shiftKey && matchAction('pane.zoom', e, appMod)) { e.preventDefault(); executeCommand('pane.zoom'); return; }
+      if (!e.shiftKey) {
+        if (matchAction('session.search', e, appMod)) { e.preventDefault(); executeCommand('session.search'); return; }
+        if (matchAction('workspace.close', e, appMod)) { e.preventDefault(); executeCommand('workspace.close'); return; }
+        if (matchAction('tab.new', e, appMod)) { e.preventDefault(); executeCommand('tab.new'); return; }
+        if (matchAction('pane.split', e, appMod)) { e.preventDefault(); executeCommand('pane.split'); return; }
+        // 文件分屏内的全选(焦点在路径栏等输入框时由上面的 isEditableTarget
+        // 早退,是输入框原生全选,不抢)
+        if (matchAction('files.selectAll', e, appMod) && !terminalInput && document.activeElement?.closest?.('.term-pane.file-pane')) {
+          e.preventDefault();
+          import('./sftp.js').then((m) => { const p = m.focusedFilePane(); if (p) m.selectAllEntries(p); });
+          return;
+        }
+        // mod+1..9 切换标签(spec 是范围写法,逐键判断)
+        if (/^[1-9]$/.test(e.key)) {
+          e.preventDefault();
+          const target = [...state.tabs.keys()][Number(e.key) - 1];
+          if (target) activateTab(target);
+          return;
+        }
       }
     }
     if (e.key !== 'Escape') return;
@@ -570,7 +596,7 @@ export function bindEvents() {
 function fillMenuKeys() {
   for (const btn of document.querySelectorAll('#more-menu [data-accel]')) {
     const keyEl = btn.querySelector('.mm-key');
-    if (keyEl) keyEl.textContent = accel(String(btn.dataset.accel).split('|')[0]);
+    if (keyEl) keyEl.textContent = accelSpec(String(btn.dataset.accel).split('|')[0].trim());
   }
 }
 
@@ -639,8 +665,15 @@ function setupResizers() {
 }
 
 export async function boot() {
+  // data-accel 里的动作名(如 'term.copy')在 core.applyAccelTitles 渲染时
+  // 经此查 keymap(core 不反向依赖 keymap,由这里注入解析器)。
+  applyAccelTitles._accelSpec = accelSpec;
+  // 解 terminal→ai 循环依赖:选中「解释」按钮点击时经此回调 aiSend
+  bindSelectionExplain._aiSend = aiSend;
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
   applyAccelTitles();
+  // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
+  hydrateIcons(document);
   fillMenuKeys();
   bindModalInteractions();
   bindAiCodeActions();
@@ -648,6 +681,7 @@ export async function boot() {
   bindEvents();
   setupResizers();
   bindContextMenu();
+  bindWindowControls();
   // 启动时同步一次收起按钮的状态(侧栏默认展开):此后由 toggleSidebar 维护
   syncSidebarToggle($('#sidebar').classList.contains('collapsed'));
   state.settings = await api('settings:get');
@@ -758,25 +792,19 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     // 不能读整 chip 的 textContent —— 里面还有 ✕ 移除按钮的文字
     modelChips: () => [...document.querySelectorAll('#ai-model-chips .model-chip')].map((b) => (b.querySelector('.model-chip-name') || b).textContent),
     modelChipActive: () => ($('#ai-model-chips .model-chip.active .model-chip-name') || {}).textContent || '',
-    modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-switch option')].map((o) => o.value),
-    // 设置弹窗里"拉取模型"按钮与模型栏的高度(第 4 条:两者必须等高)
-    aiRowHeights: () => {
-      const b = $('#btn-ai-fetch-models').getBoundingClientRect();
-      const c = $('#ai-model-chips').getBoundingClientRect();
-      return { btn: Math.round(b.height), chips: Math.round(c.height) };
-    },
+    modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-menu-list .ai-model-menu-item')].map((b) => b.dataset.model),
+    modelSwitchValue: () => savedAiModelId(),
     // AI 头部两个按钮的间距(第 6 条)
     aiHeaderGap: () => {
       const a = $('#ai-settings-open').getBoundingClientRect();
       const b = $('#btn-ai-close').getBoundingClientRect();
       return Math.round(b.left - a.right);
     },
-    // 头部控件与发送按钮的高度对比(第 7 条)
+    // 头部按钮高度对比(第 7 条;模型选择已移入 composer,不再参与对比)
     aiHeaderHeights: () => {
-      const s = $('#ai-model-switch').getBoundingClientRect();
       const g = $('#ai-settings-open').getBoundingClientRect();
       const x = $('#btn-ai-close').getBoundingClientRect();
-      return { select: Math.round(s.height), settings: Math.round(g.height), close: Math.round(x.height) };
+      return { settings: Math.round(g.height), close: Math.round(x.height) };
     },
     // 对话气泡的状态类与文本:等待态/流式态渲染的观测点
     aiBubbles: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
@@ -792,12 +820,16 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     hasTempField: () => !!$('#ai-temp'),
     // AI 输入行:发送按钮与输入框是否等高
     aiInputHeights: () => {
-      const i = $('#ai-input').getBoundingClientRect();
+      const i = $('#ai-input');
       const b = $('#ai-send').getBoundingClientRect();
-      return { input: Math.round(i.height), send: Math.round(b.height) };
+      return {
+        input: Math.round(i.getBoundingClientRect().height),
+        inputScroll: i.scrollHeight, inputClient: i.clientHeight,
+        send: Math.round(b.height), sendW: Math.round(b.width),
+      };
     },
     // 生成命令是否已移除(按钮 + 快捷按钮行内都不该再有)
-    genButtonGone: () => !$('#btn-ai-gen') && !String(document.querySelector('.ai-quick')?.textContent || '').includes('生成命令'),
+    genButtonGone: () => !$('#btn-ai-gen') && !String(document.querySelector('#ai-messages')?.textContent || '').includes('生成命令'),
     // 助手消息的渲染形态:Markdown 结构 / 复制按钮 / 诊断素材
     aiMsgDetail: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
       role: b.dataset.role,
@@ -816,6 +848,20 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     diagSource: () => {
       const s = state.sessions.get(state.activeId);
       return s ? { cmd: s.lastCmd || '', output: (s.lastOutput || '').slice(0, 300), collecting: !!s.collectOutput } : null;
+    },
+    /// 选中悬浮「解释」按钮(T9z):全选当前会话(制造可视选区)返回按钮状态;
+    /// hide=true 时清除选区并断言按钮隐藏。
+    explainBubble: async (opts) => {
+      const o = opts || {};
+      const s = state.sessions.get(state.activeId);
+      if (!s) return { hasBubble: !!document.querySelector('#ai-explain-bubble'), shown: false };
+      if (o.clear) s.term.clearSelection();
+      else s.term.selectAll();
+      await new Promise((r) => setTimeout(r, 120)); // onSelectionChange 异步定位
+      const b = document.querySelector('#ai-explain-bubble');
+      const rect = b?.getBoundingClientRect();
+      return { hasBubble: !!b, shown: !!b && !b.classList.contains('hidden') && b.classList.contains('show') && b.getClientRects().length > 0,
+        top: rect ? Math.round(rect.top) : 0, left: rect ? Math.round(rect.left) : 0 };
     },
     write: (d) => {
       const s = state.sessions.get(state.activeId);

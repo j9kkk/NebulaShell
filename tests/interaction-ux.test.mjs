@@ -144,6 +144,8 @@ class Element extends EventTargetAdapter {
     this.ownerDocument.notifyMutation(this, 'childList', [child]);
     return child;
   }
+  // toast(core.js)用 el.append(icon, body):与 appendChild 等价的桩。
+  append(...nodes) { for (const n of nodes) this.appendChild(n); }
   remove() {
     const parent = this.parentNode;
     if (parent) parent.children.splice(parent.children.indexOf(this), 1);
@@ -239,13 +241,17 @@ async function setup({ platform = 'darwin', width = 800, height = 600 } = {}) {
   });
   const cache = new Map();
   async function load(name) {
+    // '../shared/...' 从 modules/ 出发解析;其余仍按 modules/ 内相对名
+    const file = name.startsWith('../')
+      ? name.replace('../', '../src/')   // '../shared/x.js' → '../src/shared/x.js'
+      : `../src/modules/${name}`;
     if (!cache.has(name)) cache.set(name, new vm.SourceTextModule(
-      await readFile(new URL(`../src/modules/${name}`, import.meta.url), 'utf8'), { context, identifier: name },
+      await readFile(new URL(file, import.meta.url), 'utf8'), { context, identifier: name },
     ));
     return cache.get(name);
   }
   const menuModule = await load('menu.js');
-  await menuModule.link((specifier) => load(specifier.replace('./', '')));
+  await menuModule.link((specifier) => load(specifier.startsWith('../') ? specifier : specifier.replace('./', '')));
   await menuModule.evaluate();
   const core = cache.get('core.js').namespace;
   const interaction = cache.get('interaction.js').namespace;
@@ -395,7 +401,7 @@ test('prompt validation keeps the modal open and composing Enter cannot submit',
   const { core, document, input, prompt } = await setup();
   const result = core.askPrompt('Required', { validate: (value) => value.trim() ? null : 'Value is required' }); await flush();
   key(input, 'Enter'); assert.equal(prompt.classList.contains('hidden'), false);
-  assert.equal(document.querySelector('#toasts').children[0].textContent, 'Value is required');
+  assert.equal(document.querySelector('#toasts').children[0].querySelector('.toast-body').textContent, 'Value is required');
   input.value = 'valid'; key(input, 'Enter', { isComposing: true });
   assert.equal(prompt.classList.contains('hidden'), false);
   key(input, 'Enter'); assert.equal(await result, 'valid');
@@ -615,7 +621,7 @@ test('failed command surfaces an error and refreshes post-failure state rather t
   const button = add(app, 'button'); button.dataset.command = 'fail';
   commands.registerCommand('fail', { enabled: () => available, run: async () => { available = false; throw new Error('SSH connection lost'); } });
   commands.bindCommandButtons(); assert.equal(await commands.executeCommand('fail'), false);
-  assert.equal(button.disabled, true); assert.equal(document.querySelector('#toasts').children[0].textContent, 'SSH connection lost');
+  assert.equal(button.disabled, true); assert.equal(document.querySelector('#toasts').children[0].querySelector('.toast-body').textContent, 'SSH connection lost');
   assert.equal(document.querySelector('#toasts').children[0].classList.contains('error'), true);
 });
 

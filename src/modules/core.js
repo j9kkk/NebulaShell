@@ -1,6 +1,7 @@
 // 共享底座:DOM 查询、IPC 封装、全局状态、通用弹窗/toast、标签与窗格访问器
 
 import { isAppModifier as matchAppModifier } from './interaction.js';
+import { icon } from '../shared/icons.js';
 
 export const $ = (s) => document.querySelector(s);
 
@@ -125,11 +126,16 @@ export function accel(spec) {
 
 /// 按平台重写带快捷键的元素标题。
 /// 约定:data-title 是文案模板(%1/%2 是占位符),data-accel 用 | 分隔多个快捷键
-/// (顺序与占位符一一对应)。用属性而不是在 JS 里写死,是为了让"文案和快捷键"
-/// 就留在标记旁边 —— 加一个按钮时不必再来改这里。
+/// (顺序与占位符一一对应)。data-accel 的取值优先写 keymap 动作名(如
+/// 'term.copy',自定义键位生效),也兼容裸 spec(如 'mod+T');动作名解析
+/// 由 keymap.accelSpec 提供,这里延迟取用避免 core↔keymap 循环依赖。
+/// 用属性而不是在 JS 里写死,是为了让"文案和快捷键"就留在标记旁边 ——
+/// 加一个按钮时不必再来改这里。
 export function applyAccelTitles(root = document) {
+  // 惰性 import 不可用(同步函数),用模块注册:entry.js boot 时注入。
+  const resolve = applyAccelTitles._accelSpec || ((s) => accel(s));
   for (const el of root.querySelectorAll('[data-accel]')) {
-    const specs = String(el.dataset.accel).split('|').map((s) => accel(s.trim()));
+    const specs = String(el.dataset.accel).split('|').map((s) => resolve(s.trim()));
     let title = el.dataset.title || '';
     specs.forEach((k, i) => { title = title.split('%' + (i + 1)).join(k); });
     el.title = title;
@@ -139,12 +145,21 @@ export function applyAccelTitles(root = document) {
 
 /* ---------------- 通用 UI ---------------- */
 
+/// 通知图标按类型区分;长消息(如具体失败原因)自动换行完整展示。
+const TOAST_ICONS = { success: 'checkCircle', error: 'xCircle', warn: 'alert', info: 'info' };
+
 export function toast(msg, type = '') {
   const el = document.createElement('div');
   el.className = 'toast ' + type;
-  el.textContent = msg;
+  const iconEl = document.createElement('span');
+  iconEl.className = 'toast-icon';
+  iconEl.innerHTML = icon(TOAST_ICONS[type] || 'info');
+  const body = document.createElement('span');
+  body.className = 'toast-body';
+  body.textContent = msg;
+  el.appendChild(iconEl); el.appendChild(body);
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), 4000);
+  setTimeout(() => el.remove(), 6000);
 }
 
 /// 复制文本到剪贴板:优先 async Clipboard API,被拒时退回 execCommand('copy')。
@@ -520,6 +535,8 @@ export function showCtxMenu(x, y, items) {
     btn.innerHTML = `<span class="ctx-label"></span>${it.key ? '<span class="ctx-key"></span>' : ''}`;
     btn.querySelector('.ctx-label').textContent = it.label;
     if (it.key) btn.querySelector('.ctx-key').textContent = it.key;
+    // 可选 tips:与普通按钮 title 同语义(悬停展示说明)
+    if (it.title) btn.title = it.title;
     btn.disabled = !!it.disabled;
     btn.setAttribute('role', it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem');
     if (it.checked !== undefined) btn.setAttribute('aria-checked', String(!!it.checked));

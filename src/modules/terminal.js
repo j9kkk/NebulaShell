@@ -1,5 +1,7 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, accel, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, isAppModifier, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
+import { $, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, isAppModifier, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
+import { icon } from '../shared/icons.js';
+import { accelOf } from './keymap.js';
 import { DIVIDER_SIZE, layoutMinSize, paneCapacity, paneMinSize, planGrid } from './terminal-layout.js';
 import { renderSplitTree, replaceLayoutContent } from './split-layout-renderer.js';
 import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, workspaceSignature } from './terminal-workspace.js';
@@ -63,7 +65,7 @@ export function makeTab(tabId) {
   const el = document.createElement('div');
   el.className = 'tab';
   el.dataset.tab = tabId;
-  el.innerHTML = '<span class="tab-dot connecting"></span><span class="tab-title">新标签</span><button class="tab-close" title="关闭标签">✕</button>';
+  el.innerHTML = `<span class="tab-dot connecting"></span><span class="tab-title">新标签</span><button class="tab-close" title="关闭标签">${icon('x')}</button>`;
   el.addEventListener('click', (e) => {
     if (e.target.classList.contains('tab-close')) return;
     activateTab(tabId);
@@ -127,7 +129,7 @@ export function openTabCtxMenu(x, y, tabId) {
   const idx = ids.indexOf(tabId);
   const firstSession = [...state.sessions.values()].find((s) => s.tabId === tabId);
   showCtxMenu(x, y, [
-    { label: '关闭标签', key: accel('mod+W'), run: () => closeTab(tabId) },
+    { label: '关闭标签', key: accelOf('workspace.close'), run: () => closeTab(tabId) },
     { label: '关闭其他标签', disabled: ids.length <= 1, run: () => { for (const id of ids) if (id !== tabId) closeTab(id); } },
     { label: '关闭右侧标签', disabled: idx >= ids.length - 1, run: () => { for (const id of ids.slice(idx + 1)) closeTab(id); } },
     '-',
@@ -311,7 +313,7 @@ export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
   const closeBtn = document.createElement('button');
   closeBtn.className = 'pane-close-btn';
   closeBtn.title = '关闭该窗格';
-  closeBtn.textContent = '✕';
+  closeBtn.innerHTML = icon('x');
   closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
   closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -319,8 +321,8 @@ export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
   });
   const zoomBtn = document.createElement('button');
   zoomBtn.className = 'pane-zoom-btn';
-  zoomBtn.title = `放大该窗格(${accel('mod+shift+Enter')} 还原)`;
-  zoomBtn.textContent = '⤢';
+  zoomBtn.title = `放大该窗格(${accelOf('pane.zoom')} 还原)`;
+  zoomBtn.innerHTML = icon('zoom');
   zoomBtn.addEventListener('mousedown', (e) => e.stopPropagation());
   zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(paneId, tabId); });
   el.appendChild(closeBtn);
@@ -341,7 +343,7 @@ export function syncPaneButtons(tab = activeTab()) {
       zoom.title = single ? '只有一个窗格,无需放大' : !zoomable ? '连接后可放大' : enlarged ? '还原分屏布局' : '放大该窗格';
       zoom.setAttribute('aria-label', zoom.title);
       zoom.setAttribute('aria-pressed', String(enlarged));
-      zoom.textContent = enlarged ? '⤡' : '⤢';
+      zoom.textContent = ''; zoom.innerHTML = icon(enlarged ? 'zoomOff' : 'zoom');
     }
   }
 }
@@ -494,8 +496,8 @@ export function renderTabLayout(tab, root) {
       root.appendChild(pane.el);
       const chip = document.createElement('span');
       chip.className = 'zoom-chip';
-      chip.title = `点击还原布局(${accel('mod+shift+Enter')})`;
-      chip.textContent = '⤢ 已放大';
+      chip.title = `点击还原布局(${accelOf('pane.zoom')})`;
+      chip.textContent = '已放大';
       chip.addEventListener('click', () => togglePaneZoom(tab.zoomPaneId, tab.id));
       root.appendChild(chip);
     } else if (tab.layout) {
@@ -637,7 +639,7 @@ export function renderPickers(tab = activeTab()) {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'pane-picker-close';
     closeBtn.title = '关闭该窗格';
-    closeBtn.textContent = '✕';
+    closeBtn.innerHTML = icon('x');
     closeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       closeActivePane(paneId, tabId);
@@ -922,6 +924,91 @@ export function resizeResizeSync() {
   }, 150);
 }
 
+/* ---------------- 选中内容悬浮「解释」按钮 ---------------- */
+
+/// 全局唯一悬浮按钮:任一会话出现选区时,定位到选区末字符后方。
+/// 挂 body(fixed 定位),不随任何窗格 transform/滚动容器裁切。
+let explainBubble = null;
+let explainBubbleFor = null; // 当前按钮归属的 session(切会话/清选区时隐藏)
+
+function explainBubbleEl() {
+  if (explainBubble) return explainBubble;
+  explainBubble = document.createElement('button');
+  explainBubble.id = 'ai-explain-bubble';
+  explainBubble.type = 'button';
+  explainBubble.className = 'ai-explain-bubble';
+  explainBubble.textContent = '🔍';
+  // tips 与原「解释选中内容」按钮一致
+  explainBubble.title = '解释选中内容';
+  explainBubble.setAttribute('aria-label', '解释选中内容');
+  // 点击即用当前归属会话的选区发起解释;mousedown 先行,避免点击时先清掉 xterm 选区
+  explainBubble.addEventListener('mousedown', (e) => e.preventDefault());
+  explainBubble.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // 先取归属会话再隐藏:hideExplainBubble 会清空 explainBubbleFor
+    const s = explainBubbleFor;
+    hideExplainBubble();
+    const sel = s ? s.term.getSelection() : '';
+    if (!sel) return toast('请先在终端中选中要解释的内容', 'error');
+    (bindSelectionExplain._aiSend || ((sel) => console.warn('aiSend 未注入')))(sel, 'explain');
+  });
+  document.body.appendChild(explainBubble);
+  return explainBubble;
+}
+
+function hideExplainBubble() {
+  if (explainBubble) explainBubble.classList.remove('show');
+  explainBubbleFor = null;
+}
+
+export function bindSelectionExplain(session) {
+  const compute = () => {
+    const term = session.term;
+    let sel = '';
+    try { sel = term.getSelection(); } catch { /* ignore */ }
+    if (!sel || session.paneId !== focusedPaneId() || !session.pane?.isConnected) {
+      if (explainBubbleFor === session) hideExplainBubble();
+      return;
+    }
+    // 选区末字符的视口坐标:走 xterm 内部选择服务的 selectionEnd([x, y],
+    // y 为含 ybase 的绝对 buffer 行),换算到可视行列再乘 cell 尺寸
+    let x = 0, y = 0, ok = false;
+    try {
+      const svc = term._core?._selectionService;
+      const end = svc?.selectionEnd;
+      if (end) {
+        const [endX, endAbsY] = end;
+        const buf = term.buffer.active;
+        const viewY = endAbsY - buf.viewportY;
+        // 只处理可视区内的选区末尾(滚出视口的选区不弹按钮)
+        if (viewY >= 0 && viewY < term.rows) {
+          const rowsEl = term.element.querySelector('.xterm-rows');
+          const dim = rowsEl?.getBoundingClientRect();
+          const cellW = dim ? (dim.width / term.cols) : 8;
+          const cellH = dim ? (dim.height / term.rows) : 16;
+          const paneRect = session.pane.getBoundingClientRect();
+          x = paneRect.left + (endX + 1) * cellW;
+          y = paneRect.top + (viewY + 1) * cellH;
+          ok = true;
+        }
+      }
+    } catch { /* 内部 API 不可用:不弹按钮 */ }
+    if (!ok) { if (explainBubbleFor === session) hideExplainBubble(); return; }
+    const bubble = explainBubbleEl();
+    explainBubbleFor = session;
+    bubble.classList.add('show');
+    const bw = bubble.offsetWidth || 28, bh = bubble.offsetHeight || 28;
+    bubble.style.left = Math.min(x + 6, window.innerWidth - bw - 8) + 'px';
+    bubble.style.top = Math.max(8, y - bh - 4) + 'px';
+  };
+  try {
+    session.term.onSelectionChange(compute);
+  } catch { /* 老版本 xterm 无此事件:功能降级为无悬浮按钮 */ }
+  // 选区随滚动/会话切换变化:滚轮与焦点切换时重算或隐藏
+  session.term.onScroll?.(() => { if (explainBubbleFor === session) compute(); });
+  session.pane?.addEventListener?.('scroll', () => { if (explainBubbleFor === session) compute(); }, true);
+}
+
 export function createSession(host, paneId, tabId, dir, options = {}) {
   // Resolve explicit pane ownership before any active-tab accessor or await.
   let tab = paneId ? paneOwner(paneId, tabId) : (tabId ? state.tabs.get(tabId) : activeTab());
@@ -1055,6 +1142,7 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   // 标签元素由标签模型持有(不再每个会话建一个标签):
   // 一个标签可在其内部承载多个分屏窗格。
   const session = { sessionId, host, term, fit, search, paneId: targetPaneId, pane, tabId: tab.id, status: 'connecting', readOnly: false, histBuf: '', inAltScreen: false, reconnectAttempt: 0, connection: host.quick ? { kind: 'quick', host: { ...host } } : { kind: 'saved', hostId: host.id }, connectionEpoch: 0, remoteCwd: null, lastCmd: '', lastOutput: '', collectOutput: false };
+  bindSelectionExplain(session);
   // OSC 7(shell 集成):部分 shell 配置后会在每个提示符前上报当前目录
   // (\x1b]7;file://host/path\x07)。顺路记录到 remoteCwd,文件面板首次打开时
   // 若 exec 探测不可用,可作为初始目录的兜底。格式不符一律忽略,不吃掉事件。
@@ -1294,7 +1382,7 @@ export function updateStatusbar(session, error = session?.lastError) {
   btnLog.classList.toggle('recording', connected && !!session.logActive);
   if (connected) {
     dot.className = 'dot connected';
-    text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 📢广播中' : '');
+    text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 广播中' : '');
     setBtn(btnRe, false, '已连接');
     setBtn(btnDis, true, '断开连接');
   } else if (connecting) {
@@ -1766,7 +1854,7 @@ export function refreshBroadcast() {
       $('#tabbar').insertAdjacentElement('afterend', bar);
     }
     bar.classList.remove('hidden');
-    bar.innerHTML = `<b>📢 广播中 → ${writableBroadcastSessions().length} 个可写会话（已选 ${state.broadcast.size}）</b><span class="grow"></span><button id="btn-broadcast-stop" class="btn sm">停止广播</button>`;
+    bar.innerHTML = `<b>${icon('megaphone')} 广播中 → ${writableBroadcastSessions().length} 个可写会话（已选 ${state.broadcast.size}）</b><span class="grow"></span><button id="btn-broadcast-stop" class="btn sm">停止广播</button>`;
     $('#btn-broadcast-stop').addEventListener('click', () => setBroadcast(null));
   } else if (bar) {
     bar.classList.add('hidden');

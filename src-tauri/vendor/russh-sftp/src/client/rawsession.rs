@@ -17,8 +17,8 @@ use crate::{
     client::{run, Config},
     de,
     extensions::{
-        self, ExpandPathExtension, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs,
-        StatvfsExtension,
+        self, ExpandPathExtension, FsyncExtension, HardlinkExtension, LimitsExtension,
+        PosixRenameExtension, Statvfs, StatvfsExtension,
     },
     protocol::{
         Attrs, Close, Data, Extended, ExtendedReply, FSetStat, FileAttributes, Fstat, Handle, Init,
@@ -758,6 +758,27 @@ impl RawSftpSession {
             .extended(
                 extensions::HARDLINK,
                 HardlinkExtension {
+                    oldpath: oldpath.into(),
+                    newpath: newpath.into(),
+                }
+                .try_into()?,
+            )
+            .await?;
+
+        into_status!(result)
+    }
+
+    /// `posix-rename@openssh.com`: rename that overwrites an existing target,
+    /// unlike protocol-level RENAME which OpenSSH refuses with a generic Failure.
+    pub async fn posix_rename<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<Status>
+    where
+        O: Into<String>,
+        N: Into<String>,
+    {
+        let result = self
+            .extended(
+                extensions::POSIX_RENAME,
+                PosixRenameExtension {
                     oldpath: oldpath.into(),
                     newpath: newpath.into(),
                 }

@@ -623,9 +623,11 @@ pub async fn nebula_invoke(
             drop(reg);
             r
         }
-        // 右键「打开」:下载到临时目录后交系统默认程序(test_mode 只落盘不拉起)
+        // 双击「打开」:下载到临时目录后交系统默认程序(test_mode 只落盘不拉起)
         "sftp:openRemote" => {
             let test_mode = state.test_mode;
+            // 打开前读一次设置(data 锁只握到返回,不跨网络/IO)
+            let temp_root = state.store.open_temp_dir();
             sftp_op(
                 &state,
                 app.clone(),
@@ -636,6 +638,7 @@ pub async fn nebula_invoke(
                         app,
                         sid,
                         p["remotePath"].as_str().unwrap_or(""),
+                        &temp_root,
                         test_mode,
                     )
                     .await

@@ -115,8 +115,12 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
       return submit ? submit(target, text, opts) : { ok: true };
     });
   }, { context });
+  const icons = await load('../src/shared/icons.js');
+  const interaction = new vm.SyntheticModule(['popupPosition'], function () {
+    this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
+  }, { context });
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();
@@ -157,8 +161,8 @@ test('chat snapshots saved settings rather than unsaved draft or mutable message
   assert.equal(sent.ai.baseUrl, 'https://saved.example/v1');
   assert.equal(sent.ai.model, 'm1');
   assert.equal(h.model, 'm1');
-  assert.equal($('#ai-model-switch').value, 'm1');
-  assert.equal($('#ai-model-switch').disabled, true);
+  assert.equal(ai.savedAiModelId(), 'm1');
+  assert.equal($('#ai-model-trigger').disabled, true);
   state.settings.ai.model = 'm2';
   messages[0].content = 'mutated';
   assert.equal(sent.messages[0].content, 'original');
@@ -172,12 +176,12 @@ test('model switch syncs saved controls and following request while leaving acti
   await ai.switchModel('m2');
   assert.equal(state.settings.ai.model, 'm2');
   assert.equal($('#ai-model').value, 'm2');
-  assert.equal($('#ai-model-switch').value, 'm2');
+  assert.equal(ai.savedAiModelId(), 'm2');
   ai.openAiSettings();
   ai.fillPreset('deepseek');
   await ai.switchModel('m1');
   assert.equal($('#ai-model').value, 'deepseek-chat');
-  assert.equal($('#ai-model-switch').value, 'm1');
+  assert.equal(ai.savedAiModelId(), 'm1');
   const request = ai.aiRequest([], null);
   const h = state.aiReq;
   await ai.switchModel('m2');
@@ -191,10 +195,10 @@ test('model switch syncs saved controls and following request while leaving acti
 
 test('failed model switch rolls dropdown back and leaves saved settings unchanged', async () => {
   const { ai, $, state } = await setup(() => { throw new Error('disk failure'); });
-  $('#ai-model-switch').value = 'm2';
+  // 新模型菜单不再由测试直接赋值;switchModel 以参数传入,失败回滚经 savedAiModelId 断言
   await assert.rejects(ai.switchModel('m2'), /disk failure/);
   assert.equal(state.settings.ai.model, 'm1');
-  assert.equal($('#ai-model-switch').value, 'm1');
+  assert.equal(ai.savedAiModelId(), 'm1');
   assert.equal($('#ai-model-switch').disabled, false);
 });
 
@@ -203,15 +207,15 @@ test('manual model fallback stays draft-only until save; cancellation restores s
   ai.openAiSettings();
   ai.addManualAiModel(' vendor/manual-model ');
   assert.equal($('#ai-model').value, 'vendor/manual-model');
-  assert.equal($('#ai-model-switch').value, 'm1');
-  assert.ok(!$('#ai-model-switch').innerHTML.includes('vendor/manual-model'));
+  assert.equal(ai.savedAiModelId(), 'm1');
+  assert.ok(!state.settings.ai.models?.some((m) => m.id === 'vendor/manual-model')); // 未保存前不落 settings
   ai.closeAiSettings();
   assert.equal($('#ai-model').value, 'm1');
   ai.openAiSettings();
   ai.addManualAiModel('vendor/manual-model');
   await ai.saveAiSettings();
   assert.equal(state.settings.ai.model, 'vendor/manual-model');
-  assert.equal($('#ai-model-switch').value, 'vendor/manual-model');
+  assert.equal(ai.savedAiModelId(), 'vendor/manual-model');
   assert.ok(calls.at(-1).payload.ai.models.some((m) => m.id === 'vendor/manual-model'));
 });
 

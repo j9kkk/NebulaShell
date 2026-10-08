@@ -194,11 +194,29 @@ function attachMockSftp(session, tree, emit = () => {}) {
       if (!node) return fail(reqId, { code: 2 });
       sftp.attrs(reqId, memFsAttrs(node));
     });
-    // RENAME:POSIX 语义(目标存在则原子替换)—— 与 OpenSSH sftp-server 一致,
-    // 复制任务的"发布/安全覆盖"都走这条路。
+    // RENAME:协议级语义 —— 目标已存在即失败(OpenSSH 对 SSH_FXP_RENAME
+    // 目标存在一律拒绝)。原子替换必须走 posix-rename@openssh.com 扩展,
+    // 不给 RENAME 开"目标存在也成功"的口子,否则会掩盖真机
+    // "占位 0 字节文件 + 普通 RENAME 失败"的发布缺陷(e2e 假绿)。
     sftp.on('RENAME', (reqId, from, to) => {
       const rf = memFsResolve('/home/user', String(from));
       const rt = memFsResolve('/home/user', String(to));
+      const node = tree.get(rf);
+      if (!node || rf === rt) return fail(reqId, { code: 2 });
+      if (tree.has(rt)) return fail(reqId, null); // EEXIST → 泛化 Failure,同真实 OpenSSH
+      tree.set(rt, node);
+      tree.delete(rf);
+      sftp.status(reqId, SFTP_STATUS_CODE.OK);
+    });
+    // posix-rename@openssh.com:目标存在则原子替换(OpenSSH 扩展)
+    sftp.on('EXTENDED', (reqId, extName, extData) => {
+      if (extName !== 'posix-rename@openssh.com') return fail(reqId, { code: 8 }); // unsupported
+      // extData: STRING from, STRING to
+      const fromLen = extData.readUInt32BE(0);
+      const rf = memFsResolve('/home/user', extData.slice(4, 4 + fromLen).toString());
+      const toOff = 4 + fromLen;
+      const toLen = extData.readUInt32BE(toOff);
+      const rt = memFsResolve('/home/user', extData.slice(toOff + 4, toOff + 4 + toLen).toString());
       const node = tree.get(rf);
       if (!node || rf === rt) return fail(reqId, { code: 2 });
       tree.delete(rt);

@@ -5,9 +5,10 @@ export async function auditNarrowPanels() {
   const panels = [...document.querySelectorAll('#sidebar, #ai-panel')];
   const controls = [...document.querySelectorAll('#ai-send')];
   const saved = [...panels, ...controls].map(el => ({ el, style: el.style.cssText, className: el.className }));
-  const select = document.querySelector('#ai-model-switch');
-  const options = select.innerHTML;
-  const selected = select.value;
+  // 模型选择器现为「触发钮 + 自定义菜单」(#ai-model-name 展示当前模型);
+  // 长名溢出审计改为改写触发钮文字(2026-10-08 composer 重构)。
+  const modelName = document.querySelector('#ai-model-name');
+  const options = modelName ? modelName.textContent : '';
   const issues = [];
   let samples = 0;
   // rAF 双帧等待 + 定时器兜底:窗口被遮挡时 WKWebView 可能完全停摆 rAF,
@@ -41,7 +42,7 @@ export async function auditNarrowPanels() {
     }
   };
   try {
-    select.innerHTML = '<option>provider/very-long-model-name-with-version-2026</option>';
+    if (modelName) modelName.textContent = 'provider/very-long-model-name-with-version-2026';
     for (const panel of panels) {
       for (const other of panels) other.classList.toggle('hidden', other !== panel && other.id !== 'sidebar');
       panel.classList.remove('collapsed', 'hidden');
@@ -66,8 +67,7 @@ export async function auditNarrowPanels() {
     if (Math.abs(collapsed.top - status.top) > 1) issues.push({ kind: 'collapsed-footer-misaligned' });
     return { samples, issues };
   } finally {
-    select.innerHTML = options;
-    select.value = selected;
+    if (modelName) modelName.textContent = options;
     for (const { el, style, className } of saved) { el.style.cssText = style; el.className = className; }
     await frame();
   }

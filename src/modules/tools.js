@@ -1,5 +1,6 @@
 // 批量执行、命令历史、端口转发
 import { $, api, askConfirm, closeModal, copyText, makeDraggable, openModal, state, stripFpMark, toast } from './core.js';
+import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
 import { writeSessionInput } from './terminal.js';
 
@@ -462,11 +463,11 @@ export async function toggleHistory() {
     // 标题栏兼作拖拽把手;带关闭按钮,不必再靠 Esc 或重复点按钮退出
     panel.innerHTML = `
       <div class="pop-head">
-        <span class="pop-title">🕘 命令历史</span>
+        <span class="pop-title">命令历史</span>
         <span class="spacer"></span>
         <input id="hist-search" class="inp" placeholder="过滤历史…" />
         <button id="hist-clear" class="btn sm">清空</button>
-        <button id="hist-close" class="btn icon" title="关闭">✕</button>
+        <button id="hist-close" class="btn icon" title="关闭">${icon('x')}</button>
       </div>
       <div id="hist-list"></div>`;
     $('#term-stack').appendChild(panel);

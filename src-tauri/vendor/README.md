@@ -8,6 +8,11 @@
   笔 READDIR 在途(协议允许并发未应答请求,按 id 配对),按请求顺序收割;
   首个 EOF 停发,在途请求按协议再次返回 EOF,照常收割丢弃。
 - `src/client/session.rs`:`read_dir` 改调上述方法,`READDIR_WINDOW = 8`。
+- `src/client/rawsession.rs` + `session.rs`:新增 `posix_rename` ——
+  `posix-rename@openssh.com` 扩展(`extensions.rs` 加 `POSIX_RENAME` 常量与
+  `PosixRenameExtension`)。协议层 RENAME 在目标已存在时被 OpenSSH 拒绝并返回
+  泛化的 Failure,覆盖发布(跨主机复制/上传的 .part 发布)必须走该扩展;
+  服务器不支持时回退普通 RENAME(无覆盖语义)。
 
 受影响面:`sftp::list`、目录/批量下载(`download_tree`)、跨主机复制引擎的
 目录枚举全部经由 `SftpSession::read_dir`,自动加速。除列目录外与上游 2.4.0

@@ -1,5 +1,6 @@
 // Outer tab geometry and mounting. Inner trees and terminal instances are never rewritten.
 import { layoutMinSize, paneMinSize, planGrid } from './terminal-layout.js';
+import { icon } from '../shared/icons.js';
 import { renderSplitTree } from './split-layout-renderer.js';
 
 export const TILE_HEADER_HEIGHT = 28;
@@ -43,7 +44,7 @@ export function ensureWorkspaceTile(tab, { document, activate, close }) {
   title.className = 'workspace-tile-title';
   const closeButton = document.createElement('button');
   closeButton.className = 'workspace-tile-close';
-  closeButton.textContent = '✕';
+  closeButton.innerHTML = icon('x');
   closeButton.title = '关闭标签';
   closeButton.setAttribute('aria-label', '关闭标签');
   // A close operation on an inactive tile must not first activate it.

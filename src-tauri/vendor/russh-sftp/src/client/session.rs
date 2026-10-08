@@ -234,6 +234,25 @@ impl SftpSession {
         self.session.rename(oldpath, newpath).await.map(|_| ())
     }
 
+    /// `posix-rename@openssh.com`: atomic rename that overwrites an existing target.
+    /// Falls back to plain RENAME when the server lacks the extension.
+    pub async fn posix_rename<O, N>(&self, oldpath: O, newpath: N) -> SftpResult<()>
+    where
+        O: Into<String>,
+        N: Into<String>,
+    {
+        let oldpath = oldpath.into();
+        let newpath = newpath.into();
+        match self.session.posix_rename(&oldpath, &newpath).await {
+            // Server without the extension reports OP_UNSUPPORTED; plain
+            // RENAME is then the only option (no overwrite semantics).
+            Err(Error::Status(s)) if s.status_code == StatusCode::OpUnsupported => {
+                self.session.rename(&oldpath, &newpath).await.map(|_| ())
+            }
+            other => other.map(|_| ()),
+        }
+    }
+
     /// Creates a symlink of the specified target.
     pub async fn symlink<P, T>(&self, path: P, target: T) -> SftpResult<()>
     where

@@ -1,6 +1,8 @@
 // AI 助手:流式对话、模型切换、设置弹窗、诊断
 import { $, api, askConfirm, closeModal, copyText, openModal, state, toast } from './core.js';
+import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
+import { popupPosition } from './interaction.js';
 import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
 import { renderMarkdown } from '../shared/markdown.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
@@ -20,6 +22,8 @@ export function aiEndpointIdentity(ai = {}) {
 }
 
 function savedAi() { return (state.settings && state.settings.ai) || {}; }
+/// 当前生效模型 id:供 __nbTest 钩子等外部观测(原 #ai-model-switch.value 语义)
+export function savedAiModelId() { return savedAi().model || ''; }
 
 function savedModels() {
   const s = savedAi();
@@ -388,7 +392,7 @@ export function renderAiMessage(role, text, opts) {
   copy.className = 'ai-copy';
   copy.title = '复制这条内容';
   copy.setAttribute('aria-label', '复制这条内容');
-  copy.textContent = '⧉';
+  copy.innerHTML = icon('copy');
   copy.addEventListener('click', async (ev) => {
     ev.stopPropagation();
     const ok = await copyText(el.__raw ?? '');
@@ -489,11 +493,11 @@ export function clearBubbleState(bubble) {
 }
 
 export function setAiBusy(busy) {
-  // 单按钮双状态:空闲=发送(primary),流式=停止(危险色,可点击中止)。
+  // 单按钮双状态:空闲=↑ 发送,流式=■ 停止(危险色,可点击中止)。
   // 忙时保持可点 —— 此时按钮的职责已从发送切换为停止。
   const send = $('#ai-send');
   send.classList.toggle('stop', busy);
-  send.textContent = busy ? '⏹ 停止' : '发送';
+  send.innerHTML = icon(busy ? 'stop' : 'arrowUpSend', { size: 16 });
   send.title = busy ? '停止生成' : '发送';
   renderModelSwitch();
 }
@@ -908,7 +912,7 @@ export function renderModelChips() {
     del.className = 'model-chip-del';
     del.title = `移除 ${m.id}（不再启用）`;
     del.setAttribute('aria-label', `移除模型 ${m.id}`);
-    del.textContent = '✕';
+    del.innerHTML = icon('x');
     del.addEventListener('click', (e) => {
       e.stopPropagation();
       applySelectedModels(state.aiSelected.filter((x) => x.id !== m.id));
@@ -929,16 +933,51 @@ export function renderModelChips() {
 
 /* ---------------- 资源监控 ---------------- */
 
-/// 对话页的模型下拉:只列"已勾选启用"的模型 —— 未勾选的模型不应能被选用。
+/// 对话页的模型选择:无边框触发钮(当前模型名 + ⌄)+ 自定义浮层菜单。
+/// 只列"已勾选启用"的模型 —— 未勾选的模型不应能被选用;菜单尾部带"管理模型"入口。
 export function renderModelSwitch() {
-  const sel = $('#ai-model-switch');
   const current = savedAi().model || '';
   const models = savedModels();
-  sel.innerHTML = models.length
-    ? models.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name || m.id)}</option>`).join('')
-    : '<option value="">未启用模型</option>';
-  if (current && models.some((m) => m.id === current)) sel.value = current;
-  sel.disabled = models.length === 0 || !!state.aiReq || modelSwitchPending;
+  const active = models.find((m) => m.id === current);
+  $('#ai-model-name').textContent = active ? (active.name || active.id) : '未启用模型';
+  $('#ai-model-trigger').disabled = models.length === 0 || !!state.aiReq || modelSwitchPending;
+  // 菜单若开着,同步刷新条目(切换完成/禁用态变化时)
+  renderModelMenu();
+  if ($('#ai-model-menu').classList.contains('hidden')) return;
+  if (models.length === 0 || !!state.aiReq || modelSwitchPending) closeModelMenu();
+}
+
+function renderModelMenu() {
+  const list = $('#ai-model-menu-list');
+  if (!list) return;
+  const current = savedAi().model || '';
+  const models = savedModels();
+  list.innerHTML = models.map((m) => `
+    <button class="ai-model-menu-item${m.id === current ? ' active' : ''}" type="button" role="menuitem" data-model="${escapeHtml(m.id)}">
+      <span>${escapeHtml(m.name || m.id)}</span>
+      <span class="check" aria-hidden="true">✓</span>
+    </button>`).join('');
+}
+
+export function openModelMenu() {
+  const menu = $('#ai-model-menu');
+  const trigger = $('#ai-model-trigger');
+  if (trigger.disabled) return;
+  renderModelMenu();
+  menu.classList.remove('hidden');
+  // 菜单展开在触发钮上方(输入区在面板底部,向下没有空间),右缘对齐触发钮
+  const tr = trigger.getBoundingClientRect();
+  const size = { width: menu.offsetWidth || 220, height: menu.offsetHeight || 200 };
+  const pos = popupPosition(
+    { top: tr.top, bottom: tr.top, left: tr.left, right: tr.right },
+    size, { width: window.innerWidth, height: window.innerHeight },
+  );
+  menu.style.left = pos.left + 'px';
+  menu.style.top = Math.max(8, tr.top - size.height - 6) + 'px';
+}
+
+export function closeModelMenu() {
+  $('#ai-model-menu').classList.add('hidden');
 }
 
 let modelSwitchPending = false;

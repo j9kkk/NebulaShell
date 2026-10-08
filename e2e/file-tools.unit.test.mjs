@@ -83,7 +83,8 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     './core.js': { $, api, state, askConfirm: confirm, askPrompt: async () => null, copyText: async () => true, toast: () => {},
       showCtxMenu: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
       setModalDismissHandler: (element, handler) => { element.dismiss = handler; },
-      hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim() },
+      hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim(),
+      applyAccelTitles: () => {} },
     './hosts.js': { escapeHtml: (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;') },
     './terminal.js': { writeSessionInput: write },
     // file-transfer.js 由 e2e 覆盖真实链路;单测里用记录型桩,断言任务注册发生过
@@ -105,6 +106,8 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
       submitCopyTask: async (params) => { calls.push({ channel: 'task:submitCopy', payload: params }); return {}; },
     },
     './interaction.js': { popupPosition: () => ({ left: 100, top: 200 }) },
+    // sftp.js 右键菜单标签用 accelOf 渲染快捷键提示;单测断言不涉及具体键位
+    './keymap.js': { accelOf: () => '⌘A', matchAction: () => false, accelSpec: (s) => s },
     // file-transfer.js 引 sftp.js 的窗格查找;任务中心单测用不到,给空实现
     './sftp.js': {
       findFilePane: () => null, filePaneFromEl: () => null,
@@ -515,6 +518,24 @@ test('multi-select: click/cmd/shift semantics and selection survives refresh int
   assert.equal(pane.selectedNames.length, 3);
   await h.module.loadFileDir(pane, '/other');
   assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['a.txt', 'c']));
+});
+
+test('invertSelection swaps selection against current entries', async () => {
+  const h = await harness('sftp', { invoke: async () => [] });
+  h.connect('a', '/d');
+  const pane = h.mkPane('a', { cwd: '/d' });
+  pane.entries = [{ name: 'a.txt' }, { name: 'b.txt' }, { name: 'c' }];
+  // 部分选中 → 反选 = 补集(保持 entries 顺序)
+  h.module.selectEntries(pane, pane.entries[0], 0, {});
+  h.module.invertSelection(pane);
+  assert.equal(JSON.stringify(pane.selectedNames), JSON.stringify(['b.txt', 'c']));
+  // 全选 → 反选 = 清空
+  h.module.selectAllEntries(pane);
+  h.module.invertSelection(pane);
+  assert.equal(pane.selectedNames.length, 0);
+  // 空选 → 反选 = 全选
+  h.module.invertSelection(pane);
+  assert.equal(pane.selectedNames.length, 3);
 });
 
 test('multi-download routes single files to save dialog and batches to folder picker', async () => {

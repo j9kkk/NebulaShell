@@ -63,7 +63,9 @@ async function fixture() {
     set innerHTML(html) {
       this.replaceChildren();
       // Only small, static chrome templates are parsed, not terminal content.
-      for (const match of html.matchAll(/<(span|button|div)([^>]*)>([^<]*)<\/(?:span|button|div)>/g)) {
+      // shared/icons.js 注入的内联 SVG 会出现在按钮里:先把 svg 整体剥掉再匹配子元素。
+      const stripped = html.replace(/<svg[\s\S]*?<\/svg>/g, '');
+      for (const match of stripped.matchAll(/<(span|button|div)([^>]*)>([^<]*)<\/(?:span|button|div)>/g)) {
         const child = new Element(match[1]); child.className = match[2].match(/class="([^"]*)"/)?.[1] || '';
         child.textContent = match[3]; this.appendChild(child);
       }

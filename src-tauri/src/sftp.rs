@@ -221,9 +221,15 @@ pub async fn upload_with_policy<
                 .open_with_flags(&remote_path, upload_flags(conflict_policy)?)
                 .await
             {
-                // 独占创建成功 = 名字可用,先关掉;真正写入在 .part 上进行
+                // 独占创建成功 = 名字可用。探测本身已在服务器留下 0 字节占位
+                // 文件 —— 必须立即删除:发布若走普通 RENAME(不支持
+                // posix-rename 的服务端)目标存在必失败,占位文件就会以
+                // "0 字节上传成功"的假象留在服务器上。
                 Ok(f) => {
-                    let _ = f.close().await;
+                    drop(f);
+                    if let Err(e) = sftp.remove_file(&remote_path).await {
+                        return Err(format!("上传冲突探测清理失败: {e}"));
+                    }
                     break;
                 }
                 Err(e) => {
@@ -321,8 +327,16 @@ pub async fn upload_with_policy<
         let _ = sftp.remove_file(&part_path).await;
         return Err(e.to_string());
     }
-    // 发布:rename(OpenSSH = 原子替换)。覆盖时旧文件在替换瞬间前仍完整。
-    if let Err(e) = sftp.rename(&part_path, &final_path).await {
+    // 发布:non-overwrite 路径的目标已确认不存在(占位文件也已清理),
+    // 普通 RENAME 在所有 SFTP 服务端语义一致;只有 overwrite 才需要
+    // posix-rename 的"目标存在则原子替换"扩展。不支持该扩展的服务端
+    // (NAS/嵌入式等)会回退成"删目标+普通 RENAME",窗口极小但语义正确。
+    let published = if conflict_policy == "overwrite" {
+        sftp.posix_rename(&part_path, &final_path).await
+    } else {
+        sftp.rename(&part_path, &final_path).await
+    };
+    if let Err(e) = published {
         let _ = sftp.remove_file(&part_path).await;
         return Err(format!("发布上传文件失败: {e}"));
     }
@@ -397,12 +411,13 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
     Ok(json!({ "localPath": local_path }))
 }
 
-/// 右键「打开」:把远端文件下载到本机临时目录后交给系统默认程序。
+/// 双击「打开」:把远端文件下载到本机临时目录后交给系统默认程序。
 ///
-/// 每次打开都落在独立的 `NebulaShell-open/<时间戳>/` 子目录 —— 同名文件反复
-/// 打开互不覆盖,旧副本被本地程序占用(如 Excel 锁定)也不影响新副本;
-/// 超过 24h 的旧目录在下次打开时顺手清理。test_mode 下不真正拉起系统程序
-/// (e2e 会在测试机上弹窗),只验证"下载落盘"这一段。
+/// 每次打开都落在 `<临时缓存根>/NebulaShell-open/<时间戳>/` 子目录(缓存根可在
+/// 设置中配置,空 = 系统临时目录)—— 同名文件反复打开互不覆盖,旧副本被本地
+/// 程序占用(如 Excel 锁定)也不影响新副本;超过 24h 的旧目录在下次打开时顺手
+/// 清理。test_mode 下不真正拉起系统程序(e2e 会在测试机上弹窗),只验证
+/// "下载落盘"这一段。
 pub async fn open_remote<
     R: tauri::Runtime,
     E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
@@ -411,6 +426,7 @@ pub async fn open_remote<
     app: E,
     session_id: String,
     remote_path: &str,
+    temp_root: &str,
     test_mode: bool,
 ) -> Result<Value, String> {
     let meta = sftp
@@ -425,7 +441,12 @@ pub async fn open_remote<
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file.bin".into());
     let name = sanitize_local_name(&raw_name);
-    let root = std::env::temp_dir().join("NebulaShell-open");
+    let root = if temp_root.trim().is_empty() {
+        std::env::temp_dir()
+    } else {
+        PathBuf::from(temp_root.trim())
+    }
+    .join("NebulaShell-open");
     let dir = root.join(format!("open-{}", chrono::Local::now().timestamp_millis()));
     tokio::fs::create_dir_all(&dir)
         .await

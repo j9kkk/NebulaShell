@@ -23,6 +23,8 @@ fn defaults() -> Value {
         "settings": {
             "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "models": [], "apiKey": "" },
             "terminal": { "fontSize": 13, "theme": "nebula", "scrollback": 2000 },
+            // 文件「双击打开」临时副本的缓存根目录;空 = 默认(系统临时目录/NebulaShell-open)
+            "openTempDir": "",
             "clouds": {
                 "tencent": { "key": "", "secret": "", "endpoint": "" },
                 "aliyun": { "key": "", "secret": "", "endpoint": "" }
@@ -292,6 +294,16 @@ impl Store {
         }
     }
 
+    /// 双击打开临时副本的缓存根目录;空 = 系统临时目录(默认)。
+    /// 仅做内存读取(data 锁很短),不做路径校验 —— 目录由 open_remote 兜底创建。
+    pub fn open_temp_dir(&self) -> String {
+        let data = self.data.lock().unwrap();
+        data["settings"]["openTempDir"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    }
+
     /// 解密:enc: → keyring;plain: → base64;失败返回空串(与 Electron 版一致)
     pub fn dec(&self, cipher: &str) -> String {
         if cipher.is_empty() {
@@ -340,6 +352,10 @@ impl Store {
         }
         if data["settings"]["terminal"].is_null() {
             data["settings"]["terminal"] = defaults()["settings"]["terminal"].clone();
+        }
+        // 双击打开临时目录(2026-10-08):老配置补默认空值 = 用系统临时目录
+        if data["settings"]["openTempDir"].is_null() {
+            data["settings"]["openTempDir"] = json!("");
         }
         for p in ["tencent", "aliyun"] {
             if data["settings"]["clouds"][p].is_null() {
@@ -969,6 +985,7 @@ impl Store {
                 "apiKeySet": !self.dec(ai["apiKeyEnc"].as_str().unwrap_or("")).is_empty()
             },
             "terminal": data["settings"]["terminal"].clone(),
+            "openTempDir": data["settings"]["openTempDir"].clone(),
             "snippets": data["snippets"].clone(),
             // 多账号云凭据:公开形态不回传 Secret,只给 keyId 与"是否已存"
             "cloudAccounts": data["settings"]["cloudAccounts"]
@@ -1111,6 +1128,10 @@ impl Store {
                     term["theme"] = v.clone();
                 }
             }
+        }
+        // 双击打开临时目录:trim 后存;留空表示恢复默认(系统临时目录)
+        if let Some(v) = patch["openTempDir"].as_str() {
+            data["settings"]["openTempDir"] = json!(v.trim());
         }
         if let Some(ai) = patch["ai"].as_object() {
             let out = &mut data["settings"]["ai"];

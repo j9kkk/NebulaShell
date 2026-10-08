@@ -1,7 +1,7 @@
 {
   "name": "nebulashell",
   "productName": "NebulaShell",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "NebulaShell 星云终端 — 基于 Tauri 2 + Rust 的跨平台 SSH 客户端（macOS / Windows / Linux），内置 AI 助手与腾讯云/阿里云主机自动发现",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,8 @@
     "tauri": "tauri",
     "test": "npm run test:rust && npm run test:web",
     "test:rust": "cd src-tauri && cargo test",
-    "test:web": "node e2e/ui.e2e.mjs"
+    "test:web": "node e2e/ui.e2e.mjs",
+    "commit-review": "node scripts/commit-review.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.4",

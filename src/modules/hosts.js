@@ -1,5 +1,6 @@
 // 主机列表、主机编辑弹窗、指纹管理
 import { $, PROVIDER_LABEL, api, askConfirm, closeModal, copyText, openModal, showCtxMenu, state, toast } from './core.js';
+import { icon } from '../shared/icons.js';
 import { connectHost } from './terminal.js';
 
 export function groupOf(h) {
@@ -35,16 +36,16 @@ export function renderHosts() {
       const item = document.createElement('div');
       item.className = 'host-item' + (isActiveHost(h.id) ? ' active' : '');
       item.dataset.id = h.id;
-      const sub = `${h.username}@${h.host}:${h.port}` + (h.cloud && h.cloud.region ? `  ·  ☁ ${h.cloud.region}` : '');
+      const sub = `${h.username}@${h.host}:${h.port}` + (h.cloud && h.cloud.region ? `  ·  ${h.cloud.region}` : '');
       item.innerHTML = `
         <div class="host-main">
           <div class="host-name">${escapeHtml(h.name)}${!h.hasPassword && !h.hasKey ? '<span class="host-chip">待补全凭据</span>' : ''}</div>
           <div class="host-sub">${escapeHtml(sub)}</div>
         </div>
         <div class="host-actions">
-          <button class="hi-clone" title="克隆">⧉</button>
-          <button class="hi-edit" title="编辑">✎</button>
-          <button class="hi-del" title="删除">🗑</button>
+          <button class="hi-clone" title="克隆">${icon('copy')}</button>
+          <button class="hi-edit" title="编辑">${icon('settings')}</button>
+          <button class="hi-del" title="删除">${icon('trash')}</button>
         </div>`;
       // 普通点击:已有会话则切过去,否则连接。
       // ⌘/Ctrl+点击 或 中键:强制新开一个标签(支持同主机多会话)。

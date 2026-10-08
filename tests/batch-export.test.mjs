@@ -49,7 +49,15 @@ async function setup(invoke) {
   // Blob/URL deliberately absent: this export must go through native IPC only.
   const context = vm.createContext({ document });
   const module = new vm.SourceTextModule(await readFile(new URL('../src/modules/tools.js', import.meta.url), 'utf8'), { context });
-  await module.link((specifier) => {
+  await module.link(async (specifier) => {
+    if (specifier.startsWith('../')) {
+      // shared/ 模块用真实源码(icons.js 纯函数,无 DOM 依赖)
+      const shared = new vm.SourceTextModule(
+        await readFile(new URL(specifier.replace('../', '../src/'), import.meta.url), 'utf8'), { context, identifier: specifier });
+      await shared.link(() => { throw new Error(`Unexpected import ${specifier}`); });
+      await shared.evaluate();
+      return shared;
+    }
     const values = imports[specifier];
     assert.ok(values, `Unexpected import ${specifier}`);
     return new vm.SyntheticModule(Object.keys(values), function () {
