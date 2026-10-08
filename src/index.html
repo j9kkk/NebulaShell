@@ -6,11 +6,14 @@
   <title>NebulaShell 星云终端</title>
   <link rel="stylesheet" href="./app.css" />
 </head>
-<body>
+<!-- body class 由 build.mjs 构建期按目标平台二选一:
+     platform-darwin(macOS,原生红绿灯) / platform-nonmacos(Windows/Linux,
+     自绘 #win-controls)。见 style.css 对应分支。 -->
+<body class="platform-darwin platform-nonmacos">
   <div id="app">
     <!-- 侧边栏：主机列表 -->
     <aside id="sidebar">
-      <div class="side-header" data-tauri-drag-region>
+      <div class="side-header" data-tauri-drag-region data-platform-darwin-only="tl-row">
         <div class="logo">✦ <span class="logo-text">NebulaShell</span></div>
         <div class="logo-sub">星云终端 · SSH Client</div>
         <div class="side-actions">
@@ -86,13 +89,14 @@
             <button id="btn-about" class="btn small" data-command="app.about"><span class="mi" data-icon="info"></span><span class="mm-label">关于</span></button>
           </div>
         </div>
-        <!-- 窗口控制:最小化 / 最大化(还原) / 关闭。图标由 window-controls.js
-             按平台与最大化状态写入;关闭 hover 红色。 -->
-        <div id="win-controls" role="group" aria-label="窗口控制">
-          <button id="btn-win-min" class="win-ctl" title="最小化" aria-label="最小化"></button>
-          <button id="btn-win-max" class="win-ctl" title="最大化" aria-label="最大化"></button>
-          <button id="btn-win-close" class="win-ctl win-ctl-close" title="关闭" aria-label="关闭"></button>
-        </div>
+      </div>
+      <!-- 窗口控制(Windows/Linux):fixed 锚在视口右上角,不随 #main/AI 面板
+           挤动。图标由 window-controls.js 按最大化状态写入;关闭 hover 红色;
+           macOS(原生红绿灯)由 window-controls.js 隐藏本块。 -->
+      <div id="win-controls" role="group" aria-label="窗口控制">
+        <button id="btn-win-min" class="win-ctl" title="最小化" aria-label="最小化"></button>
+        <button id="btn-win-max" class="win-ctl" title="最大化" aria-label="最大化"></button>
+        <button id="btn-win-close" class="win-ctl win-ctl-close" title="关闭" aria-label="关闭"></button>
       </div>
       <div id="snippet-menu" class="hidden">
         <div class="pop-head">
@@ -165,7 +169,9 @@
     <!-- AI 面板 -->
     <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手面板宽度"></div>
     <aside id="ai-panel" class="hidden">
-      <div class="ai-header">
+      <!-- 空白处可拖拽窗口(data-tauri-drag-region 只在点按元素本身时生效,
+           不影响子按钮);右侧 padding 给 #win-controls 让位(Windows)。 -->
+      <div class="ai-header" data-tauri-drag-region>
         <span class="ai-title">✨ AI 助手</span>
         <span class="spacer"></span>
         <button id="ai-settings-open" class="btn icon" title="AI 设置">⚙</button>
@@ -193,9 +199,10 @@
             <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
               <span class="ai-model-dot" aria-hidden="true"></span>
               <span id="ai-model-name">未启用模型</span>
-              <span class="ai-model-caret" aria-hidden="true">⌄</span>
+              <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
             </button>
-            <!-- 发送/停止同钮双状态:空闲=↑ 发送,流式=■ 停止(见 ai.js setAiBusy) -->
+            <!-- 发送/停止同钮双状态:空闲=↑ 发送,流式=■ 停止(见 ai.js setAiBusy)。
+                 图标由 boot 时 setAiBusy(false) 初始化,不在 HTML 里放占位 —— 尺寸/逻辑单点收在 ai.js -->
             <button id="ai-send" class="btn primary ai-send" type="button" title="发送"></button>
           </div>
         </div>
@@ -566,6 +573,9 @@
        必须挂在 body:留在 #statusbar 里会被其 overflow-y:hidden 整体裁掉(开了也看不见) -->
   <div id="file-task-popover" class="task-popover hidden">
     <div id="file-task-list" class="file-task-list hidden"></div>
+    <div class="task-popover-foot">
+      <button id="btn-file-tasks-clear-all" class="task-clear-all hidden" type="button">清除所有任务</button>
+    </div>
   </div>
   <script src="./nebula-shim.js"></script>
   <script src="./app.js"></script>

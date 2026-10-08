@@ -40,6 +40,7 @@ class Element {
     return this.elements.get(selector);
   }
   addEventListener(name, callback) { this.listeners.set(name, callback); }
+  setAttribute() {}
   async fire(name, event = { target: { classList: { contains: () => false } } }) {
     return this.listeners.get(name)?.(event);
   }
@@ -86,6 +87,8 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
       hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim(),
       applyAccelTitles: () => {} },
     './hosts.js': { escapeHtml: (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;') },
+    // SVG 图标注册表:vm 桩给最小实现(占位 svg 串),测试只断言结构不断言图形
+    '../shared/icons.js': { icon: (name) => `<svg data-icon="${name}"></svg>`, ICON_NAMES: ['stub'] },
     './terminal.js': { writeSessionInput: write },
     // file-transfer.js 由 e2e 覆盖真实链路;单测里用记录型桩,断言任务注册发生过
     './file-transfer.js': {
@@ -106,6 +109,8 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
       submitCopyTask: async (params) => { calls.push({ channel: 'task:submitCopy', payload: params }); return {}; },
     },
     './interaction.js': { popupPosition: () => ({ left: 100, top: 200 }) },
+    // SVG 图标注册表:sftp.js/file-transfer.js 动态拼图标,单测只要 svg 串存在
+    '../shared/icons.js': { icon: (name) => `<svg data-icon="${name}"></svg>` },
     // sftp.js 右键菜单标签用 accelOf 渲染快捷键提示;单测断言不涉及具体键位
     './keymap.js': { accelOf: () => '⌘A', matchAction: () => false, accelSpec: (s) => s },
     // file-transfer.js 引 sftp.js 的窗格查找;任务中心单测用不到,给空实现
@@ -352,7 +357,8 @@ test('progress events route to the matching pane and never leak across panes', a
   const pa = h.mkPane('a', { cwd: '/da' });
   const pb = h.mkPane('b', { cwd: '/db' });
   h.module.routeProgress({ sessionId: 'a', op: 'upload', name: 'f.bin', remoteDir: '/da', pct: 42 });
-  const statusOf = (pane) => pane.el.querySelector('.file-status').textContent;
+  // 底部状态栏已移除:进度写入窗格数据 statusText,不再渲染 DOM
+  const statusOf = (pane) => pane.statusText;
   assert.equal(statusOf(pa), '上传 f.bin 42%');
   assert.equal(statusOf(pb), '');
   // 目录不匹配(pb 正看着 /db)的进度不写入

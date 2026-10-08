@@ -103,6 +103,20 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 /* 侧栏头部:decorations:false 后无系统标题栏,上内距从 16px 收到 10px,
    logo 行与 tabbar(40px 行高)视觉齐平。 */
 .side-header { flex: none; padding: 10px 14px 10px; border-bottom: 1px solid var(--border); }
+/* macOS(原生红绿灯,Overlay):红绿灯悬浮在窗口左上角、压在侧栏顶部。
+   参照 WorkBuddy 的两行结构:顶部拖拽行整体留白让位红绿灯(系统按钮区
+   约 78px 宽,留 88px 含呼吸空间),logo 行照常下移一行,互不打架。
+   收起态窄条(40px)红绿灯会压住内容,同样整行留白。 */
+.side-header.tl-row {
+  padding-top: 0;
+}
+.side-header.tl-row::before {
+  content: '';
+  display: block;
+  height: var(--tabbar-h);
+  margin: 0 -14px; /* 抵消 .side-header 左右 padding,拖拽区扩到整行 */
+}
+#sidebar.collapsed .side-header.tl-row::before { height: 38px; margin: 0; }
 .logo { font-size: 18px; font-weight: 700; }
 .logo-text {
   background: linear-gradient(90deg, var(--accent), var(--accent2));
@@ -200,10 +214,18 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
    曾给 AI 按钮单独加 margin-bottom:6px,把它顶高了 6px,与相邻按钮不齐。 */
 .ai-btn { flex: 0 0 auto; }
 
-/* 自定义窗口控制(decorations:false):贴 tabbar 行尾,撑满行高、无圆角,
-   hover 用底色块(Windows 标题栏习惯);关闭 hover 红底白字。
+/* 自定义窗口控制(Windows/Linux,decorations:false):fixed 锚在视口右上角,
+   不在 #main 布局流里 —— AI 面板展开挤压 #main 时按钮纹丝不动(WorkBuddy
+   右上角浮层同款做法)。撑满 tabbar 行高、无圆角,hover 用底色块
+   (Windows 标题栏习惯);关闭 hover 红底白字。常驻浮层,z-index 高于
+   ai-panel/modal 内联层;macOS(platform-darwin,原生红绿灯)整块隐藏。
    图标为 10px 内联 SVG,由 window-controls.js 注入。 */
-#win-controls { display: flex; align-items: stretch; align-self: stretch; flex: 0 0 auto; margin-left: 2px; }
+#win-controls {
+  position: fixed; top: 0; right: 0; z-index: 500;
+  height: var(--tabbar-h);
+  display: flex; align-items: stretch; flex: 0 0 auto;
+}
+body.platform-darwin #win-controls { display: none; }
 .win-ctl {
   width: 40px; border: none; background: none; cursor: pointer;
   color: var(--muted); display: flex; align-items: center; justify-content: center;
@@ -211,6 +233,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 }
 .win-ctl:hover { background: var(--border); color: var(--text); }
 .win-ctl-close:hover { background: var(--danger); color: #fff; }
+/* Windows/Linux:#tabbar 行尾与 .ai-header 行尾给 fixed 按钮组(3×40px)让位,
+   内容不会滑到按钮底下;macOS 无自绘按钮,不需要。 */
+body:not(.platform-darwin) #tabbar { padding-right: 122px; }
+body:not(.platform-darwin) .ai-header { padding-right: 132px; }
 
 #term-stack { flex: 1; position: relative; background: var(--bg); min-height: 0; }
 .term-pane { position: absolute; inset: 0; padding: 6px 2px 2px 8px; display: none; }
@@ -467,7 +493,9 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   border: 1px solid var(--border); border-radius: 10px;
   padding: 4px;
 }
-.ai-composer:focus-within { border-color: var(--accent); }
+/* 聚焦指示:composer 外框不变色,textarea 也无外圈 —— 一体外框加两层聚焦
+   边框纯属冗余,光标位置已足够表明焦点。 */
+#ai-input:focus-visible { outline: none; }
 #ai-input {
   /* textarea 融进外框:无边框透明底,高度由 rows=2 + line-height 决定 */
   flex: none; width: 100%; resize: none;
@@ -492,7 +520,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .ai-model-trigger:disabled { opacity: 0.6; cursor: not-allowed; }
 #ai-model-name { overflow: hidden; text-overflow: ellipsis; }
 .ai-model-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
-.ai-model-caret { flex: none; font-size: 11px; line-height: 1; transform: translateY(-1px); }
+/* 下箭头走 SVG 注册表(chevronDown),flex 容器内与圆圈/文字天然同轴,
+   不再用文字符号 ⌄ + translateY 手工补偿 —— 那在不同字体度量下必然错位。 */
+.ai-model-caret { flex: none; display: inline-flex; }
+.ai-model-caret svg { width: 12px; height: 12px; }
 /* 模型菜单浮层:锚定在触发钮上方,z 与 .ai-code-menu-items 同档(局部浮层) */
 .ai-model-menu {
   position: fixed; z-index: 70;
@@ -902,12 +933,17 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #hist-search { width: 120px; font-size: 12px; padding: 4px 8px; }
 
 /* 文件分屏内容(窗格外壳/布局/焦点由 .term-pane 契约提供) */
-.file-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+/* 工具栏锁高 --tabbar-h:与顶部标签栏行高一致,悬浮的窗格 ✕/⤢(top:4px,
+   高 28px,共 36px)恰落在行内同一水平线上;窄窗格不再换行挤压行高。 */
+.file-toolbar { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 6px; height: var(--tabbar-h); padding: 0 10px; border-bottom: 1px solid var(--border); }
+/* 行首的文件管理器身份标识:区分本窗格是文件分屏(终端分屏无此徽标) */
+.file-pane-badge { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; border-radius: 6px; background: rgba(91,140,255,0.14); color: var(--accent2); }
+.file-pane-badge svg { display: block; }
 /* 工具栏只留图标按钮(新建文件夹 / 上传 / 刷新):文字按钮太占地,
    且"下载/重命名/权限/删除"这些针对具体文件的操作已挪进行的右键菜单。 */
 .file-toolbar .btn.icon { --ctl-h: 28px; width: 28px; flex: none; font-size: 15px; }
 .file-toolbar .spacer { display: none; }
-.file-toolbar-hint { flex: 1 1 180px; min-width: 0; font-size: 11px; overflow-wrap: anywhere; }
+.file-toolbar-hint { flex: 1 1 120px; min-width: 0; font-size: 11px; overflow-wrap: anywhere; }
 .fp-input-row { display: flex; flex: none; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .fp-input-row.hidden { display: none; }
 .fp-mkdir-row input { flex: 1 1 0; min-width: 0; width: 0; font-size: 12px; }
@@ -930,7 +966,6 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .file-row .f-ic { display: inline-flex; align-items: center; flex: none; color: var(--accent2); }
 .file-row .f-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-row .f-size, .file-row .f-mtime { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.file-status { flex: none; height: var(--footer-h); padding: 6px 10px; font-size: 11px; overflow: auto; overflow-wrap: anywhere; border-top: 1px solid var(--border); }
 .file-empty { color: var(--muted); text-align: center; padding: 24px 10px; font-size: 12px; }
 
 /* 文件分屏:布局树里的普通窗格(.term-pane 契约),内容纵向排布。
@@ -946,7 +981,6 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .term-pane.file-pane.stale .file-list,
 .term-pane.file-pane.stale .file-toolbar,
 .term-pane.file-pane.stale .file-path { opacity: 0.45; pointer-events: none; }
-.term-pane.file-pane.stale .file-status { color: var(--warn); }
 .term-pane.file-pane .file-drop-hint { z-index: 10; }
 
 /* 任务中心(状态栏入口 + 向上浮层,见 file-transfer.js)。
@@ -961,18 +995,24 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   box-shadow: 0 8px 28px rgba(0,0,0,0.4); z-index: 500;
 }
 .task-popover.hidden { display: none; }
-.file-task-list { max-height: 260px; overflow: auto; padding: 4px 6px; }
+.file-task-list { max-height: 320px; overflow: auto; padding: 4px 6px; }
 .file-task-list.hidden { display: none; }
 .fp-task-empty { padding: 10px; font-size: 11px; }
-.fp-task { padding: 6px 6px 8px; border-bottom: 1px solid rgba(35,44,61,0.5); }
+/* 任务行 = 单行:状态图标 → 标签 → 进度/错误 → 行尾清除钮。
+   原先「计数行+错误行+操作行」三段式压缩到一行:状态由行首图标表达,
+   计数/失败原因进行尾 info(省略号截断,完整内容看 title)。 */
+.fp-task {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 5px 6px; border-radius: 6px; border-bottom: 1px solid rgba(35,44,61,0.5);
+}
 .fp-task:last-child { border-bottom: none; }
-.fp-task-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* 状态图标(替代圆点):图形即状态,颜色沿用状态色板 */
 .fp-task-dot {
   width: 16px; height: 16px; flex: none;
   font-size: 11px; line-height: 16px; text-align: center;
   border-radius: 50%;
 }
+.fp-task-dot svg { display: block; }
 .fp-task-dot.run { color: var(--accent); animation: fp-pulse 1.2s ease-in-out infinite; }
 .fp-task-dot.ok { color: var(--accent2); }
 .fp-task-dot.warn { color: var(--warn); }
@@ -980,21 +1020,21 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .fp-task-dot.muted { color: var(--muted); }
 @keyframes fp-pulse { 50% { opacity: 0.35; } }
 .fp-task-label { flex: 1; min-width: 0; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fp-task-stage { flex: none; font-size: 11px; }
-.fp-task-sub { font-size: 11px; padding: 2px 0 0 14px; overflow-wrap: anywhere; }
-/* 具体失败原因:独立一行,红色醒目,完整展示不截断 */
-.fp-task-error {
-  margin: 4px 0 0 14px; padding: 5px 8px;
-  font-size: 11px; color: var(--danger);
-  background: rgba(255, 107, 107, 0.08);
-  border-left: 2px solid var(--danger);
-  border-radius: 0 4px 4px 0;
-  overflow-wrap: anywhere; white-space: normal;
+.fp-task-info { flex: 0 1 auto; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+/* 在途任务整行可点 = 取消 */
+.fp-task.active { cursor: pointer; }
+.fp-task.active:hover { background: rgba(255, 107, 107, 0.08); }
+/* 清除记录的行尾图标钮 */
+.fp-task-clear { --ctl-h: 20px; width: 20px; flex: none; font-size: 11px; color: var(--muted); border-color: transparent; }
+.fp-task-clear:hover { color: var(--text); border-color: var(--border); }
+/* 右下角文字按钮:清除所有任务记录 */
+.task-popover-foot { display: flex; justify-content: flex-end; padding: 4px 8px 6px; border-top: 1px solid var(--border); }
+.task-clear-all {
+  border: none; background: none; padding: 2px 4px; font-size: 11px;
+  color: var(--accent); cursor: pointer; border-radius: 4px;
 }
-.fp-task-error.warn-text { color: var(--warn); background: rgba(255, 194, 75, 0.08); border-left-color: var(--warn); }
-.fp-task-track { height: 4px; margin: 5px 0 0 14px; background: var(--bg, #0d1117); border-radius: 3px; overflow: hidden; }
-.fp-task-track > span { display: block; height: 100%; background: var(--accent); transition: width 0.15s; }
-.fp-task-actions { display: flex; gap: 6px; padding: 5px 0 0 14px; }
+.task-clear-all:hover { text-decoration: underline; }
+.task-clear-all.hidden { display: none; }
 .fp-badge {
   display: inline-block; min-width: 14px; height: 14px; margin-left: 2px;
   padding: 0 3px; border-radius: 8px; background: var(--danger); color: #fff;
@@ -1141,7 +1181,15 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 /* 文件面板扩展 */
 .file-bookmarks { display: flex; flex: none; flex-wrap: wrap; gap: 4px; padding: 6px 10px 0; }
 .file-bookmarks:empty { display: none; }
-.file-bookmarks .bm-chip { min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; cursor: pointer; color: var(--muted); }
+/* 收藏 chip:图标 + 路径 flex 居中对齐(inline 布局下 svg 与文字基线错位) */
+.file-bookmarks .bm-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-width: 0; max-width: 100%; font-size: 11px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+  cursor: pointer; color: var(--muted);
+}
+.file-bookmarks .bm-chip svg { display: block; flex: none; }
+.file-bookmarks .bm-chip .bm-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-bookmarks .bm-chip:hover { color: var(--text); border-color: var(--accent); }
 .file-drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(91,140,255,0.15); border: 2px dashed var(--accent); z-index: 10; font-size: 14px; color: var(--text); }
 .term-pane.file-pane { position: relative; }

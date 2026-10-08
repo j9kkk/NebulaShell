@@ -364,6 +364,18 @@ function positionTaskPopover() {
   pop.style.top = `${position.top}px`;
 }
 
+/// 单行任务的信息段(行尾,省略号截断,完整内容看 title):
+/// 传输中给百分比/字节/当前文件;终态只给失败原因(计数由行首图标表达,
+/// 原先的 ✔⃠✖🗑 计数行已移除)。
+function taskInfoText(t) {
+  if (t.error) return t.error;
+  if (t.stage !== 'transferring' && t.stage !== 'waiting' && t.stage !== 'cancelling') return '';
+  if (typeof t.pct === 'number' && t.pct >= 0) return t.pct + '%';
+  if (t.total > 0) return `${fmtBytes(t.bytes)} / ${fmtBytes(t.total)}`;
+  const done = t.items.filter((i) => ['done', 'skipped', 'failed', 'cancelled'].includes(i.state)).length;
+  return t.items.length > 1 ? `${done}/${t.items.length}` : '';
+}
+
 function renderTaskCenter() {
   const badge = $('#file-task-badge');
   const sbBtn = $('#btn-file-tasks-status');
@@ -382,6 +394,10 @@ function renderTaskCenter() {
   }
   const pop = $('#file-task-popover');
   if (pop) pop.classList.toggle('hidden', !taskPopoverOpen || !tasks.length);
+  // 右下角「清除所有任务」:有任务才出现(单条任务时行尾 ✕ 已够用,按钮常在,
+  // 简化显隐规则;清除语义 = 移除全部任务记录,不影响在途传输本身)
+  const clearAll = $('#btn-file-tasks-clear-all');
+  if (clearAll) clearAll.classList.toggle('hidden', !tasks.length);
   const list = $('#file-task-list');
   if (!list) return;
   list.classList.toggle('hidden', !taskPopoverOpen);
@@ -393,9 +409,7 @@ function renderTaskCenter() {
   for (const t of tasks) {
     const row = document.createElement('div');
     row.className = 'fp-task';
-    const head = document.createElement('div');
-    head.className = 'fp-task-head';
-    // 状态图标替代圆点:图形即状态,title 保留文字说明
+    // 单行布局:行首状态图标(图形即状态,title 留文字)→ 标签 → 信息 → 清除钮
     const si = STAGE_ICON[t.stage] || { glyph: 'circleDot', cls: 'muted' };
     const dot = document.createElement('span');
     dot.className = 'fp-task-dot ' + si.cls;
@@ -404,108 +418,51 @@ function renderTaskCenter() {
     const name = document.createElement('span');
     name.className = 'fp-task-label';
     name.textContent = t.label;
-    name.title = t.label;
-    const stage = document.createElement('span');
-    stage.className = 'fp-task-stage muted';
-    stage.textContent = STAGE_TEXT[t.stage] || t.stage;
-    head.append(dot, name, stage);
-    row.appendChild(head);
-    // 进度/计数行
-    const counts = t.files.done + t.files.skipped + t.files.failed + t.files.cancelled + t.dirs.done;
-    const sub = document.createElement('div');
-    sub.className = 'fp-task-sub muted';
-    const bits = [];
-    if (t.stage === 'transferring' || t.stage === 'waiting' || t.stage === 'cancelling') {
-      if (t.total > 0) bits.push(`${fmtBytes(t.bytes)} / ${fmtBytes(t.total)}`);
-      if (t.current) bits.push(t.current);
-    } else if (isTerminal(t)) {
-      bits.push(`✔ ${t.files.done} · ⃠ ${t.files.skipped} · ✖ ${t.files.failed} · 🗑 ${t.files.cancelled}`);
-      if (t.dirs.done) bits.push(`目录 ${t.dirs.done}`);
-    } else if (t.kind === 'upload' || t.kind === 'download') {
-      const total = t.items.length;
-      const done = t.items.filter((i) => ['done', 'skipped', 'failed', 'cancelled'].includes(i.state)).length;
-      bits.push(`${done}/${total}`);
-      if (t.current) bits.push(t.current);
-      if (counts && t.kind !== 'upload' && t.kind !== 'download') bits.push(`${counts} 项`);
-    }
-    sub.textContent = bits.filter(Boolean).join(' · ');
-    row.appendChild(sub);
-    // 具体失败原因独立成行:醒目、完整展示,不与计数挤在一行被截断
-    if (t.error) {
-      const err = document.createElement('div');
-      err.className = 'fp-task-error';
-      err.textContent = '✖ ' + t.error;
-      row.appendChild(err);
-    }
-    if (t.truncated) {
-      const tn = document.createElement('div');
-      tn.className = 'fp-task-error warn-text';
-      tn.textContent = '⚠ 已达递归上限,部分内容未执行';
-      row.appendChild(tn);
-    }
-    if ((t.stage === 'transferring' || t.stage === 'waiting') && t.pct != null && t.pct >= 0 && (t.kind === 'upload' || t.kind === 'download')) {
-      const track = document.createElement('div');
-      track.className = 'fp-task-track';
-      const fill = document.createElement('span');
-      fill.style.width = t.pct + '%';
-      track.appendChild(fill);
-      row.appendChild(track);
-    }
-    // 操作行
-    const actions = document.createElement('div');
-    actions.className = 'fp-task-actions';
-    if (t.conflict) {
-      const btn = document.createElement('button');
-      btn.className = 'btn small primary';
-      btn.textContent = '处理冲突';
-      btn.addEventListener('click', () => {
+    name.title = t.error ? `${t.label}\n${t.error}` : t.label;
+    const info = document.createElement('span');
+    info.className = 'fp-task-info muted';
+    info.textContent = taskInfoText(t);
+    row.append(dot, name, info);
+    // 冲突待处理:单行里放不下操作按钮,状态图标/标签可点打开冲突框
+    let conflictOpenClick = null;
+    if (t.stage === 'waiting' && (t.conflict || pendingConflicts.some((c) => c.task === t))) {
+      row.classList.add('has-conflict');
+      conflictOpenClick = () => {
         const pending = pendingConflicts.find((c) => c.task === t);
         if (pending) openConflictDialog(pending.task, pending.conflict);
-      });
-      actions.appendChild(btn);
+      };
+      dot.addEventListener('click', (e) => { e.stopPropagation(); conflictOpenClick(); });
+      name.addEventListener('click', (e) => { e.stopPropagation(); conflictOpenClick(); });
     }
-    if (t.stage === 'waiting' && !t.conflict && pendingConflicts.some((c) => c.task === t)) {
-      const btn = document.createElement('button');
-      btn.className = 'btn small primary';
-      btn.textContent = '处理冲突';
-      btn.addEventListener('click', () => {
-        const pending = pendingConflicts.find((c) => c.task === t);
-        if (pending) openConflictDialog(pending.task, pending.conflict);
-      });
-      actions.appendChild(btn);
-    }
+    // 非终态整行可点 = 取消(title 说明;取消反馈走 toast/状态图标)
     if (!isTerminal(t)) {
-      const btn = document.createElement('button');
-      btn.className = 'btn small';
-      btn.textContent = '取消';
-      btn.addEventListener('click', async () => {
+      row.classList.add('active');
+      row.title = conflictOpenClick ? '点击标签处理冲突' : '点击取消此任务';
+      row.addEventListener('click', async () => {
+        if (conflictOpenClick) { conflictOpenClick(); return; }
         try {
           if (t.kind === 'copy') await api('transfer:cancel', { taskId: t.taskId });
           else await api('sftp:cancel', { taskId: t.taskId });
           t.userCancelled = true;
           renderTaskCenter();
-        } catch (e) { toast('取消失败:' + e.message, 'error'); }
+        } catch (err) { toast('取消失败:' + err.message, 'error'); }
       });
-      actions.appendChild(btn);
-    } else {
-      if (['failed', 'partial', 'interrupted'].includes(t.stage) && t.retry) {
-        const btn = document.createElement('button');
-        btn.className = 'btn small';
-        btn.textContent = '重试';
-        btn.addEventListener('click', () => submitCopyTask({ ...t.retry }));
-        actions.appendChild(btn);
-      }
-      const btn = document.createElement('button');
-      btn.className = 'btn small';
-      btn.textContent = '清除';
-      btn.addEventListener('click', () => {
+    }
+    // 清除:仅终态任务可清,图标钮收在行尾
+    if (isTerminal(t)) {
+      const clear = document.createElement('button');
+      clear.className = 'btn icon fp-task-clear';
+      clear.title = '清除此任务记录';
+      clear.setAttribute('aria-label', '清除此任务记录');
+      clear.innerHTML = icon('x');
+      clear.addEventListener('click', (e) => {
+        e.stopPropagation();
         const idx = tasks.indexOf(t);
         if (idx >= 0) tasks.splice(idx, 1);
         renderTaskCenter();
       });
-      actions.appendChild(btn);
+      row.appendChild(clear);
     }
-    if (actions.children.length) row.appendChild(actions);
     list.appendChild(row);
   }
   // 任务事件会随时重渲染,浮层每次都重新贴住锚点(高度随内容变化)
@@ -690,6 +647,16 @@ export function bindTransferUi() {
   window.addEventListener('resize', positionTaskPopover);
   const sbBtn = $('#btn-file-tasks-status');
   if (sbBtn) sbBtn.addEventListener('click', () => toggleTaskPopover());
+  const clearAll = $('#btn-file-tasks-clear-all');
+  if (clearAll) {
+    clearAll.addEventListener('click', () => {
+      // 只清任务记录:在途传输不因此中断(用户可继续看 toast 反馈),
+      // 需要中断在途任务时逐条点行取消。
+      tasks.length = 0;
+      pendingConflicts.length = 0;
+      renderTaskCenter();
+    });
+  }
   // 浮层外点击收起(状态栏按钮自身由上面的 toggle 处理)
   document.addEventListener('pointerdown', (e) => {
     if (!taskPopoverOpen) return;

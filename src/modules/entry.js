@@ -6,7 +6,7 @@ import { bindMoreMenu, closeMoreMenu } from './menu.js';
 import { activateSession, activateTab, addFilePane, autoLayoutTab, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
 import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
 import {
   filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -682,12 +682,15 @@ export async function boot() {
   setupResizers();
   bindContextMenu();
   bindWindowControls();
+  // 发送钮初始图标:HTML 里不放 SVG,统一由 setAiBusy 渲染(否则首帧按钮为空,
+  // 要等第一次发送才有图标)
+  setAiBusy(false);
   // 启动时同步一次收起按钮的状态(侧栏默认展开):此后由 toggleSidebar 维护
   syncSidebarToggle($('#sidebar').classList.contains('collapsed'));
   state.settings = await api('settings:get');
   await refreshHosts();
   await refreshAiModels();
-  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨\n可以直接提问，或使用上方快捷操作：\n· **解释选中内容**：选中终端输出后点击\n· **诊断报错**：把最后一次输入的命令及其控制台输出发给 AI 分析\n\n回复支持 Markdown 展示，代码块可单独复制；明确的 Shell 命令可由你点击执行到当前终端。');
+  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨');
 }
 
 boot();
@@ -1020,7 +1023,8 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
           forward: !g('.fp-forward')?.disabled,
           up: !g('.fp-up')?.disabled,
         },
-        status: g('.file-status')?.textContent ?? '',
+        // 底部状态栏已移除:状态文案读窗格数据(statusText),不再读 DOM
+        status: pane?.statusText ?? '',
         lastOpen: pane?.lastOpen ?? null,
         rows: elp.querySelectorAll('.file-list .file-row').length,
         names: [...elp.querySelectorAll('.file-list .file-row .f-name')].map((e) => e.textContent),
@@ -1053,21 +1057,26 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       statusBarBtn: !$('#btn-file-tasks-status')?.classList.contains('hidden'),
       tasks: [...document.querySelectorAll('#file-task-list .fp-task')].map((row) => ({
         label: row.querySelector('.fp-task-label')?.textContent ?? '',
-        stage: row.querySelector('.fp-task-stage')?.textContent ?? '',
+        // 单行布局:状态文字在行首图标的 title;sub = 行尾 info(进度/错误)
+        stage: row.querySelector('.fp-task-dot')?.title ?? '',
         dot: row.querySelector('.fp-task-dot')?.className.replace('fp-task-dot', '').trim() ?? '',
-        sub: row.querySelector('.fp-task-sub')?.textContent ?? '',
-        actions: [...row.querySelectorAll('.fp-task-actions .btn')].map((b) => b.textContent.trim()),
+        sub: row.querySelector('.fp-task-info')?.textContent ?? '',
+        actions: [],
       })),
     }),
-    /// 任务中心操作:按标签找任务行并点击指定按钮(取消/重试/清除/处理冲突)
+    /// 任务中心操作:按标签找任务行并执行动作(取消=点行;清除=点行尾 ✕)
     fileTaskClick: (label, action) => {
       const rows = [...document.querySelectorAll('#file-task-list .fp-task')];
       const row = rows.find((r) => r.querySelector('.fp-task-label')?.textContent === label);
       if (!row) return false;
-      const btn = [...row.querySelectorAll('.fp-task-actions .btn')].find((b) => b.textContent.trim() === action);
-      if (!btn) return false;
-      btn.click();
-      return true;
+      if (action === '取消') { row.click(); return true; }
+      if (action === '清除') {
+        const btn = row.querySelector('.fp-task-clear');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      }
+      return false;
     },
     /// 内部拖拽(应用内复制):从 fromName 行按下,移动到 toName 目录行或
     /// 'pane:<index>'(第 N 个可见文件分屏空白处),松开 —— 完整走 pointer 事件链。

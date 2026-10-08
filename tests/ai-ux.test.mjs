@@ -671,3 +671,23 @@ test('submission errors restore controls and do not claim success', async () => 
   assert.equal(toasts.at(-1).type, 'error');
   assert.match(toasts.at(-1).message, /IPC unavailable/);
 });
+
+test('token counts format with K/M units below rounding', async () => {
+  const { ai } = await setup();
+  assert.equal(ai.formatTokenCount(318), '318');
+  assert.equal(ai.formatTokenCount(999), '999');
+  assert.equal(ai.formatTokenCount(1000), '1K');
+  assert.equal(ai.formatTokenCount(8653), '9K');
+  assert.equal(ai.formatTokenCount(999999), '1000K');
+  assert.equal(ai.formatTokenCount(1000000), '1M');
+  assert.equal(ai.formatTokenCount(2500000), '3M');
+});
+
+test('setAiMeta renders converted token units', async () => {
+  const { ai } = await setup();
+  const bubble = makeBubble();
+  bubble.parts['.ai-meta-text'] = new Element();
+  bubble.parts['.ai-meta-text'].textContent = '12:00';
+  ai.setAiMeta(bubble, { model: 'gpt-6-luna', usage: { promptTokens: 12500, completionTokens: 865 }, elapsedMs: 14600 });
+  assert.equal(bubble.parts['.ai-meta-text'].textContent, '12:00 · gpt-6-luna · tokens 13K入/865出 · 14.6s');
+});

@@ -1,5 +1,8 @@
-// 自定义窗口控制(decorations:false 后系统标题栏消失,最小化/最大化/关闭
-// 由前端接管)。经全局 __TAURI__.window 调用,权限见 capabilities/default.json
+// 自定义窗口控制(Windows/Linux:decorations:false 后系统标题栏消失,
+// 最小化/最大化/关闭由前端接管)。macOS 用原生红绿灯(tauri.macos.conf.json
+// 的 titleBarStyle Overlay),构建期 body 只保留 platform-darwin class
+// (见 build.mjs),CSS 据此隐藏按钮;这里只需跳过绑定。
+// 经全局 __TAURI__.window 调用,权限见 capabilities/default.json
 // (allow-minimize / allow-toggle-maximize / allow-is-maximized / allow-close /
 // allow-start-dragging)。浏览器或 stub 环境无 __TAURI__ 时整体跳过。
 const MAX_SVG = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1" fill="none" stroke="currentColor"/></svg>';
@@ -13,6 +16,8 @@ export function bindWindowControls() {
   const maxBtn = document.getElementById('btn-win-max');
   const closeBtn = document.getElementById('btn-win-close');
   if (!minBtn || !maxBtn || !closeBtn) return;
+  // macOS 构建(原生红绿灯):CSS 已隐藏按钮,跳过绑定
+  if (document.body.classList.contains('platform-darwin')) return;
   // 无 Tauri 环境(纯浏览器调试):按钮隐藏,不留死按钮
   if (!tauri || !tauri.window || !tauri.window.getCurrentWindow) {
     const box = document.getElementById('win-controls');

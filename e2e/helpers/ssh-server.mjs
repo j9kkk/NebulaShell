@@ -63,7 +63,8 @@ function memFsStat(tree, rp) {
 }
 
 // 挂载最小 SFTP 服务端：REALPATH / OPENDIR / READDIR / OPEN / READ / WRITE / CLOSE / MKDIR / RMDIR / REMOVE / STAT
-function attachMockSftp(session, tree, emit = () => {}) {
+// opts.readDelayMs: 每个 READ 响应人为延迟(模拟慢网/慢盘),0 = 不延迟;仅测试床使用,默认关闭。
+function attachMockSftp(session, tree, emit = () => {}, { readDelayMs = 0 } = {}) {
   // 注意:ssh2 在存在 'sftp' 监听器时只发 'sftp' 事件、不发 'subsystem'
   // (见 ssh2/lib/server.js 的 case 'subsystem'),故计数必须挂在 'sftp' 上。
   session.on('subsystem', (accept) => accept && accept()); // russh 客户端需显式请求 sftp 子系统
@@ -138,7 +139,9 @@ function attachMockSftp(session, tree, emit = () => {}) {
       if (!node) return fail(reqId, { code: 2 });
       const slice = (node.data || Buffer.alloc(0)).slice(offset, offset + size);
       if (!slice.length) return sftp.status(reqId, SFTP_STATUS_CODE.EOF);
-      sftp.data(reqId, slice);
+      const reply = () => sftp.data(reqId, slice);
+      if (readDelayMs > 0) setTimeout(reply, readDelayMs);
+      else reply();
     });
     sftp.on('WRITE', (reqId, h, offset, data) => {
       const info = getHandle(h);
@@ -228,7 +231,7 @@ function attachMockSftp(session, tree, emit = () => {}) {
   });
 }
 
-export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent, commandBlockInput = false } = {}) {
+export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent, commandBlockInput = false, sftpReadDelayMs = 0 } = {}) {
   const hostPrivateKey = crypto
     .generateKeyPairSync('rsa', { modulusLength: 2048 })
     .privateKey.export({ type: 'pkcs1', format: 'pem' });
@@ -257,7 +260,7 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept();
-        attachMockSftp(session, tree, emit);
+        attachMockSftp(session, tree, emit, { readDelayMs: sftpReadDelayMs });
         session.on('pty', (ac) => ac());
         session.on('shell', (ac) => {
           emit('shell', +1);

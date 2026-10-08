@@ -2,7 +2,7 @@
 use crate::ai::emit_evt;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 fn attr_val(e: &russh_sftp::protocol::FileAttributes) -> (bool, u64, u64) {
     (
@@ -345,8 +345,15 @@ pub async fn upload_with_policy<
 
 /// op 用于进度事件的文案(前端按 op 显示「下载/打开 x 42%」);普通下载传 "download"。
 /// task_id/cancel:任务中心归属与在途取消;取消时删除半成品本地文件。
+///
+/// 读路径并发化:russh-sftp 的 AsyncRead 是单请求串行(一个 64KB READ 等应答
+/// 再发下一个),且每个请求有 10s 硬超时 —— 大文件 = 数百个串行往返,慢链路
+/// 上任意一个请求抖过 10s 整个下载即报 "Timeout" 失败。大于 PARALLEL_MIN
+/// 的文件按 4 路 handle 各读一段(共享同一条 SFTP 通道,请求按 id 配对互不
+/// 阻塞),吞吐 ×4 且单点超时不再毁全局;小文件维持串行。
+/// 接收 Arc<SftpSession>:SftpSession 不实现 Clone,并发段任务需要各自持有。
 pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
-    sftp: &russh_sftp::client::SftpSession,
+    sftp: std::sync::Arc<russh_sftp::client::SftpSession>,
     app: E,
     session_id: String,
     remote_path: &str,
@@ -356,6 +363,7 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Value, String> {
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     let name = PathBuf::from(remote_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -365,45 +373,154 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
         .await
         .map_err(|e| e.to_string())?;
     let total = meta.size.unwrap_or(0);
-    let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
     let mut local = tokio::fs::File::create(local_path)
         .await
         .map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut got: u64 = 0;
-    let mut last_pct = -1;
-    loop {
-        if cancel
+
+    const PARALLEL_WAYS: u64 = 4;
+    const PARALLEL_MIN: u64 = 8 * 1024 * 1024;
+    const BUF_LEN: usize = 64 * 1024;
+
+    let cancelled = || {
+        cancel
             .as_ref()
-            .map(|c| c.load(Ordering::Acquire))
+            .map(|c| c.load(std::sync::atomic::Ordering::Acquire))
             .unwrap_or(false)
-        {
-            drop(local);
-            let _ = tokio::fs::remove_file(local_path).await;
-            return Ok(json!({ "localPath": local_path, "cancelled": true }));
+    };
+
+    // 进度:并发时各段写入共享计数器,父任务轮询换算成百分比上报。
+    let got = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    if total >= PARALLEL_MIN {
+        // 并发分段:每路独立远端 handle 读自己的区段,直接 seek 写入本地文件
+        // 的对应偏移(不占内存);段内仍按 64KB 顺序 READ,单请求超时只伤本段。
+        let chunk = total.div_ceil(PARALLEL_WAYS);
+        let mut handles = Vec::with_capacity(PARALLEL_WAYS as usize);
+        for i in 0..PARALLEL_WAYS {
+            let start = i * chunk;
+            let end = total.min(start + chunk);
+            if start >= end {
+                break;
+            }
+            let sftp = sftp.clone();
+            let remote_path = remote_path.to_string();
+            let local_path = local_path.to_string();
+            let got = got.clone();
+            let cancel = cancel.clone();
+            handles.push(tokio::spawn(async move {
+                let cancelled = || {
+                    cancel
+                        .as_ref()
+                        .map(|c| c.load(std::sync::atomic::Ordering::Acquire))
+                        .unwrap_or(false)
+                };
+                let mut remote = sftp.open(&remote_path).await.map_err(|e| e.to_string())?;
+                let mut local = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&local_path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                local
+                    .seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut buf = vec![0u8; BUF_LEN];
+                let mut pos = start;
+                while pos < end {
+                    if cancelled() {
+                        return Err("已取消".to_string());
+                    }
+                    let want = ((end - pos) as usize).min(BUF_LEN);
+                    let n = remote
+                        .read(&mut buf[..want])
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        return Err("远端文件在传输中变短".to_string());
+                    }
+                    local
+                        .write_all(&buf[..n])
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    pos += n as u64;
+                    got.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok::<(), String>(())
+            }));
         }
-        let n = remote.read(&mut buf).await.map_err(|e| {
-            // 失败不留半截:正式路径上的截断文件比"没有文件"更危险
-            let _ = tokio::fs::remove_file(local_path);
-            e.to_string()
-        })?;
-        if n == 0 {
-            break;
-        }
-        local.write_all(&buf[..n]).await.map_err(|e| {
-            let _ = tokio::fs::remove_file(local_path);
-            e.to_string()
-        })?;
-        got += n as u64;
-        if total > 0 {
-            let pct = (got * 100 / total) as i64;
+        // 等全部段完成;进度变化即上报,取消立即中止所有段。
+        let mut last_pct = -1i64;
+        loop {
+            if cancelled() {
+                for h in &handles {
+                    h.abort();
+                }
+                let _ = tokio::fs::remove_file(local_path).await;
+                return Ok(json!({ "localPath": local_path, "cancelled": true }));
+            }
+            let all_done = handles.iter().all(|h| h.is_finished());
+            let now = got.load(std::sync::atomic::Ordering::Relaxed);
+            let pct = if total > 0 {
+                (now * 100 / total) as i64
+            } else {
+                100
+            };
             if pct != last_pct {
                 last_pct = pct;
-                crate::ai::emit_evt(
+                emit_evt(
                     &app,
                     "sftp:progress",
                     json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct }),
                 );
+            }
+            if all_done {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        for h in handles {
+            if let Err(e) = h.await.map_err(|e| e.to_string()).and_then(|r| r) {
+                // 失败不留半截:正式路径上的截断文件比"没有文件"更危险
+                let _ = tokio::fs::remove_file(local_path).await;
+                if e == "已取消" {
+                    return Ok(json!({ "localPath": local_path, "cancelled": true }));
+                }
+                return Err(e);
+            }
+        }
+    } else {
+        let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; BUF_LEN];
+        let mut last_pct = -1i64;
+        loop {
+            if cancelled() {
+                drop(local);
+                let _ = tokio::fs::remove_file(local_path).await;
+                return Ok(json!({ "localPath": local_path, "cancelled": true }));
+            }
+            let n = remote.read(&mut buf).await.map_err(|e| {
+                // 失败不留半截:正式路径上的截断文件比"没有文件"更危险
+                let _ = tokio::fs::remove_file(local_path);
+                e.to_string()
+            })?;
+            if n == 0 {
+                break;
+            }
+            local.write_all(&buf[..n]).await.map_err(|e| {
+                let _ = tokio::fs::remove_file(local_path);
+                e.to_string()
+            })?;
+            let now = got.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed) + n as u64;
+            if total > 0 {
+                let pct = (now * 100 / total) as i64;
+                if pct != last_pct {
+                    last_pct = pct;
+                    emit_evt(
+                        &app,
+                        "sftp:progress",
+                        json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct }),
+                    );
+                }
             }
         }
     }
@@ -422,7 +539,7 @@ pub async fn open_remote<
     R: tauri::Runtime,
     E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
 >(
-    sftp: &russh_sftp::client::SftpSession,
+    sftp: std::sync::Arc<russh_sftp::client::SftpSession>,
     app: E,
     session_id: String,
     remote_path: &str,
@@ -456,7 +573,7 @@ pub async fn open_remote<
     let local_str = local.to_string_lossy().to_string();
     // 复用 download 的搬运与进度上报,op 用 "open":前端状态栏显示「打开 x 42%」
     download(
-        sftp,
+        sftp.clone(),
         app,
         session_id,
         remote_path,

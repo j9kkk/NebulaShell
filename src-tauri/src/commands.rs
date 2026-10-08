@@ -536,11 +536,10 @@ pub async fn nebula_invoke(
                 _ => None,
             };
             let cancel = reg.as_ref().map(|r| r.flag.clone());
-            let r = sftp_op(
-                &state,
-                app.clone(),
-                &payload,
-                |sftp, app, sid, p| async move {
+            let cancel_c = cancel.clone();
+            let r = sftp_op(&state, app.clone(), &payload, |sftp, app, sid, p| {
+                let cancel = cancel_c.clone();
+                async move {
                     crate::sftp::upload_with_policy(
                         &sftp,
                         app,
@@ -553,8 +552,8 @@ pub async fn nebula_invoke(
                         cancel,
                     )
                     .await
-                },
-            )
+                }
+            })
             .await;
             drop(reg);
             r
@@ -569,13 +568,12 @@ pub async fn nebula_invoke(
                 _ => None,
             };
             let cancel = reg.as_ref().map(|r| r.flag.clone());
-            let r = sftp_op(
-                &state,
-                app.clone(),
-                &payload,
-                |sftp, app, sid, p| async move {
+            let cancel_c = cancel.clone();
+            let r = sftp_op(&state, app.clone(), &payload, |sftp, app, sid, p| {
+                let cancel = cancel_c.clone();
+                async move {
                     crate::sftp::download(
-                        &sftp,
+                        sftp.clone(),
                         app,
                         sid,
                         p["remotePath"].as_str().unwrap_or(""),
@@ -585,8 +583,8 @@ pub async fn nebula_invoke(
                         cancel,
                     )
                     .await
-                },
-            )
+                }
+            })
             .await;
             drop(reg);
             r
@@ -602,11 +600,10 @@ pub async fn nebula_invoke(
                 _ => None,
             };
             let cancel = reg.as_ref().map(|r| r.flag.clone());
-            let r = sftp_op(
-                &state,
-                app.clone(),
-                &payload,
-                |sftp, app, sid, p| async move {
+            let cancel_c = cancel.clone();
+            let r = sftp_op(&state, app.clone(), &payload, |sftp, app, sid, p| {
+                let cancel = cancel_c.clone();
+                async move {
                     crate::sftp::download_tree(
                         &sftp,
                         app,
@@ -617,8 +614,8 @@ pub async fn nebula_invoke(
                         cancel,
                     )
                     .await
-                },
-            )
+                }
+            })
             .await;
             drop(reg);
             r
@@ -628,13 +625,11 @@ pub async fn nebula_invoke(
             let test_mode = state.test_mode;
             // 打开前读一次设置(data 锁只握到返回,不跨网络/IO)
             let temp_root = state.store.open_temp_dir();
-            sftp_op(
-                &state,
-                app.clone(),
-                &payload,
-                move |sftp, app, sid, p| async move {
+            sftp_op(&state, app.clone(), &payload, move |sftp, app, sid, p| {
+                let temp_root = temp_root.clone();
+                async move {
                     crate::sftp::open_remote(
-                        &sftp,
+                        sftp.clone(),
                         app,
                         sid,
                         p["remotePath"].as_str().unwrap_or(""),
@@ -642,8 +637,8 @@ pub async fn nebula_invoke(
                         test_mode,
                     )
                     .await
-                },
-            )
+                }
+            })
             .await
         }
         // 会话端点(代次 + 展示名 + 主机摘要):文件面板/传输任务锁定真实连接
@@ -1359,6 +1354,13 @@ fn file_has_credentials(text: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// SFTP 通道死亡特征:缓存通道挂在已死/半死的子通道上时,russh-sftp 的
+/// 每请求 10s(现为 30s)超时报 "Timeout",事件循环 EOF 后发送端仍开放则报
+/// "session closed"。命中即丢缓存重试一次,新请求自动重新协商通道。
+fn sftp_channel_dead(e: &str) -> bool {
+    e.contains("Timeout") || e.contains("session closed") || e.contains("UnexpectedEof")
+}
+
 async fn sftp_op<F, Fut>(
     state: &tauri::State<'_, AppState>,
     app: tauri::AppHandle,
@@ -1366,7 +1368,7 @@ async fn sftp_op<F, Fut>(
     f: F,
 ) -> Result<Value, String>
 where
-    F: FnOnce(Arc<russh_sftp::client::SftpSession>, tauri::AppHandle, String, Value) -> Fut,
+    F: Fn(Arc<russh_sftp::client::SftpSession>, tauri::AppHandle, String, Value) -> Fut + Clone,
     Fut: std::future::Future<Output = Result<Value, String>>,
 {
     let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
@@ -1377,8 +1379,22 @@ where
         Ok(s) => s,
         Err(e) => return err_msg(e),
     };
-    match f(sftp, app, sid, payload).await {
+    match f(sftp, app.clone(), sid.clone(), payload.clone()).await {
         Ok(data) => ok(data),
+        Err(e) if sftp_channel_dead(&e) => {
+            // 自愈:通道僵死(连接本身正常)→ 丢缓存重建后重试一次;
+            // 重试仍失败才报给前端。各操作均幂等:下载/打开重建本地临时文件,
+            // 上传走 .part + rename,列目录/stat 只读。
+            state.ssh.forget_sftp(&sid).await;
+            let sftp = match state.ssh.open_sftp(&sid).await {
+                Ok(s) => s,
+                Err(e2) => return err_msg(e2),
+            };
+            match f(sftp, app, sid, payload).await {
+                Ok(data) => ok(data),
+                Err(_) => err_msg(e),
+            }
+        }
         Err(e) => err_msg(e),
     }
 }

@@ -166,7 +166,7 @@ async fn ssh_connect_exec_roundtrip() {
 
     let dl = dir.join("down.bin");
     nebulashell_lib::sftp::download(
-        &sftp,
+        sftp.clone(),
         handle.clone(),
         sid.into(),
         "/home/user/up.bin",

@@ -63,6 +63,7 @@ const ICONS = {
   // 复制/交互
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   arrowUpSend: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
 };
 
 /// 图标集合版本号:仅用于测试快照对齐,加图标时不必改。

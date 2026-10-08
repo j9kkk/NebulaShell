@@ -1129,6 +1129,10 @@ impl SshService {
                     .map_err(|e| format!("打开 SFTP 通道失败: {}", e))?,
             )
         };
+        // 库默认单请求 10s 超时,对高 RTT 链路(新加坡等)偏紧:一次网络抖动
+        // 即报 "Timeout"。放宽到 30s,大文件并发分段下载(见 sftp::download)
+        // 已保证单点慢不拖垮整体。
+        sftp.set_timeout(30);
         let mut cache = self.sftp_sessions.lock().await;
         // 协商期间连接被替换/断开:这条通道挂在废弃的 SSH 连接上,直接报错,
         // 让调用方(及下一轮调用)重建,绝不入缓存。

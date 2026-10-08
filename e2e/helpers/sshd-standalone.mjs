@@ -3,8 +3,9 @@ import { startMockSshd } from './ssh-server.mjs';
 
 const portFile = process.argv[2];
 const password = process.argv[3] || 'itest-pass';
+const readDelayMs = Number(process.argv[4] || 0) || 0;
 import fs from 'node:fs';
-const sshd = await startMockSshd({ password });
+const sshd = await startMockSshd({ password, sftpReadDelayMs: readDelayMs });
 fs.writeFileSync(portFile, String(sshd.port));
 console.log('sshd ready on', sshd.port);
 process.on('exit', () => {});

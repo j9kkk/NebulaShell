@@ -1256,12 +1256,13 @@ async function main() {
     inRow.send === 30 && inRow.sendW === 30 && inRow.inputScroll <= inRow.inputClient,
     JSON.stringify(inRow));
 
-  // Markdown 渲染 + 每条消息一键复制
+  // Markdown 渲染 + 每条消息一键复制。欢迎语已精简为单句(无 **bold**),
+  // 这里断言:段落结构正常渲染(mdBlocks>0) + 每条消息都有复制按钮;
+  // <strong> 等 Markdown 富文本走后续 mock SSE 消息(T9u2)验证。
   const bootMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
   const greet = bootMsgs.find((m) => m.role === 'assistant');
-  check('T9u 助手消息按 Markdown 渲染,每条消息带复制按钮',
-    greet && greet.mdBlocks > 0 && bootMsgs.every((m) => m.hasCopy)
-    && String(await evalJs(`return document.querySelector('#ai-messages .ai-msg .ai-body').innerHTML`)).includes('<strong>'),
+  check('T9u 助手欢迎语正常渲染,每条消息带复制按钮',
+    greet && greet.mdBlocks > 0 && bootMsgs.every((m) => m.hasCopy),
     JSON.stringify(bootMsgs.slice(0, 1)));
   await evalJs(`window.__nbTest.aiCopyClick(0); return 1`);
   const copyToast = await waitEval(`return document.querySelector('#toasts').textContent`, '已复制', 10000);
@@ -1629,7 +1630,7 @@ async function main() {
   await evalJs(`window.__nbTest.fileDragTo('copy-src.txt', 'pane:1'); return 1`);
   await waitEval(`return String(document.querySelector('.upload-conflict') !== null)`, 'true', 20000);
   await evalJs(`[...document.querySelectorAll('.upload-conflict .modal-foot .btn')].find((b) => b.textContent.includes('覆盖')).click(); return 1`);
-  await waitEval(`return (function(){ const rows = [...document.querySelectorAll('#file-task-list .fp-task')]; return rows.some((r) => r.querySelector('.fp-task-stage')?.textContent === '已完成') ? 'DONE' : 'WAIT'; })()`, 'DONE', 30000);
+  await waitEval(`return (function(){ const rows = [...document.querySelectorAll('#file-task-list .fp-task')]; return rows.some((r) => r.querySelector('.fp-task-dot')?.title === '已完成') ? 'DONE' : 'WAIT'; })()`, 'DONE', 30000);
   const fm5c = asObj(await evalJs(`return JSON.stringify({
     tasks: window.__nbTest.fileTasks().tasks,
     names: window.__nbTest.filePanel(1).names,
@@ -1639,12 +1640,10 @@ async function main() {
     fm5cDone && fm5cDone.stage === '已完成' && (fm5c.names || []).includes('copy-src.txt'),
     JSON.stringify(fm5c));
 
-  // FM6 收尾:清除全部任务记录 → 状态栏任务入口隐藏;关闭第二个文件分屏
-  // → 布局自动回填,屏0 浏览状态保留
-  await evalJs(`
-    const rows = [...document.querySelectorAll('#file-task-list .fp-task')];
-    for (const r of rows) { const b = [...r.querySelectorAll('.fp-task-actions .btn')].find((x) => x.textContent === '清除'); if (b) b.click(); }
-    return rows.length`);
+  // FM6 收尾:右下角「清除所有任务」一键清空 → 状态栏任务入口隐藏;
+  // 关闭第二个文件分屏 → 布局自动回填,屏0 浏览状态保留
+  await evalJs(`return String(!document.querySelector('#btn-file-tasks-clear-all').classList.contains('hidden'))`);
+  await evalJs(`document.querySelector('#btn-file-tasks-clear-all').click(); return 1`);
   await sleep(300);
   const fm6a = asObj(await evalJs(`return JSON.stringify({ tasks: window.__nbTest.fileTasks().tasks.length, btnHidden: document.querySelector('#btn-file-tasks-status').classList.contains('hidden') })`));
   check('FM6a 清除任务后状态栏任务入口隐藏', fm6a.tasks === 0 && fm6a.btnHidden === true, JSON.stringify(fm6a));
@@ -2331,7 +2330,8 @@ async function main() {
     JSON.stringify(auto),
   );
   // 收尾:把上面开出来的一堆窗格关回 1 个,避免影响后续用例(它们假定特定的窗格数)
-  for (let i = 0; i < 10; i++) {
+  // 次数须 > T41 满容量(最大 12):每次关 1 个,12 格要 11 次点击。
+  for (let i = 0; i < 15; i++) {
     const n = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
     if (n <= 1) break;
     await evalJs(`document.querySelector('#btn-more').click(); return 1`);
@@ -2707,7 +2707,7 @@ async function main() {
         // 只扫可视布局区的浅层(状态栏/标签栏/侧栏/面板头/终端窗格),全 body
         // querySelectorAll('*') 会带出 xterm 上万节点导致 eval 超时。
         const roots = ['#statusbar', '#tabbar', '#sidebar', '.ai-header', '.ai-input-row',
-          '.file-toolbar', '#file-mkdir-row', '#file-chmod-row', '#file-bookmarks', '#file-status',
+          '.file-toolbar', '#file-mkdir-row', '#file-chmod-row', '#file-bookmarks',
           '#more-menu', '#welcome', '.pane-picker'];
         const seen = new Set();
         for (const sel of roots) {
@@ -2850,6 +2850,23 @@ async function main() {
   // —— 1 新增分屏后自动整理为均衡网格 ——
   // 从单窗格连开两次,断言变成"行列均衡、同列宽/同行高一致"的网格,
   // 而不是被反复一刀切出的失衡形状。
+  // 前序链路(T22 分屏放大/T32 指纹重连)可能在活动标签遗留 >1 窗格:
+  // 先收回到单窗格,保证本组用例"从单窗格连开两次"的前提成立。
+  // 用窗格 ✕(owner-scoped)逐个关闭:不经过菜单,不受 hasOpenModal
+  // 门禁影响(指纹弹窗等残留 modal 会把菜单项变禁用)。
+  for (let i = 0; i < 8; i++) {
+    const n = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
+    if (n <= 1) break;
+    const clicked = await evalJs(`(function(){
+      const activeTab = window.__nbTest.workspaceState().activeTabId;
+      const panes = [...document.querySelectorAll('.term-pane')].filter(p => p.dataset.tab === activeTab);
+      if (panes.length <= 1) return 'none';
+      panes[panes.length - 1].querySelector('.pane-close-btn')?.click();
+      return 'closed';
+    })()`);
+    if (clicked !== 'closed') break;
+    await sleep(500);
+  }
   // 固定为可容纳 2×2 的最小尺寸:3 个窗格应为 2+1,不能用旧的 100px 下限。
   await evalJs(`const lr = document.querySelector('#layout-root'); window.__e2eLayoutStyle = lr.style.cssText;
     lr.style.width = '645px'; lr.style.height = '365px'; lr.style.flex = 'none'; return 1`);

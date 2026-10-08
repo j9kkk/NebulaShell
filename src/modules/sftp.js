@@ -145,8 +145,9 @@ export function isFilePaneCurrent(target) {
 function setFilePaneStatus(target, text) {
   const pane = findFilePane(target?.paneId);
   if (!pane || !isFilePaneCurrent(target)) return;
+  // 底部状态栏已移除(进度看任务中心、结果看 toast);statusText 保留为
+  // 窗格数据(__nbTest 桥与断开态提示仍用),不再落到 DOM。
   pane.statusText = text;
-  renderFileStatus(pane);
 }
 
 /* ---------------- 窗格 DOM ---------------- */
@@ -159,6 +160,7 @@ export function buildFilePane(pane) {
   elp.dataset.fpBuilt = '1';
   elp.innerHTML = `
     <div class="file-toolbar">
+      <span class="file-pane-badge" title="文件管理器">${icon('folder')}</span>
       <button class="btn icon fp-back" title="后退">${icon('arrowLeft')}</button>
       <button class="btn icon fp-forward" title="前进">${icon('arrowRight')}</button>
       <button class="btn icon fp-up" title="上一级">${icon('arrowUp')}</button>
@@ -185,7 +187,6 @@ export function buildFilePane(pane) {
     <input class="file-path" type="text" spellcheck="false" autocomplete="off" />
     <div class="file-bookmarks"></div>
     <div class="file-list"></div>
-    <div class="file-status muted"></div>
     <div class="file-drop-hint hidden">松开即上传到当前目录</div>
   `;
   // 提示里的快捷键按平台渲染(动作名查 keymap):buildFilePane 是动态创建,
@@ -326,19 +327,13 @@ export async function initialFileDir(s) {
 
 function q(pane, sel) { return pane.el?.querySelector(sel) || null; }
 
-export function renderFileStatus(pane) {
-  const st = q(pane, '.file-status');
-  if (st) st.textContent = pane.statusText || '';
-}
-
-/// 全量渲染一个窗格(列表/路径/导航/状态/书签)。未挂载的窗格(后台标签)
+/// 全量渲染一个窗格(列表/路径/导航/书签)。未挂载的窗格(后台标签)
 /// 写在 detached el 上,重新挂载时自然可见。
 export function renderFilePane(pane) {
   if (!pane || !pane.el) return;
   pane.el.classList.toggle('stale', !!pane.stale);
   renderFileList(pane);
   renderFileNav(pane);
-  renderFileStatus(pane);
   renderFileBookmarks(pane).catch(() => {});
 }
 
@@ -535,7 +530,6 @@ async function refreshCachedDir(pane, s, dir, gen) {
   } catch (e) {
     if (gen !== pane.reqGen || pane.cwd !== dir) return;
     pane.statusText = '后台刷新失败:' + e.message;
-    renderFileStatus(pane);
   }
 }
 
@@ -563,10 +557,9 @@ export async function loadFileDir(pane, dir, opts = {}) {
   pane.loading = true;
   pane.lastSessionId = s.sessionId;
   const list = q(pane, '.file-list');
-  // 加载提示只留列表区居中的一份,状态栏不再重复显示同样的「加载中…」
+  // 加载提示只留列表区居中的一份
   if (list) list.innerHTML = '<div class="file-empty">加载中…</div>';
   pane.statusText = '';
-  renderFileStatus(pane);
   for (const sel of ['.fp-mkdir-row', '.fp-chmod-row']) q(pane, sel)?.classList.add('hidden');
   try {
     const r = await api('sftp:list', { sessionId: s.sessionId, path: dir });
@@ -579,6 +572,7 @@ export async function loadFileDir(pane, dir, opts = {}) {
     if (gen !== pane.reqGen) return false;
     pane.loading = false;
     pane.statusText = '加载失败:' + e.message;
+    toast('加载失败:' + e.message, 'error');
     renderFilePane(pane);
     return false;
   }
@@ -877,7 +871,7 @@ export async function renderFileBookmarks(pane) {
   for (const b of mine) {
     const chip = document.createElement('span');
     chip.className = 'bm-chip';
-    chip.innerHTML = icon('star') + ' ' + escapeHtml(b.path);
+    chip.innerHTML = icon('star') + '<span class="bm-path">' + escapeHtml(b.path) + '</span>';
     chip.title = `跳转到 ${b.path}(右键移除书签)`;
     chip.addEventListener('click', () => loadFileDir(pane, b.path));
     chip.addEventListener('contextmenu', (e) => {
@@ -1042,7 +1036,6 @@ export function routeProgress(evt) {
     pane.statusText = evt.stage
       ? `${op} ${evt.name}:${evt.stage}${evt.error ? ' ' + evt.error : ''}`
       : typeof evt.pct === 'number' ? `${op} ${evt.name} ${evt.pct}%` : `${op} ${evt.name}…`;
-    renderFileStatus(pane);
   }
 }
 

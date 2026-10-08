@@ -424,6 +424,13 @@ export function renderAiMessage(role, text, opts) {
   return el;
 }
 
+/// token 数量单位换算:>=1M 显示 M,>=1000 显示 K,四舍五入保留 0 位小数。
+export function formatTokenCount(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
+  return String(n);
+}
+
 /// AI 响应结束后的元信息行:模型、输入/输出 token、耗时。
 /// 传入 null 值的项跳过;整行更新到 .ai-meta-text(时间戳扩展成完整元信息)。
 /// 只改文字节点:.ai-meta 里还有头像,整体重写 textContent 会把它抹掉。
@@ -437,8 +444,8 @@ export function setAiMeta(bubble, { model, usage, elapsedMs } = {}) {
   if (model) parts.push(model);
   if (usage) {
     const tok = [];
-    if (usage.promptTokens != null) tok.push(`${usage.promptTokens}入`);
-    if (usage.completionTokens != null) tok.push(`${usage.completionTokens}出`);
+    if (usage.promptTokens != null) tok.push(`${formatTokenCount(usage.promptTokens)}入`);
+    if (usage.completionTokens != null) tok.push(`${formatTokenCount(usage.completionTokens)}出`);
     if (tok.length) parts.push('tokens ' + tok.join('/'));
   }
   if (elapsedMs != null) parts.push((elapsedMs / 1000).toFixed(1) + 's');
@@ -662,7 +669,7 @@ export async function aiTestConnection() {
     } else {
       const u = r && r.usage;
       const tok = u && (u.promptTokens != null || u.completionTokens != null)
-        ? `，tokens ${u.promptTokens ?? '?'}入/${u.completionTokens ?? '?'}出` : '';
+        ? `，tokens ${u.promptTokens != null ? formatTokenCount(u.promptTokens) : '?'}入/${u.completionTokens != null ? formatTokenCount(u.completionTokens) : '?'}出` : '';
       toast(`连接成功：${override.model}，延迟 ${sec}s${tok}`, 'success');
     }
   } finally {
@@ -933,7 +940,7 @@ export function renderModelChips() {
 
 /* ---------------- 资源监控 ---------------- */
 
-/// 对话页的模型选择:无边框触发钮(当前模型名 + ⌄)+ 自定义浮层菜单。
+/// 对话页的模型选择:无边框触发钮(圆圈 + 模型名 + chevronDown)+ 自定义浮层菜单。
 /// 只列"已勾选启用"的模型 —— 未勾选的模型不应能被选用;菜单尾部带"管理模型"入口。
 export function renderModelSwitch() {
   const current = savedAi().model || '';
