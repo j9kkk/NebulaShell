@@ -41,7 +41,7 @@ class Element {
   }
   addEventListener(name, callback) { this.listeners.set(name, callback); }
   setAttribute() {}
-  async fire(name, event = { target: { classList: { contains: () => false } } }) {
+  async fire(name, event = { target: { classList: { contains: () => false }, closest: () => null } }) {
     return this.listeners.get(name)?.(event);
   }
   after() {}
@@ -52,7 +52,8 @@ class Element {
   showModal() {}
 }
 
-async function harness(moduleName, { invoke = async () => [], write = async () => true, confirm = async () => true } = {}) {
+async function harness(moduleName, { invoke = async () => [], write = async () => true, confirm = async () => true, trusted = async () => ({ ok: true }) } = {}) {
+  const toasts = [];
   const elements = new Map();
   const $ = (selector) => {
     if (!elements.has(selector)) elements.set(selector, new Element());
@@ -81,7 +82,7 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     },
   });
   const imports = {
-    './core.js': { $, api, state, askConfirm: confirm, askPrompt: async () => null, copyText: async () => true, toast: () => {},
+    './core.js': { $, api, state, askConfirm: confirm, askPrompt: async () => null, copyText: async () => true, toast: (...args) => toasts.push(args),
       showCtxMenu: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
       setModalDismissHandler: (element, handler) => { element.dismiss = handler; },
       hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim(),
@@ -89,7 +90,8 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     './hosts.js': { escapeHtml: (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;') },
     // SVG 图标注册表:vm 桩给最小实现(占位 svg 串),测试只断言结构不断言图形
     '../shared/icons.js': { icon: (name) => `<svg data-icon="${name}"></svg>`, ICON_NAMES: ['stub'] },
-    './terminal.js': { writeSessionInput: write },
+    // 历史填入 / 常用命令执行走 feedTrusted(可信输入,与 AI 命令块同一条发送路径)
+    './terminal.js': { writeSessionInput: write, feedTrusted: trusted },
     // file-transfer.js 由 e2e 覆盖真实链路;单测里用记录型桩,断言任务注册发生过
     './file-transfer.js': {
       registerUploadTask: ({ names }) => {
@@ -157,7 +159,7 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     tab.activePaneId = pane.id;
     return pane;
   };
-  return { module: module.namespace, state, $, calls, events, connect, mkPane, document, Element: ElementClass };
+  return { module: module.namespace, state, $, calls, events, connect, mkPane, document, toasts, Element: ElementClass };
 }
 
 const deferred = () => {
@@ -404,40 +406,39 @@ test('task terminal state refreshes only panes still browsing the target dir', a
   assert.equal(h.calls.find((c) => c.channel === 'sftp:list').payload.path, '/same');
 });
 
-test('snippet page runs through the shared write helper and returns focus to the terminal only on success', async () => {
-  const writes = [];
-  let allow = false;
-  const h = await harness('monitor', { write: async (...args) => { writes.push(args); return allow; } });
-  const session = h.connect('a');
-  let focused = 0;
-  session.term = { focus: () => { focused++; } };
+// 发送、可用性判定与焦点归还都在 terminal.js 的 submitCommandBlock(见 terminal.test.mjs);
+// 这里只断言页面走可信路径、参数正确,失败时把原因告诉用户。
+test('snippet page executes through the trusted command path and reports why it was declined', async () => {
+  const sent = [];
+  let result = { ok: false, reason: '目标会话处于只读模式' };
+  const h = await harness('monitor', { trusted: async (...args) => { sent.push(args); return result; } });
+  h.connect('a');
   h.state.settings.snippets = [{ name: 'snippet', cmd: 'echo safe' }];
   h.module.renderSnippets();
   const row = h.$('#snippet-list').children[0];
   await row.fire('click');
-  assert.equal(focused, 0, 'declined input (readonly) keeps focus in the page');
-  allow = true;
+  assert.deepEqual(h.toasts, [['目标会话处于只读模式', 'error']], 'declined input surfaces the reason');
+  result = { ok: true };
   await row.fire('click');
-  assert.equal(focused, 1);
-  assert.deepEqual(writes, [['a', 'echo safe\r'], ['a', 'echo safe\r']]);
+  assert.equal(h.toasts.length, 1);
+  // 选项对象建在 vm 上下文里(另一套原型),按 JSON 比较
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [['echo safe', { execute: true }], ['echo safe', { execute: true }]]);
   assert.equal(h.calls.length, 0, 'no direct ssh:write bypass');
 });
 
-test('history page fills the terminal without Enter and returns focus only on success', async () => {
-  let allow = false;
-  const writes = [];
-  const h = await harness('tools', { invoke: async () => [{ cmd: 'echo history', host: 'a' }], write: async (...args) => { writes.push(args); return allow; } });
-  const session = h.connect('a');
-  let focused = 0;
-  session.term = { focus: () => { focused++; } };
+test('history page fills the terminal through the trusted path without Enter and reports failures', async () => {
+  const sent = [];
+  let result = { ok: false, reason: '目标会话未连接' };
+  const h = await harness('tools', { invoke: async () => [{ cmd: 'echo history', host: 'a' }], trusted: async (...args) => { sent.push(args); return result; } });
+  h.connect('a');
   await h.module.renderHistory('');
   const row = h.$('#hist-list').children[0];
   await row.fire('click');
-  assert.equal(focused, 0);
-  allow = true;
+  assert.deepEqual(h.toasts, [['目标会话未连接', 'error']]);
+  result = { ok: true };
   await row.fire('click');
-  assert.equal(focused, 1);
-  assert.deepEqual(writes, [['a', 'echo history'], ['a', 'echo history']]);
+  assert.equal(h.toasts.length, 1);
+  assert.deepEqual(sent, [['echo history'], ['echo history']], 'fill only: no execute option, no Enter');
   assert.equal(h.calls.some((c) => c.channel === 'ssh:write'), false);
 });
 

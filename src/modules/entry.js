@@ -3,7 +3,7 @@ import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenu
 import { isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { bindMoreMenu, closeMoreMenu } from './menu.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
@@ -406,6 +406,7 @@ function setupWorkspaceCommands() {
     return togglePaneZoom(state.zoomPaneId || focusedPaneId());
   } });
   registerCommand('pane.reflow', { label: '整理当前标签分屏', category: 'layout', keywords: ['reflow', 'arrange', 'layout', 'zl', 'zhengli', 'buju'], enabled: () => count() > 1, reason: '当前标签只有一个窗格', run: autoLayoutTab });
+  registerCommand('tabs.list', { label: '全部标签', category: 'layout', kind: 'dialog', keywords: ['all tabs', 'tab list', 'switch tab', 'qbbq', 'biaoqian', 'liebiao'], enabled: () => state.tabs.size > 0, reason: '没有打开的标签', run: () => openTabList() });
   registerCommand('workspace.tile', { label: '标签平铺', category: 'layout', keywords: ['tile tabs', 'grid', 'bqpp', 'pingpu'], checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, reason: '需要至少 2 个标签', run: toggleTabTiling });
   registerCommand('workspace.close', { label: (ctx) => {
     const t = targetOf(ctx);
@@ -425,7 +426,7 @@ function setupWorkspaceCommands() {
   registerCommand('panel.tools', { label: '右侧工具栏', category: 'panel', keywords: ['tools', 'right panel', 'toolbar', 'ycgjl', 'gongjulan', 'youce'], checked: () => rightPanelOpen(), run: toggleRightPanel });
   registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'zs', 'zhushou'], checked: () => rightTabShown('ai'), run: () => toggleRightTab('ai') });
   registerCommand('panel.history', { label: '命令历史', category: 'panel', keywords: ['history', 'mlls', 'lishi'], checked: () => rightTabShown('history'), run: () => toggleRightTab('history') });
-  registerCommand('panel.snippets', { label: '常用片段', category: 'panel', keywords: ['snippets', 'cypd', 'pianduan'], checked: () => rightTabShown('snippets'), run: () => toggleRightTab('snippets') });
+  registerCommand('panel.snippets', { label: '常用命令', category: 'panel', keywords: ['snippets', '片段', 'cyml', 'changyong', 'cypd', 'pianduan'], checked: () => rightTabShown('snippets'), run: () => toggleRightTab('snippets') });
 
   // 会话
   registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return openTermSearch(); } });
@@ -862,6 +863,7 @@ export async function boot() {
   bindEvents();
   bindPalette();
   bindPaneToolbars();
+  bindTabStrip();
   setupResizers();
   bindContextMenu();
   bindWindowControls();

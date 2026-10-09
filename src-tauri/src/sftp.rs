@@ -721,6 +721,12 @@ async fn cleanup_open_dir(root: &std::path::Path) {
     }
 }
 
+/// 本地下载目标必须是本平台的绝对路径:Windows 是 `C:\…` / `\\server\share\…`,
+/// 不能按 `/` 开头判断(那样 Windows 上多选/目录下载必然被拒)。
+fn valid_local_root(path: &str) -> bool {
+    !path.contains('\0') && std::path::Path::new(path).is_absolute()
+}
+
 /// 目录/批量递归下载引擎(任务中心编排,文件字节不进 JS)。
 /// - local_root 必须已存在:多选/目录下载共用,逐项写入其下;
 /// - 单文件/空目录逐项执行,子项失败不中断其它项,任务级计数由前端按事件聚合;
@@ -740,7 +746,7 @@ pub async fn download_tree<
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Value, String> {
     use std::sync::atomic::Ordering;
-    if !local_root.starts_with('/') || local_root.contains('\0') {
+    if !valid_local_root(local_root) {
         return Err("本地目标必须是绝对路径".into());
     }
     let cancelled = || {
@@ -1024,6 +1030,30 @@ async fn download_one<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
 
 #[cfg(test)]
 mod download_tree_tests {
+    use super::valid_local_root;
+
+    #[test]
+    fn local_root_accepts_platform_absolute_paths_only() {
+        #[cfg(windows)]
+        {
+            assert!(valid_local_root(r"C:\Users\me\Downloads"));
+            assert!(valid_local_root(r"\\nas\share\dl"));
+            assert!(!valid_local_root(r"\no-drive"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(valid_local_root("/Users/me/Downloads"));
+            assert!(!valid_local_root(r"C:\Users\me\Downloads"));
+        }
+        assert!(!valid_local_root("Downloads"));
+        assert!(!valid_local_root("./dl"));
+        assert!(!valid_local_root(""));
+        #[cfg(not(windows))]
+        assert!(!valid_local_root("/tmp/a\0b"));
+        #[cfg(windows)]
+        assert!(!valid_local_root("C:\\tmp\\a\0b"));
+    }
+
     /// 本地同名避让与 .part 命名是批量下载的两个本地安全契约:
     /// 绝不覆盖用户已有文件,且临时文件不与正式文件同名。
     #[test]

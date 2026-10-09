@@ -271,13 +271,26 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
           let bracketed = false;
           let inPaste = false;
           let input = '';
+          // nb-pw:打印 "Password: " 并关闭下一行的回显(模拟 sudo 密码提示),该行不算命令
+          let awaitingPassword = false;
           const pasteStart = '\x1b[200~', pasteEnd = '\x1b[201~';
+          const echo = (text) => { if (!awaitingPassword) stream.write(text); };
           const submit = () => {
             const cmd = line.trim();
             line = '';
+            stream.write('\r\n');
+            if (awaitingPassword) {
+              awaitingPassword = false;
+              stream.write('PASSWORD-ACCEPTED\r\nroot@mock:~# ');
+              return true;
+            }
             if (cmd) {
               shellCommands.push({ shellId, command: cmd });
-              stream.write('\r\n');
+              if (cmd === 'nb-pw') {
+                awaitingPassword = true;
+                stream.write('Password: ');
+                return true;
+              }
               if (commandBlockInput && cmd === 'nebula-e2e-bracketed-on') {
                 bracketed = true;
                 stream.write('\x1b[?2004hBRACKETED-ON\r\n');
@@ -299,9 +312,11 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
           stream.write('root@mock:~# ');
           stream.on('data', (d) => {
             shellWrites.push({ shellId, data: d.toString() });
-            stream.write(d); // 模拟 PTY 回显
-            // Default parsing stays unchanged; opt-in channels recognize paste
-            // boundaries even when SSH splits an escape sequence across packets.
+            // 最小行规程回显(像 readline 那样,而不是把收到的字节原样弹回):
+            // 可打印字符照回显,退格回显 "\b \b",回车换行,Ctrl+C 回显 ^C 并换新提示符,
+            // 转义序列(方向键、粘贴标记)不回显。命令历史按"屏幕上看得到回显"校验。
+            // Opt-in channels recognize paste boundaries even when SSH splits an
+            // escape sequence across packets.
             input += d.toString();
             while (input) {
               if (commandBlockInput && bracketed) {
@@ -313,17 +328,24 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
                 }
                 if (marker.startsWith(input)) break;
               }
+              if (input[0] === '\x1b' && !inPaste) {
+                const seq = input.match(/^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[\s\S]|[^[O])/);
+                if (!seq) break;
+                input = input.slice(seq[0].length);
+                continue;
+              }
               const ch = input[0];
               input = input.slice(1);
-              if (commandBlockInput && bracketed && ch === '\x03') {
-                line = ''; inPaste = false;
+              if (ch === '\x03') {
+                line = ''; inPaste = false; awaitingPassword = false;
                 stream.write('^C\r\nroot@mock:~# ');
               } else if (ch === '\r' && !inPaste) {
                 if (!submit()) return;
               } else if (ch === '\x7f') {
-                line = line.slice(0, -1);
+                if (line) { line = line.slice(0, -1); echo('\b \b'); }
               } else {
                 line += inPaste && ch === '\r' ? '\n' : ch;
+                echo(inPaste && ch === '\r' ? '\r\n' : ch);
               }
             }
           });

@@ -116,11 +116,12 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
     });
   }, { context });
   const icons = await load('../src/shared/icons.js');
+  const termText = await load('../src/shared/term-text.js');
   const interaction = new vm.SyntheticModule(['popupPosition'], function () {
     this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
   }, { context });
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();

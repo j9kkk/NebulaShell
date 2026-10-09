@@ -60,6 +60,12 @@ export async function auditNarrowPanels() {
     const status = document.querySelector('#statusbar').getBoundingClientRect();
     // 底栏对齐契约:侧栏底部与主状态栏顶对齐(文件分屏已并入布局树,无独立底栏)
     if (Math.abs(footer.top - status.top) > 1) issues.push({ kind: 'footer-misaligned', sidebar: footer.top, main: status.top });
+    // 右侧栏(此刻展开):常用命令页添加行上边框与状态栏上边框齐平;历史工具行输入框与按钮等高
+    const snippetAdd = document.querySelector('#rp-snippets .snippet-add').getBoundingClientRect();
+    if (Math.abs(snippetAdd.top - status.top) > 1) issues.push({ kind: 'snippet-add-misaligned', snippets: snippetAdd.top, main: status.top });
+    const histSearch = document.querySelector('#hist-search').getBoundingClientRect();
+    const histClear = document.querySelector('#hist-clear').getBoundingClientRect();
+    if (Math.abs(histSearch.height - histClear.height) > 0.5) issues.push({ kind: 'history-toolbar-height', input: histSearch.height, button: histClear.height });
     document.querySelector('#sidebar').classList.add('collapsed');
     await frame();
     audit(document.querySelector('#sidebar'), 40);

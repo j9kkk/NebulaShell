@@ -34,6 +34,128 @@ fn defaults() -> Value {
     })
 }
 
+// ===== 命令历史清洗 =====
+
+/// 跳过 chars[i] 起的 ESC 序列,返回其后的位置。与前端 shared/term-text.js 的
+/// stripTerminalNoise 覆盖同样的序列:CSI、OSC(BEL 或 ST 结尾)、DCS/SOS/PM/APC
+/// (ST 结尾)、SS2/SS3 连同其后一个字符、字符集指定、其余两字节 ESC 序列。
+fn skip_escape(chars: &[char], i: usize) -> usize {
+    let n = chars.len();
+    let st_end = |from: usize, bel: bool| {
+        let mut j = from;
+        while j < n {
+            if bel && chars[j] == '\x07' {
+                return j + 1;
+            }
+            if chars[j] == '\x1b' {
+                return if chars.get(j + 1) == Some(&'\\') {
+                    j + 2
+                } else {
+                    j
+                };
+            }
+            j += 1;
+        }
+        n
+    };
+    let Some(&next) = chars.get(i + 1) else {
+        return i + 1;
+    };
+    match next {
+        '[' => {
+            let mut j = i + 2;
+            while j < n && ('\x30'..='\x3f').contains(&chars[j]) {
+                j += 1;
+            }
+            while j < n && ('\x20'..='\x2f').contains(&chars[j]) {
+                j += 1;
+            }
+            if j < n && ('\x40'..='\x7e').contains(&chars[j]) {
+                j + 1
+            } else {
+                j
+            }
+        }
+        ']' => st_end(i + 2, true),
+        'P' | 'X' | '^' | '_' => st_end(i + 2, false),
+        'N' | 'O' => match chars.get(i + 2) {
+            Some(c) if *c != '\x1b' => i + 3,
+            _ => i + 2,
+        },
+        '\x20'..='\x2f' => {
+            let mut j = i + 2;
+            while j < n && ('\x20'..='\x2f').contains(&chars[j]) {
+                j += 1;
+            }
+            if j < n && ('\x30'..='\x7e').contains(&chars[j]) {
+                j + 1
+            } else {
+                j
+            }
+        }
+        '\x30'..='\x7e' => i + 2,
+        _ => i + 1,
+    }
+}
+
+/// 清洗一条命令历史:去控制序列;旧版采集把整串按键原样存下,这里按行编辑语义
+/// 重放 Ctrl+C / Ctrl+G / Ctrl+U(丢弃此前内容)、Ctrl+W(删前一个词)与退格,
+/// 保留换行与制表符,其余控制字符丢弃,最后去首尾空白。
+pub fn clean_command(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\x1b' => {
+                i = skip_escape(&chars, i);
+                continue;
+            }
+            '\x03' | '\x07' | '\x15' => out.clear(),
+            '\x17' => {
+                while out.last().is_some_and(|c| c.is_whitespace()) {
+                    out.pop();
+                }
+                while out.last().is_some_and(|c| !c.is_whitespace()) {
+                    out.pop();
+                }
+            }
+            '\x08' | '\x7f' => {
+                out.pop();
+            }
+            '\t' | '\n' => out.push(c),
+            c if c < ' ' || ('\u{80}'..='\u{9f}').contains(&c) => {}
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    out.into_iter().collect::<String>().trim().to_string()
+}
+
+/// 清洗整份命令历史(数组按时间从旧到新):逐条 clean_command,丢掉空条目与非对象,
+/// 同一命令只保留最新一条。幂等;返回是否有改动。
+pub fn clean_history(history: &mut Vec<Value>) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut kept: Vec<Value> = Vec::with_capacity(history.len());
+    for item in history.iter().rev() {
+        let Some(raw) = item["cmd"].as_str() else {
+            continue;
+        };
+        let cmd = clean_command(raw);
+        if cmd.is_empty() || !seen.insert(cmd.clone()) {
+            continue;
+        }
+        let mut item = item.clone();
+        item["cmd"] = json!(cmd);
+        kept.push(item);
+    }
+    kept.reverse();
+    let changed = kept != *history;
+    *history = kept;
+    changed
+}
+
 // ===== 凭据加密 =====
 // 设计取舍:不用 keyring 作为主存储。
 // 原因:keyring 在未签名/无 entitlements 的 macOS 进程中 set_password+get_password 均返回 Ok,
@@ -400,12 +522,46 @@ impl Store {
         if data["knownHosts"].is_null() {
             data["knownHosts"] = json!({});
         }
+        // 旧版命令历史把按键原样入库(bracketed paste 标记、方向键、Ctrl+C 拼接、
+        // 甚至密码提示下的输入),每次加载都清洗一遍;有改动则置脏,由去抖任务落盘。
+        let history_changed = match data["history"].as_array_mut() {
+            Some(history) => clean_history(history),
+            None => {
+                data["history"] = json!([]);
+                true
+            }
+        };
         Store {
             dir,
             data: Mutex::new(data),
             use_keyring: true,
-            dirty: std::sync::atomic::AtomicBool::new(false),
+            dirty: std::sync::atomic::AtomicBool::new(history_changed),
         }
+    }
+
+    /// 记一条命令历史:清洗后为空不记;同一命令只保留最新一条,最多 500 条。
+    /// 返回是否记录了。只改内存并置脏,由去抖任务落盘。
+    pub fn add_history(&self, host_id: Value, host: Value, raw: &str) -> bool {
+        let cmd = clean_command(raw);
+        if cmd.is_empty() {
+            return false;
+        }
+        {
+            let mut data = self.data.lock().unwrap();
+            if !data["history"].is_array() {
+                data["history"] = json!([]);
+            }
+            if let Some(history) = data["history"].as_array_mut() {
+                history.retain(|h| h["cmd"].as_str() != Some(cmd.as_str()));
+                history.push(json!({ "hostId": host_id, "host": host, "cmd": cmd, "at": chrono::Utc::now().timestamp_millis() }));
+                let len = history.len();
+                if len > 500 {
+                    history.drain(..len - 500);
+                }
+            }
+        }
+        self.mark_dirty();
+        true
     }
 
     /// 测试用:禁用 keyring,凭据走 base64 回退

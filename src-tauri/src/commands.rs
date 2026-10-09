@@ -839,22 +839,13 @@ pub async fn nebula_invoke(
         }
 
         "history:add" => {
-            {
-                let mut data = state.store.data.lock().unwrap();
-                let cmd = payload["cmd"].as_str().unwrap_or("").trim().to_string();
-                if !cmd.is_empty() {
-                    let history = data["history"].as_array_mut().unwrap();
-                    history.retain(|h| h["cmd"].as_str() != Some(cmd.as_str()));
-                    history.push(json!({ "hostId": payload["hostId"], "host": payload["host"], "cmd": cmd, "at": chrono::Utc::now().timestamp_millis() }));
-                    let len = history.len();
-                    if len > 500 {
-                        data["history"] = json!(history[len - 500..]);
-                    }
-                }
-            }
-            // 每敲一条命令都全量重写配置文件的代价过高(含加密凭据的整份 JSON),
-            // 改为标记脏位,由后台去抖任务合并落盘。
-            state.store.mark_dirty();
+            // 入库前清洗(去控制序列);每敲一条命令都全量重写配置文件的代价过高
+            // (含加密凭据的整份 JSON),只改内存并标记脏位,由后台去抖任务合并落盘。
+            state.store.add_history(
+                payload["hostId"].clone(),
+                payload["host"].clone(),
+                payload["cmd"].as_str().unwrap_or(""),
+            );
             ok(json!(null))
         }
         "history:list" => {

@@ -47,14 +47,18 @@
            行尾是最小化/最大化/关闭窗口控制按钮(见 modules/window-controls.js)。 -->
       <div id="tabbar" data-tauri-drag-region>
         <div id="tabs" data-tauri-drag-region></div>
+        <!-- 全部标签:仅在标签条溢出时显示,数字是标签数(terminal.js bindTabStrip) -->
+        <button id="btn-tab-list" class="btn icon-tb hidden" type="button" title="全部标签" aria-label="全部标签"><span class="tab-count">0</span><span class="mi" data-icon="chevronDown"></span></button>
         <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
-        <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
-        <button id="btn-split-menu" class="btn icon-tb split-caret" title="分屏与布局" aria-label="分屏与布局"><span class="mi" data-icon="chevronDown"></span></button>
-        <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="右侧工具栏(AI 助手 / 命令历史 / 常用片段)" aria-label="右侧工具栏">✨</button>
+        <div class="split-group" role="group" aria-label="分屏">
+          <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
+          <button id="btn-split-menu" class="btn icon-tb split-caret" title="分屏与布局" aria-label="分屏与布局"><span class="mi" data-icon="chevronDown"></span></button>
+        </div>
+        <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="右侧工具栏(AI 助手 / 命令历史 / 常用命令)" aria-label="右侧工具栏">✨</button>
         <button id="btn-more" class="btn icon-tb" aria-label="更多" data-title="更多(命令面板 %1)" data-accel="palette.open"><span class="mi" data-icon="dots"></span></button>
         <!-- 更多菜单只放全局项:命令面板入口、视图开关、设置与关于。会话与布局
              命令在就近入口(窗格工具条、终端右键、分屏下拉、侧栏「管理」),
-             AI / 历史 / 片段是右侧工具栏的页签。 -->
+             AI / 历史 / 常用命令是右侧工具栏的页签。 -->
         <div id="more-menu" class="hidden" aria-label="更多">
           <button id="btn-palette" class="btn small" data-command="palette.open" data-accel="palette.open" data-title="命令面板(%1)"><span class="mi" data-icon="command"></span><span class="mm-label">命令面板…</span><span class="mm-key"></span></button>
           <div class="mm-sep"></div>
@@ -129,7 +133,7 @@
       </div>
     </main>
 
-    <!-- 右侧工具栏:AI 助手 / 命令历史 / 常用片段 三个页签(容器沿用 #ai-panel)。
+    <!-- 右侧工具栏:AI 助手 / 命令历史 / 常用命令 三个页签(容器沿用 #ai-panel)。
          页签页叠放在同一格,非活动页只是不可见 —— 滚动位置、过滤词、输入草稿
          都留在原处(见 right-panel.js)。 -->
     <div id="ai-resizer" class="resizer hidden" title="拖动调整右侧工具栏宽度"></div>
@@ -140,7 +144,7 @@
         <div class="rp-tabs" role="tablist" aria-label="右侧工具栏">
           <button id="rp-tab-ai" class="rp-tab" type="button" role="tab" data-tab="ai" aria-controls="rp-ai" aria-selected="true" title="AI 助手"><span class="mi" data-icon="sparkles"></span><span class="rp-tab-lbl">AI 助手</span></button>
           <button id="rp-tab-history" class="rp-tab" type="button" role="tab" data-tab="history" aria-controls="rp-history" aria-selected="false" tabindex="-1" title="命令历史"><span class="mi" data-icon="clock"></span><span class="rp-tab-lbl">命令历史</span></button>
-          <button id="rp-tab-snippets" class="rp-tab" type="button" role="tab" data-tab="snippets" aria-controls="rp-snippets" aria-selected="false" tabindex="-1" title="常用片段"><span class="mi" data-icon="zap"></span><span class="rp-tab-lbl">常用片段</span></button>
+          <button id="rp-tab-snippets" class="rp-tab" type="button" role="tab" data-tab="snippets" aria-controls="rp-snippets" aria-selected="false" tabindex="-1" title="常用命令"><span class="mi" data-icon="zap"></span><span class="rp-tab-lbl">常用命令</span></button>
         </div>
         <span class="spacer"></span>
         <button id="ai-settings-open" class="btn icon" title="AI 设置" aria-label="AI 设置">⚙</button>
@@ -185,16 +189,15 @@
           <button id="hist-clear" class="btn small" type="button">清空</button>
         </div>
         <div id="hist-list" class="rp-list"></div>
-        <p class="rp-hint muted">点击填入当前终端,不会自动回车</p>
       </section>
+      <!-- 添加行必须是本页最后一个子元素:它锁 --footer-h 高,上边框与状态栏上边框齐平 -->
       <section id="rp-snippets" class="rp-page" role="tabpanel" data-page="snippets" aria-labelledby="rp-tab-snippets">
         <div id="snippet-list" class="rp-list"></div>
         <div class="snippet-add">
-          <input id="snippet-name" type="text" placeholder="名称" aria-label="片段名称" />
-          <input id="snippet-cmd" type="text" placeholder="命令，例如：df -h" aria-label="片段命令" />
+          <input id="snippet-name" type="text" placeholder="名称" aria-label="命令名称" />
+          <input id="snippet-cmd" type="text" placeholder="命令，例如：df -h" aria-label="命令内容" />
           <button id="btn-snippet-add" class="btn small primary" type="button">添加</button>
         </div>
-        <p class="rp-hint muted">点击在当前终端执行</p>
       </section>
       </div>
     </aside>

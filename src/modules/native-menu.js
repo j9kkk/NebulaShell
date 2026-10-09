@@ -40,7 +40,7 @@ export const MENU_SPEC = [
     cmd('palette.open'), sep,
     cmd('panel.sidebar'), cmd('panel.tools'), sep,
     cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), sep,
-    cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), sep,
+    cmd('tabs.list'), cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), sep,
     pre('Fullscreen', '进入全屏'),
   ] },
   { submenu: '主机', items: [

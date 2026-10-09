@@ -443,3 +443,96 @@ fn cloud_accounts_crud() {
     );
     let _ = std::fs::remove_dir_all(&store.dir);
 }
+
+/// 命令历史条目清洗:去控制序列,并按行编辑语义重放旧版采集原样存下的按键。
+#[test]
+fn clean_command_strips_sequences_and_replays_line_edits() {
+    use crate::config::clean_command;
+    assert_eq!(
+        clean_command("\u{1b}[200~ss -tulnp | grep -E '80|443'\u{1b}[201~"),
+        "ss -tulnp | grep -E '80|443'"
+    );
+    assert_eq!(clean_command("\u{1b}[A"), "");
+    assert_eq!(clean_command("\u{1b}[31mls\u{1b}[0m"), "ls");
+    assert_eq!(clean_command("a\u{1b}OAb\u{1b}(Bc\u{1b}=d"), "abcd");
+    assert_eq!(
+        clean_command("x\u{1b}]0;title\u{7}y\u{1b}Pq\u{1b}\\z"),
+        "xyz"
+    );
+    assert_eq!(clean_command("rm -rf /tmp/x\u{3}pwd"), "pwd");
+    assert_eq!(clean_command("whoami\u{15}id"), "id");
+    assert_eq!(clean_command("echo hello world\u{17}"), "echo hello");
+    assert_eq!(clean_command("lss\u{7f} -la"), "ls -la");
+    assert_eq!(clean_command("  echo a\r\n\techo b  "), "echo a\n\techo b");
+    assert_eq!(clean_command("a\u{9b}b"), "ab");
+    assert_eq!(clean_command("\u{1b}"), "");
+    assert_eq!(clean_command("echo 你好"), "echo 你好");
+}
+
+/// 旧版命令历史在加载时清洗:删空条目与非对象、同一命令只留最新一条,并置脏落盘;
+/// 清洗是幂等的,再次加载不再置脏。
+#[test]
+fn history_is_cleaned_on_load() {
+    let dir = std::env::temp_dir().join(format!("nb-legacy-history-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry =
+        |cmd: &str, at: i64| json!({ "hostId": "h1", "host": "root@a", "cmd": cmd, "at": at });
+    let legacy = json!({
+        "version": 1, "hosts": [], "snippets": [], "forwards": [], "bookmarks": [], "knownHosts": {},
+        "history": [
+            entry("ls -la", 1),
+            entry("\u{1b}[200~ss -tulnp | grep -E '80|443'\u{1b}[201~", 2),
+            entry("\u{1b}[A", 3),
+            entry("rm -rf /tmp/x\u{3}pwd", 4),
+            "not an object",
+            entry("  ls -la  ", 5),
+        ]
+    });
+    std::fs::write(
+        dir.join("nebulashell-config.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    let store = Store::load_plain(dir.clone());
+    {
+        let data = store.data.lock().unwrap();
+        let history = data["history"].as_array().unwrap();
+        let cmds: Vec<&str> = history.iter().map(|h| h["cmd"].as_str().unwrap()).collect();
+        assert_eq!(cmds, vec!["ss -tulnp | grep -E '80|443'", "pwd", "ls -la"]);
+        assert_eq!(history[2]["at"], json!(5), "重复命令保留最新一条");
+        assert_eq!(history[0]["host"], json!("root@a"), "其余字段原样保留");
+    }
+    assert!(store.flush_if_dirty(), "清洗有改动应置脏落盘");
+    let again = Store::load_plain(dir.clone());
+    assert!(!again.flush_if_dirty(), "已清洗的历史再次加载不应置脏");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// history:add:入库前清洗,清洗后为空不记;同一命令只留最新;history 字段被
+/// 写坏(非数组)时重置而不是 panic。
+#[test]
+fn add_history_cleans_dedups_and_survives_corrupt_field() {
+    let store = tmp_store("add-history");
+    assert!(!store.add_history(json!("h1"), json!("root@a"), "\u{1b}[A"));
+    assert!(!store.flush_if_dirty(), "没记录就不置脏");
+    {
+        let mut data = store.data.lock().unwrap();
+        data["history"] = json!({ "broken": true });
+    }
+    assert!(store.add_history(json!("h1"), json!("root@a"), "\u{1b}[200~uptime\u{1b}[201~"));
+    assert!(store.add_history(json!("h1"), json!("root@a"), "df -h"));
+    assert!(store.add_history(json!("h1"), json!("root@a"), " uptime "));
+    {
+        let data = store.data.lock().unwrap();
+        let cmds: Vec<&str> = data["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["cmd"].as_str().unwrap())
+            .collect();
+        assert_eq!(cmds, vec!["df -h", "uptime"]);
+    }
+    assert!(store.flush_if_dirty());
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

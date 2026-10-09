@@ -1,5 +1,5 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
+import { $, activeTab, api, askConfirm, askPrompt, bindMenuButton, closeCtxMenu, copyText, hasOpenModal, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { accelOf, appShortcutOf, matchAction } from './keymap.js';
 import { bindCommandButton, commandMenuItem, refreshCommandStates } from './commands.js';
@@ -10,6 +10,8 @@ import { escapeHtml } from './hosts.js';
 import { renderMonitorBar } from './monitor.js';
 import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSession } from './sftp.js';
 import { confirmTransferInterrupt } from './file-transfer.js';
+import { appendTrusted, createLine, feed as feedLine, firstCommandLine, resetLine } from '../shared/cmdline.js';
+import { endsWithCommand, logicalLineEnd, normalizeSpace, readCommandFromBuffer } from '../shared/term-text.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -169,9 +171,76 @@ export async function renameTab(tabId) {
 /// innerHTML 清空 —— 那会把 term.open() 刚挂好的终端摘掉再挂回,造成首屏输出丢失。
 export function setActiveTabId(tabId) {
   // Even a chrome-only away-and-back invalidates an outstanding target snapshot.
-  if (state.activeTabId !== tabId) focusRevision++;
+  const changed = state.activeTabId !== tabId;
+  if (changed) focusRevision++;
   state.activeTabId = tabId;
   for (const [id, t] of state.tabs) t.el.classList.toggle('active', id === tabId);
+  if (changed) revealActiveTab();
+}
+
+// —— 标签条溢出:滚动条已隐藏(见 style.css #tabs),改由滚轮横向滚动、活动标签
+// 自动滚入视野、溢出时显示「全部标签」按钮 ——
+
+/// 把活动标签滚进 #tabs 可视区。只滚标签条本身(scrollIntoView 会连带滚动祖先);
+/// 两端各留出右端淡出遮罩的宽度。只在活动标签变化或其标题变化时调用,
+/// 不在每次状态刷新时把用户滚走的标签条拉回来。
+function revealActiveTab() {
+  const el = state.tabs.get(state.activeTabId)?.el;
+  const strip = el?.parentElement;
+  if (!strip || typeof strip.getBoundingClientRect !== 'function' || !(strip.scrollWidth > strip.clientWidth)) return;
+  const pad = 24;
+  const s = strip.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  if (r.left < s.left + pad) strip.scrollLeft -= s.left + pad - r.left;
+  else if (r.right > s.right - pad) strip.scrollLeft += r.right - (s.right - pad);
+}
+
+function syncTabOverflow() {
+  const strip = $('#tabs');
+  const button = $('#btn-tab-list');
+  if (!strip || !button) return;
+  const over = strip.scrollWidth > strip.clientWidth + 1;
+  strip.classList.toggle('overflowing', over);
+  strip.classList.toggle('at-end', strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1);
+  button.classList.toggle('hidden', !over);
+  button.querySelector('.tab-count').textContent = String(state.tabs.size);
+}
+
+/// 全部标签列表(「全部标签」按钮与 tabs.list 命令共用):活动项打勾,选中即切换。
+export function tabListItems() {
+  return [...state.tabs.values()].map((tab) => ({
+    label: tab.el.querySelector('.tab-title')?.textContent || '新标签',
+    checked: tab.id === state.activeTabId,
+    run: () => activateTab(tab.id),
+  }));
+}
+
+/// tabs.list 命令:按钮可见时锚在按钮下,否则锚在标签条左下;关闭后焦点回到终端。
+export function openTabList() {
+  const button = $('#btn-tab-list');
+  const visible = !!button?.getClientRects().length;
+  const r = (visible ? button : $('#tabs')).getBoundingClientRect();
+  const back = document.querySelector('.term-pane.focused .xterm-helper-textarea') || document.activeElement;
+  showCtxMenu(r.left, r.bottom + 4, tabListItems(), { label: '全部标签', trigger: visible ? button : undefined, returnFocus: back });
+}
+
+export function bindTabStrip() {
+  const strip = $('#tabs');
+  const button = $('#btn-tab-list');
+  if (!strip || !button) return;
+  // 纵向滚轮映射为横向滚动;Shift+滚轮与触控板横扫本来就是横向,交给原生
+  strip.addEventListener('wheel', (e) => {
+    if (e.shiftKey || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+    if (!(strip.scrollWidth > strip.clientWidth)) return;
+    e.preventDefault();
+    strip.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  }, { passive: false });
+  strip.addEventListener('scroll', syncTabOverflow, { passive: true });
+  // 尺寸变化(窗口/侧栏/右侧栏)与标签增删、标题变化都会改变是否溢出
+  new ResizeObserver(syncTabOverflow).observe(strip);
+  new MutationObserver(syncTabOverflow).observe(strip, { childList: true, subtree: true, characterData: true });
+  bindMenuButton(button, tabListItems, { label: '全部标签' });
+  syncTabOverflow();
 }
 
 /// 切换标签:只挂载目标标签的窗格,其余标签的终端保留在内存中不销毁
@@ -288,10 +357,12 @@ export function notifyTerminalStateChange() {
 
 export function syncTabChrome() {
   notifyTerminalStateChange();
+  let activeRetitled = false;
   for (const [tabId, tab] of state.tabs) {
     const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
     const title = tab.el.querySelector('.tab-title');
     const dot = tab.el.querySelector('.tab-dot');
+    const before = title.textContent;
     if (s) {
       title.textContent = tab.customTitle || s.host.name;
       dot.className = 'tab-dot ' + s.status;
@@ -299,7 +370,10 @@ export function syncTabChrome() {
       title.textContent = tab.customTitle || '新标签';
       dot.className = 'tab-dot';
     }
+    if (tabId === state.activeTabId && title.textContent !== before) activeRetitled = true;
   }
+  // 活动标签换了标题(新建后连上主机、重命名)宽度会变,可能被挤出可视区
+  if (activeRetitled) revealActiveTab();
   syncWorkspaceChrome(state.tabs, state.activeTabId);
 }
 
@@ -1230,6 +1304,14 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
     term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, altScreenEdge(true));
     term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, altScreenEdge(false));
   } catch { /* 老版本 xterm 无 parser API:跳过 */ }
+  // 命令采集的判定时机(见 consumeCommandKeys):换行在解析过程中同步触发,早于
+  // 同一批数据里随后的清屏;每批写入解析完再补一次。ESC c 全屏复位不经 CSI,
+  // 由缓冲区切换事件兜底备用屏幕状态。
+  try {
+    term.onLineFeed?.(() => drainCommands(session));
+    term.onWriteParsed?.(() => drainCommands(session));
+    term.buffer?.onBufferChange?.((buf) => setAltScreen(session, buf.type === 'alternate'));
+  } catch { /* 老版本 xterm:只靠 CSI 钩子与超时 */ }
   state.sessions.set(sessionId, session);
   // e2e 钩子:WebGL 渲染下终端文本不再出现在 .xterm-rows 的 DOM 里,
   // 测试统一从这里读(基于 buffer API,渲染无关)。
@@ -1360,6 +1442,7 @@ function closeSessionNow(sessionId) {
   disconnectSession(sessionId);
   stopLogIfActive(sessionId);
   if (s._paintTimer) { clearInterval(s._paintTimer); s._paintTimer = null; }
+  resetCommandCapture(s);
   s.term.dispose();
   // 只在"所属标签"里摘除窗格(可能同时有多个标签各自的分屏)
   const tab = s.tabId ? state.tabs.get(s.tabId) : null;
@@ -1573,32 +1656,222 @@ function addCommandHistory(session, cmd) {
   if (cmd) api('history:add', { hostId: session.host.id, host: `${session.host.username}@${session.host.host}`, cmd }).catch(() => {});
 }
 
-// 命令行采集:输入累积进 histBuf,遇回车切出一条命令并开启它的输出采集。
+// —— 命令历史采集:按键模型为主,屏幕为证 ——
+// 输入经 shared/cmdline.js 的行模型还原成命令文本(histBuf 是它的文本)。回车时
+// 不立即入库,等远端回显后核对屏幕:键盘输入的行必须在提示符后看得到回显才记录
+// —— sudo/ssh 的密码提示关闭了回显,密码因此不会进历史;含光标移动、补全、
+// 历史调用的行模型还原不了,改读屏幕上的命令。历史填入、常用命令、AI 命令块
+// 是可信来源,免校验。判定在命令行换行时进行(早于随后的清屏等输出被解析),
+// 最迟 ECHO_TIMEOUT;校验不了一律不记。xterm 缓冲区不可用时(单测替身)退化为
+// 只看模型。行位置一律用 marker 保存:回滚区写满后旧行被裁掉,绝对行号会整体前移。
+//
 // 备用屏幕(alt screen)期间的按键是 top/vim/less 等全屏 TUI 的程序快捷键而非
-// 命令行,不采集 —— 否则无回车的快捷键(M/q/方向键)滞留 histBuf,拼进下一条
-// 真实命令(诊断素材把 "llll" 变成 "MDCCCqllll"),TUI 里的回车快捷键(:wq)
-// 还会被误记成命令历史。边界由 openTerminal 的 CSI ?1049/?47/?1047 钩子驱动。
-// 代价:tmux 客户端整体运行在备用屏幕里,其内层会话的命令采集会暂停(历史与
-// lastCmd 不更新),lastOutput 仍在累积,诊断素材不至完全失效。
-function consumeCommandKeys(s, d) {
-  if (s.inAltScreen) return;
-  s.histBuf += d;
-  // 多字符 chunk(粘贴)也要逐字符识别回车;保留原有手动输入解析行为。
-  let idx;
-  while ((idx = s.histBuf.indexOf('\r')) >= 0) {
-    const cmd = s.histBuf.slice(0, idx).replace(/[\x08\x7f]/g, '').trim(); // 清理退格控制符
-    s.histBuf = s.histBuf.slice(idx + 1);
-    beginCommandCollection(s, cmd);
-    addCommandHistory(s, cmd);
-  }
+// 命令行,不采集 —— 否则快捷键会拼进下一条命令,TUI 里的回车(:wq)还会被误记
+// 成命令。边界由 createSession 的 CSI ?1049/?47/?1047 钩子与 buffer.onBufferChange
+// (ESC c 全屏复位不经 CSI)驱动。代价:tmux 客户端整体运行在备用屏幕里,其内层
+// 会话的命令采集会暂停,lastOutput 仍在累积,诊断素材不至完全失效。
+const ECHO_TIMEOUT = 1500;
+const SCAN_LIMIT = 200;
+
+const canVerify = (term) => !!(term?.buffer?.normal && typeof term.registerMarker === 'function');
+const cursorRow = (buf) => buf.baseY + buf.cursorY;
+const liveMarker = (marker) => !!marker && !marker.isDisposed && marker.line >= 0;
+
+function disposeAnchor(anchor) {
+  try { anchor?.marker?.dispose(); } catch { /* ignore */ }
 }
 
-// 备用屏幕切换边界。进入时清一次 histBuf:切换序列被解析前的一瞬间敲下的按键
-// 已不可能属于命令行,丢弃最干净。退出不需要清:TUI 期间的按键从未入库。
+/// 会话上的行模型。histBuf 被外部直接改写(命令块回滚等)时以它为准重建,来源未知按键盘输入处理。
+function lineOf(s) {
+  const text = s.histBuf || '';
+  if (!s.cmdLine || s.cmdLine.text !== text) {
+    disposeAnchor(s.cmdLine?.anchor);
+    s.cmdLine = createLine();
+    if (text) Object.assign(s.cmdLine, { text, started: true, typed: true });
+  }
+  return s.cmdLine;
+}
+
+/// 新行开始时的锚点:提示符结束位置(光标所在行与列)和此刻的提示符文字。
+/// 上一次回车的回显还没到(连续输入、非 bracketed 的多行粘贴)时,光标还停在
+/// 上一条命令所在行,锚点不可信:记为 chained,判定时到之后的行里找"提示符 + 命令"。
+function anchorNewLine(s) {
+  const term = s.term;
+  if (!canVerify(term) || term.buffer.active?.type === 'alternate') return null;
+  const buf = term.buffer.normal;
+  const marker = term.registerMarker(0);
+  if (!marker) return null;
+  const enter = s.cmdEnterMarker;
+  const chained = liveMarker(enter) && cursorRow(buf) <= enter.line;
+  const startCol = buf.cursorX;
+  return { marker, startCol, chained, promptText: buf.getLine(marker.line)?.translateToString(false, 0, startCol) ?? '' };
+}
+
+function lineHooks(s) {
+  return {
+    onStart: (line) => { line.anchor = anchorNewLine(s); },
+    onSubmit: (item) => submitTypedLine(s, item),
+    onAbort: disposeAnchor,
+  };
+}
+
+function consumeCommandKeys(s, d) {
+  if (s.inAltScreen) return;
+  const line = lineOf(s);
+  feedLine(line, d, lineHooks(s));
+  s.histBuf = line.text;
+}
+
+/// 回车提交。输出采集立即开始(输出可能先于判定到达),lastCmd 却要等判定通过
+/// 才写入 —— 判定前它可能是一条没回显的密码。
+function submitTypedLine(s, item) {
+  const term = s.term;
+  const verify = canVerify(term);
+  if (verify && term.buffer.active?.type !== 'alternate') {
+    try { s.cmdEnterMarker?.dispose(); } catch { /* ignore */ }
+    s.cmdEnterMarker = term.registerMarker(0) || null;
+  }
+  const text = item.text.trim();
+  const instant = item.trusted && !item.typed && !item.dirty;
+  const prev = { lastCmd: s.lastCmd, lastOutput: s.lastOutput, collectOutput: s.collectOutput, collection: commandCollections.get(s) };
+  const collection = beginCommandCollection(s, instant || (!verify && !item.dirty) ? text : '');
+  const entry = { item, text, anchor: item.anchor, collection, prev, at: Date.now(), scanOffset: null, scanBudget: SCAN_LIMIT };
+  // 空行回车只开启新的采集;脏行的模型文本可以是空的(↑ 调出的命令只在屏幕上)
+  if (!text && !item.dirty) { disposeAnchor(entry.anchor); return; }
+  if (!verify) { settleCommand(s, entry, item.dirty ? null : text); return; }
+  (s.cmdPending ||= []).push(entry);
+  drainCommands(s);
+}
+
+/// 记录或放弃一条提交。放弃(没校验到回显)时,本次回车之后的输出仍属于上一条
+/// 命令(如 sudo apt update 输入密码后的输出),采集回滚并接上。
+function settleCommand(s, entry, verdict) {
+  disposeAnchor(entry.anchor);
+  const current = commandCollections.get(s) === entry.collection;
+  if (verdict) {
+    const cmd = verdict.trim();
+    if (current) s.lastCmd = cmd;
+    addCommandHistory(s, cmd);
+    return;
+  }
+  if (!current) return;
+  const prev = entry.prev;
+  s.lastCmd = prev.lastCmd;
+  s.lastOutput = prev.collectOutput ? ((prev.lastOutput || '') + (s.lastOutput || '')).slice(-6000) : prev.lastOutput;
+  s.collectOutput = prev.collectOutput;
+  if (prev.collection) commandCollections.set(s, prev.collection);
+  else commandCollections.delete(s);
+}
+
+/// 按提交顺序逐条判定;队首没到判定时机就等下一次换行 / 写入解析完 / 超时。
+/// 等待上限从各自提交时算起,一条没回显的行不会把后面每一条都再拖一个周期。
+function drainCommands(s) {
+  const queue = s.cmdPending;
+  if (!queue?.length) return;
+  const now = Date.now();
+  while (queue.length) {
+    const entry = queue[0];
+    const verdict = judgeCommand(s, entry, now - entry.at >= ECHO_TIMEOUT);
+    if (verdict === undefined) break;
+    queue.shift();
+    settleCommand(s, entry, verdict);
+  }
+  clearTimeout(s.cmdTimer);
+  s.cmdTimer = queue.length ? setTimeout(() => drainCommands(s), Math.max(20, queue[0].at + ECHO_TIMEOUT - Date.now())) : null;
+}
+
+/// 返回要记录的命令文本;null = 不记;undefined = 还没到判定时机。
+function judgeCommand(s, entry, timedOut) {
+  const { item, anchor } = entry;
+  if (item.trusted && !item.typed && !item.dirty) return entry.text;
+  if (!anchor || item.lost || !liveMarker(anchor.marker)) return null;
+  const term = s.term;
+  const buf = term.buffer.normal;
+  const cur = cursorRow(buf);
+  const needle = normalizeSpace(firstCommandLine(item.text));
+  if (!anchor.chained) {
+    const row = anchor.marker.line;
+    const end = logicalLineEnd(buf, row);
+    if (cur <= end && !timedOut) return undefined;
+    const region = readCommandFromBuffer(buf, row, anchor.startCol, term.cols) ?? '';
+    if (item.dirty) return readDirtyCommand(buf, entry, row, region);
+    // 锚点在行首 = 开始输入时提示符还没出现。行首的文字可能是程序关闭回显之前
+    // tty 替它回显的密码(sudo 启动慢时提前敲好),这种行只认"提示符 + 命令"
+    if (anchor.startCol > 0 && normalizeSpace(region).startsWith(needle)) return entry.text;
+    if (endsWithCommand(readCommandFromBuffer(buf, row, 0, term.cols) ?? '', needle)) return entry.text;
+    // 回显不在锚点行:提示符是在输入之后才出现的(边输出边敲),转为向后查找
+    anchor.chained = true;
+    entry.scanOffset = end + 1 - row;
+  }
+  if (item.dirty) return null;
+  if (scanForEcho(s, entry, needle, cur)) return entry.text;
+  return timedOut ? null : undefined;
+}
+
+/// 含导航/补全键的行:命令以屏幕为准。提示符必须没变(Ctrl+R 搜索界面、重绘过的
+/// 行读不准),多行与行首锚点不读;模型里第一次变脏前的文字必须是屏幕命令的开头。
+function readDirtyCommand(buf, entry, row, region) {
+  const { item, anchor } = entry;
+  if (item.text.includes('\n') || anchor.startCol === 0) return null;
+  const prompt = buf.getLine(row)?.translateToString(false, 0, anchor.startCol) ?? '';
+  if (prompt !== anchor.promptText) return null;
+  const cmd = region.trim();
+  // 只有星号:pwfeedback 的密码提示下误按了方向键或 Tab
+  if (!cmd || /^\*+$/.test(cmd)) return null;
+  const clean = normalizeSpace(item.cleanPrefix);
+  return !clean || normalizeSpace(cmd).startsWith(clean) ? cmd : null;
+}
+
+/// 在锚点之后已经结束的行里找"提示符 + 命令"(只看光标之上的完整行),增量推进,
+/// 最多 SCAN_LIMIT 行。偏移相对锚点 marker 保存,不受回滚区裁剪影响。
+function scanForEcho(s, entry, needle, cur) {
+  const buf = s.term.buffer.normal;
+  const base = entry.anchor.marker.line;
+  if (entry.scanOffset == null) entry.scanOffset = logicalLineEnd(buf, base) + 1 - base;
+  let row = base + entry.scanOffset;
+  while (row < cur && entry.scanBudget > 0) {
+    const end = logicalLineEnd(buf, row);
+    if (end >= cur) break;
+    if (endsWithCommand(readCommandFromBuffer(buf, row, 0, s.term.cols) ?? '', needle)) return true;
+    entry.scanBudget -= end + 1 - row;
+    row = end + 1;
+  }
+  entry.scanOffset = row - base;
+  return false;
+}
+
+/// 连接重建、会话关闭时丢弃未完成的行与未判定的提交(新 shell 与它们无关)。
+function resetCommandCapture(s) {
+  disposeAnchor(s.cmdLine?.anchor);
+  s.cmdLine = null;
+  s.histBuf = '';
+  for (const entry of s.cmdPending || []) disposeAnchor(entry.anchor);
+  s.cmdPending = [];
+  clearTimeout(s.cmdTimer);
+  s.cmdTimer = null;
+  try { s.cmdEnterMarker?.dispose(); } catch { /* ignore */ }
+  s.cmdEnterMarker = null;
+}
+
+// 备用屏幕切换边界。进入时清一次行模型:切换序列被解析前的一瞬间敲下的按键
+// 已不可能属于命令行,丢弃最干净。退出不需要清:TUI 期间的按键从未入模型。
 function setAltScreen(s, on) {
   if (s.inAltScreen === on) return;
   s.inAltScreen = on;
-  if (on) s.histBuf = '';
+  if (on) {
+    disposeAnchor(s.cmdLine?.anchor);
+    s.cmdLine = null;
+    s.histBuf = '';
+  }
+}
+
+/// 历史行点击填入 / 常用命令点击执行:作用于当前活动终端,走 AI 命令块同一条
+/// 发送路径(bracketed paste 包裹、拒绝控制字符与无 bracketed 时的多行),作为
+/// 可信输入免回显校验;执行类立即更新命令历史与 lastCmd。
+export async function feedTrusted(text, { execute = false } = {}) {
+  const t = getCommandBlockTarget();
+  if (!t.ok) return t;
+  return submitCommandBlock(t.target, text, { execute });
 }
 
 // Keep owner identities privately: callers cannot retarget a confirmation by
@@ -1665,7 +1938,11 @@ export async function submitCommandBlock(target, text, { execute = true } = {}) 
   const previous = { histBuf: s.histBuf, lastCmd: s.lastCmd, lastOutput: s.lastOutput, collectOutput: s.collectOutput, collection: commandCollections.get(s) };
   // Store pasted newlines as LF in the history buffer, not Enter events. A later
   // manual Enter on fill-only records the block once, without protocol framing.
-  const histBuf = execute ? '' : (s.histBuf || '') + text.replace(/\r\n/g, '\n');
+  // Fill-only text is trusted input: that Enter skips echo verification.
+  const line = lineOf(s);
+  if (execute) { disposeAnchor(line.anchor); resetLine(line); }
+  else appendTrusted(line, text, lineHooks(s));
+  const histBuf = line.text;
   s.histBuf = histBuf;
   const collection = execute ? beginCommandCollection(s, text) : commandCollections.get(s);
   // No await between final eligibility and this one write; never term.paste(),
@@ -1696,6 +1973,7 @@ export async function submitCommandBlock(target, text, { execute = true } = {}) 
 async function runSessionConnection(s, automatic = false) {
   if (state.sessions.get(s.sessionId) !== s) return false;
   const epoch = s.connectionEpoch = (s.connectionEpoch || 0) + 1;
+  resetCommandCapture(s);
   s.manualDisconnect = false;
   s.status = 'connecting';
   updateTab(s);

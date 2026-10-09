@@ -44,7 +44,7 @@ async function setup(invoke) {
       askConfirm() {}, closeModal() {}, copyText() {}, makeDraggable() {}, openModal() {},
     },
     './hosts.js': { escapeHtml: String },
-    './terminal.js': { writeSessionInput() {} },
+    './terminal.js': { feedTrusted: async () => ({ ok: true }) },
   };
   // Blob/URL deliberately absent: this export must go through native IPC only.
   const context = vm.createContext({ document });

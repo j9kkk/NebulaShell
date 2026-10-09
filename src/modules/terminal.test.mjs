@@ -7,12 +7,15 @@ import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
 import * as layout from './terminal-layout.js';
 import { parseFpError, stripFpMark } from './core.js';
+import * as cmdline from '../shared/cmdline.js';
+import * as termText from '../shared/term-text.js';
+import xtermPkg from '@xterm/xterm';
 
 const moduleSource = (await readFile(new URL('./terminal.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '');
 const source = moduleSource.replace(/\bexport /g, '');
 
-function harness({ renderStatusbar = false } = {}) {
+function harness({ renderStatusbar = false, terminal = null, clock = null } = {}) {
   const calls = [], timers = new Map(), notices = [], closedTabs = [], confirmations = [], elements = new Map();
   let timerSeq = 0, modal = false, password = 'quick-secret', confirm = false, implementation = async () => ({});
   const element = (selector) => {
@@ -59,7 +62,8 @@ function harness({ renderStatusbar = false } = {}) {
   }
   class Addon { fit() {} onContextLoss() {} }
   const context = vm.createContext({
-    ...layout, state, crypto: webcrypto, console, Terminal,
+    ...layout, ...cmdline, feedLine: cmdline.feed, ...termText, state, crypto: webcrypto, console, Terminal: terminal || Terminal,
+    ...(clock ? { Date: class extends Date { static now() { return clock.now; } } } : {}),
     FitAddon: Addon, SearchAddon: Addon, WebLinksAddon: Addon, WebglAddon: Addon,
     window: {}, getComputedStyle: () => ({ getPropertyValue: () => '' }),
     api: async (name, payload) => { calls.push({ name, payload }); return implementation(name, payload); },
@@ -109,7 +113,7 @@ function harness({ renderStatusbar = false } = {}) {
       scheduleReconnect, handleSessionStatus, writableBroadcastSessions, quickConnect, splitActive,
       isRetryableNetworkError, closeActivePane, syncPaneButtons, visibleSessions, fitActive, updateStatusbar,
       syncPaneStatusBanner,
-      getCommandBlockTarget, commandBlockTargetStatus, submitCommandBlock,
+      getCommandBlockTarget, commandBlockTargetStatus, submitCommandBlock, feedTrusted,
       activateSession, activatePane, setActiveTabId, closeSession, createInputSession,
       consumeCommandKeys, setAltScreen};
   `, Object.assign(context, { closedTabs, addSession, paneElement }));
@@ -847,6 +851,204 @@ test('setAltScreen 幂等,仅进入备用屏幕时清 histBuf', () => {
   h.setAltScreen(s, false);  // 退出不动 histBuf(TUI 期间按键从未入库)
   assert.equal(s.inAltScreen, false);
   assert.equal(s.histBuf, 'stuck');
+});
+
+// ---- 命令历史采集矩阵:真实 xterm(不调用 open,无需 DOM)+ 模拟远端回显 ----
+// keys() 走 xterm onData(与键盘一致),out() 是远端写回终端的内容。
+
+class HeadlessTerminal extends xtermPkg.Terminal { open() {} loadAddon() {} }
+const PROMPT = 'root@h:~# ';
+
+function captureHarness() {
+  const clock = { now: 1_000_000 };
+  const h = harness({ terminal: HeadlessTerminal, clock });
+  const s = h.createInputSession({ id: 'host-a', host: 'example.invalid', username: 'root', port: 22 });
+  s.status = 'connected'; h.state.activeId = s.sessionId;
+  const out = (data) => new Promise((resolve) => s.term.write(data, resolve));
+  const keys = (data) => s.term.input(data);
+  const cmds = () => histories(h).map((c) => c.payload.cmd);
+  // 超过回显等待上限,并执行到期的判定定时器
+  const expire = async () => {
+    clock.now += 2000;
+    const timer = h.timers.get(s.cmdTimer);
+    if (timer) { h.timers.delete(s.cmdTimer); timer.fn(); }
+    await new Promise(setImmediate);
+  };
+  return { h, s, out, keys, cmds, expire };
+}
+
+test('采集:回显到达后才记录,判定前 lastCmd 不写入;退格按模型还原', async () => {
+  const { s, out, keys, cmds } = captureHarness();
+  await out(PROMPT);
+  keys('lss'); await out('lss');
+  keys('\x7f'); await out('\b \b');
+  keys(' -la'); await out(' -la');
+  keys('\r');
+  assert.deepEqual(cmds(), []);
+  assert.equal(s.lastCmd, '', '判定前可能是没回显的密码,不能进诊断素材');
+  assert.equal(s.collectOutput, true);
+  await out('\r\ntotal 0\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['ls -la']);
+  assert.equal(s.lastCmd, 'ls -la');
+  assert.equal(s.histBuf, '');
+});
+
+test('采集:bracketed 单行/多行粘贴去掉标记,多行记成一条', async () => {
+  const { out, keys, cmds } = captureHarness();
+  await out('\x1b[?2004h' + PROMPT);
+  keys('\x1b[200~ss -tulnp | grep 80\x1b[201~'); await out('ss -tulnp | grep 80');
+  keys('\r'); await out('\r\n' + PROMPT);
+  keys('\x1b[200~echo a\recho b\x1b[201~'); await out('echo a\r\necho b');
+  keys('\r'); await out('\r\na\r\nb\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['ss -tulnp | grep 80', 'echo a\necho b']);
+});
+
+test('采集:非 bracketed 多行粘贴与连续输入(回显未到就敲下一条)逐条记录', async () => {
+  const { out, keys, cmds } = captureHarness();
+  await out(PROMPT);
+  keys('echo a\recho b\r');
+  await out('echo a\r\na\r\n' + PROMPT + 'echo b\r\nb\r\n' + PROMPT);
+  keys('cd /tmp\r'); keys('ls\r');
+  await out('cd /tmp\r\nroot@h:/tmp# ls\r\nfile\r\nroot@h:/tmp# ');
+  assert.deepEqual(cmds(), ['echo a', 'echo b', 'cd /tmp', 'ls']);
+});
+
+test('采集:↑ 调历史、Tab 补全、Ctrl+R 搜索的行以屏幕为准', async () => {
+  const { out, keys, cmds } = captureHarness();
+  await out(PROMPT);
+  keys('\x1b[A'); await out('ls -la');
+  keys('\r'); await out('\r\ntotal 0\r\n' + PROMPT);
+  keys('ls /et'); await out('ls /et');
+  keys('\t'); await out('c/');
+  keys('\r'); await out('\r\nhosts\r\n' + PROMPT);
+  keys('\x12'); await out('\r\x1b[K(reverse-i-search)`\': ');
+  keys('pi'); await out('\r\x1b[K(reverse-i-search)`pi\': ping -c 1 h');
+  keys('\r'); await out('\r\x1b[K' + PROMPT + 'ping -c 1 h\r\nPING h\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['ls -la', 'ls /etc/', 'ping -c 1 h']);
+});
+
+test('采集:Ctrl+C 放弃半行,Ctrl+U / Ctrl+W 删除后记录剩下的文字', async () => {
+  const { out, keys, cmds } = captureHarness();
+  await out(PROMPT);
+  keys('rm -rf /tmp/x'); await out('rm -rf /tmp/x');
+  keys('\x03'); await out('^C\r\n' + PROMPT);
+  keys('pwd'); await out('pwd');
+  keys('\r'); await out('\r\n/root\r\n' + PROMPT);
+  keys('echo hello world'); await out('echo hello world');
+  keys('\x17'); await out('\b\b\b\b\b\x1b[K');
+  keys('\r'); await out('\r\nhello\r\n' + PROMPT);
+  keys('whoami'); await out('whoami');
+  keys('\x15'); await out('\r\x1b[K' + PROMPT);
+  keys('id'); await out('id');
+  keys('\r'); await out('\r\nuid=0\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['pwd', 'echo hello', 'id']);
+});
+
+test('采集:sudo 密码(不回显 / pwfeedback / 剪贴板粘贴)不记录,输出仍归上一条命令', async () => {
+  const { s, out, keys, cmds, expire } = captureHarness();
+  await out(PROMPT);
+  keys('sudo apt update'); await out('sudo apt update');
+  keys('\r'); await out('\r\n[sudo] password for root: ');
+  assert.equal(s.lastCmd, 'sudo apt update');
+  keys('S3cret-pw');
+  keys('\r'); await out('\r\nHit:1 http://mirror stable InRelease\r\n');
+  await expire();
+  assert.equal(s.lastCmd, 'sudo apt update', '密码行被放弃,lastCmd 回到上一条命令');
+  assert.equal(s.collectOutput, true);
+  await out('[sudo] password for root: ');
+  keys('S3cret-pw'); await out('*********');
+  keys('\r'); await out('\r\n');
+  await out('[sudo] password for root: ');
+  keys('S3cret-pw\r'); await out('\r\nok\r\n' + PROMPT);
+  await expire();
+  assert.deepEqual(cmds(), ['sudo apt update']);
+  assert.ok(!cmds().some((c) => c.includes('S3cret')));
+  await out('[sudo] password for root: ');
+  keys('S3cret-pw\r');
+  await out('\r\nok\r\n' + PROMPT);
+  keys('ls'); await out('ls');
+  keys('\r'); await out('\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['sudo apt update'], '排在未判定的密码行之后,按提交顺序等它');
+  await expire();
+  assert.deepEqual(cmds(), ['sudo apt update', 'ls'], '放弃密码行之后正常采集');
+});
+
+test('采集:提示符出现前就开始输入(锚点在行首)只认"提示符 + 命令",提前敲的密码不记', async () => {
+  const { out, keys, cmds, expire } = captureHarness();
+  await out(PROMPT);
+  keys('sudo ls'); await out('sudo ls');
+  keys('\r'); await out('\r\n');
+  // sudo 启动慢、还没关闭回显:tty 把提前敲好的密码原样回显在行首
+  keys('S3cret-pw'); await out('S3cret-pw');
+  keys('\r'); await out('\r\n[sudo] password for root: \r\nfile\r\n' + PROMPT);
+  await expire();
+  assert.deepEqual(cmds(), ['sudo ls']);
+  // 命令运行期间提前敲下一条:tty 在行首回显,readline 随后在提示符后再显示一次
+  keys('sleep 1'); await out('sleep 1');
+  keys('\r'); await out('\r\n');
+  keys('pwd\r'); await out('pwd\r\n');
+  await out(PROMPT + 'pwd\r\n/root\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['sudo ls', 'sleep 1', 'pwd']);
+});
+
+test('采集:pwfeedback 密码提示下误按方向键,屏幕上只有星号,不记录', async () => {
+  const { out, keys, cmds, expire } = captureHarness();
+  await out(PROMPT);
+  keys('sudo -v'); await out('sudo -v');
+  keys('\r'); await out('\r\n[sudo] password for root: ');
+  keys('\x1b[D');
+  keys('S3cret-pw'); await out('*********');
+  keys('\r'); await out('\r\n' + PROMPT);
+  await expire();
+  assert.deepEqual(cmds(), ['sudo -v']);
+});
+
+test('采集:回显超过等待上限不记录(宁缺勿错),迟到的回显也不补记', async () => {
+  const { out, keys, cmds, expire } = captureHarness();
+  await out(PROMPT);
+  keys('uname -a\r');
+  await expire();
+  await out('uname -a\r\nLinux\r\n' + PROMPT);
+  assert.deepEqual(cmds(), []);
+});
+
+test('采集:历史填入后回车、常用命令执行是可信来源,立即记录', async () => {
+  const { h, s, out, keys, cmds } = captureHarness();
+  await out('\x1b[?2004h' + PROMPT);
+  assert.equal((await h.feedTrusted('df -h')).ok, true);
+  assert.equal(writes(h).at(-1).payload.data, '\x1b[200~df -h\x1b[201~');
+  keys('\r');
+  assert.deepEqual(cmds(), ['df -h'], '可信填入免回显校验');
+  await out('df -h\r\nFilesystem\r\n' + PROMPT);
+  assert.equal((await h.feedTrusted('uptime', { execute: true })).ok, true);
+  assert.deepEqual(cmds(), ['df -h', 'uptime']);
+  assert.equal(s.lastCmd, 'uptime');
+  assert.equal(writes(h).at(-1).payload.data, '\x1b[200~uptime\x1b[201~\r');
+});
+
+test('采集:备用屏幕内的按键不采集;回车后的清屏不影响该命令的记录', async () => {
+  const { out, keys, cmds } = captureHarness();
+  await out(PROMPT);
+  keys('vim f'); await out('vim f');
+  keys('\r'); await out('\r\n\x1b[?1049h\x1b[H\x1b[2J~\r\n~');
+  keys(':wq\r');
+  await out('\x1b[?1049l' + PROMPT);
+  keys('clear'); await out('clear');
+  keys('\r'); await out('\r\n\x1b[H\x1b[2J\x1b[3J' + PROMPT);
+  assert.deepEqual(cmds(), ['vim f', 'clear']);
+});
+
+test('采集:zsh RPROMPT 不进命令;行内按过 Ctrl+L 的键盘行不记录', async () => {
+  const { out, keys, cmds } = captureHarness();
+  // zsh 默认把 RPROMPT 末字符放在倒数第 2 列
+  await out('% \x1b7\x1b[73G[12:30]\x1b8');
+  keys('\x1b[A'); await out('git status');
+  keys('\r'); await out('\r\nOn branch main\r\n' + PROMPT);
+  keys('pw'); await out('pw');
+  keys('\x0c'); await out('\x1b[H\x1b[2J' + PROMPT + 'pw');
+  keys('d'); await out('d');
+  keys('\r'); await out('\r\n/root\r\n' + PROMPT);
+  assert.deepEqual(cmds(), ['git status']);
 });
 
 // 回归:创建文件分屏时 makePaneEl 必须先回填 pane.el 再调 buildFilePane。

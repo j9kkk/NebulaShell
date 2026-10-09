@@ -1,4 +1,4 @@
-// 右侧工具栏:AI 助手 / 命令历史 / 常用片段 三个页签,容器沿用 #ai-panel。
+// 右侧工具栏:AI 助手 / 命令历史 / 常用命令 三个页签,容器沿用 #ai-panel。
 //
 // 状态只有两样:面板是否打开(#ai-panel.hidden)和当前页签(#ai-panel[data-tab])。
 // 页签页叠在同一格,非活动页只是不可见(见 style.css .rp-page),各页的滚动位置、
@@ -54,6 +54,9 @@ export function setRightPanel(open, tab = null) {
   if (!open && wasOpen && panel().contains(document.activeElement)) focusTerminal();
   panel().classList.toggle('hidden', !open);
   $('#ai-resizer').classList.toggle('hidden', !open);
+  // Windows/Linux 的窗口按钮浮在右上角:面板打开时它压在面板标题行上,标签行不必再让位。
+  // 用 body class 而不是 :has(),较老的 WebKitGTK 不支持 :has()
+  document.body.classList.toggle('rp-open', open);
   if (open && (!wasOpen || target !== before)) onShown(target);
   if (open !== wasOpen) { fitAllVisible(); scheduleResizeSync(); }
   refreshCommandStates();

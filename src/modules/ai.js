@@ -5,6 +5,7 @@ import { escapeHtml } from './hosts.js';
 import { popupPosition } from './interaction.js';
 import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
 import { renderMarkdown } from '../shared/markdown.js';
+import { stripTerminalNoise } from '../shared/term-text.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
 
@@ -1029,15 +1030,8 @@ export async function refreshAiModels() {
 
 // 终端原始字节流里的 ANSI/OSC 控制序列(括号粘贴 \x1b[?2004h、OSC 标题
 // \x1b]0;...\x07、光标/颜色等)对 AI 是纯噪声,拼进诊断 prompt 会显示为乱码。
-// 按 VT 解析规则剥离:CSI 以 ESC[ 开头到 0x40-0x7E 结束;OSC 以 ESC] 开头到
-// BEL 或 ESC\ 结束;其余单个 ESC 序列一并去掉。
-export function stripTerminalNoise(s) {
-  return String(s ?? '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[@-_]/g, '')
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
-}
+// 实现与命令历史共用(shared/term-text.js),这里再导出保持原调用点。
+export { stripTerminalNoise };
 
 /// 返回是否已发出诊断请求;调用方据此切到右侧工具栏的 AI 页签。
 export async function aiDiagnose() {

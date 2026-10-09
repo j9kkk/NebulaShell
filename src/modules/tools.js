@@ -1,7 +1,7 @@
 // 批量执行、命令历史、端口转发
 import { $, api, askConfirm, closeModal, copyText, openModal, state, stripFpMark, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
-import { writeSessionInput } from './terminal.js';
+import { feedTrusted } from './terminal.js';
 
 export let batchChecked = new Set();
 export let batchResults = new Map();
@@ -478,10 +478,10 @@ export async function renderHistory(kw, { keepScroll = false } = {}) {
     row.className = 'hist-row';
     row.innerHTML = `<span class="h-cmd"></span><span class="h-meta">${escapeHtml(h.host || '')}</span>`;
     row.querySelector('.h-cmd').textContent = h.cmd;
+    row.title = `${h.cmd}\n点击填入当前终端,不回车`;
     row.addEventListener('click', async () => {
-      const s = state.sessions.get(state.activeId);
-      if (!s || s.status !== 'connected') return toast('请先连接主机', 'error');
-      if (await writeSessionInput(s.sessionId, h.cmd)) s.term?.focus?.();
+      const r = await feedTrusted(h.cmd);
+      if (!r.ok) toast(r.reason, 'error');
     });
     box.appendChild(row);
   }

@@ -2017,6 +2017,58 @@ async function main() {
     JSON.stringify(explainUser || {}).slice(0, 200));
   await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
 
+  // 命令历史采集(0.2.3):按键模型 + 屏幕回显校验。mock sshd 按最小行规程回显
+  // (退格 "\b \b"、Ctrl+C 换新提示符、粘贴标记不回显,nb-pw 关闭下一行回显)。
+  {
+    const tag = 'nb93' + Date.now().toString(36);
+    const histJs = `return JSON.stringify(await window.nebula.invoke('history:list', { kw: '${tag}' }).then((r) => (r.data || []).map((h) => h.cmd)))`;
+    const histCmds = async () => asObj(await evalJs(histJs));
+    const typeKeys = async (data) => { await evalJs(`window.__nbTest.write(${JSON.stringify(data)}); return 1`); await sleep(150); };
+    await typeKeys(`echo ${tag}-plain\r`);
+    await waitEval(histJs, `echo ${tag}-plain`, 8000).catch(() => {});
+    check('T93a 键盘输入的命令在回显后记入历史', (await histCmds()).includes(`echo ${tag}-plain`), JSON.stringify(await histCmds()));
+
+    await typeKeys(`echo ${tag}-bss`); await typeKeys('\x7f'); await typeKeys('\r');
+    await typeKeys(`echo ${tag}-abort`); await typeKeys('\x03'); await typeKeys(`echo ${tag}-after\r`);
+    await waitEval(histJs, `echo ${tag}-after`, 8000).catch(() => {});
+    const edited = await histCmds();
+    check('T93b 退格按行编辑还原(不记成 bss)', edited.includes(`echo ${tag}-bs`) && !edited.some((c) => c.includes('-bss')), JSON.stringify(edited));
+    check('T93c Ctrl+C 放弃的半行不记录,也不拼进下一条', edited.includes(`echo ${tag}-after`) && !edited.some((c) => c.includes('-abort')), JSON.stringify(edited));
+
+    // 粘贴标记由前端行模型剥离,与 shell 是否开启 bracketed paste 无关(mock 不回显转义序列)
+    await typeKeys(`\x1b[200~echo ${tag}-paste\x1b[201~`); await typeKeys('\r');
+    await waitEval(histJs, `echo ${tag}-paste`, 8000).catch(() => {});
+    const pasted = await histCmds();
+    check('T93d bracketed 粘贴记录为干净的命令(无 200~/201~ 标记)',
+      pasted.includes(`echo ${tag}-paste`) && !pasted.some((c) => /\x1b|200~|201~/.test(c)), JSON.stringify(pasted));
+
+    const pwCount = `window.__NB_TERM_TEXT__().split('PASSWORD-ACCEPTED').length`;
+    const pwBefore = Number(await evalJs(`return ${pwCount}`));
+    await typeKeys('nb-pw\r');
+    await waitEval(`return window.__nbTest.diagSource().cmd`, 'nb-pw', 8000).catch(() => {});
+    await typeKeys(`${tag}-secret`); await typeKeys('\r');
+    await waitEval(`return String(${pwCount} > ${pwBefore})`, 'true', 8000).catch(() => {});
+    // 密码行等满回显上限后放弃,诊断素材回到 nb-pw(后台窗口的定时器可能被节流,轮询等待)
+    await waitEval(`return window.__nbTest.diagSource().cmd`, 'nb-pw', 8000).catch(() => {});
+    const afterPw = await histCmds();
+    const pwDiag = asObj(await evalJs(`return JSON.stringify(window.__nbTest.diagSource())`));
+    check('T93e 关闭回显的密码输入不进历史,诊断素材仍归上一条命令', !afterPw.some((c) => c.includes('-secret')) && pwDiag.cmd === 'nb-pw',
+      JSON.stringify({ afterPw, cmd: pwDiag.cmd }));
+
+    await evalJs(`window.__nbTest.runCommand('panel.history'); return 1`);
+    await evalJs(`const q = document.querySelector('#hist-search'); q.value = ${JSON.stringify(tag + '-bs')}; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
+    await waitEval(`return document.querySelector('#hist-list').textContent`, `echo ${tag}-bs`, 8000).catch(() => {});
+    await evalJs(`document.querySelector('#hist-list .hist-row')?.click(); return 1`);
+    await sleep(300);
+    await typeKeys('\r');
+    await sleep(300);
+    const refilled = await histCmds();
+    check('T93f 历史行填入后回车:可信来源直接记录,且排到最新', refilled[0] === `echo ${tag}-bs`, JSON.stringify(refilled));
+    await evalJs(`const q = document.querySelector('#hist-search'); q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true }));
+      window.__nbTest.runCommand('panel.ai'); return 1`);
+    await sleep(200);
+  }
+
   // 放大按钮回归:单窗格时不得进入"已放大"态(视觉无变化,角标让用户以为按钮失效)
   // T19 已切回 tab-1(多窗格);回到 T13 新开的多会话标签前先切到最后一个标签,
   // 其只有一个终端窗格 —— 单窗格放大禁用只在这里可验。
@@ -2391,7 +2443,7 @@ async function main() {
 
 
 
-  // 右侧工具栏(阶段 3):AI / 命令历史 / 常用片段是同一个面板的三个页签,不再浮在终端上
+  // 右侧工具栏(阶段 3):AI / 命令历史 / 常用命令是同一个面板的三个页签,不再浮在终端上
   const rp = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.rightPanel())`));
   const runCmd = async (id) => { await evalJs(`window.__nbTest.runCommand(${JSON.stringify(id)}); return 1`); await sleep(250); };
   await runCmd('panel.snippets');
@@ -2407,7 +2459,7 @@ async function main() {
       checked: { tools: window.__nbTest.commandState('panel.tools').checked, snippets: window.__nbTest.commandState('panel.snippets').checked,
         ai: window.__nbTest.commandState('panel.ai').checked } };
   })())`));
-  check('T43 常用片段是右侧工具栏页签:在面板内显示、不遮挡终端、无浮动面板,⚙ 只在 AI 页',
+  check('T43 常用命令是右侧工具栏页签:在面板内显示、不遮挡终端、无浮动面板,⚙ 只在 AI 页',
     snipTab.open && snipTab.tab === 'snippets' && snipTab.snippets === 'visible' && snipTab.ai === 'hidden' && snipTab.history === 'hidden'
       && JSON.stringify(snipTab.selected) === '["snippets"]' && snipTab.inPanel && snipTab.noOverlap && !snipTab.floating
       && snipTab.gear === 'hidden' && snipTab.toolsPressed === 'true'
@@ -2454,6 +2506,20 @@ async function main() {
   }
   check('T46 右侧栏输入框里按 Esc 焦点回到终端,面板保持打开',
     escFrom.every((e) => e.prevented && e.terminal === true && e.panel.open && !e.panel.focusInside), JSON.stringify(escFrom));
+
+  // 右侧栏小修(0.2.3):历史工具行等高;常用命令页添加行与状态栏上边框齐平、无提示行、改名"常用命令"
+  const rpFix = asObj(await evalJs(`return JSON.stringify((() => {
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const search = r('#hist-search'), clear = r('#hist-clear'), add = r('#rp-snippets .snippet-add'), bar = r('#statusbar');
+    return { searchH: search.height, clearH: clear.height, addTop: Math.round(add.top * 10) / 10, barTop: Math.round(bar.top * 10) / 10,
+      lastChild: !!document.querySelector('#rp-snippets').lastElementChild?.classList.contains('snippet-add'),
+      hints: document.querySelectorAll('.rp-hint').length, tabText: document.querySelector('#rp-tab-snippets').textContent.trim(),
+      cmdLabel: window.__nbTest.commandState('panel.snippets').label };
+  })())`));
+  check('T45b 命令历史工具行:过滤框与清空按钮等高', Math.abs(rpFix.searchH - rpFix.clearH) < 0.5, JSON.stringify(rpFix));
+  check('T46e 常用命令页:添加行上边框与状态栏上边框齐平,无提示行,页签与命令名为"常用命令"',
+    Math.abs(rpFix.addTop - rpFix.barTop) <= 1 && rpFix.lastChild && rpFix.hints === 0 && rpFix.tabText === '常用命令' && rpFix.cmdLabel === '常用命令',
+    JSON.stringify(rpFix));
 
   // 设置窗口:⌘, / Ctrl+, 在终端里打开(终端分区);三个分区;⚙ 直接到 AI 分区
   const isMac = (await evalJs(`return window.nebula.platform`)) === 'darwin';
@@ -2534,6 +2600,61 @@ async function main() {
     JSON.stringify(align),
   );
   await focusedKey('Escape');
+  // 分屏 ⛶ 与 ▾ 是一个分体按钮:同组、无缝(箭头 -1px 共用分隔线),曾吃到标签栏 gap 留 7px 缝
+  const splitSeam = asObj(await evalJs(`return JSON.stringify((() => {
+    const a = document.querySelector('#btn-split'), b = document.querySelector('#btn-split-menu');
+    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+    return { gap: Math.round((rb.left - ra.right) * 10) / 10, dTop: Math.abs(ra.top - rb.top), dH: Math.abs(ra.height - rb.height),
+      sameGroup: a.parentElement === b.parentElement && a.parentElement.classList.contains('split-group') };
+  })())`));
+  check(
+    'T48b 分屏按钮与下拉箭头无缝拼接',
+    splitSeam.sameGroup && splitSeam.gap <= 0 && splitSeam.gap >= -1 && splitSeam.dTop < 0.5 && splitSeam.dH < 0.5,
+    JSON.stringify(splitSeam),
+  );
+
+  // 标签溢出(0.2.3):#tabs 带窗口拖拽属性,可见滚动条一拖就变成拖窗口 —— 改为隐藏滚动条、
+  // 滚轮横向滚动、活动标签自动滚入视野、溢出时显示「全部标签」按钮
+  {
+    const base = asObj(await evalJs(`const w = window.__nbTest.workspaceState(); return JSON.stringify({ tabs: w.tabs.map((t) => t.id), active: w.activeTabId })`));
+    const activeInView = `(() => { const s = document.querySelector('#tabs').getBoundingClientRect(); const t = document.querySelector('.tab.active').getBoundingClientRect();
+      return t.left >= s.left - 0.5 && t.right <= s.right + 0.5; })()`;
+    try {
+      for (let i = 0; i < 12; i++) await evalJs(`window.__nbTest.runCommand('tab.new'); return 1`);
+      await sleep(400);
+      const over = asObj(await evalJs(`return JSON.stringify((() => {
+        const strip = document.querySelector('#tabs'), btn = document.querySelector('#btn-tab-list');
+        const snap = { overflow: strip.scrollWidth > strip.clientWidth, scrollbar: strip.offsetHeight - strip.clientHeight,
+          button: btn.getClientRects().length > 0, count: btn.querySelector('.tab-count').textContent,
+          tabs: window.__nbTest.workspaceState().tabs.length, activeInView: ${activeInView} };
+        const before = strip.scrollLeft;
+        strip.dispatchEvent(new WheelEvent('wheel', { deltaY: -240, bubbles: true, cancelable: true }));
+        snap.wheelMoved = strip.scrollLeft < before;
+        strip.scrollLeft = 0;
+        return snap;
+      })())`));
+      await evalJs(`window.__nbTest.runCommand('tab.new'); return 1`); await sleep(300);
+      const newInView = await evalJs(`return String(${activeInView})`);
+      await openDropdown('#btn-tab-list');
+      const list = await ctxSnapshot();
+      const firstTab = await evalJs(`return window.__nbTest.workspaceState().tabs[0].id`);
+      await evalJs(`document.querySelector('#ctx-menu .ctx-item').click(); return 1`); await sleep(300);
+      const picked = asObj(await evalJs(`return JSON.stringify({ active: window.__nbTest.workspaceState().activeTabId, inView: ${activeInView},
+        tabs: window.__nbTest.workspaceState().tabs.length })`));
+      check('T94 标签溢出:无可见滚动条、滚轮横向滚动、新建后活动标签可见、「全部标签」列出全部并可切换',
+        over.overflow && over.scrollbar === 0 && over.button && Number(over.count) === over.tabs && over.activeInView && over.wheelMoved
+          && newInView === 'true' && list.open && list.items.length === picked.tabs && list.items.filter((i) => i.checked === 'true').length === 1
+          && picked.active === firstTab && picked.inView,
+        JSON.stringify({ over, newInView, items: list.items.length, picked }));
+    } finally {
+      await evalJs(`const baseline = new Set(${JSON.stringify(base.tabs)});
+        for (const tab of window.__nbTest.workspaceState().tabs) if (!baseline.has(tab.id)) document.querySelector('.tab[data-tab="' + tab.id + '"] .tab-close')?.click();
+        document.querySelector('.tab[data-tab="${base.active}"]')?.click(); return 1`);
+      await sleep(300);
+    }
+    const restored = asObj(await evalJs(`return JSON.stringify({ tabs: window.__nbTest.workspaceState().tabs.length, button: document.querySelector('#btn-tab-list').getClientRects().length > 0 })`));
+    check('T94b 关掉多余标签后「全部标签」按钮隐藏', restored.tabs === base.tabs.length && !restored.button, JSON.stringify(restored));
+  }
 
   // 状态栏监控:窄窗口下必须"先收缩监控/状态文字,绝不遮挡行尾按钮",且高度恒定。
   // 宽度取现实档位:1248 = 14 寸默认(1512 − 侧栏 264);888 = 14 寸 + AI 面板(曾

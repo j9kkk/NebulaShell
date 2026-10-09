@@ -1,6 +1,7 @@
 // 资源监控:指标采集与监控条
 import { $, api, state, toast } from './core.js';
-import { writeSessionInput } from './terminal.js';
+import { feedTrusted } from './terminal.js';
+import { icon } from '../shared/icons.js';
 
 // 状态栏数值一律定长展示:最多 1 位小数、去掉无意义的尾 .0(100.0→100)。
 // 多位小数既挤占槽位也让数字难以速读,这里统一收口。
@@ -48,7 +49,7 @@ export function fmtLat(ms) {
   return Math.round(ms / 1000) + 's';
 }
 
-/// 常用片段是右侧工具栏的一个页签(见 right-panel.js),执行后页签保持打开,
+/// 常用命令是右侧工具栏的一个页签(见 right-panel.js),执行后页签保持打开,
 /// 焦点回到终端,方便接着看输出或继续输入。
 export function renderSnippets() {
   const list = $('#snippet-list');
@@ -61,14 +62,14 @@ export function renderSnippets() {
   for (const s of items) {
     const row = document.createElement('div');
     row.className = 'snippet-row';
-    row.innerHTML = `<span class="s-name"></span><span class="s-cmd"></span><button class="s-del" title="删除">🗑</button>`;
+    row.innerHTML = `<span class="s-name"></span><span class="s-cmd"></span><button class="s-del" type="button" title="删除" aria-label="删除">${icon('trash', { size: 13 })}</button>`;
     row.querySelector('.s-name').textContent = s.name;
     row.querySelector('.s-cmd').textContent = s.cmd;
+    row.title = `${s.cmd}\n点击在当前终端执行`;
     row.addEventListener('click', async (e) => {
-      if (e.target.classList.contains('s-del')) return;
-      const cur = state.sessions.get(state.activeId);
-      if (!cur || cur.status !== 'connected') return toast('请先连接主机', 'error');
-      if (await writeSessionInput(cur.sessionId, s.cmd + '\r')) cur.term?.focus?.();
+      if (e.target.closest('.s-del')) return;
+      const r = await feedTrusted(s.cmd, { execute: true });
+      if (!r.ok) toast(r.reason, 'error');
     });
     row.querySelector('.s-del').addEventListener('click', async (e) => {
       e.stopPropagation();

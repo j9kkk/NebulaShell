@@ -234,8 +234,9 @@ body.platform-darwin #win-controls { display: none; }
 .win-ctl:hover { background: var(--border); color: var(--text); }
 .win-ctl-close:hover { background: var(--danger); color: #fff; }
 /* Windows/Linux:#tabbar 行尾与 .ai-header 行尾给 fixed 按钮组(3×40px)让位,
-   内容不会滑到按钮底下;macOS 无自绘按钮,不需要。 */
-body:not(.platform-darwin) #tabbar { padding-right: 122px; }
+   内容不会滑到按钮底下;macOS 无自绘按钮,不需要。右侧栏打开时按钮压在
+   .ai-header 上,标签行不再让位(rp-open 由 right-panel.js 维护)。 */
+body:not(.platform-darwin):not(.rp-open) #tabbar { padding-right: 122px; }
 body:not(.platform-darwin) .ai-header { padding-right: 132px; }
 
 #term-stack { flex: 1; position: relative; background: var(--bg); min-height: 0; }
@@ -338,11 +339,10 @@ body:not(.platform-darwin) .ai-header { padding-right: 132px; }
 .rp-pages { flex: 1; min-height: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .rp-page { grid-area: 1 / 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .rp-page:not(.active), .rp-page:not(.active) * { visibility: hidden !important; }
-.rp-toolbar { flex: none; display: flex; gap: 6px; padding: 10px 12px 6px; }
+.rp-toolbar { --ctl-h: 26px; flex: none; display: flex; gap: 6px; padding: 10px 12px 6px; }
 .rp-toolbar .inp { flex: 1; min-width: 0; font-size: 12px; }
 .rp-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px 8px; }
 #snippet-list { padding-top: 10px; }
-.rp-hint { flex: none; margin: 0; padding: 0 12px 8px; font-size: 11px; }
 /* (.ai-quick 快捷按钮区已移除:入口迁移至终端选区悬浮按钮与右键菜单,2026-10-08) */
 /* 消息区外壳:承载"回到底部"浮动按钮的定位上下文;flex:1/min-height:0 的
    尺寸职责从 #ai-messages 上移到这一层,滚动容器本身规则不变。 */
@@ -608,7 +608,7 @@ body:not(.platform-darwin) .ai-header { padding-right: 132px; }
    抵消全局 input 纵向内距带来的"输入框比按钮高"。哪一行整体要 26px 档,
    就在行容器上覆写 --ctl-h —— 输入框与行内按钮同时生效(picker 工具行
    按钮已是 30px 档,输入框直接取默认;mkdir/chmod/片段行是 small 档)。 */
-.picker-toolbar .inp, .fp-input-row input, .snippet-add input {
+.picker-toolbar .inp, .fp-input-row input, .snippet-add input, .rp-toolbar .inp {
   height: var(--ctl-h);
   padding: 0 10px;
   line-height: 1;
@@ -981,14 +981,16 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #monitor-bar.mon-unsupported .mon-spark { display: none; }
 #mon-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
-/* 常用片段 / 命令历史:右侧工具栏的页签页(布局见 .rp-page) */
+/* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page) */
 .snippet-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 .snippet-row:hover { background: rgba(91,140,255,0.12); }
 .snippet-row .s-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
 .snippet-row .s-cmd { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.snippet-row .s-del { visibility: hidden; border: 0; background: none; color: var(--danger, #ff6b6b); cursor: pointer; }
+.snippet-row .s-del { visibility: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--danger, #ff6b6b); cursor: pointer; }
+.snippet-row .s-del:hover { background: rgba(255,107,107,0.12); }
 .snippet-row:hover .s-del { visibility: visible; }
-.snippet-add { flex: none; display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); }
+/* 添加行锁 --footer-h(含上边框):上边框与左侧状态栏上边框横向齐平 */
+.snippet-add { flex: none; display: flex; align-items: center; gap: 6px; height: var(--footer-h); padding: 0 12px; border-top: 1px solid var(--border); }
 .snippet-add input { flex: 1; min-width: 0; font-size: 12px; }
 .hist-row { display: flex; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
 .hist-row:hover { background: rgba(91,140,255,0.12); }
@@ -1390,12 +1392,27 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .workspace-layout-hint.hidden { display: none; }
 
 /* ===== tab 栏优化:tab 第一要素 ===== */
-#tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+/* 标签条不显示滚动条:#tabs 带窗口拖拽属性,Tauri 把点在滚动条上算作点在元素自身,
+   拖滚动条会变成拖窗口。改用滚轮横向滚动、活动标签自动滚入、溢出时右端淡出 +
+   「全部标签」按钮(见 terminal.js bindTabStrip)。 */
+#tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+#tabs::-webkit-scrollbar { display: none; }
+#tabs.overflowing:not(.at-end) {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+#btn-tab-list { width: auto; min-width: var(--ctl-h); padding: 0 6px; gap: 2px; font-size: 12px; color: var(--muted); }
+#btn-tab-list .tab-count { font-variant-numeric: tabular-nums; }
+#btn-tab-list svg { width: 12px; height: 12px; }
 .tab { flex: 0 0 auto; max-width: 190px; }
 .tab-title { display: inline-block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .icon-tb { --ctl-h: 28px; width: var(--ctl-h); padding: 0; font-size: 15px; flex: 0 0 auto; }
 .icon-tb.active { border-color: var(--accent); color: var(--accent); }
-/* 分屏按钮右侧的下拉箭头:窄条,与 ⛶ 视觉上连成一个分体按钮 */
+/* 分屏按钮右侧的下拉箭头:窄条,与 ⛶ 连成一个分体按钮。两者包在 .split-group 里,
+   不吃 #tabbar 的 gap;箭头 -1px 与 ⛶ 共用一条分隔线,悬停/聚焦的一侧提到上层,
+   描边不被相邻按钮压住。 */
+.split-group { display: inline-flex; flex: 0 0 auto; }
+.split-group > .btn:is(:hover, :focus-visible) { position: relative; z-index: 1; }
 #btn-split { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .icon-tb.split-caret { width: 16px; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; color: var(--muted); }
 .icon-tb.split-caret .mi { display: inline-flex; width: 12px; }
