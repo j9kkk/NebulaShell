@@ -542,34 +542,63 @@ export function closeCtxMenu(restore = true) {
   if (!m || m.classList.contains('hidden')) return;
   const focused = m.contains(document.activeElement);
   m.classList.add('hidden');
+  const trigger = m._trigger;
+  m._trigger = null;
+  if (trigger) {
+    trigger.setAttribute('aria-expanded', 'false');
+    m._closedTrigger = trigger;
+    m._closedAt = performance.now();
+  }
   if (restore && focused && m._returnFocus?.isConnected) m._returnFocus.focus();
 }
 
 /// 在 (x, y) 弹出右键菜单。items 元素形如
-/// { label, key?, disabled?, reason?, danger?, run() } 或字符串 '-' 表示分隔线。
-/// reason 是禁用原因,显示在菜单底部。
-export function showCtxMenu(x, y, items) {
+/// { label, key?, disabled?, reason?, danger?, checked?, command?, run() } 或字符串 '-' 表示分隔线。
+/// reason 是禁用原因,显示在菜单底部;command 写进 data-command,供可达性测试读取;
+/// checked 非 undefined 时是开关项,显示 ✓。
+/// opts.trigger:由按钮打开的下拉菜单(分屏下拉、主机管理),同步 aria-expanded;
+/// opts.returnFocus:关闭后焦点的去处(缺省为打开前的焦点)。
+export function showCtxMenu(x, y, items, opts = {}) {
   const menu = $('#ctx-menu');
   if (!menu) return;
   const modal = topModal();
   if (modal && !modal.contains(document.activeElement)) return;
   document.dispatchEvent(new Event('nebula:close-menus'));
-  menu._returnFocus = document.activeElement;
+  closeCtxMenu(false);
+  menu._returnFocus = opts.returnFocus || opts.trigger || document.activeElement;
+  menu._trigger = opts.trigger || null;
+  menu.setAttribute('aria-label', opts.label || '上下文菜单');
+  if (opts.trigger) opts.trigger.setAttribute('aria-expanded', 'true');
   menu.style.zIndex = modal ? String(Number(modal.style.zIndex) + 1) : '100';
   if (!menu._keyboardBound) { bindMenuKeyboard(menu, closeCtxMenu); menu._keyboardBound = true; }
   menu.innerHTML = '';
+  const hasChecks = items.some((it) => it && it !== '-' && it.checked !== undefined);
+  // 分隔线只出现在两组之间:开头、连续、结尾的都省掉(右键菜单按状态取舍分组)
+  let pendingSep = false;
+  let rows = 0;
   for (const it of items) {
-    if (it === '-') {
+    if (!it) continue;
+    if (it === '-') { pendingSep = rows > 0; continue; }
+    if (pendingSep) {
       const sep = document.createElement('div');
       sep.className = 'ctx-sep';
       menu.appendChild(sep);
-      continue;
+      pendingSep = false;
     }
+    rows++;
     const btn = document.createElement('button');
     btn.className = 'ctx-item' + (it.danger ? ' danger' : '');
-    btn.innerHTML = `<span class="ctx-label"></span>${it.key ? '<span class="ctx-key"></span>' : ''}`;
-    btn.querySelector('.ctx-label').textContent = it.label;
-    if (it.key) btn.querySelector('.ctx-key').textContent = it.key;
+    const part = (className, text) => {
+      const span = document.createElement('span');
+      span.className = className;
+      span.textContent = text;
+      btn.appendChild(span);
+      return span;
+    };
+    if (hasChecks) part('ctx-check', it.checked ? '✓' : '').setAttribute('aria-hidden', 'true');
+    part('ctx-label', it.label);
+    if (it.key) part('ctx-key', it.key);
+    if (it.command) btn.dataset.command = it.command;
     // 可选 tips:与普通按钮 title 同语义(悬停展示说明)
     if (it.title) btn.title = it.title;
     if (it.disabled) {
@@ -593,6 +622,43 @@ export function showCtxMenu(x, y, items) {
   menu.style.left = `${Math.max(8, px)}px`;
   menu.style.top = `${Math.max(8, py)}px`;
   menu.querySelector('button:not([aria-disabled="true"])')?.focus();
+}
+
+/// 按钮触发的下拉菜单:点击 / Enter / Space / ↓ 打开,挂在按钮下方(右边缘对齐
+/// 时向左回推);再点一次关闭。items 每次打开时重新求值,状态总是最新的。
+/// 焦点归还与 ⋯ 一致:用鼠标打开时还给打开前的位置(通常是终端,接着打字
+/// 不丢),用键盘打开时还给按钮。
+export function bindMenuButton(button, items, opts = {}) {
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'false');
+  let opener = null;
+  button.addEventListener('mousedown', () => { opener = document.activeElement; });
+  const returnTarget = () => {
+    const prior = opener;
+    opener = null;
+    if (prior === null) return button;
+    if (prior && prior !== button && prior !== document.body && prior.isConnected) return prior;
+    return document.querySelector('.term-pane.focused .xterm-helper-textarea') || button;
+  };
+  const open = () => {
+    const back = returnTarget();
+    const menu = $('#ctx-menu');
+    // 刚被同一个按钮的 mousedown 关掉:这次点击是"收起",不再打开
+    if (menu?._closedTrigger === button && performance.now() - (menu._closedAt || 0) < 300) return;
+    if (menu && !menu.classList.contains('hidden') && menu._trigger === button) { closeCtxMenu(); return; }
+    const r = button.getBoundingClientRect();
+    showCtxMenu(opts.alignRight ? r.right : r.left, r.bottom + 4, items(), { trigger: button, label: opts.label, returnFocus: back });
+    if (opts.alignRight && menu) {
+      const width = menu.getBoundingClientRect().width;
+      menu.style.left = `${Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8))}px`;
+    }
+  };
+  button.addEventListener('click', open);
+  button.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    open();
+  });
 }
 
 /// 全局右键菜单的收起逻辑:点击别处/滚动/失焦/缩放都收起。

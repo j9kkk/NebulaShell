@@ -421,8 +421,11 @@ export async function refreshForwards() {
   if (cur) sel.value = cur;
 }
 
-export async function openForwardModal() {
+/// opts.hostId:从窗格工具条或右键菜单打开时预选该窗格的主机(快速连接的
+/// 临时主机不在主机库里,保持原选择)。
+export async function openForwardModal(opts = {}) {
   await refreshForwards();
+  if (opts.hostId && state.hosts.some((h) => h.id === opts.hostId)) $('#fw-host').value = opts.hostId;
   openModal('#modal-forward');
 }
 

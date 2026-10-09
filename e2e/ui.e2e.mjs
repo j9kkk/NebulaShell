@@ -159,16 +159,46 @@ async function menuFocus(selector) {
   throw new Error('菜单键盘无法到达: ' + selector + ' — ' + detail);
 }
 
-async function openMenuPage(page = 'root') {
+// 更多菜单(阶段 2 起无子页)。
+async function openMenuPage() {
   await evalJs(`
     const menu = document.querySelector('#more-menu');
     if (!menu.classList.contains('hidden')) document.querySelector('#btn-more').click();
     window.__e2eMenuOpenAt = Date.now();
     document.querySelector('#btn-more').focus(); document.querySelector('#btn-more').click(); return 1`);
-  if (page !== 'root') {
-    await menuFocus('[data-menu-page="' + page + '"]');
-    await focusedKey('Enter');
+}
+
+// 终端右键菜单:在窗格的终端表面派发 contextmenu(不经 mousedown,窗格不被激活)。
+async function openTermMenu(paneId) {
+  await evalJs(`const pane = document.querySelector('.term-pane[data-pane="${paneId}"]');
+    const target = pane.querySelector('.xterm-screen') || pane; const r = target.getBoundingClientRect();
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 40, clientY: r.top + 40 })); return 1`);
+}
+
+// 下拉菜单按钮(分屏 ▾、侧栏「管理」):键盘打开,与 ⋯ 一样走真实按键路径。
+async function openDropdown(selector) {
+  await evalJs(`const btn = document.querySelector(${JSON.stringify(selector)}); btn.focus(); return 1`);
+  await focusedKey('ArrowDown');
+}
+
+// 在 #ctx-menu 里用方向键走到目标项(右键菜单、下拉菜单共用)。
+async function ctxFocus(selector) {
+  for (let i = 0; i < 40; i++) {
+    const state = asObj(await evalJs(`return JSON.stringify({ found: !!document.activeElement?.matches(${JSON.stringify(selector)}) && !!document.activeElement.closest('#ctx-menu'),
+      open: !document.querySelector('#ctx-menu').classList.contains('hidden') })`));
+    if (state.found) return;
+    if (!state.open) throw new Error('菜单已关闭,无法到达 ' + selector);
+    await focusedKey('ArrowDown');
   }
+  throw new Error('菜单键盘无法到达: ' + selector);
+}
+
+// 当前 #ctx-menu 的内容快照
+async function ctxSnapshot() {
+  return asObj(await evalJs(`return JSON.stringify({ open: !document.querySelector('#ctx-menu').classList.contains('hidden'),
+    items: [...document.querySelectorAll('#ctx-menu .ctx-item')].map((b) => ({ command: b.dataset.command || '', label: b.querySelector('.ctx-label').textContent,
+      key: b.querySelector('.ctx-key')?.textContent || '', checked: b.getAttribute('aria-checked'), disabled: b.getAttribute('aria-disabled') === 'true',
+      reason: b.getAttribute('aria-description') || '', danger: b.classList.contains('danger') })) })`));
 }
 
 // The planner may choose balanced rows OR columns according to available dimensions.
@@ -247,15 +277,21 @@ async function tabTilingRegressions() {
       && tiled.sessions.every((s) => s.mounted && s.visible) && opened === sshConnectionsOpened, JSON.stringify({ before, tiled, opened, now: sshConnectionsOpened }));
     await openMenuPage();
     const menu = asObj(await evalJs(`return JSON.stringify({ checked: document.querySelector('#btn-tile-tabs').getAttribute('aria-checked'),
-      label: document.querySelector('#btn-auto-layout .mm-label').textContent,
       tileButtons: document.querySelectorAll('[data-command="workspace.tile"]').length,
       toolbarTile: !!document.querySelector('#tabbar > [data-command="workspace.tile"]'), accel: document.querySelector('#btn-tile-tabs').dataset.accel || '',
       inPalette: window.__nbTest.commands().some((c) => c.id === 'workspace.tile' && c.checked === true),
       inMenuBar: window.__nbTest.nativeMenu().commandIds.includes('workspace.tile') })`));
-    check('T70b 平铺在更多根菜单有勾选入口并进命令面板/菜单栏,整理明确限于当前标签,无快捷键/常驻图标',
-      menu.checked === 'true' && menu.label === '整理当前标签分屏' && menu.tileButtons === 1 && !menu.toolbarTile && !menu.accel
-      && menu.inPalette && menu.inMenuBar, JSON.stringify(menu));
     await focusedKey('Escape');
+    await openDropdown('#btn-split-menu');
+    const splitMenu = await ctxSnapshot();
+    await focusedKey('Escape');
+    const splitIds = splitMenu.items.map((i) => i.command);
+    menu.splitMenu = splitMenu;
+    check('T70b 平铺在更多菜单和分屏下拉都有勾选入口并进命令面板/菜单栏,整理明确限于当前标签,无快捷键/常驻图标',
+      menu.checked === 'true' && menu.tileButtons === 1 && !menu.toolbarTile && !menu.accel && menu.inPalette && menu.inMenuBar
+      && JSON.stringify(splitIds) === JSON.stringify(['pane.split', 'tab.file.add', 'pane.reflow', 'pane.zoom', 'workspace.tile'])
+      && splitMenu.items[0].label === '终端分屏' && splitMenu.items[2].label === '整理当前标签分屏'
+      && splitMenu.items[4].checked === 'true', JSON.stringify(menu));
     const tileChrome = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('.workspace-tile-header')].map(header => ({
       title: header.querySelector('.workspace-tile-title')?.textContent || '', connected: !!header.querySelector('.tab-dot.connected'),
       closeLabel: header.querySelector('.workspace-tile-close')?.getAttribute('aria-label') || '' })))`));
@@ -337,7 +373,8 @@ async function tabTilingRegressions() {
     await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
     await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === ${JSON.stringify(sessionB.id)}).readOnly`, 'true');
     await evalJs(`window.__nbTest.write('echo NB_TILE_READONLY_BLOCKED\\r'); return 1`);
-    await openMenuPage('session'); await menuFocus('#btn-broadcast'); await focusedKey('Enter');
+    // 入口:非活动窗格 A0 的工具条广播按钮(显式目标,不切换活动会话)
+    await evalJs(`document.querySelector('.term-pane[data-pane="${sessionsA[0].paneId}"] .pane-tb-broadcast').click(); return 1`);
     await waitEval(`return !!document.querySelector('#bc-list')`, 'true');
     const readonlyExcluded = await evalJs(`return !document.querySelector('#bc-list input[value="${sessionB.id}"]')`);
     await evalJs(`for (const input of document.querySelectorAll('#bc-list input')) input.checked = input.value === ${JSON.stringify(sessionsA[0].id)};
@@ -716,7 +753,8 @@ async function aiCommandBlockRegressions() {
     emptyTab = null;
     await focusSession(active);
 
-    await openMenuPage('session'); await menuFocus('#btn-broadcast'); await focusedKey('Enter');
+    // 入口:终端右键菜单「广播输入…」(键盘)
+    await openTermMenu(active.paneId); await ctxFocus('[data-command="tools.broadcast"]'); await focusedKey('Enter');
     await waitEval(`return !!document.querySelector('#bc-list')`, 'true');
     await evalJs(`for (const input of document.querySelectorAll('#bc-list input')) input.checked = ${JSON.stringify([active.id, peer.id])}.includes(input.value);
       document.querySelector('#bc-ok').click(); return 1`);
@@ -936,7 +974,7 @@ async function main() {
   await evalJs(`return document.querySelector('#welcome') ? 1 : 0`);
   // 版本号不再显示在侧边栏左下角,而是收进「关于」弹窗(功能菜单 → 关于)。
   // 断言改为:点开「关于」能看到版本与平台,且侧边栏底部已无版本号。
-  await openMenuPage('settings');
+  await openMenuPage();
   await menuFocus('#btn-about');
   await focusedKey('Enter');
   await waitEval(`window.__nbTest.about().open`, 'true', 10000);
@@ -1416,8 +1454,8 @@ async function main() {
   // SFTP 文件分屏:「新增文件分屏」在活动分屏右侧切出文件窗格,
   // 初始目录 = 会话记忆目录 / 探测 cwd(mock exec 探针返回 ~/data)。
   // 路径栏是输入框,断言读 value(textContent 恒空);列表内容经 filePanel(i).names 读。
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await evalJs(`document.querySelector('#btn-files').click(); return 1`);
+  // 入口:焦点终端窗格的工具条「文件」按钮(显式目标 = 该窗格)
+  await evalJs(`document.querySelector('.term-pane.focused .pane-tb-file').click(); return 1`);
   await waitEval(`return window.__nbTest.filePanel(0).pathValue`, '/home/user/data', 25000);
   const filesOk = asObj(await evalJs(`return JSON.stringify(window.__nbTest.filePanel(0).names)`));
   check('T10 文件分屏首次打开默认 shell 当前 cwd(~/data)', String(filesOk).includes('app.log'), JSON.stringify(filesOk));
@@ -1564,8 +1602,10 @@ async function main() {
     JSON.stringify(fm1));
 
   // FM2 第二个文件分屏:与「新增分屏」对称地再开一屏,布局两列、浏览状态独立
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await evalJs(`document.querySelector('#btn-files').click(); return 1`);
+  // 入口:分屏按钮的下拉菜单,键盘走到「新增文件分屏」
+  await openDropdown('#btn-split-menu');
+  await ctxFocus('[data-command="tab.file.add"]');
+  await focusedKey('Enter');
   await waitEval(`return String(window.__nbTest.filePanes().panes.length === 2)`, 'true', 15000);
   await waitEval(`return String(!!window.__nbTest.filePanel(1).cwd)`, 'true', 20000);
   check('FM2 新增文件分屏:两屏并存,第二屏自动初始化目录',
@@ -2122,7 +2162,8 @@ async function main() {
   // 导出:走带口令的加密导出,随后直接检查落盘文件不含明文凭据
   const exportPath = path.join(work, 'hosts-export.json');
   await evalJs(`window.__exportPath = ${JSON.stringify(exportPath)}; return 1`);
-  await evalJs(`document.querySelector('#btn-hosts-export').click(); return 1`);
+  // 入口:侧栏「管理」菜单(鼠标路径)
+  await evalJs(`document.querySelector('#btn-host-manage').click(); document.querySelector('#ctx-menu [data-command="hosts.export"]').click(); return 1`);
   await answerPrompt('e2e-passphrase-1', '导出主机');
   // 二次确认口令(标题不同,answerPrompt 靠标题区分两个框)
   await answerPrompt('e2e-passphrase-1', '确认口令');
@@ -2160,7 +2201,8 @@ async function main() {
   await waitEval(`window.__nbTest.confirmOpen()`, 'true', 10000);
   await evalJs(`window.__nbTest.confirmClickOk(); return 1`);
   await sleep(800);
-  await evalJs(`document.querySelector('#btn-hosts-import').click(); return 1`);
+  // 入口:侧栏「管理」菜单(键盘路径)
+  await openDropdown('#btn-host-manage'); await ctxFocus('[data-command="hosts.import"]'); await focusedKey('Enter');
   await answerPrompt('e2e-passphrase-1', '输入解密口令');
   // 导入同样要走 scrypt 派生(debug 构建下数秒,高负载时更久),预算放宽
   await waitEval(`document.querySelector('#toasts').textContent`, '导入完成', 60000);
@@ -2232,11 +2274,13 @@ async function main() {
   const narrowBefore = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
   await evalJs(`const lr = document.querySelector('#layout-root'); window.__narrowLayoutStyle = lr.style.cssText;
     lr.style.width = '319px'; lr.style.height = '550px'; lr.style.flex = 'none'; return 1`);
-  await openMenuPage();
   if (narrowBefore.panes > 1) {
-    await menuFocus('#btn-auto-layout');
+    await openDropdown('#btn-split-menu');
+    await ctxFocus('[data-command="pane.reflow"]');
     await focusedKey('Enter');
-  } else await focusedKey('Escape');
+  }
+  // 尺寸变化经 ResizeObserver 刷新命令可用状态(容量随 #layout-root 尺寸变化)
+  await waitEval(`return String(document.querySelector('#btn-split').disabled)`, 'true', 5000).catch(() => {});
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
   const narrow = asObj(await evalJs(`return JSON.stringify({ state: window.__nbTest.tabState(),
     disabled: document.querySelector('#btn-split').disabled, width: document.querySelector('#layout-root').offsetWidth,
@@ -2249,33 +2293,37 @@ async function main() {
     for (const b of document.querySelectorAll('.term-pane.file-pane .pane-close-btn')) b.click();
     return 1`);
 
-  // 分屏入口统一为工具栏按钮;根页仅保留整理/放大/关闭,不再有方向菜单。
-  await openMenuPage();
-  const splitMenu = asObj(await evalJs(`return JSON.stringify((() => {
-    const root = document.querySelector('#more-menu .mm-page[data-page="root"]');
-    return {
-      items: [...root.querySelectorAll('.btn')].map((b) => b.textContent.trim()),
-      commands: [...root.querySelectorAll('[data-command]')].map((b) => b.dataset.command),
-      splitCommand: document.querySelector('#btn-split').dataset.command,
-      hasDirections: window.__nbTest.accelTitles().hasDirectionMenus,
-    };
-  })())`));
+  // 分屏入口统一为工具栏按钮;整理/放大在分屏下拉,关闭在窗格 ✕ 与终端右键,不再有方向菜单。
+  await openDropdown('#btn-split-menu');
+  const splitDrop = await ctxSnapshot();
+  await focusedKey('Escape');
+  const focusedPane = await evalJs(`return document.querySelector('.term-pane.focused').dataset.pane`);
+  await openTermMenu(focusedPane);
+  const termMenu = await ctxSnapshot();
+  await focusedKey('Escape');
+  const splitMenu = asObj(await evalJs(`return JSON.stringify({
+    splitCommand: document.querySelector('#btn-split').dataset.command,
+    hasDirections: window.__nbTest.accelTitles().hasDirectionMenus,
+    moreCommands: [...document.querySelectorAll('#more-menu [data-command]')].map((b) => b.dataset.command) })`));
+  splitMenu.dropdown = splitDrop.items.map((i) => i.command);
+  splitMenu.term = termMenu.items.map((i) => i.command);
   check(
-    'T38 统一分屏入口,根菜单保留整理/放大/关闭且无方向按钮',
+    'T38 统一分屏入口:分屏下拉有整理/放大,终端右键有分屏/放大/关闭,更多菜单不再有布局命令,无方向按钮',
     splitMenu.splitCommand === 'pane.split' && splitMenu.hasDirections === false
-      && ['pane.reflow', 'pane.zoom', 'workspace.close'].every((id) => splitMenu.commands.includes(id)),
+      && ['pane.reflow', 'pane.zoom'].every((id) => splitMenu.dropdown.includes(id))
+      && ['pane.split', 'pane.zoom', 'workspace.close'].every((id) => splitMenu.term.includes(id))
+      && !['pane.reflow', 'pane.zoom', 'workspace.close', 'tab.file.add'].some((id) => splitMenu.moreCommands.includes(id)),
     JSON.stringify(splitMenu),
   );
-  await focusedKey('Escape');
   const beforePanes = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
   await evalJs(`document.querySelector('#btn-split').click(); return 1`);
   // 分屏不再经过"选择主机"的空窗格:新窗格直接复用当前已连接主机
   await waitEval(`return document.querySelectorAll('.term-pane .xterm').length`, String(beforePanes + 1), 30000);
   // 关闭当前窗格:曾经分屏后无法退出(空窗格更没有入口)。
   // 关掉 N 个窗格中的一个后应剩 N-1 个;只有回到 1 个时布局树才不再有分隔节点。
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await sleep(200);
-  await evalJs(`document.querySelector('#btn-close-pane').click(); return 1`);
+  // 入口:终端右键菜单「关闭该窗格」(显式目标 = 右键所在窗格)
+  await openTermMenu(await evalJs(`return document.querySelector('.term-pane.focused').dataset.pane`));
+  await evalJs(`document.querySelector('#ctx-menu [data-command="workspace.close"]').click(); return 1`);
   await sleep(1200);
   const afterClose = asObj(await evalJs(`return JSON.stringify({ panes: document.querySelectorAll('.term-pane').length, nodes: document.querySelectorAll('.split-node').length })`));
   check(
@@ -2305,9 +2353,7 @@ async function main() {
     many.panes >= 2 && many.panes === splitLimit && many.splitDisabled && !many.canScroll && many.ow === 'auto',
     JSON.stringify(many),
   );
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await sleep(200);
-  await evalJs(`document.querySelector('#btn-auto-layout').click(); return 1`);
+  await evalJs(`document.querySelector('#btn-split-menu').click(); document.querySelector('#ctx-menu [data-command="pane.reflow"]').click(); return 1`);
   await sleep(1200);
   const auto = asObj(await evalJs(`return JSON.stringify((() => {
     const panes = [...document.querySelectorAll('.term-pane')].map((p) => { const r = p.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; });
@@ -2337,9 +2383,7 @@ async function main() {
   for (let i = 0; i < 15; i++) {
     const n = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
     if (n <= 1) break;
-    await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-    await sleep(120);
-    await evalJs(`document.querySelector('#btn-close-pane').click(); return 1`);
+    await evalJs(`(document.querySelector('.term-pane.focused .pane-close-btn') || document.querySelector('.term-pane .pane-close-btn')).click(); return 1`);
     await sleep(400);
   }
   const restoredPanes = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
@@ -2407,12 +2451,12 @@ async function main() {
   await openMenuPage();
   const align = asObj(await evalJs(`return JSON.stringify((() => {
     // ① 标签栏右侧按钮:顶边与垂直中心都必须一致(曾因 .ai-btn 单加 margin-bottom 而错位)
-    const tbIds = ['#btn-newtab', '#btn-split', '#btn-ai-toggle', '#btn-more'];
+    const tbIds = ['#btn-newtab', '#btn-split', '#btn-split-menu', '#btn-ai-toggle', '#btn-more'];
     const tbs = tbIds.map((id) => { const r = document.querySelector(id).getBoundingClientRect(); return { id, top: Math.round(r.top * 10) / 10, cy: Math.round((r.top + r.height / 2) * 10) / 10 }; });
     const tabbarAligned = new Set(tbs.map((t) => t.top)).size === 1 && new Set(tbs.map((t) => t.cy)).size === 1;
-    // ② 竖向根页:图标、显式 .mm-label 列与行高都可测,不把隐藏页的零矩形算入。
+    // ② 竖向菜单:图标、显式 .mm-label 列与行高都可测。
     const mm = document.querySelector('#more-menu');
-    const items = [...mm.querySelectorAll('.mm-page:not(.hidden) .btn')].map((b) => {
+    const items = [...mm.querySelectorAll('.btn')].map((b) => {
       const br = b.getBoundingClientRect();
       const mr = b.querySelector('.mi').getBoundingClientRect();
       const lr = b.querySelector('.mm-label').getBoundingClientRect();
@@ -2571,33 +2615,38 @@ async function main() {
 
   /* ===== 本轮改动(1–7)的回归 ===== */
 
-  // —— 7 指纹功能已并入功能菜单列表 ——
-  await openMenuPage('settings');
-  const moreItems = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#more-menu .mm-page:not(.hidden) .btn')].map((b) => b.textContent.trim()))`));
+  // —— 7 更多菜单只放全局项;主机库操作在侧栏「管理」菜单 ——
+  const moreItems = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#more-menu .btn')].map((b) => b.querySelector('.mm-label').textContent.trim()))`));
   check(
-    'T50 指纹与关于已并入功能菜单,侧栏不再有指纹按钮',
-    moreItems.some((t) => t.includes('主机指纹')) && moreItems.some((t) => t.includes('关于')) && footer.hasFingerprintBtn === false,
+    'T50 更多菜单扁平 9 项(命令面板/视图开关/设置与关于),无子页,侧栏不再有指纹按钮',
+    JSON.stringify(moreItems) === JSON.stringify(['命令面板…', '主机侧栏', 'AI 助手', '命令历史', '常用片段', '标签平铺', '终端设置…', 'AI 配置…', '关于 NebulaShell'])
+      && !(await evalJs(`return !!document.querySelector('#more-menu .mm-page, #more-menu [data-menu-page], #more-menu [data-menu-back]')`))
+      && footer.hasFingerprintBtn === false,
     JSON.stringify({ moreItems, footerHasFp: footer.hasFingerprintBtn }),
   );
-  // T50c 主机导入/导出移入「配置」分组:侧栏底部不再有这两个按钮
+  await openDropdown('#btn-host-manage');
+  const manage = await ctxSnapshot();
+  const manageState = asObj(await evalJs(`return JSON.stringify({ expanded: document.querySelector('#btn-host-manage').getAttribute('aria-expanded'),
+    focusInMenu: !!document.activeElement.closest('#ctx-menu') })`));
   check(
-    'T50c 主机导入/导出可从「设置与管理」页到达',
-    moreItems.some((t) => t.includes('导入主机')) && moreItems.some((t) => t.includes('导出主机')) && footer.text === '',
-    JSON.stringify({ moreItems, footerText: footer.text }),
+    'T50c 侧栏「管理」菜单:导入/导出/指纹/端口转发规则,键盘打开且焦点进入菜单',
+    JSON.stringify(manage.items.map((i) => i.command)) === JSON.stringify(['hosts.import', 'hosts.export', 'settings.fingerprints', 'tools.forwards'])
+      && manage.items[3].label === '端口转发规则…' && manageState.expanded === 'true' && manageState.focusInMenu && footer.text === '',
+    JSON.stringify({ manage, manageState, footerText: footer.text }),
   );
-  // 从菜单点开指纹弹窗,确认链路仍通(此前是侧边栏底部的按钮)
-  await menuFocus('#btn-fingerprints');
+  // 从「管理」菜单打开指纹弹窗,确认链路仍通
+  await ctxFocus('[data-command="settings.fingerprints"]');
   await focusedKey('Enter');
   await sleep(800);
   const fpOpen = await evalJs(`return String(!document.querySelector('#modal-fp').classList.contains('hidden'))`);
-  check('T50b 功能菜单可打开指纹管理', fpOpen === 'true', fpOpen);
+  check('T50b 侧栏「管理」菜单可打开指纹管理', fpOpen === 'true', fpOpen);
   await evalJs(`document.querySelector('#btn-fp-close') && document.querySelector('#btn-fp-close').click(); return 1`);
 
   // 固定 300px 浮层允许覆盖文件分屏,但必须贴合工具按钮并钳制在视口内。
   // (检查必须在 webview 内做:Node 侧没有 document)
   if (await evalJs(`return document.querySelectorAll('.term-pane.file-pane').length === 0`)) {
-    await openMenuPage();
-    await menuFocus('#btn-files');
+    await openDropdown('#btn-split-menu');
+    await ctxFocus('[data-command="tab.file.add"]');
     await focusedKey('Enter');
   }
   await waitEval(`return String(document.querySelectorAll('.term-pane.file-pane').length >= 1)`, 'true', 15000);
@@ -2894,7 +2943,7 @@ async function main() {
   const plannerAxes = asObj(await evalJs(`return JSON.stringify([[970, 180], [320, 550]].map(([width, height]) => {
     const lr = document.querySelector('#layout-root');
     lr.style.width = width + 'px'; lr.style.height = height + 'px';
-    document.querySelector('#btn-auto-layout').click();
+    window.__nbTest.runCommand('pane.reflow'); // run() 同步执行,随后即可量取
     const boxes = [...document.querySelectorAll('.term-pane')].map((p) => {
       const r = p.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
     });
@@ -2907,7 +2956,7 @@ async function main() {
       && new Set(plannerAxes[1].boxes.map((b) => b[0])).size === 1,
     JSON.stringify(plannerAxes));
   await evalJs(`document.querySelector('#layout-root').style.cssText = window.__e2eLayoutStyle;
-    delete window.__e2eLayoutStyle; document.querySelector('#btn-auto-layout').click(); return 1`);
+    delete window.__e2eLayoutStyle; window.__nbTest.runCommand('pane.reflow'); return 1`);
 
   // —— 2 快捷键提示按平台渲染 ——
   const acc = asObj(await evalJs(`return JSON.stringify(window.__nbTest.accelTitles())`));
@@ -2928,9 +2977,7 @@ async function main() {
   for (let i = 0; i < 6; i++) {
     const n = Number(await evalJs(`return document.querySelectorAll('.term-pane').length`));
     if (n <= 1) break;
-    await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-    await sleep(120);
-    await evalJs(`document.querySelector('#btn-close-pane').click(); return 1`);
+    await evalJs(`(document.querySelector('.term-pane.focused .pane-close-btn') || document.querySelector('.term-pane .pane-close-btn')).click(); return 1`);
     await sleep(400);
   }
 
@@ -2989,53 +3036,65 @@ async function main() {
   // 收起右键菜单,避免影响后续
   await evalJs(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return 1`);
 
-  // 分页菜单的真实可见路由(桥接键盘模拟,Enter 默认激活见 focusedKey)。
+  // 更多菜单扁平化(阶段 2):无子页、无组标题,分隔线分三段(桥接键盘模拟,Enter 默认激活见 focusedKey)。
   await openMenuPage();
   const menuStruct = asObj(await evalJs(`return JSON.stringify((() => {
-    const root = document.querySelector('#more-menu .mm-page:not(.hidden)');
-    return { page: root.dataset.page, heads: [...root.querySelectorAll('.mm-head')].map((h) => h.textContent.trim()),
-      routes: [...root.querySelectorAll('[data-menu-page]')].map((b) => b.dataset.menuPage),
-      keys: [...root.querySelectorAll('[data-accel] .mm-key')].map((k) => k.textContent.trim()).filter(Boolean),
+    const menu = document.querySelector('#more-menu');
+    const r = menu.getBoundingClientRect();
+    return { heads: menu.querySelectorAll('.mm-head').length, pages: menu.querySelectorAll('.mm-page, [data-menu-page], [data-menu-back]').length,
+      seps: menu.querySelectorAll('.mm-sep').length, buttons: [...menu.querySelectorAll('.btn')].map((b) => b.getBoundingClientRect().height),
+      keys: [...menu.querySelectorAll('[data-accel] .mm-key')].map((k) => k.textContent.trim()).filter(Boolean),
+      firstFocused: document.activeElement === menu.querySelector('.btn'), icon: !!document.querySelector('#btn-more svg'),
+      label: document.querySelector('#btn-more').getAttribute('aria-label'),
+      inside: r.left >= 7 && r.top >= 7 && r.right <= innerWidth - 7 && r.bottom <= innerHeight - 7,
       isMac: window.nebula.platform === 'darwin' };
   })())`));
-  check('T60 根页为布局/面板,会话与设置使用独立分页', menuStruct.page === 'root'
-    && JSON.stringify(menuStruct.heads) === JSON.stringify(['布局', '面板'])
-    && JSON.stringify(menuStruct.routes) === JSON.stringify(['session', 'settings']), JSON.stringify(menuStruct));
+  check('T60 更多菜单扁平:9 项 / 2 条分隔线 / 无子页与组标题,dots 图标,名称统一为「更多」', menuStruct.heads === 0 && menuStruct.pages === 0
+    && menuStruct.seps === 2 && menuStruct.buttons.length === 9 && menuStruct.icon && menuStruct.label === '更多', JSON.stringify(menuStruct));
   check('T60b 可见菜单快捷键列按平台渲染', menuStruct.keys.length > 0
     && menuStruct.keys.every((k) => menuStruct.isMac ? k.includes('⌘') && !k.includes('Ctrl') : k.includes('Ctrl') && !k.includes('⌘')),
     JSON.stringify(menuStruct.keys));
-  for (const page of ['session', 'settings']) {
-    await menuFocus('[data-menu-page="' + page + '"]');
-    await focusedKey('Enter');
-    const subpage = asObj(await evalJs(`return JSON.stringify((() => {
-      const menu = document.querySelector('#more-menu');
-      const visible = [...menu.querySelectorAll('.mm-page')].filter((p) => p.getClientRects().length);
-      const focus = document.activeElement;
-      const r = menu.getBoundingClientRect();
-      return { pages: visible.map((p) => p.dataset.page), backFocused: focus.hasAttribute('data-menu-back'),
-        focusVisible: !!focus.getClientRects().length, buttons: [...visible[0].querySelectorAll('button')].map((b) => ({ id: b.id, h: b.getBoundingClientRect().height })),
-        inside: r.left >= 7 && r.top >= 7 && r.right <= innerWidth - 7 && r.bottom <= innerHeight - 7 };
-    })())`));
-    check('T60c ' + page + ' 页仅自身可见,返回项获焦且菜单不越界', JSON.stringify(subpage.pages) === JSON.stringify([page])
-      && subpage.backFocused && subpage.focusVisible && subpage.inside && subpage.buttons.every((b) => b.h >= 34), JSON.stringify(subpage));
-    // Enter 返回应恢复到原根页入口,不是随便落到第一个菜单项。
-    await focusedKey('Enter');
-    const backFocus = await evalJs(`return document.activeElement.dataset.menuPage`);
-    check('T60d ' + page + ' 返回恢复入口焦点', backFocus === page, String(backFocus));
-    await focusedKey('Enter');
-    await focusedKey('ArrowLeft');
-    check('T60e ' + page + ' 左方向键同样返回并恢复焦点', await evalJs(`return document.activeElement.dataset.menuPage`) === page);
-  }
-  await menuFocus('[data-menu-page="settings"]');
-  await focusedKey('Enter');
+  check('T60c 打开即聚焦首项,菜单不越界且行高不被压缩', menuStruct.firstFocused && menuStruct.inside
+    && menuStruct.buttons.every((h) => h >= 34), JSON.stringify(menuStruct));
   await focusedKey('Escape');
   const escaped = asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#more-menu').classList.contains('hidden'),
     focus: document.activeElement.id, expanded: document.querySelector('#btn-more').getAttribute('aria-expanded') })`));
-  check('T60f 子页 Escape 关闭菜单并将焦点归还工具按钮', escaped.hidden && escaped.focus === 'btn-more' && escaped.expanded === 'false', JSON.stringify(escaped));
+  check('T60f Escape 关闭菜单并将焦点归还工具按钮', escaped.hidden && escaped.focus === 'btn-more' && escaped.expanded === 'false', JSON.stringify(escaped));
   await openMenuPage();
-  check('T60g 再次打开重置为根页且焦点在可见启用项', await evalJs(`return document.activeElement.matches('button:not(:disabled)')
-    && !!document.activeElement.closest('.mm-page[data-page="root"]:not(.hidden)') && !!document.activeElement.getClientRects().length`) === true);
+  check('T60g 再次打开焦点在可见启用项', await evalJs(`return document.activeElement.matches('button:not(:disabled)')
+    && !!document.activeElement.closest('#more-menu') && !!document.activeElement.getClientRects().length`) === true);
   await focusedKey('Escape');
+
+  // 分屏下拉:↓ 打开、方向键移动、Esc 关闭并把焦点还给 ▾,aria-expanded 同步
+  await openDropdown('#btn-split-menu');
+  const dropOpen = asObj(await evalJs(`return JSON.stringify({ expanded: document.querySelector('#btn-split-menu').getAttribute('aria-expanded'),
+    first: document.activeElement.dataset.command || '', label: document.querySelector('#ctx-menu').getAttribute('aria-label') })`));
+  const dropDown = await focusedKey('ArrowDown');
+  const dropSecond = await evalJs(`return document.activeElement.closest('#ctx-menu') ? document.activeElement.querySelector('.ctx-label').textContent : ''`);
+  await focusedKey('Escape');
+  const dropClosed = asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#ctx-menu').classList.contains('hidden'),
+    focus: document.activeElement.id, expanded: document.querySelector('#btn-split-menu').getAttribute('aria-expanded') })`));
+  check('T60d 分屏下拉键盘可用:↓ 打开聚焦首个可用项,Esc 关闭并归还焦点', dropOpen.expanded === 'true' && dropOpen.label === '分屏与布局'
+    && dropDown.prevented && !!dropSecond && dropClosed.hidden && dropClosed.focus === 'btn-split-menu' && dropClosed.expanded === 'false',
+    JSON.stringify({ dropOpen, dropSecond, dropClosed }));
+
+  // 终端右键菜单:键盘可走,Esc 关闭后焦点回到终端
+  {
+    const paneId = await evalJs(`const ta = document.querySelector('.term-pane.focused .xterm-helper-textarea'); ta.focus(); window.__e2eTermTa = ta;
+      return document.querySelector('.term-pane.focused').dataset.pane`);
+    await openTermMenu(paneId);
+    const termMenu = await ctxSnapshot();
+    await focusedKey('ArrowDown');
+    await focusedKey('Escape');
+    const termBack = asObj(await evalJs(`const back = document.activeElement === window.__e2eTermTa; delete window.__e2eTermTa;
+      return JSON.stringify({ back, hidden: document.querySelector('#ctx-menu').classList.contains('hidden') })`));
+    const ids = termMenu.items.map((i) => i.command).filter(Boolean);
+    check('T60e 终端右键菜单含窗格组与会话组(走注册表,带 data-command),Esc 焦点回终端',
+      ['session.search', 'session.diagnose', 'session.clear', 'session.readonly', 'pane.split', 'tab.file.add', 'pane.zoom', 'workspace.close', 'tools.broadcast', 'tools.forwards'].every((id) => ids.includes(id))
+      && (ids.includes('session.disconnect') || ids.includes('session.reconnect'))
+      && termMenu.items.find((i) => i.command === 'workspace.close').danger && termBack.back && termBack.hidden,
+      JSON.stringify({ termMenu, termBack }));
+  }
 
   // 用鼠标从终端打开菜单(mousedown 时记录焦点,Chromium 随后把焦点移到 ⋯),
   // 执行不弹窗的命令后焦点必须回到原终端,而不是 ⋯ 按钮(B9:接着打的字丢失)。
@@ -3053,7 +3112,7 @@ async function main() {
   // 不可用项用 aria-disabled:方向键照常经过,底部显示原因,激活不执行也不关菜单。
   await openMenuPage();
   const gated = asObj(await evalJs(`return JSON.stringify((() => {
-    const item = document.querySelector('#more-menu .mm-page:not(.hidden) [aria-disabled="true"]');
+    const item = document.querySelector('#more-menu [aria-disabled="true"]');
     return item ? { id: item.id, reason: item.getAttribute('aria-description') || '', disabled: item.disabled } : null;
   })())`));
   if (gated) {
@@ -3069,18 +3128,18 @@ async function main() {
       && afterDown.menuOpen && afterDown.focus !== gated.id, JSON.stringify({ gated, gatedState, activate, afterDown }));
   } else check('T60i 不可用项可被方向键经过、显示具体原因、激活不执行(当前无不可用项,跳过)', true);
 
-  // 点组标题不挪焦点;即使焦点已掉到 body,方向键与 Esc 仍由菜单接管。
-  const headDown = await evalJs(`const head = document.querySelector('#more-menu .mm-page:not(.hidden) .mm-head');
+  // 点分隔线不挪焦点;即使焦点已掉到 body,方向键与 Esc 仍由菜单接管。
+  const headDown = await evalJs(`const head = document.querySelector('#more-menu .mm-sep');
     const ev = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }); head.dispatchEvent(ev);
     document.activeElement.blur(); return ev.defaultPrevented`);
   const bodyArrow = await focusedKey('ArrowDown');
   await evalJs(`document.activeElement.blur(); return 1`);
   const bodyEsc = await focusedKey('Escape');
-  check('T60j 点组标题后方向键与 Esc 仍有效', headDown === true && bodyArrow.prevented && bodyArrow.focus !== ''
+  check('T60j 点分隔线后方向键与 Esc 仍有效', headDown === true && bodyArrow.prevented && bodyArrow.focus !== ''
     && bodyEsc.prevented && !bodyEsc.menuOpen && bodyEsc.focus === 'btn-more', JSON.stringify({ headDown, bodyArrow, bodyEsc }));
 
   // 模态作用域、队列与当前焦点语义:使用真实 ask* promise,不手改 modal class。
-  await openMenuPage('settings');
+  await openMenuPage();
   await menuFocus('#btn-about');
   await focusedKey('Enter');
   await waitEval(`window.__nbTest.about().open`, 'true', 10000);
@@ -3470,6 +3529,121 @@ async function main() {
     closeAsk.title === '退出 NebulaShell' && /\d+ 个已连接的会话/.test(closeAsk.text) && closeAsk.focus === 'cancel'
     && closeAfter.sessions.filter((s) => s.status === 'connected').length === closeBefore.sessions.filter((s) => s.status === 'connected').length,
     JSON.stringify({ closeAsk, before: closeBefore.sessions.length, after: closeAfter.sessions.length }));
+
+  // —— 阶段 2:窗格工具条、广播范围、就近入口可达性 ——
+  {
+    const ws = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+    const base = await ws();
+    const tabId = base.activeTabId;
+    const connectedIn = (st) => st.sessions.filter((x) => x.tabId === tabId && x.status === 'connected');
+    await evalJs(`document.querySelector('#btn-split').click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.tabId === ${JSON.stringify(tabId)} && s.status === 'connected').length`,
+      String(connectedIn(base).length + 1), 30000);
+    const split = await ws();
+    const created = split.sessions.find((x) => !base.sessions.some((b) => b.id === x.id));
+    const A = split.sessions.find((x) => x.id === split.activeId);
+    const B = connectedIn(split).find((x) => x.id !== A.id);
+    const bar = (paneId) => `.term-pane[data-pane="${paneId}"] .pane-toolbar`;
+    // 先 mousedown 再 click,与真实鼠标一致:mousedown 不得冒泡去激活窗格
+    const press = (sel) => evalJs(`const b = document.querySelector(${JSON.stringify(sel)});
+      b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })); b.click(); return 1`);
+    const toolbar = asObj(await evalJs(`return JSON.stringify((() => {
+      const bar = document.querySelector(${JSON.stringify(bar(B.paneId))});
+      return { kind: bar.dataset.kind, conn: bar.dataset.conn, role: bar.getAttribute('role'),
+        buttons: [...bar.querySelectorAll('button')].map((b) => ({ cls: b.className, command: b.dataset.command, pane: b.dataset.cmdPane, title: b.title,
+          shown: getComputedStyle(b).display !== 'none' })) };
+    })())`));
+    const tb = (cls) => toolbar.buttons.find((b) => b.cls.includes(cls)) || {};
+    check('T92 窗格工具条:文件/端口转发/广播 + ✕⤢,按钮带显式目标并从注册表取名称,已连接时不显示重连',
+      toolbar.kind === 'term' && toolbar.conn === 'connected' && toolbar.role === 'toolbar'
+      && toolbar.buttons.every((b) => b.pane === B.paneId && b.command)
+      && tb('pane-tb-file').title === '新增文件分屏' && tb('pane-tb-forward').title === '端口转发…' && tb('pane-tb-broadcast').title === '广播输入…'
+      && tb('pane-close-btn').title === '关闭该窗格' && tb('pane-zoom-btn').title === '放大该窗格'
+      && tb('pane-tb-reconnect').shown === false && tb('pane-tb-file').shown, JSON.stringify(toolbar));
+
+    // 端口转发:从 B 的工具条打开,预选 B 的主机,活动会话不变
+    await press(`${bar(B.paneId)} .pane-tb-forward`);
+    await waitEval(`return String(!document.querySelector('#modal-forward').classList.contains('hidden'))`, 'true', 10000);
+    const fw = asObj(await evalJs(`return JSON.stringify({ host: document.querySelector('#fw-host').value, active: window.__nbTest.workspaceState().activeId,
+      saved: window.__nbTest.workspaceState().sessions.find((s) => s.id === ${JSON.stringify(B.id)}).host })`));
+    await evalJs(`document.querySelector('#btn-fw-close').click(); return 1`);
+    check('T92b 工具条端口转发只作用于所在窗格:预选该窗格主机,不切换活动会话', fw.active === A.id && fw.host === fw.saved, JSON.stringify(fw));
+
+    // 广播范围预设
+    await press(`${bar(B.paneId)} .pane-tb-broadcast`);
+    await waitEval(`return !!document.querySelector('#bc-list')`, 'true');
+    const scopes = asObj(await evalJs(`return JSON.stringify((() => {
+      const pick = (v) => { const r = document.querySelector('input[name="bc-scope"][value="' + v + '"]'); r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true })); };
+      const checkedIds = () => [...document.querySelectorAll('#bc-list input:checked')].map((i) => i.value).sort();
+      const scope = () => document.querySelector('input[name="bc-scope"]:checked').value;
+      const out = { title: document.querySelector('#modal-broadcast h3').textContent, initial: scope(), all: checkedIds(),
+        current: document.querySelector('#bc-list .tag')?.closest('label')?.querySelector('input').value };
+      pick('tab'); out.tab = checkedIds();
+      const box = document.querySelector('#bc-list input:checked'); box.checked = false; box.dispatchEvent(new Event('change', { bubbles: true }));
+      out.afterManual = scope();
+      pick('all'); out.backToAll = checkedIds().length === out.all.length;
+      return out;
+    })())`));
+    const tabIds = connectedIn(split).map((x) => x.id).sort();
+    check('T92c 广播范围预设:默认全部已连接,当前标签只勾本标签窗格,手动改动切到自定义;"当前"标记为工具条所在会话',
+      scopes.title === '广播输入' && scopes.initial === 'all' && JSON.stringify(scopes.tab) === JSON.stringify(tabIds)
+      && scopes.afterManual === 'custom' && scopes.backToAll && scopes.current === B.id, JSON.stringify({ scopes, tabIds }));
+    await evalJs(`document.querySelector('#bc-ok').click(); return 1`);
+    await waitEval(`return String(document.body.classList.contains('broadcasting'))`, 'true', 5000);
+    const bcBtn = `${bar(B.paneId)} .pane-tb-broadcast`;
+    const memberState = async () => asObj(await evalJs(`return JSON.stringify({ pressed: document.querySelector(${JSON.stringify(bcBtn)}).getAttribute('aria-pressed'),
+      title: document.querySelector(${JSON.stringify(bcBtn)}).title, visible: getComputedStyle(document.querySelector(${JSON.stringify(bcBtn)})).opacity === '1',
+      members: window.__nbTest.workspaceState().broadcast, banner: !!document.querySelector('#broadcast-bar:not(.hidden)') })`));
+    const joined = await memberState();
+    await press(bcBtn);
+    const left = await memberState();
+    await press(bcBtn);
+    const rejoined = await memberState();
+    await evalJs(`document.querySelector('#btn-broadcast-stop').click(); return 1`);
+    const stopped = await memberState();
+    check('T92d 广播期间工具条一直显示本会话是否参与,点击加入/退出只改该会话,横幅保持',
+      joined.pressed === 'true' && joined.title === '退出广播' && joined.visible && joined.members.includes(B.id) && joined.banner
+      && left.pressed === 'false' && left.title === '加入广播' && !left.members.includes(B.id) && left.members.length === joined.members.length - 1 && left.banner
+      && rejoined.members.includes(B.id) && stopped.title === '广播输入…' && !stopped.banner,
+      JSON.stringify({ joined, left, rejoined, stopped }));
+
+    // 文件按钮:在 B 右侧新增文件分屏,活动会话不变
+    const filesBefore = Number(await evalJs(`return document.querySelectorAll('.term-pane.file-pane').length`));
+    await press(`${bar(B.paneId)} .pane-tb-file`);
+    await waitEval(`return document.querySelectorAll('.term-pane.file-pane').length`, String(filesBefore + 1), 10000);
+    const afterFile = await ws();
+    const fileBar = asObj(await evalJs(`return JSON.stringify((() => { const bar = document.querySelector('.term-pane.file-pane .pane-toolbar');
+      return { kind: bar.dataset.kind, extra: getComputedStyle(bar.querySelector('.pane-tools-extra')).display, close: !!bar.querySelector('.pane-close-btn'), zoom: !!bar.querySelector('.pane-zoom-btn') }; })())`));
+    check('T92e 工具条「文件」只作用于所在标签,不改变活动会话;文件分屏工具条只留 ✕⤢',
+      afterFile.activeId === A.id && afterFile.activeTabId === tabId && fileBar.kind === 'file' && fileBar.extra === 'none' && fileBar.close && fileBar.zoom,
+      JSON.stringify({ afterFile: { activeId: afterFile.activeId, activeTabId: afterFile.activeTabId }, fileBar }));
+    await evalJs(`for (const b of document.querySelectorAll('.term-pane.file-pane .pane-close-btn')) b.click(); return 1`);
+
+    // 可达性:原更多菜单 21 个命令都有就近入口(附录 A「阶段 2 后」列)
+    const surfaces = asObj(await evalJs(`return JSON.stringify({
+      static: [...document.querySelectorAll('#tabbar [data-command], #statusbar [data-command], #sidebar [data-command], .pane-toolbar [data-command]')].map((b) => b.dataset.command),
+      more: [...document.querySelectorAll('#more-menu [data-command]')].map((b) => b.dataset.command) })`));
+    await openTermMenu(A.paneId); const termItems = (await ctxSnapshot()).items; await focusedKey('Escape');
+    await evalJs(`const tab = document.querySelector('.tab.active'); const r = tab.getBoundingClientRect();
+      tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 8 })); return 1`);
+    const tabItems = (await ctxSnapshot()).items; await focusedKey('Escape');
+    await openDropdown('#btn-split-menu'); const splitItems = (await ctxSnapshot()).items; await focusedKey('Escape');
+    await openDropdown('#btn-host-manage'); const manageItems = (await ctxSnapshot()).items; await focusedKey('Escape');
+    const near = new Set([...surfaces.static, ...[...termItems, ...tabItems, ...splitItems, ...manageItems].map((i) => i.command).filter(Boolean)]);
+    const movedOut = ['pane.reflow', 'tab.file.add', 'pane.zoom', 'workspace.close', 'session.reconnect', 'session.readonly', 'session.log',
+      'tools.forwards', 'tools.broadcast', 'tools.batch', 'hosts.import', 'hosts.export', 'settings.fingerprints'];
+    const keptInMore = ['workspace.tile', 'panel.sidebar', 'panel.ai', 'panel.history', 'panel.snippets', 'settings.terminal', 'settings.ai', 'app.about'];
+    const missing = movedOut.filter((id) => !near.has(id));
+    const notInMore = keptInMore.filter((id) => !surfaces.more.includes(id));
+    const leaked = movedOut.filter((id) => surfaces.more.includes(id));
+    check('T92f 可达性:移出更多菜单的 13 个命令都有就近入口,保留的 8 个仍在更多菜单,更多菜单不再有会话/布局命令',
+      !missing.length && !notInMore.length && !leaked.length && near.has('workspace.tile') && near.has('panel.sidebar') && near.has('panel.ai'),
+      JSON.stringify({ missing, notInMore, leaked, near: [...near] }));
+
+    // 清理:关掉本组新开的分屏窗格
+    if (created) await evalJs(`document.querySelector('.term-pane[data-pane="${created.paneId}"] .pane-close-btn')?.click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.length`, String(base.sessions.length), 15000);
+  }
 
   // 无未捕获异常
   const errs = await evalJs(`return JSON.stringify(window.__errs)`);

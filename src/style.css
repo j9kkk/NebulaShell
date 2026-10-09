@@ -164,7 +164,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .host-actions button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px; border-radius: 6px; }
 .host-actions button:hover { color: var(--text); background: var(--border); }
 .host-empty { color: var(--muted); text-align: center; padding: 30px 10px; font-size: 12px; }
-/* .side-footer 已移除:导入/导出移入功能菜单「配置」组,底部只留快捷连接框 */
+/* .side-footer 已移除:导入/导出移入侧栏「管理」菜单,底部只留快捷连接框 */
 
 /* 主区域 */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -178,7 +178,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   height: var(--tabbar-h);
   padding: 0 8px;
   gap: 8px;
-  /* 工具栏保留自己的层级;功能菜单由 menu.js 移到 body 并按按钮位置锚定。 */
+  /* 工具栏保留自己的层级;更多菜单由 menu.js 移到 body 并按按钮位置锚定。 */
   position: relative;
   z-index: 64;
 }
@@ -1272,6 +1272,9 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 #batch-search { width: 100%; }
 /* 主机列表:min-height 而非固定高度 —— 命令块被拉高(或文本域手动加高)时
    列表随共享行一起长高,两侧始终同底。 */
+.bc-scope { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 2px 0 10px; font-size: 13px; }
+.bc-scope label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.bc-scope label:has(input:disabled) { color: var(--muted); cursor: default; }
 .batch-hosts { grid-area: hosts; min-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
 .batch-hosts-empty { color: var(--muted); font-size: 12px; padding: 10px 6px; line-height: 1.6; }
 /* 主机条目两层信息:名称 + 连接串,各自单行省略;复选框对齐首行而非整块垂直居中。 */
@@ -1373,10 +1376,16 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .tab-title { display: inline-block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .icon-tb { --ctl-h: 28px; width: var(--ctl-h); padding: 0; font-size: 15px; flex: 0 0 auto; }
 .icon-tb.active { border-color: var(--accent); color: var(--accent); }
+/* 分屏按钮右侧的下拉箭头:窄条,与 ⛶ 视觉上连成一个分体按钮 */
+#btn-split { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.icon-tb.split-caret { width: 16px; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; color: var(--muted); }
+.icon-tb.split-caret .mi { display: inline-flex; width: 12px; }
+.icon-tb.split-caret svg { width: 12px; height: 12px; }
+.icon-tb .mi { display: inline-flex; align-items: center; justify-content: center; }
 #more-menu {
   /* menu.js 将菜单移到 body;仅 left/top 由锚点计算,不保留工具栏的 right 约束。 */
   position: fixed; top: 8px; left: 8px; right: auto; z-index: 64;
-  display: flex; flex-direction: column; padding: 6px;
+  display: flex; flex-direction: column; gap: 1px; padding: 6px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.45);
   width: 300px; max-width: calc(100vw - 16px);
@@ -1384,8 +1393,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   max-height: calc(100dvh - 16px);
   overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
 }
-#more-menu.hidden, #more-menu .mm-page.hidden { display: none; }
-#more-menu .mm-page { display: flex; flex: none; flex-direction: column; gap: 1px; min-width: 0; }
+#more-menu.hidden { display: none; }
 #more-menu .btn {
   --ctl-h: 36px; width: 100%; height: var(--ctl-h); min-height: 34px; flex: none;
   display: flex; align-items: center; justify-content: flex-start; gap: 8px;
@@ -1398,15 +1406,8 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 #more-menu .btn.danger:not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible) { background: rgba(255,107,107,0.12); }
 /* 不可用的菜单项保持可聚焦(aria-disabled),外观与原生 disabled 一致 */
 #more-menu .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
-/* 组头和分隔线保持自己的高度,菜单过矮时整页滚动而不是压缩按钮。 */
-#more-menu .mm-head {
-  flex: none; padding: 7px 10px 3px; font-size: 11px; color: var(--muted);
-  letter-spacing: 0.05em; user-select: none;
-}
-#more-menu .mm-head:first-child { padding-top: 4px; }
-#more-menu .mm-head:not(:first-child) { border-top: 1px solid var(--border); margin-top: 5px; }
+/* 分隔线保持自己的高度,菜单过矮时整体滚动而不是压缩按钮。 */
 #more-menu .mm-sep { flex: none; height: 1px; margin: 5px 6px; background: var(--border); }
-#more-menu .mm-back { color: var(--muted); }
 #more-menu .mm-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 标签吸收收缩压力,快捷键/状态在独立的行尾列保持可读。 */
 #more-menu .mm-key, #more-menu .mm-state { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -1437,6 +1438,8 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 #ctx-menu .ctx-item:not([aria-disabled="true"]):is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
 #ctx-menu .ctx-item:focus-visible { outline-offset: -2px; }
 #ctx-menu .ctx-label { min-width: 0; overflow-wrap: anywhere; }
+/* 开关项的 ✓ 列:菜单里只要有一个开关项,所有项都留这一列,文字起点对齐 */
+#ctx-menu .ctx-check { flex: none; width: 12px; margin-right: -2px; color: var(--accent2); font-size: 12px; text-align: center; }
 #ctx-menu .ctx-item:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: default; }
 /* 禁用原因:焦点或鼠标停在禁用项上时出现在菜单底部(core.showMenuReason) */
 :is(#more-menu, #ctx-menu) .menu-reason {
@@ -1450,35 +1453,48 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 #ctx-menu .ctx-item.danger .ctx-label { color: var(--danger, #ff6b6b); }
 #ctx-menu .ctx-sep { flex: none; height: 1px; margin: 4px 6px; background: var(--border); }
 
-/* 窗格放大模式 */
-.pane-zoom-btn {
+/* 窗格工具条(terminal.js appendPaneButtons):右上角一条,右对齐。
+   ✕⤢ 在悬停/焦点窗格时出现;文件·端口转发·广播 / 重连只在悬停或键盘聚焦
+   工具条时出现,打字时不遮挡终端右上角。隐藏用 opacity:各按钮位置固定不跳动。 */
+.pane-toolbar {
   position: absolute; top: 4px; right: 8px; z-index: 8;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; gap: 6px; pointer-events: none;
+}
+.pane-tools-extra { display: flex; align-items: center; gap: 4px; }
+.pane-toolbar :is(.pane-tb-btn, .pane-close-btn, .pane-zoom-btn) {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
   opacity: 0; pointer-events: none;
-  width: 28px; height: 28px; padding: 0; font-size: 13px; line-height: 1;
+  min-width: 28px; height: 28px; padding: 0; font-size: 12px; line-height: 1;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   color: var(--muted); cursor: pointer;
 }
-.term-pane:is(:hover, .focused, :focus-within) .pane-zoom-btn { opacity: 1; pointer-events: auto; }
-.pane-zoom-btn:hover { color: var(--accent); border-color: var(--accent); }
-/* 窗格关闭按钮:与放大按钮并排(放大让位到其左侧) */
-.pane-close-btn {
-  position: absolute; top: 4px; right: 42px; z-index: 8;
-  display: flex; align-items: center; justify-content: center;
-  opacity: 0; pointer-events: none;
-  width: 28px; height: 28px; padding: 0; font-size: 12px; line-height: 1;
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--muted); cursor: pointer;
-}
-.term-pane:is(:hover, .focused, :focus-within) .pane-close-btn { opacity: 1; pointer-events: auto; }
-/* 保留可聚焦的按钮;触摸设备没有 hover,操作入口始终可见。 */
+.pane-toolbar :is(.pane-tb-btn, .pane-close-btn, .pane-zoom-btn):disabled { cursor: default; }
+.pane-toolbar svg { display: block; flex: none; width: 14px; height: 14px; }
+.pane-tb-sep { width: 1px; height: 16px; background: var(--border); opacity: 0; }
+.term-pane:is(:hover, .focused, :focus-within) .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
+.term-pane:hover .pane-toolbar :is(.pane-tb-btn, .pane-tb-sep),
+.pane-toolbar:focus-within :is(.pane-tb-btn, .pane-tb-sep) { opacity: 1; pointer-events: auto; }
+/* 不可用的按钮在工具条浮现时半透明(原因在 title 里),隐藏时照样隐藏 */
+.term-pane:hover .pane-toolbar .pane-tb-btn:disabled,
+.pane-toolbar:focus-within .pane-tb-btn:disabled,
+.term-pane:is(:hover, .focused, :focus-within) .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn):disabled { opacity: 0.45; }
+/* 按窗格形态取舍:文件分屏和空窗格只留 ✕⤢;断开时只给重连;已连接时不给重连 */
+.pane-toolbar:not([data-kind="term"]) :is(.pane-tools-extra, .pane-tb-sep),
+.pane-toolbar[data-conn="connecting"] :is(.pane-tools-extra, .pane-tb-sep) { display: none; }
+.pane-toolbar[data-conn="down"] :is(.pane-tb-file, .pane-tb-forward, .pane-tb-broadcast),
+.pane-toolbar[data-conn="connected"] .pane-tb-reconnect { display: none; }
+.pane-tb-reconnect { padding: 0 8px !important; color: var(--accent) !important; }
+/* 广播期间每个已连接窗格都显示广播按钮,参与者高亮 */
+body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opacity: 1; pointer-events: auto; }
+.pane-toolbar .pane-tb-broadcast.active { color: var(--warn, #f5a524); border-color: var(--warn, #f5a524); }
+.pane-toolbar .pane-tb-btn:not(:disabled):hover, .pane-zoom-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
+.pane-close-btn:not(:disabled):hover { color: var(--danger); border-color: var(--danger); }
+/* 触摸设备没有 hover:操作入口始终可见 */
 @media (hover: none), (any-pointer: coarse) {
-  .term-pane .pane-zoom-btn, .term-pane .pane-close-btn { opacity: 1; pointer-events: auto; }
+  .term-pane .pane-toolbar :is(.pane-tb-btn, .pane-tb-sep, .pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
 }
-.pane-close-btn:hover { color: var(--danger); border-color: var(--danger); }
 .zoom-chip {
-  position: absolute; top: 4px; right: 76px; z-index: 9;
-  display: inline-flex; align-items: center; height: 28px; cursor: pointer;
+  order: -1; display: inline-flex; align-items: center; height: 28px; cursor: pointer; pointer-events: auto;
   font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
   border-radius: 6px; padding: 0 8px; background: var(--bg2);
 }

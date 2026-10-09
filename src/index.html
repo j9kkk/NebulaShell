@@ -21,6 +21,7 @@
           <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建主机</span></button>
           <button id="btn-cloud-import" class="btn small" title="从腾讯云 / 阿里云导入主机"><span class="mi" data-icon="cloud"></span><span class="lbl">云导入</span></button>
           <button id="btn-batch" class="btn small" title="多主机批量执行命令"><span class="mi" data-icon="eject"></span><span class="lbl">批量</span></button>
+          <button id="btn-host-manage" class="btn small" title="主机管理:导入、导出、指纹、端口转发" aria-label="主机管理"><span class="mi" data-icon="dots"></span><span class="lbl">管理</span></button>
         </div>
         <input id="host-search" type="text" placeholder="搜索主机名称 / IP…" />
       </div>
@@ -48,48 +49,23 @@
         <div id="tabs" data-tauri-drag-region></div>
         <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
         <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
+        <button id="btn-split-menu" class="btn icon-tb split-caret" title="分屏与布局" aria-label="分屏与布局"><span class="mi" data-icon="chevronDown"></span></button>
         <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
-        <button id="btn-more" class="btn icon-tb" aria-label="更多" data-title="更多(命令面板 %1)" data-accel="palette.open">⋯</button>
+        <button id="btn-more" class="btn icon-tb" aria-label="更多" data-title="更多(命令面板 %1)" data-accel="palette.open"><span class="mi" data-icon="dots"></span></button>
+        <!-- 更多菜单只放全局项:命令面板入口、视图开关、设置与关于。会话与布局
+             命令在就近入口(窗格工具条、终端右键、分屏下拉、侧栏「管理」)。 -->
         <div id="more-menu" class="hidden" aria-label="更多">
-          <div class="mm-page" data-page="root">
-            <button id="btn-palette" class="btn small" data-command="palette.open" data-accel="palette.open" data-title="命令面板(%1)"><span class="mi" data-icon="command"></span><span class="mm-label">命令面板…</span><span class="mm-key"></span></button>
-            <div class="mm-sep"></div>
-            <div class="mm-head">布局</div>
-            <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi" data-icon="layout"></span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
-            <button id="btn-auto-layout" class="btn small" data-command="pane.reflow"><span class="mi" data-icon="layout"></span><span class="mm-label">整理当前标签分屏</span></button>
-            <button id="btn-files" class="btn small" data-command="tab.file.add"><span class="mi" data-icon="folder"></span><span class="mm-label">新增文件分屏</span></button>
-            <button id="btn-zoom-pane" class="btn small" data-command="pane.zoom" data-title="放大/还原当前窗格(%1)" data-accel="pane.zoom"><span class="mi" data-icon="zoom"></span><span class="mm-label">放大当前窗格</span><span class="mm-key"></span></button>
-            <button id="btn-close-pane" class="btn small danger" data-command="workspace.close" data-title="关闭当前窗格或标签(%1)" data-accel="workspace.close"><span class="mi" data-icon="x"></span><span class="mm-label">关闭当前窗格</span><span class="mm-key"></span></button>
-            <div class="mm-head">面板</div>
-            <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi" data-icon="panelLeft"></span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
-            <button id="btn-ai-menu" class="btn small" data-command="panel.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 助手</span><span class="mm-state"></span></button>
-            <button id="btn-history" class="btn small" data-command="panel.history"><span class="mi" data-icon="clock"></span><span class="mm-label">命令历史</span><span class="mm-state"></span></button>
-            <button id="btn-snippets" class="btn small" data-command="panel.snippets"><span class="mi" data-icon="zap"></span><span class="mm-label">常用片段</span><span class="mm-state"></span></button>
-            <div class="mm-sep"></div>
-            <button class="btn small" data-menu-page="session"><span class="mi" data-icon="plug"></span><span class="mm-label">会话工具</span><span class="mm-key">›</span></button>
-            <button class="btn small" data-menu-page="settings"><span class="mi" data-icon="settings"></span><span class="mm-label">设置与管理</span><span class="mm-key">›</span></button>
-          </div>
-          <div class="mm-page hidden" data-page="session">
-            <button class="btn small mm-back" data-menu-back><span class="mi">‹</span><span class="mm-label">返回 · 会话工具</span></button>
-            <div class="mm-head">当前会话</div>
-            <button id="btn-reconnect-menu" class="btn small" data-command="session.reconnect"><span class="mi" data-icon="rotate"></span><span class="mm-label">重连当前会话</span></button>
-            <button id="btn-readonly-menu" class="btn small" data-command="session.readonly"><span class="mi" data-icon="lock"></span><span class="mm-label">只读模式</span><span class="mm-state"></span></button>
-            <button id="btn-log-menu" class="btn small" data-command="session.log"><span class="mi" data-icon="circleDot"></span><span class="mm-label">记录会话日志</span><span class="mm-state"></span></button>
-            <button id="btn-forwards" class="btn small" data-command="tools.forwards"><span class="mi" data-icon="shuffle"></span><span class="mm-label">端口转发</span></button>
-            <div class="mm-head">多主机工具</div>
-            <button id="btn-broadcast" class="btn small" data-command="tools.broadcast"><span class="mi" data-icon="megaphone"></span><span class="mm-label">广播输入</span><span class="mm-state"></span></button>
-            <button id="btn-batch-menu" class="btn small" data-command="tools.batch"><span class="mi" data-icon="eject"></span><span class="mm-label">批量执行</span></button>
-          </div>
-          <div class="mm-page hidden" data-page="settings">
-            <button class="btn small mm-back" data-menu-back><span class="mi">‹</span><span class="mm-label">返回 · 设置与管理</span></button>
-            <button id="btn-term-settings" class="btn small" data-command="settings.terminal" data-accel="settings.terminal" data-title="终端设置(%1)"><span class="mi" data-icon="settings"></span><span class="mm-label">终端设置…</span><span class="mm-key"></span></button>
-            <button id="btn-ai-settings-menu" class="btn small" data-command="settings.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 配置</span></button>
-            <div class="mm-sep"></div>
-            <button id="btn-hosts-import" class="btn small"><span class="mi" data-icon="import"></span><span class="mm-label">导入主机</span></button>
-            <button id="btn-hosts-export" class="btn small"><span class="mi" data-icon="export"></span><span class="mm-label">导出主机</span></button>
-            <button id="btn-fingerprints" class="btn small" data-command="settings.fingerprints"><span class="mi" data-icon="key"></span><span class="mm-label">主机指纹</span></button>
-            <button id="btn-about" class="btn small" data-command="app.about"><span class="mi" data-icon="info"></span><span class="mm-label">关于</span></button>
-          </div>
+          <button id="btn-palette" class="btn small" data-command="palette.open" data-accel="palette.open" data-title="命令面板(%1)"><span class="mi" data-icon="command"></span><span class="mm-label">命令面板…</span><span class="mm-key"></span></button>
+          <div class="mm-sep"></div>
+          <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi" data-icon="panelLeft"></span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
+          <button id="btn-ai-menu" class="btn small" data-command="panel.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 助手</span><span class="mm-state"></span></button>
+          <button id="btn-history" class="btn small" data-command="panel.history"><span class="mi" data-icon="clock"></span><span class="mm-label">命令历史</span><span class="mm-state"></span></button>
+          <button id="btn-snippets" class="btn small" data-command="panel.snippets"><span class="mi" data-icon="zap"></span><span class="mm-label">常用片段</span><span class="mm-state"></span></button>
+          <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi" data-icon="layout"></span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
+          <div class="mm-sep"></div>
+          <button id="btn-term-settings" class="btn small" data-command="settings.terminal" data-accel="settings.terminal" data-title="终端设置(%1)"><span class="mi" data-icon="settings"></span><span class="mm-label">终端设置…</span><span class="mm-key"></span></button>
+          <button id="btn-ai-settings-menu" class="btn small" data-command="settings.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 配置…</span></button>
+          <button id="btn-about" class="btn small" data-command="app.about"><span class="mi" data-icon="info"></span><span class="mm-label">关于 NebulaShell</span></button>
         </div>
       </div>
       <!-- 窗口控制(Windows/Linux):fixed 锚在视口右上角,不随 #main/AI 面板

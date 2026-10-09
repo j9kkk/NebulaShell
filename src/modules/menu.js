@@ -2,9 +2,6 @@ import { $, bindMenuKeyboard, closeCtxMenu, hasOpenModal, isMenuItemDisabled } f
 import { refreshCommandStates } from './commands.js';
 import { popupPosition } from './interaction.js';
 
-let page = 'root';
-let returnItem = null;
-let savedScroll = 0;
 let opener = null;
 
 /// 打开菜单前的焦点位置。用鼠标打开时 mousedown 阶段记录(Chromium 随后会把
@@ -49,17 +46,6 @@ function positionMenu() {
   }
 }
 
-function showPage(next, trigger = null) {
-  const menu = $('#more-menu');
-  if (next !== 'root') { returnItem = trigger; savedScroll = menu.scrollTop; }
-  page = next;
-  for (const element of menu.querySelectorAll('.mm-page')) element.classList.toggle('hidden', element.dataset.page !== page);
-  positionMenu();
-  menu.scrollTop = next === 'root' ? savedScroll : 0;
-  if (next === 'root' && returnItem?.isConnected) returnItem.focus();
-  else menu.querySelector(`.mm-page[data-page="${page}"] button:not(:disabled):not([aria-disabled="true"])`)?.focus();
-}
-
 export function bindMoreMenu() {
   const menu = $('#more-menu');
   const button = $('#btn-more');
@@ -68,7 +54,7 @@ export function bindMoreMenu() {
   button.setAttribute('aria-haspopup', 'menu');
   button.setAttribute('aria-controls', 'more-menu');
   button.setAttribute('aria-expanded', 'false');
-  bindMenuKeyboard(menu, closeMoreMenu, () => { if (page !== 'root') showPage('root'); });
+  bindMenuKeyboard(menu, closeMoreMenu);
   for (const item of menu.querySelectorAll('button')) item.setAttribute('role', 'menuitem');
   button.addEventListener('mousedown', () => { if (menu.classList.contains('hidden')) opener = document.activeElement; });
   button.addEventListener('click', () => {
@@ -79,9 +65,9 @@ export function bindMoreMenu() {
     refreshCommandStates();
     menu.classList.remove('hidden');
     button.setAttribute('aria-expanded', 'true');
-    returnItem = null;
-    savedScroll = 0;
-    showPage('root');
+    positionMenu();
+    menu.scrollTop = 0;
+    menu.querySelector('button:not(:disabled):not([aria-disabled="true"])')?.focus();
   });
   // 捕获阶段:先关菜单、把焦点还给打开前的位置,再让菜单项自己的监听执行
   // 命令 —— 命令若打开弹窗,弹窗记下的归还目标就是原位置而不是隐藏的菜单项。
@@ -89,15 +75,8 @@ export function bindMoreMenu() {
     const item = event.target.closest('button');
     if (!item) return;
     if (isMenuItemDisabled(item)) { event.preventDefault(); event.stopPropagation(); return; }
-    if (item.dataset.menuPage || item.hasAttribute('data-menu-back')) return;
     closeMoreMenu('opener');
   }, true);
-  menu.addEventListener('click', (event) => {
-    const item = event.target.closest('button');
-    if (!item) return;
-    if (item.dataset.menuPage) { showPage(item.dataset.menuPage, item); return; }
-    if (item.hasAttribute('data-menu-back')) showPage('root');
-  });
   document.addEventListener('mousedown', (event) => {
     if (!event.target.closest('#more-menu, #btn-more')) closeMoreMenu(false);
   });

@@ -280,7 +280,7 @@ async function setup({ platform = 'darwin', width = 800, height = 600 } = {}) {
   more.rect = { left: 0, right: 240, top: 0, bottom: 260, width: 240, height: 260 };
   const root = add(more, 'div', '', 'mm-page'); root.dataset.page = 'root';
   const disabledRoot = add(root, 'button'); disabledRoot.disabled = true;
-  const pageLink = add(root, 'button'); pageLink.dataset.menuPage = 'session';
+  const pageLink = add(root, 'button');
   const action = add(root, 'button');
   const sessionPage = add(more, 'div', '', 'mm-page hidden'); sessionPage.dataset.page = 'session';
   const back = add(sessionPage, 'button'); back.setAttribute('data-menu-back', '');
@@ -543,7 +543,7 @@ test('terminal state notifications refresh the real workspace split button after
   const tile = add(root, 'button', 'btn-tile-tabs'); tile.dataset.command = 'workspace.tile';
   add(tile, 'span', '', 'mm-label'); add(tile, 'span', '', 'mm-state');
   for (const id of ['btn-newtab', 'btn-split', 'btn-ai-toggle', 'btn-sidebar-toggle', 'btn-batch', 'btn-readonly', 'btn-log-toggle', 'btn-clear', 'btn-reconnect', 'btn-disconnect',
-    'btn-add-host', 'btn-welcome-add', 'btn-cloud-import', 'btn-welcome-cloud', 'btn-hosts-import', 'btn-hosts-export']) add(app, 'button', id);
+    'btn-add-host', 'btn-welcome-add', 'btn-cloud-import', 'btn-welcome-cloud', 'btn-split-menu', 'btn-host-manage']) add(app, 'button', id);
   add(app, 'aside', 'sidebar'); add(app, 'aside', 'ai-panel', 'hidden');
   const split = document.querySelector('#btn-split');
   const session = { status: 'connecting' };
@@ -556,7 +556,8 @@ test('terminal state notifications refresh the real workspace split button after
     toggleTabTiling: () => { state.workspace.mode = state.workspace.mode === 'single' ? 'tiled' : 'single'; },
   });
   for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'toggleHistory', 'toggleSnippetMenu', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openTermSettings', 'openAiSettings', 'openFingerprints', 'openAbout', 'toggleSidebar',
-    'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts']) context[name] = () => {};
+    'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts',
+    'focusedPaneId', 'paneOwner', 'activateSession', 'toggleBroadcastMember', 'splitMenuItems', 'hostManageItems']) context[name] = () => {};
   // Execute production wiring and notifier, with adapters only for unrelated actions.
   const entrySource = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
   const terminalSource = await readFile(new URL('../src/modules/terminal.js', import.meta.url), 'utf8');
@@ -654,17 +655,6 @@ test('menu positioning uses the untransformed layout box during animation', asyn
   assert.equal(more.style.top, '52px');
 });
 
-test('menu subpage ArrowLeft and back button restore the parent item and root scroll', async () => {
-  const { menu, document, more, moreButton, root, sessionPage, pageLink, back, subAction } = await setup();
-  menu.bindMoreMenu(); moreButton.click(); more.scrollTop = 93; pageLink.click();
-  assert.equal(root.classList.contains('hidden'), true); assert.equal(sessionPage.classList.contains('hidden'), false);
-  assert.equal(more.scrollTop, 0); assert.equal(document.activeElement, back);
-  key(back, 'ArrowDown'); assert.equal(document.activeElement, subAction);
-  key(subAction, 'ArrowLeft'); assert.equal(document.activeElement, pageLink); assert.equal(more.scrollTop, 93);
-  assert.equal(root.classList.contains('hidden'), false); assert.equal(sessionPage.classList.contains('hidden'), true);
-  pageLink.click(); back.click(); assert.equal(document.activeElement, pageLink); assert.equal(more.classList.contains('hidden'), false);
-});
-
 test('menu Escape/Tab restore trigger focus, outside dismissal does not steal focus, and modal blocks opening', async () => {
   const { core, menu, document, trigger, confirm, more, moreButton, pageLink, window } = await setup();
   menu.bindMoreMenu();
@@ -681,15 +671,15 @@ test('menu Escape/Tab restore trigger focus, outside dismissal does not steal fo
   assert.equal(more.classList.contains('hidden'), true);
 });
 
-test('menu action closes, resize repositions, and reopening always resets to root', async () => {
-  const { menu, document, window, more, moreButton, pageLink, root, back, subAction, trigger } = await setup();
-  menu.bindMoreMenu(); moreButton.click(); pageLink.click(); subAction.focus(); subAction.click();
+test('menu action closes, resize repositions, and reopening focuses the first item', async () => {
+  const { menu, document, window, more, moreButton, pageLink, action, trigger } = await setup();
+  menu.bindMoreMenu(); moreButton.click(); action.focus(); action.click();
   assert.equal(more.classList.contains('hidden'), true);
   assert.equal(document.activeElement, trigger, 'executing an item returns focus to where it was before the menu opened');
-  moreButton.click(); assert.equal(root.classList.contains('hidden'), false); assert.equal(document.activeElement, pageLink);
+  moreButton.click(); assert.equal(document.activeElement, pageLink);
   window.innerWidth = 300; window.innerHeight = 400; window.dispatchEvent(new DomEvent('resize'));
   assert.equal(more.style.left, '8px'); assert.equal(more.style.top, '70px'); assert.equal(more.style.maxHeight, '384px');
-  pageLink.click(); key(back, 'Escape'); moreButton.click(); assert.equal(document.activeElement, pageLink);
+  key(action, 'Escape'); moreButton.click(); assert.equal(document.activeElement, pageLink);
 });
 
 test('context popup clamps edges, skips disabled entries, and restores the invoking control on Escape', async () => {
@@ -809,4 +799,44 @@ test('every registered command has a category and keywords, and appears in the m
     assert.ok(menuIds.has(id), `${id} is missing from the macOS menu bar`);
   }
   for (const id of menuIds) assert.ok(ids.includes(id), `menu bar references unregistered command ${id}`);
+});
+
+test('explicit command targets: element ctx drives state, labels and execution; menu items carry the command id', async () => {
+  const { commands, add, app } = await setup();
+  const seen = [];
+  commands.registerCommand('pane.cmd', {
+    label: (ctx) => (ctx?.paneId ? `Pane ${ctx.paneId}` : 'Focused pane'),
+    enabled: (ctx) => ctx?.paneId !== 'p2', reason: (ctx) => `busy ${ctx?.paneId}`,
+    checked: (ctx) => (ctx?.paneId ? ctx.paneId === 'p1' : undefined),
+    run: (ctx) => { seen.push(ctx?.paneId || 'focused'); },
+  });
+  const make = (pane) => { const b = add(app, 'button'); b.dataset.command = 'pane.cmd'; b.dataset.cmdPane = pane; b.setAttribute('data-label-title', ''); return b; };
+  const one = make('p1'); const two = make('p2');
+  const direct = add(app, 'button'); direct.dataset.command = 'pane.cmd'; direct.dataset.commandDirect = '1';
+  commands.bindCommandButtons();
+  assert.equal(one.title, 'Pane p1'); assert.equal(one.getAttribute('aria-pressed'), 'true');
+  assert.equal(two.disabled, true); assert.equal(two.title, 'Pane p2（busy p2）'); assert.equal(two.getAttribute('aria-pressed'), 'false');
+  one.click(); await flush();
+  direct.click(); await flush();
+  assert.deepEqual(seen, ['p1'], 'element ctx reaches run(); direct buttons are not double-bound');
+  assert.equal(commands.commandState('pane.cmd').checked, undefined, 'no target means not a toggle');
+  const item = commands.commandMenuItem('pane.cmd', { paneId: 'p2' }, { danger: true });
+  assert.deepEqual([item.command, item.label, item.disabled, item.reason, item.danger], ['pane.cmd', 'Pane p2', true, 'busy p2', true]);
+  await commands.commandMenuItem('pane.cmd', { paneId: 'p3' }).run();
+  assert.deepEqual(seen, ['p1', 'p3']);
+  assert.equal(commands.commandMenuItem('missing'), null);
+});
+
+test('context menu items expose data-command and a check column only when a toggle is present', async () => {
+  const { core, ctx } = await setup();
+  core.showCtxMenu(10, 10, [{ label: 'A', command: 'cmd.a', run() {} }, '-', '-', { label: 'B', checked: false, run() {} }, '-']);
+  const buttons = ctx.querySelectorAll('button');
+  assert.equal(buttons[0].dataset.command, 'cmd.a');
+  assert.equal(ctx.querySelectorAll('.ctx-sep').length, 1, 'duplicate and trailing separators collapse');
+  assert.equal(buttons[1].getAttribute('role'), 'menuitemcheckbox');
+  assert.ok(buttons[0].querySelector('.ctx-check'), 'rows align when any row is a toggle');
+  core.closeCtxMenu();
+  core.showCtxMenu(10, 10, [{ label: 'Only', run() {} }]);
+  assert.equal(ctx.querySelector('.ctx-check'), null);
+  core.closeCtxMenu();
 });

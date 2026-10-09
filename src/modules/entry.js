@@ -1,9 +1,9 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
-import { bindCommandButtons, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
+import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { bindMoreMenu, closeMoreMenu } from './menu.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
@@ -28,28 +28,64 @@ export function termFromEvent(e) {
   return sid ? state.sessions.get(sid) || null : null;
 }
 
-/// 终端右键菜单:复制/粘贴/全选 + 清屏/搜索/只读。快捷键提示按平台渲染。
+/// 终端右键菜单:编辑 / 当前会话 / 窗格 / 会话连接 四组。除复制粘贴外都走
+/// 命令注册表,带显式目标(右键所在的会话),快捷键提示按平台渲染。
 export function openTermCtxMenu(e, session) {
   const term = session.term;
   // 选区文本在"菜单打开时"快照:若等点击菜单项时再读 getSelection,
   // 选区可能已被右键/焦点变化清掉,复制到的就是空串或别的内容
   // (用户视角的"复制无效/复制错内容")。
   const selText = (() => { try { return term.getSelection() || ''; } catch { return ''; } })();
+  const ctx = { sessionId: session.sessionId, paneId: session.paneId, tabId: session.tabId };
+  const item = (id, overrides) => commandMenuItem(id, ctx, overrides);
+  const connected = ['connected', 'connecting'].includes(session.status);
   showCtxMenu(e.clientX, e.clientY, [
-    { label: '复制', key: accelOf('term.copy'), disabled: !selText, run: () => {
+    { label: '复制', key: accelOf('term.copy'), disabled: !selText, reason: '没有选中的内容', run: () => {
       copyText(selText).then((ok) => toast(ok ? `已复制 ${selText.length} 个字符` : '复制失败：剪贴板不可用', ok ? 'success' : 'error'));
     } },
     { label: '粘贴', key: accelOf('term.paste'), run: () => { navigator.clipboard.readText().then((t) => { if (t && !session.readOnly) term.paste(t); }).catch(() => {}); } },
     { label: '全选', key: accelOf('term.selectAll'), run: () => { try { term.selectAll(); } catch { /* ignore */ } } },
     '-',
-    { label: '搜索…', key: accelOf('session.search'), run: () => { activateSession(session.sessionId); openTermSearch(); } },
-    // 「诊断报错」入口从 AI 面板快捷按钮迁移至此;tips 与原按钮 title 一致。
-    { label: '🩺 诊断报错', title: '只取最后一次输入的命令及其控制台输出,让 AI 诊断', run: () => { activateSession(session.sessionId); aiDiagnose(); } },
-    { label: '清屏', run: () => { activateSession(session.sessionId); clearActiveTerm(); } },
-    { label: session.readOnly ? '关闭只读' : '设为只读', run: () => { activateSession(session.sessionId); toggleReadonly(); } },
+    item('session.search', { label: '搜索…' }),
+    // tips 与原 AI 面板「诊断报错」按钮的 title 一致
+    item('session.diagnose', { title: '只取最后一次输入的命令及其控制台输出,让 AI 诊断' }),
+    item('session.clear'),
+    item('session.readonly'),
+    '-',
+    item('pane.split'),
+    item('tab.file.add'),
+    item('pane.zoom'),
+    item('workspace.close', { danger: true }),
+    '-',
+    connected ? item('session.disconnect', { danger: true }) : item('session.reconnect', { label: '重新连接' }),
+    item('tools.broadcast'),
+    item('tools.forwards'),
     '-',
     { label: '复制会话 ID', run: () => { copyText(session.sessionId).then((ok) => toast(ok ? '已复制会话 ID' : '复制失败', ok ? 'success' : 'error')); } },
-  ]);
+  ], { label: '终端菜单' });
+}
+
+/// 分屏按钮的下拉:⛶ 本体仍是分屏,▾ 打开布局类命令。
+function splitMenuItems() {
+  return [
+    commandMenuItem('pane.split', undefined, { label: '终端分屏' }),
+    commandMenuItem('tab.file.add'),
+    '-',
+    commandMenuItem('pane.reflow'),
+    commandMenuItem('pane.zoom'),
+    commandMenuItem('workspace.tile'),
+  ];
+}
+
+/// 侧栏「管理」:主机库层面的低频操作。
+function hostManageItems() {
+  return [
+    commandMenuItem('hosts.import'),
+    commandMenuItem('hosts.export'),
+    '-',
+    commandMenuItem('settings.fingerprints'),
+    commandMenuItem('tools.forwards', undefined, { label: '端口转发规则…' }),
+  ];
 }
 
 export function bindContextMenu() {
@@ -144,7 +180,7 @@ const PLATFORM_LABEL = { darwin: 'macOS', macos: 'macOS', windows: 'Windows', li
 
 /// 侧边栏收缩:面板 + 拖拽把手同步显隐。收起时侧栏塌缩为一个窄条,
 /// 底部的收起/展开按钮仍留在条上(收起后必须有入口展开,按钮不能随面板消失)。
-/// 展开态用按钮文字+图标反映;工具栏按钮(已移除)、功能菜单、
+/// 展开态用按钮文字+图标反映;工具栏按钮(已移除)、更多菜单、
 /// 把手双击三处共用这一个入口。
 let expandedSidebarWidth = null;
 function toggleSidebar() {
@@ -306,13 +342,42 @@ async function confirmAppClose({ transfers = 0, sessions = -1 } = {}) {
 }
 
 function setupWorkspaceCommands() {
-  const session = () => state.sessions.get(state.activeId);
-  const count = () => leafCount(activeTab()?.layout);
+  // 作用目标:ctx 缺省为当前焦点(活动标签、焦点窗格、活动会话);窗格工具条、
+  // 右键菜单传入显式的 paneId / sessionId / tabId,只作用于该目标。
+  const targetOf = (ctx) => {
+    if (ctx?.paneId) {
+      const tab = paneOwner(ctx.paneId, ctx.tabId || undefined);
+      const pane = tab?.panes.get(ctx.paneId) || null;
+      return { explicit: true, tab, pane, paneId: pane ? ctx.paneId : null, session: pane?.sessionId ? state.sessions.get(pane.sessionId) || null : null };
+    }
+    if (ctx?.sessionId) {
+      const session = state.sessions.get(ctx.sessionId) || null;
+      const tab = session ? state.tabs.get(session.tabId) || null : null;
+      return { explicit: true, tab, pane: tab?.panes.get(session.paneId) || null, paneId: session?.paneId || null, session };
+    }
+    if (ctx?.tabId) {
+      const tab = state.tabs.get(ctx.tabId) || null;
+      const session = tab ? state.sessions.get(tab.sessionId) || [...state.sessions.values()].find((s) => s.tabId === tab.id) || null : null;
+      return { explicit: true, tab, pane: null, paneId: null, session };
+    }
+    const tab = activeTab();
+    const paneId = tab ? focusedPaneId() : null;
+    return { explicit: false, tab, pane: paneId ? tab.panes.get(paneId) || null : null, paneId, session: state.sessions.get(state.activeId) || null };
+  };
+  const session = (ctx) => targetOf(ctx).session;
+  const count = (ctx) => leafCount(targetOf(ctx).tab?.layout);
+  // 右键菜单里的会话命令要先把该会话设为活动会话(搜索框、AI 诊断只认活动会话)
+  const focusTarget = (ctx) => {
+    const s = session(ctx);
+    if (ctx && s && s.sessionId !== state.activeId) activateSession(s.sessionId);
+    return s;
+  };
   // 字段约定见 commands.js registerCommand。有 enabled 的命令都要给出 reason:
-  // ⋯ 菜单底部、命令面板副标题、按钮 title、读屏都显示它。
+  // 更多菜单底部、命令面板副标题、按钮 title、读屏都显示它。
   const noSession = '没有活动会话';
   const noTab = '没有打开的标签';
-  const sessionReason = () => (session() ? '会话未连接' : noSession);
+  const sessionReason = (ctx) => (session(ctx) ? '会话未连接' : noSession);
+  const live = (s) => !!s && ['connected', 'connecting'].includes(s.status);
 
   // 应用
   registerCommand('palette.open', { label: '命令面板', category: 'app', kind: 'dialog', keywords: ['command palette', 'commands', 'shortcuts', 'mlmb', 'mingling', 'kuaijiejian'], run: () => openPalette() });
@@ -324,16 +389,44 @@ function setupWorkspaceCommands() {
 
   // 标签与分屏
   registerCommand('tab.new', { label: '新建标签', category: 'layout', keywords: ['new tab', 'xjbq', 'biaoqian'], run: newTabWithPicker });
-  registerCommand('tab.rename', { label: '重命名标签', category: 'layout', kind: 'dialog', keywords: ['rename tab', 'cmm', 'cmmbq', 'chongmingming'], enabled: () => !!activeTab(), reason: noTab, run: () => renameTab(state.activeTabId) });
-  registerCommand('pane.split', { label: '分屏', category: 'layout', keywords: ['split', 'split pane', 'fenping', 'fp'], enabled: () => session()?.status === 'connected' && count() < maxPaneCapacity(),
-    reason: () => (session()?.status !== 'connected' ? '先连接当前窗格的主机' : `当前窗口最多容纳 ${maxPaneCapacity()} 个分屏窗格`), run: () => splitActive() });
-  // 文件分屏:与「分屏」对称的入口,作用于当前标签
-  registerCommand('tab.file.add', { label: '新增文件分屏', category: 'layout', keywords: ['files', 'sftp', 'file manager', 'wenjian', 'wjfp', 'xzwjfp'], enabled: () => !filePaneBlocker(), reason: () => filePaneBlocker(), run: () => { addFilePane(); refreshCommandStates(); } });
-  registerCommand('pane.zoom', { label: '放大当前窗格', category: 'layout', keywords: ['zoom', 'maximize pane', 'fd', 'fangda', 'fdck'], enabled: () => count() > 1 && !!state.panes.get(focusedPaneId())?.sessionId,
-    reason: () => (count() > 1 ? '焦点窗格不是终端会话' : '当前标签只有一个窗格'), checked: () => !!state.zoomPaneId, run: () => togglePaneZoom(state.zoomPaneId || focusedPaneId()) });
+  registerCommand('tab.rename', { label: '重命名标签', category: 'layout', kind: 'dialog', keywords: ['rename tab', 'cmm', 'cmmbq', 'chongmingming'], enabled: (ctx) => !!targetOf(ctx).tab, reason: noTab, run: (ctx) => renameTab(targetOf(ctx).tab.id) });
+  registerCommand('pane.split', { label: '分屏', category: 'layout', keywords: ['split', 'split pane', 'fenping', 'fp'], enabled: (ctx) => session(ctx)?.status === 'connected' && count(ctx) < maxPaneCapacity(),
+    reason: (ctx) => (session(ctx)?.status !== 'connected' ? '先连接当前窗格的主机' : `当前窗口最多容纳 ${maxPaneCapacity()} 个分屏窗格`), run: (ctx) => { focusTarget(ctx); return splitActive(); } });
+  // 文件分屏:与「分屏」对称的入口;显式目标时在该窗格右侧切出
+  registerCommand('tab.file.add', { label: '新增文件分屏', category: 'layout', keywords: ['files', 'sftp', 'file manager', 'wenjian', 'wjfp', 'xzwjfp'],
+    enabled: (ctx) => !filePaneBlocker(targetOf(ctx).tab?.id), reason: (ctx) => filePaneBlocker(targetOf(ctx).tab?.id),
+    run: (ctx) => { const t = targetOf(ctx); addFilePane(t.tab?.id, t.explicit ? t.paneId : undefined); refreshCommandStates(); } });
+  // 显式目标(窗格工具条 ⤢、右键菜单)时名称随状态换成「还原分屏布局」,不打 ✓
+  registerCommand('pane.zoom', { label: (ctx) => {
+    const t = targetOf(ctx);
+    if (!t.explicit) return '放大当前窗格';
+    return t.tab?.zoomPaneId && t.tab.zoomPaneId === t.paneId ? '还原分屏布局' : '放大该窗格';
+  }, category: 'layout', keywords: ['zoom', 'maximize pane', 'fd', 'fangda', 'fdck'],
+  enabled: (ctx) => {
+    const t = targetOf(ctx);
+    if (t.explicit && t.tab?.zoomPaneId === t.paneId && t.paneId) return true;
+    return count(ctx) > 1 && (!!t.pane?.sessionId || (t.explicit && t.pane?.kind === 'file'));
+  },
+  reason: (ctx) => (count(ctx) <= 1 ? '当前标签只有一个窗格' : targetOf(ctx).explicit ? '连接后可放大' : '焦点窗格不是终端会话'),
+  checked: (ctx) => (targetOf(ctx).explicit ? undefined : !!state.zoomPaneId),
+  run: (ctx) => {
+    const t = targetOf(ctx);
+    if (t.explicit) return togglePaneZoom(t.paneId, t.tab.id);
+    return togglePaneZoom(state.zoomPaneId || focusedPaneId());
+  } });
   registerCommand('pane.reflow', { label: '整理当前标签分屏', category: 'layout', keywords: ['reflow', 'arrange', 'layout', 'zl', 'zhengli', 'buju'], enabled: () => count() > 1, reason: '当前标签只有一个窗格', run: autoLayoutTab });
   registerCommand('workspace.tile', { label: '标签平铺', category: 'layout', keywords: ['tile tabs', 'grid', 'bqpp', 'pingpu'], checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, reason: '需要至少 2 个标签', run: toggleTabTiling });
-  registerCommand('workspace.close', { label: () => count() > 1 ? '关闭当前窗格' : '关闭当前标签', category: 'layout', keywords: ['close', 'close pane', 'close tab', 'gb', 'guanbi'], enabled: () => !!activeTab(), reason: noTab, run: closeCurrent });
+  registerCommand('workspace.close', { label: (ctx) => {
+    const t = targetOf(ctx);
+    const many = count(ctx) > 1;
+    if (t.explicit && t.paneId) return many ? '关闭该窗格' : '关闭标签';
+    return many ? '关闭当前窗格' : '关闭当前标签';
+  }, category: 'layout', keywords: ['close', 'close pane', 'close tab', 'gb', 'guanbi'], enabled: (ctx) => !!targetOf(ctx).tab, reason: noTab,
+  run: (ctx) => {
+    const t = targetOf(ctx);
+    if (t.explicit && t.paneId) return closeActivePane(t.paneId, t.tab.id);
+    return closeCurrent();
+  } });
 
   // 面板
   registerCommand('panel.sidebar', { label: '主机侧栏', category: 'panel', keywords: ['sidebar', 'hosts', 'zjcl', 'cebianlan'], checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
@@ -342,21 +435,48 @@ function setupWorkspaceCommands() {
   registerCommand('panel.snippets', { label: '常用片段', category: 'panel', keywords: ['snippets', 'cypd', 'pianduan'], checked: () => !$('#snippet-menu').classList.contains('hidden'), run: toggleSnippetMenu });
 
   // 会话
-  registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: () => !!session(), reason: noSession, run: openTermSearch });
-  registerCommand('session.clear', { label: '清屏', category: 'session', keywords: ['clear', 'cls', 'qp', 'qingping'], enabled: () => !!session(), reason: noSession, run: clearActiveTerm });
-  registerCommand('session.reconnect', { label: '重连当前会话', category: 'session', keywords: ['reconnect', 'cl', 'chonglian'], enabled: () => !!session() && !['connected', 'connecting'].includes(session().status),
-    reason: () => (!session() ? noSession : session().status === 'connecting' ? '会话正在连接' : '会话已连接'), run: () => reconnectSession(state.activeId) });
-  registerCommand('session.disconnect', { label: '断开连接', category: 'session', keywords: ['disconnect', 'dk', 'duankai'], enabled: () => !!session() && (['connected', 'connecting'].includes(session().status) || session().reconnectScheduled),
-    reason: sessionReason, run: async () => { if (await confirmTransferInterrupt([state.activeId])) disconnectSession(state.activeId); } });
-  registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'], enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.readOnly, run: toggleReadonly });
-  registerCommand('session.log', { label: '记录会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'], enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.logActive, run: toggleSessionLog });
-  registerCommand('session.diagnose', { label: 'AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: () => !!session(), reason: noSession, run: aiDiagnose });
-  // 广播随状态换动词,不打 ✓
-  registerCommand('tools.broadcast', { label: () => (state.broadcast ? '停止广播' : '广播输入…'), category: 'session', keywords: ['broadcast', 'multi input', 'gbsr', 'guangbo'],
-    enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly),
-    reason: '没有可写入的已连接会话（只读会话不参与广播）', run: openBroadcastPicker });
+  registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return openTermSearch(); } });
+  registerCommand('session.clear', { label: '清屏', category: 'session', keywords: ['clear', 'cls', 'qp', 'qingping'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => clearActiveTerm(session(ctx).sessionId) });
+  registerCommand('session.reconnect', { label: '重连当前会话', category: 'session', keywords: ['reconnect', 'cl', 'chonglian'], enabled: (ctx) => !!session(ctx) && !live(session(ctx)),
+    reason: (ctx) => (!session(ctx) ? noSession : session(ctx).status === 'connecting' ? '会话正在连接' : '会话已连接'), run: (ctx) => reconnectSession(session(ctx).sessionId) });
+  registerCommand('session.disconnect', { label: '断开连接', category: 'session', keywords: ['disconnect', 'dk', 'duankai'], enabled: (ctx) => live(session(ctx)) || !!session(ctx)?.reconnectScheduled,
+    reason: sessionReason, run: async (ctx) => { const id = session(ctx).sessionId; if (await confirmTransferInterrupt([id])) disconnectSession(id); } });
+  registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.readOnly, run: (ctx) => toggleReadonly(session(ctx).sessionId) });
+  registerCommand('session.log', { label: '记录会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.logActive, run: (ctx) => toggleSessionLog(session(ctx).sessionId) });
+  registerCommand('session.diagnose', { label: 'AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return aiDiagnose(); } });
+  // 广播随状态换动词,不打 ✓。广播期间,显式目标(窗格工具条、右键菜单)是
+  // 该会话的加入 / 退出开关,按下态表示参与。
+  const broadcastMember = (ctx) => {
+    const t = targetOf(ctx);
+    return t.explicit && state.broadcast && t.session ? t.session : null;
+  };
+  registerCommand('tools.broadcast', { label: (ctx) => {
+    const member = broadcastMember(ctx);
+    if (member) return state.broadcast.has(member.sessionId) ? '退出广播' : '加入广播';
+    return state.broadcast ? '停止广播' : '广播输入…';
+  }, kind: 'action', category: 'session', keywords: ['broadcast', 'multi input', 'gbsr', 'guangbo'],
+  enabled: (ctx) => {
+    const member = broadcastMember(ctx);
+    if (member) return member.status === 'connected' && (state.broadcast.has(member.sessionId) || !member.readOnly);
+    return !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly);
+  },
+  reason: (ctx) => {
+    const member = broadcastMember(ctx);
+    if (member) return member.status !== 'connected' ? '会话未连接' : '只读会话不参与广播';
+    return '没有可写入的已连接会话（只读会话不参与广播）';
+  },
+  checked: (ctx) => {
+    const t = targetOf(ctx);
+    return t.explicit && t.session ? !!state.broadcast?.has(t.session.sessionId) : undefined;
+  },
+  run: (ctx) => {
+    const member = broadcastMember(ctx);
+    if (member) return toggleBroadcastMember(member.sessionId);
+    return openBroadcastPicker({ sessionId: targetOf(ctx).explicit ? session(ctx)?.sessionId : undefined });
+  } });
   registerCommand('tools.batch', { label: '批量执行', category: 'session', kind: 'dialog', keywords: ['batch', 'run on hosts', 'plzx', 'piliang'], run: openBatchModal });
-  registerCommand('tools.forwards', { label: '端口转发', category: 'session', kind: 'dialog', keywords: ['port forward', 'tunnel', 'dkzf', 'zhuanfa'], run: openForwardModal });
+  registerCommand('tools.forwards', { label: '端口转发', category: 'session', kind: 'dialog', keywords: ['port forward', 'tunnel', 'dkzf', 'zhuanfa'],
+    run: (ctx) => openForwardModal({ hostId: targetOf(ctx).explicit ? session(ctx)?.host?.id : undefined }) });
 
   // 主机
   registerCommand('host.new', { label: '新建主机', category: 'host', kind: 'dialog', keywords: ['new host', 'add host', 'xjzj', 'zhuji'], run: () => openHostModal(null) });
@@ -369,10 +489,11 @@ function setupWorkspaceCommands() {
     'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.ai', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
     'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-cloud-import': 'cloud.import', 'btn-welcome-cloud': 'cloud.import',
-    'btn-hosts-import': 'hosts.import', 'btn-hosts-export': 'hosts.export',
   };
   for (const [id, command] of Object.entries(buttons)) document.getElementById(id).dataset.command = command;
   bindCommandButtons();
+  bindMenuButton($('#btn-split-menu'), splitMenuItems, { label: '分屏与布局', alignRight: true });
+  bindMenuButton($('#btn-host-manage'), hostManageItems, { label: '主机管理' });
   document.addEventListener('nebula:state-change', refreshCommandStates);
   document.addEventListener('nebula:modal-scope', refreshCommandStates);
 }
@@ -560,8 +681,15 @@ export function bindEvents() {
 
   // Workspace scheduling coalesces frames and ignores unchanged geometry; observing
   // the fixed outer stack (not its rendered children) avoids layout feedback loops.
-  const ro = new ResizeObserver(() => { scheduleWorkspaceLayout(); fitAllVisible(); scheduleResizeSync(); });
+  // 分屏容量按 #layout-root 的尺寸折算:尺寸变了,分屏 / 新增文件分屏的可用状态也要跟着变
+  let commandRefresh = null;
+  const ro = new ResizeObserver(() => {
+    scheduleWorkspaceLayout(); fitAllVisible(); scheduleResizeSync();
+    clearTimeout(commandRefresh);
+    commandRefresh = setTimeout(refreshCommandStates, 100);
+  });
   ro.observe($('#term-stack'));
+  ro.observe($('#layout-root'));
 
   // 主进程事件
   window.nebula.on('ssh:data', ({ sessionId, data }) => {
@@ -650,7 +778,7 @@ export function bindEvents() {
   });
 }
 
-/// 功能菜单的快捷键列:HTML 只声明 data-accel,这里按运行平台渲染成 ⌘D / Ctrl+D。
+/// 更多菜单的快捷键列:HTML 只声明 data-accel,这里按运行平台渲染成 ⌘D / Ctrl+D。
 /// 与 tooltip(applyAccelTitles)同一份数据源 —— 加菜单项时两处一起生效,
 /// 菜单因此成为快捷键的"教育层"(此前更多菜单不带任何快捷键提示)。
 function fillMenuKeys() {
@@ -740,6 +868,7 @@ export async function boot() {
   bindAiScroll();
   bindEvents();
   bindPalette();
+  bindPaneToolbars();
   setupResizers();
   bindContextMenu();
   bindWindowControls();
@@ -1264,11 +1393,12 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       platform: window.nebula.platform,
       newtab: $('#btn-newtab').title,
       split: $('#btn-split').title,
-      closePane: $('#btn-close-pane').title,
+      // 关闭窗格的快捷键提示改在终端右键等菜单里显示,取同一份渲染结果
+      closePane: commandMenuItem('workspace.close').key,
       hasDirectionMenus: !!$('#btn-split-left-right') || !!$('#btn-split-top-bottom'),
       zoom: (document.querySelector('.pane-zoom-btn') || {}).title || '',
     }),
-    // 侧边栏底部:版本号与导入/导出均已移除(分别移入关于弹窗与功能菜单「配置」组)
+    // 侧边栏底部:版本号与导入/导出均已移除(分别移入关于弹窗与侧栏「管理」菜单)
     footer: () => ({
       version: $('#app-version') ? $('#app-version').textContent : null,
       hasVersion: !!$('#app-version'),
@@ -1276,7 +1406,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       // .side-footer 元素已整体移除:底部只剩快捷连接框
       text: document.querySelector('.side-footer') ? document.querySelector('.side-footer').textContent.trim() : '',
     }),
-    // 功能菜单项(含指纹/关于是否已并入)
+    // 更多菜单项
     moreMenuItems: () => [...document.querySelectorAll('#more-menu .btn')].map((b) => b.textContent.trim()),
     // 更多菜单几何:用于断言"菜单不遮挡主内容区"
     moreMenuGeom: () => {

@@ -2,6 +2,7 @@
 import { $, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { accelOf, appShortcutOf, matchAction } from './keymap.js';
+import { bindCommandButton, commandMenuItem, refreshCommandStates } from './commands.js';
 import { DIVIDER_SIZE, layoutMinSize, paneCapacity, paneMinSize, planGrid } from './terminal-layout.js';
 import { renderSplitTree, replaceLayoutContent } from './split-layout-renderer.js';
 import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, workspaceSignature } from './terminal-workspace.js';
@@ -129,11 +130,11 @@ export function openTabCtxMenu(x, y, tabId) {
   const idx = ids.indexOf(tabId);
   const firstSession = [...state.sessions.values()].find((s) => s.tabId === tabId);
   showCtxMenu(x, y, [
-    { label: '关闭标签', key: accelOf('workspace.close'), run: () => closeTab(tabId) },
+    { label: '关闭标签', key: accelOf('workspace.close'), danger: true, run: () => closeTab(tabId) },
     { label: '关闭其他标签', disabled: ids.length <= 1, run: () => { for (const id of ids) if (id !== tabId) closeTab(id); } },
     { label: '关闭右侧标签', disabled: idx >= ids.length - 1, run: () => { for (const id of ids.slice(idx + 1)) closeTab(id); } },
     '-',
-    { label: '重命名…', run: () => renameTab(tabId) },
+    commandMenuItem('tab.rename', { tabId }, { label: '重命名…' }),
     {
       label: '复制主机地址', disabled: !firstSession, run: () => {
         const h = firstSession.host;
@@ -141,10 +142,10 @@ export function openTabCtxMenu(x, y, tabId) {
       },
     },
     // 文件管理是标签内的分屏之一:与「新增分屏」对称的入口,可连续开多个
-    { label: '新增文件分屏', disabled: !!filePaneBlocker(tabId), reason: filePaneBlocker(tabId), run: () => addFilePane(tabId) },
+    commandMenuItem('tab.file.add', { tabId }),
     '-',
-    { label: '新建标签', run: () => newTabWithPicker() },
-  ]);
+    commandMenuItem('tab.new'),
+  ], { label: '标签菜单' });
 }
 
 /// 重命名标签:走应用内输入框(原生 prompt 在 WKWebView 下不返回)。
@@ -306,46 +307,99 @@ export function syncTabChrome() {
 // —— 分屏布局(E3):二叉布局树,leaf 持有 paneId ——
 export function newPaneId() { return 'pane-' + (++state.paneSeq); }
 
-// 每个窗格常驻的操作按钮(右上角):关闭 + 放大。
-// 关闭按钮对空窗格同样有效 —— 没有会话的窗格此前关不掉(菜单入口只认焦点,
-// 而空窗格不抢焦点),这是"未连接主机的分屏无法关闭"的直接修复。
-export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'pane-close-btn';
-  closeBtn.title = '关闭该窗格';
-  closeBtn.innerHTML = icon('x');
-  closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-  closeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    closeActivePane(paneId, tabId);
-  });
-  const zoomBtn = document.createElement('button');
-  zoomBtn.className = 'pane-zoom-btn';
-  zoomBtn.title = `放大该窗格(${accelOf('pane.zoom')} 还原)`;
-  zoomBtn.innerHTML = icon('zoom');
-  zoomBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-  zoomBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(paneId, tabId); });
-  el.appendChild(closeBtn);
-  el.appendChild(zoomBtn);
+// 窗格工具条(右上角):[已放大·还原] [文件][端口转发][广播] / [重连] │ [✕][⤢]。
+// ✕⤢ 常驻(关闭对空窗格同样有效 —— 没有会话的窗格此前关不掉);其余按钮在
+// 悬停或键盘聚焦工具条时浮现,广播期间广播按钮一直显示本会话是否参与。
+// 所有按钮带显式目标(data-cmd-pane/tab),名称与可用状态取自命令注册表,
+// 不抢焦点、不切标签。✕⤢ 直接调用窗格级函数(direct),不依赖注册表也能用。
+const PANE_TOOLS = [
+  { cls: 'pane-tb-file', command: 'tab.file.add', icon: 'folderPlus' },
+  { cls: 'pane-tb-forward', command: 'tools.forwards', icon: 'shuffle' },
+  { cls: 'pane-tb-broadcast', command: 'tools.broadcast', icon: 'megaphone' },
+  { cls: 'pane-tb-reconnect', command: 'session.reconnect', icon: 'rotate', text: '重连' },
+];
+
+function paneToolButton(cls, command, paneId, tabId, direct = null) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = cls;
+  btn.dataset.command = command;
+  btn.dataset.cmdPane = paneId;
+  if (tabId) btn.dataset.cmdTab = tabId;
+  btn.setAttribute('data-label-title', '');
+  // mousedown 不冒泡到窗格:点工具条不等于激活该窗格
+  btn.addEventListener('mousedown', (e) => e.stopPropagation());
+  // 冒泡阶段拦截:捕获阶段在目标自身上 stopPropagation 会连同本按钮的
+  // 普通监听一起跳过(DOM 规范的目标阶段分两轮调用),按钮就点不动了。
+  btn.addEventListener('click', (e) => e.stopPropagation());
+  if (direct) {
+    btn.dataset.commandDirect = '1';
+    btn.addEventListener('click', direct);
+  } else bindCommandButton(btn);
+  return btn;
 }
 
+export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
+  const bar = document.createElement('div');
+  bar.className = 'pane-toolbar';
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', '窗格操作');
+  const extra = document.createElement('span');
+  extra.className = 'pane-tools-extra';
+  for (const tool of PANE_TOOLS) {
+    const btn = paneToolButton(`pane-tb-btn ${tool.cls}`, tool.command, paneId, tabId);
+    btn.innerHTML = icon(tool.icon) + (tool.text ? `<span class="pane-tb-text">${tool.text}</span>` : '');
+    extra.appendChild(btn);
+  }
+  const sep = document.createElement('span');
+  sep.className = 'pane-tb-sep';
+  const closeBtn = paneToolButton('pane-close-btn', 'workspace.close', paneId, tabId, () => closeActivePane(paneId, tabId));
+  closeBtn.innerHTML = icon('x');
+  closeBtn.title = '关闭该窗格';
+  const zoomBtn = paneToolButton('pane-zoom-btn', 'pane.zoom', paneId, tabId, () => togglePaneZoom(paneId, tabId));
+  zoomBtn.innerHTML = icon('zoom');
+  zoomBtn.title = '放大该窗格';
+  for (const child of [extra, sep, closeBtn, zoomBtn]) bar.appendChild(child);
+  el.appendChild(bar);
+}
+
+/// 工具条的形态随窗格变化:data-kind = term / file / empty,data-conn =
+/// connected / connecting / down;按钮状态和名称由注册表按显式目标刷新。
 export function syncPaneButtons(tab = activeTab()) {
   if (!tab) return;
   for (const pane of tab.panes.values()) {
-    const close = pane.el.querySelector('.pane-close-btn');
-    const zoom = pane.el.querySelector('.pane-zoom-btn');
-    const single = tab.panes.size <= 1;
+    const bar = pane.el.querySelector('.pane-toolbar');
+    if (!bar) continue;
+    const session = pane.sessionId ? state.sessions.get(pane.sessionId) : null;
+    bar.dataset.kind = pane.kind === 'file' ? 'file' : session ? 'term' : 'empty';
+    bar.dataset.conn = session ? (['connected', 'connecting'].includes(session.status) ? session.status : 'down') : '';
     const enlarged = tab.zoomPaneId === pane.id;
-    if (close) { close.title = single ? '关闭标签' : '关闭该窗格'; close.setAttribute('aria-label', close.title); }
+    const zoom = bar.querySelector('.pane-zoom-btn');
     if (zoom) {
-      const zoomable = !!pane.sessionId || pane.kind === 'file';
-      zoom.disabled = single || !zoomable;
-      zoom.title = single ? '只有一个窗格,无需放大' : !zoomable ? '连接后可放大' : enlarged ? '还原分屏布局' : '放大该窗格';
-      zoom.setAttribute('aria-label', zoom.title);
       zoom.setAttribute('aria-pressed', String(enlarged));
-      zoom.textContent = ''; zoom.innerHTML = icon(enlarged ? 'zoomOff' : 'zoom');
+      zoom.innerHTML = icon(enlarged ? 'zoomOff' : 'zoom');
     }
+    let chip = bar.querySelector('.zoom-chip');
+    if (enlarged && !chip) {
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'zoom-chip';
+      chip.title = `还原分屏布局(${accelOf('pane.zoom')})`;
+      chip.textContent = '已放大 · 还原';
+      chip.addEventListener('mousedown', (e) => e.stopPropagation());
+      chip.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(pane.id, tab.id); });
+      bar.appendChild(chip); // CSS order 把它排到最左
+    } else if (!enlarged && chip) chip.remove();
+    refreshCommandStates(bar);
   }
+}
+
+/// 会话状态、广播、模态变化都会改变工具条:跟随 nebula:state-change 同步
+/// 所有已挂载窗格(平铺模式下不止活动标签)。
+export function bindPaneToolbars() {
+  const sync = () => { for (const tab of state.tabs.values()) syncPaneButtons(tab); };
+  document.addEventListener('nebula:state-change', sync);
+  document.addEventListener('nebula:modal-scope', sync);
 }
 
 export function makePaneEl(paneId, tabId = state.activeTabId, kind = 'term', paneObj = null) {
@@ -356,7 +410,7 @@ export function makePaneEl(paneId, tabId = state.activeTabId, kind = 'term', pan
   el.dataset.tab = tabId;
   const activate = (event) => {
     // Buttons are owner-scoped operations, not a request to steal focus.
-    if (event.target.closest?.('.pane-close-btn, .pane-zoom-btn, .pane-picker-close')) return;
+    if (event.target.closest?.('.pane-toolbar, .pane-picker-close')) return;
     activatePane(tabId, paneId, false);
   };
   el.addEventListener('mousedown', activate);
@@ -494,12 +548,6 @@ export function renderTabLayout(tab, root) {
       const pane = tab.panes.get(tab.zoomPaneId);
       pane.el.style.flex = '1 1 0';
       root.appendChild(pane.el);
-      const chip = document.createElement('span');
-      chip.className = 'zoom-chip';
-      chip.title = `点击还原布局(${accelOf('pane.zoom')})`;
-      chip.textContent = '已放大';
-      chip.addEventListener('click', () => togglePaneZoom(tab.zoomPaneId, tab.id));
-      root.appendChild(chip);
     } else if (tab.layout) {
       root.appendChild(renderSplitTree(tab.layout, {
         document,
@@ -510,7 +558,7 @@ export function renderTabLayout(tab, root) {
     }
     renderPickers(tab);
     for (const pane of tab.panes.values()) {
-      if (!pane.el.querySelector('.pane-zoom-btn')) appendPaneButtons(pane.el, pane.id, tab.id);
+      if (!pane.el.querySelector('.pane-toolbar')) appendPaneButtons(pane.el, pane.id, tab.id);
     }
     syncPaneButtons(tab);
   });
@@ -724,7 +772,8 @@ export function filePaneBlocker(tabId) {
   return '';
 }
 
-export function addFilePane(tabId) {
+/// anchorPaneId:窗格工具条传入的显式落点(在该窗格右侧切出);缺省按焦点推断。
+export function addFilePane(tabId, anchorPaneId) {
   const blocker = filePaneBlocker(tabId);
   if (blocker) return toast(blocker, 'error');
   const tab = tabId ? state.tabs.get(tabId) : activeTab();
@@ -736,11 +785,12 @@ export function addFilePane(tabId) {
     tab.layout = leaf(paneId);
   } else {
     // 落点:焦点窗格 > 标签主会话窗格 > 首个窗格;在锚点右侧一刀切出
-    const anchorPaneId = (tab.activePaneId && tab.panes.get(tab.activePaneId)) ? tab.activePaneId
+    const anchor = (anchorPaneId && tab.panes.has(anchorPaneId)) ? anchorPaneId
+      : (tab.activePaneId && tab.panes.get(tab.activePaneId)) ? tab.activePaneId
       : state.sessions.get(tab.sessionId)?.paneId
       || state.sessions.get(state.activeId)?.paneId
       || firstLeafPaneId(tab.layout);
-    const path = findLeafPath(tab.layout, anchorPaneId) || [];
+    const path = findLeafPath(tab.layout, anchor) || [];
     const split = (node) => ({ type: 'h', ratio: 0.62, a: node, b: leaf(paneId) });
     if (!path.length) tab.layout = split(tab.layout);
     else {
@@ -1852,6 +1902,7 @@ export function setBroadcast(sessionIds) {
 }
 
 export function refreshBroadcast() {
+  document.body.classList.toggle('broadcasting', !!state.broadcast);
   notifyTerminalStateChange();
   let bar = $('#broadcast-bar');
   if (state.broadcast) {
@@ -1866,28 +1917,72 @@ export function refreshBroadcast() {
   } else if (bar) {
     bar.classList.add('hidden');
   }
-  $('#btn-broadcast').classList.toggle('active', !!state.broadcast);
   const s = state.sessions.get(state.activeId);
   if (s) updateStatusbar(s);
 }
 
-export function openBroadcastPicker() {
+/// 广播期间从窗格工具条加入或退出某个会话;最后一个会话退出即停止广播。
+export function toggleBroadcastMember(sessionId) {
+  if (!state.broadcast) return;
+  const next = new Set(state.broadcast);
+  if (next.has(sessionId)) next.delete(sessionId);
+  else next.add(sessionId);
+  setBroadcast(next);
+  if (!next.size) toast('广播已停止', 'success');
+}
+
+/// 广播范围预设:当前标签全部窗格 / 全部已连接会话 / 自定义(手动勾选即切到自定义)。
+/// "当前"指 opts.sessionId(窗格工具条、右键菜单的显式目标),缺省为活动会话。
+export const BROADCAST_SCOPES = [
+  { value: 'tab', label: '当前标签全部窗格' },
+  { value: 'all', label: '全部已连接会话' },
+  { value: 'custom', label: '自定义' },
+];
+
+export function broadcastScopeIds(scope, sessions, anchor) {
+  if (scope === 'tab') return sessions.filter((s) => anchor && s.tabId === anchor.tabId).map((s) => s.sessionId);
+  if (scope === 'all') return sessions.map((s) => s.sessionId);
+  return null;
+}
+
+export function openBroadcastPicker(opts = {}) {
   const connected = [...state.sessions.values()].filter((s) => s.status === 'connected' && !s.readOnly);
-  if (connected.length < 1) return toast('没有已连接的会话', 'error');
   if (state.broadcast) return setBroadcast(null); // 再点一次关闭
+  if (connected.length < 1) return toast('没有已连接的会话', 'error');
+  const currentId = opts.sessionId || state.activeId;
+  const anchor = state.sessions.get(currentId) || null;
   const overlay = document.createElement('div');
   overlay.className = 'modal';
   overlay.id = 'modal-broadcast';
-  overlay.innerHTML = `<div class="modal-card"><h3>选择广播目标</h3><div class="batch-hosts" id="bc-list"></div>
+  const scopes = BROADCAST_SCOPES.map((o) => `<label><input type="radio" name="bc-scope" value="${o.value}"${o.value === 'all' ? ' checked' : ''} /> ${o.label}</label>`).join('');
+  overlay.innerHTML = `<div class="modal-card"><h3>广播输入</h3>
+    <div class="bc-scope" role="radiogroup" aria-label="广播范围">${scopes}</div>
+    <div class="batch-hosts" id="bc-list"></div>
     <div class="modal-actions"><button class="btn" id="bc-cancel">取消</button><button class="btn primary" id="bc-ok">开始广播</button></div></div>`;
   const list = overlay.querySelector('#bc-list');
-  // 默认全选已连接会话(广播的典型意图是"下发到所有"),活动会话置顶
-  const ordered = [...connected].sort((a, b) => (a.sessionId === state.activeId ? -1 : b.sessionId === state.activeId ? 1 : 0));
+  // 默认全部已连接会话(广播的典型意图是"下发到所有"),"当前"会话置顶
+  const ordered = [...connected].sort((a, b) => (a.sessionId === currentId ? -1 : b.sessionId === currentId ? 1 : 0));
   for (const s of ordered) {
     const label = document.createElement('label');
-    label.innerHTML = `<input type="checkbox" value="${s.sessionId}" checked /> ${escapeHtml(s.host.name)} · ${escapeHtml(s.host.username)}@${escapeHtml(s.host.host)}${s.sessionId === state.activeId ? ' <span class="tag">当前</span>' : ''}`;
+    label.innerHTML = `<input type="checkbox" value="${s.sessionId}" checked /> ${escapeHtml(s.host.name)} · ${escapeHtml(s.host.username)}@${escapeHtml(s.host.host)}${s.sessionId === currentId ? ' <span class="tag">当前</span>' : ''}`;
     list.appendChild(label);
   }
+  const tabScope = overlay.querySelector('input[name="bc-scope"][value="tab"]');
+  if (!anchor || !connected.some((s) => s.tabId === anchor.tabId)) tabScope.disabled = true;
+  overlay.querySelector('.bc-scope').addEventListener('change', (event) => {
+    const ids = broadcastScopeIds(event.target.value, ordered, anchor);
+    if (!ids) return;
+    for (const box of list.querySelectorAll('input[type="checkbox"]')) box.checked = ids.includes(box.value);
+  });
+  list.addEventListener('change', () => {
+    const boxes = [...list.querySelectorAll('input[type="checkbox"]')];
+    const picked = boxes.filter((b) => b.checked).map((b) => b.value);
+    const match = ['tab', 'all'].find((scope) => {
+      const ids = broadcastScopeIds(scope, ordered, anchor);
+      return !(scope === 'tab' && tabScope.disabled) && ids.length === picked.length && ids.every((id) => picked.includes(id));
+    }) || 'custom';
+    overlay.querySelector(`input[name="bc-scope"][value="${match}"]`).checked = true;
+  });
   overlay.querySelector('#bc-cancel').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#bc-ok').addEventListener('click', () => {
     const ids = [...list.querySelectorAll('input:checked')].map((i) => i.value);
@@ -1901,8 +1996,8 @@ export function openBroadcastPicker() {
 
 /* ---------------- 批量执行(F6) ---------------- */
 
-export async function toggleReadonly() {
-  const s = state.sessions.get(state.activeId);
+export async function toggleReadonly(sessionId = state.activeId) {
+  const s = state.sessions.get(sessionId);
   if (!s || s.status !== 'connected') return;
   const previous = s.readOnly;
   s.readOnly = !previous;
@@ -1913,14 +2008,14 @@ export async function toggleReadonly() {
   toast(s.readOnly ? '已开启只读模式' : '已关闭只读模式', 'success');
 }
 
-export function clearActiveTerm() {
-  const s = state.sessions.get(state.activeId);
+export function clearActiveTerm(sessionId = state.activeId) {
+  const s = state.sessions.get(sessionId);
   if (!s) return;
   try { s.term.clear(); s.term.write('\x1b[2J\x1b[H'); } catch { /* ignore */ }
 }
 
-export async function toggleSessionLog() {
-  const s = state.sessions.get(state.activeId);
+export async function toggleSessionLog(sessionId = state.activeId) {
+  const s = state.sessions.get(sessionId);
   if (!s || s.status !== 'connected') return toast('请先连接主机', 'error');
   try {
     if (s.logActive) {

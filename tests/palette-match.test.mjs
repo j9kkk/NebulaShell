@@ -10,7 +10,8 @@ async function registeredCommands() {
   const wiring = entry.match(/^function setupWorkspaceCommands\(\) \{[\s\S]*?^\}/m)[0];
   return wiring.split('registerCommand(').slice(1).map((chunk) => {
     const id = chunk.match(/^'([^']+)'/)[1];
-    const label = chunk.match(/label: '([^']+)'/)?.[1] || chunk.match(/label: \(\) => [^']*'([^']+)'/)?.[1] || id;
+    // 名称可以是字符串,也可以是 (ctx) => … 函数(取其中第一个字符串字面量)
+    const label = chunk.match(/label: '([^']+)'/)?.[1] || chunk.match(/label: \((?:ctx)?\) => [^']*?'([^']+)'/)?.[1] || id;
     const keywords = JSON.parse((chunk.match(/keywords: (\[[^\]]*\])/)?.[1] || '[]').replace(/'/g, '"'));
     return { id, name: label, keywords: [...keywords, id] };
   });
