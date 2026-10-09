@@ -155,26 +155,41 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // 退出前把未落盘的配置写回,避免去抖窗口内的最后一次变更丢失
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            tauri::RunEvent::ExitRequested { .. } => {
                 if let Some(state) = app.try_state::<AppState>() {
-                    let logs: Vec<_> = state
-                        .logs
-                        .lock()
-                        .unwrap()
-                        .drain()
-                        .map(|(_, log)| log)
-                        .collect();
-                    for log in logs {
-                        if let Err(error) = log.stop() {
-                            eprintln!("[log] {}: {}", log.file.display(), error);
-                        }
-                    }
+                    stop_session_logs(&state);
                     state.store.flush_now();
                 }
             }
+            // macOS 的 ⌘Q(默认菜单)、Dock 退出、注销不经 ExitRequested,直接以
+            // Exit 收尾(tao 没有实现 applicationShouldTerminate)。这里再收一次尾:
+            // 日志已在上一步排空则为空操作,配置只在仍有脏数据时写盘。
+            tauri::RunEvent::Exit => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    stop_session_logs(&state);
+                    state.store.flush_if_dirty();
+                }
+            }
+            _ => {}
         });
+}
+
+/// 停止全部会话日志并等待写线程排空队列。可重复调用:日志表取空后再调用为空操作。
+fn stop_session_logs(state: &AppState) {
+    let logs: Vec<_> = state
+        .logs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .drain()
+        .map(|(_, log)| log)
+        .collect();
+    for log in logs {
+        if let Err(error) = log.stop() {
+            eprintln!("[log] {}: {}", log.file.display(), error);
+        }
+    }
 }
 
 fn void<T>(_: T) {}

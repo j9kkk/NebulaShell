@@ -1,9 +1,9 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, isAppModifier, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
 import { bindCommandButtons, executeCommand, refreshCommandStates, registerCommand } from './commands.js';
 import { bindMoreMenu, closeMoreMenu } from './menu.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, autoLayoutTab, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
@@ -15,7 +15,7 @@ import {
 import { bindTransferUi, confirmTransferInterrupt } from './file-transfer.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
 import { bindBatchUi, openBatchModal, openForwardModal, saveForwardRule, toggleHistory } from './tools.js';
-import { matchAction, accelOf, accelSpec } from './keymap.js';
+import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
 import { bindWindowControls } from './window-controls.js';
 import { hydrateIcons } from '../shared/icons.js';
 
@@ -197,24 +197,32 @@ function setupWorkspaceCommands() {
   const session = () => state.sessions.get(state.activeId);
   const count = () => leafCount(activeTab()?.layout);
   registerCommand('tab.new', { label: '新建标签', run: newTabWithPicker });
-  registerCommand('pane.split', { label: '新增分屏', enabled: () => session()?.status === 'connected' && count() < maxPaneCapacity(), run: () => splitActive() });
-  registerCommand('workspace.tile', { label: '标签平铺', checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, run: toggleTabTiling });
-  registerCommand('pane.reflow', { label: '整理当前标签分屏', enabled: () => count() > 1, run: autoLayoutTab });
-  registerCommand('pane.zoom', { label: () => state.zoomPaneId ? '还原窗格' : '放大当前窗格', enabled: () => count() > 1 && !!state.panes.get(focusedPaneId())?.sessionId, checked: () => !!state.zoomPaneId, run: () => togglePaneZoom(state.zoomPaneId || focusedPaneId()) });
-  registerCommand('workspace.close', { label: () => count() > 1 ? '关闭当前窗格' : '关闭当前标签', enabled: () => !!activeTab(), run: closeCurrent });
+  // 有 enabled 的命令都要给出 reason:⋯ 菜单底部、按钮 title、读屏都显示它。
+  const noSession = '没有活动会话';
+  const sessionReason = () => (session() ? '会话未连接' : noSession);
+  registerCommand('pane.split', { label: '新增分屏', enabled: () => session()?.status === 'connected' && count() < maxPaneCapacity(),
+    reason: () => (session()?.status !== 'connected' ? '先连接当前窗格的主机' : `当前窗口最多容纳 ${maxPaneCapacity()} 个分屏窗格`), run: () => splitActive() });
+  registerCommand('workspace.tile', { label: '标签平铺', checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, reason: '需要至少 2 个标签', run: toggleTabTiling });
+  registerCommand('pane.reflow', { label: '整理当前标签分屏', enabled: () => count() > 1, reason: '当前标签只有一个窗格', run: autoLayoutTab });
+  registerCommand('pane.zoom', { label: () => state.zoomPaneId ? '还原窗格' : '放大当前窗格', enabled: () => count() > 1 && !!state.panes.get(focusedPaneId())?.sessionId,
+    reason: () => (count() > 1 ? '焦点窗格不是终端会话' : '当前标签只有一个窗格'), checked: () => !!state.zoomPaneId, run: () => togglePaneZoom(state.zoomPaneId || focusedPaneId()) });
+  registerCommand('workspace.close', { label: () => count() > 1 ? '关闭当前窗格' : '关闭当前标签', enabled: () => !!activeTab(), reason: '没有打开的标签', run: closeCurrent });
   registerCommand('panel.sidebar', { label: '主机侧栏', checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
   registerCommand('panel.ai', { label: 'AI 助手', checked: () => !$('#ai-panel').classList.contains('hidden'), run: () => toggleAiPanel() });
   // 文件分屏:与「新增分屏」对称的入口,作用于当前标签
-  registerCommand('tab.file.add', { label: '新增文件分屏', run: () => { addFilePane(); refreshCommandStates(); } });
+  registerCommand('tab.file.add', { label: '新增文件分屏', enabled: () => !filePaneBlocker(), reason: () => filePaneBlocker(), run: () => { addFilePane(); refreshCommandStates(); } });
   registerCommand('panel.history', { label: '命令历史', checked: () => state.historyOpen, run: toggleHistory });
   registerCommand('panel.snippets', { label: '常用片段', checked: () => !$('#snippet-menu').classList.contains('hidden'), run: toggleSnippetMenu });
-  registerCommand('session.reconnect', { label: '重连当前会话', enabled: () => !!session() && !['connected', 'connecting'].includes(session().status), run: () => reconnectSession(state.activeId) });
-  registerCommand('session.disconnect', { enabled: () => !!session() && (['connected', 'connecting'].includes(session().status) || session().reconnectScheduled), run: async () => { if (await confirmTransferInterrupt([state.activeId])) disconnectSession(state.activeId); } });
-  registerCommand('session.readonly', { label: '只读模式', enabled: () => session()?.status === 'connected', checked: () => !!session()?.readOnly, run: toggleReadonly });
-  registerCommand('session.log', { label: () => session()?.logActive ? '停止记录日志' : '记录会话日志（仅输出）', enabled: () => session()?.status === 'connected', checked: () => !!session()?.logActive, run: toggleSessionLog });
-  registerCommand('session.clear', { enabled: () => !!session(), run: clearActiveTerm });
-  registerCommand('session.search', { enabled: () => !!session(), run: openTermSearch });
-  registerCommand('tools.broadcast', { label: '广播输入', enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly), checked: () => !!state.broadcast, run: openBroadcastPicker });
+  registerCommand('session.reconnect', { label: '重连当前会话', enabled: () => !!session() && !['connected', 'connecting'].includes(session().status),
+    reason: () => (!session() ? noSession : session().status === 'connecting' ? '会话正在连接' : '会话已连接'), run: () => reconnectSession(state.activeId) });
+  registerCommand('session.disconnect', { enabled: () => !!session() && (['connected', 'connecting'].includes(session().status) || session().reconnectScheduled),
+    reason: sessionReason, run: async () => { if (await confirmTransferInterrupt([state.activeId])) disconnectSession(state.activeId); } });
+  registerCommand('session.readonly', { label: '只读模式', enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.readOnly, run: toggleReadonly });
+  registerCommand('session.log', { label: () => session()?.logActive ? '停止记录日志' : '记录会话日志（仅输出）', enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.logActive, run: toggleSessionLog });
+  registerCommand('session.clear', { enabled: () => !!session(), reason: noSession, run: clearActiveTerm });
+  registerCommand('session.search', { enabled: () => !!session(), reason: noSession, run: openTermSearch });
+  registerCommand('tools.broadcast', { label: '广播输入', enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly),
+    reason: '没有可写入的已连接会话（只读会话不参与广播）', checked: () => !!state.broadcast, run: openBroadcastPicker });
   registerCommand('tools.batch', { label: '批量执行', run: openBatchModal });
   registerCommand('tools.forwards', { label: '端口转发', run: openForwardModal });
   registerCommand('settings.terminal', { label: '终端设置', run: openTermSettings });
@@ -462,35 +470,29 @@ export function bindEvents() {
   });
 
   window.addEventListener('keydown', (e) => {
-    if (e.defaultPrevented || e.isComposing || hasOpenModal()) return;
+    if (e.defaultPrevented || e.isComposing) return;
+    // 键位从 keymap 匹配:绑定与提示共用同一张表,自定义键位对两者同时生效。
+    // 命中应用快捷键先 preventDefault,再判断当前能否执行:macOS 上网页没消费的
+    // ⌘ 键会落到原生菜单(默认菜单的 ⌘W 是"关闭窗口"),弹窗/菜单/输入框里
+    // 按 ⌘W 曾因此直接关掉应用。
+    const action = appShortcutOf(e);
+    if (action) e.preventDefault();
+    if (hasOpenModal()) return;
     if (!$('#more-menu').classList.contains('hidden') || !$('#ctx-menu').classList.contains('hidden')) return;
     const terminalInput = !!e.target.closest?.('.term-pane');
     if (isEditableTarget(e.target) && !terminalInput) return;
-    if (isAppModifier(e)) {
-      // 键位从 keymap 匹配:绑定与提示共用同一张表(action → spec),
-      // 自定义键位(settings.keybindings)对两者同时生效。
-      const appMod = isAppModifier(e);
-      if (e.shiftKey && matchAction('pane.zoom', e, appMod)) { e.preventDefault(); executeCommand('pane.zoom'); return; }
-      if (!e.shiftKey) {
-        if (matchAction('session.search', e, appMod)) { e.preventDefault(); executeCommand('session.search'); return; }
-        if (matchAction('workspace.close', e, appMod)) { e.preventDefault(); executeCommand('workspace.close'); return; }
-        if (matchAction('tab.new', e, appMod)) { e.preventDefault(); executeCommand('tab.new'); return; }
-        if (matchAction('pane.split', e, appMod)) { e.preventDefault(); executeCommand('pane.split'); return; }
-        // 文件分屏内的全选(焦点在路径栏等输入框时由上面的 isEditableTarget
-        // 早退,是输入框原生全选,不抢)
-        if (matchAction('files.selectAll', e, appMod) && !terminalInput && document.activeElement?.closest?.('.term-pane.file-pane')) {
-          e.preventDefault();
-          import('./sftp.js').then((m) => { const p = m.focusedFilePane(); if (p) m.selectAllEntries(p); });
-          return;
-        }
-        // mod+1..9 切换标签(spec 是范围写法,逐键判断)
-        if (/^[1-9]$/.test(e.key)) {
-          e.preventDefault();
-          const target = [...state.tabs.keys()][Number(e.key) - 1];
-          if (target) activateTab(target);
-          return;
-        }
-      }
+    if (action === 'tab.switch') {
+      const target = [...state.tabs.keys()][digitOf(e) - 1];
+      if (target) activateTab(target);
+      return;
+    }
+    if (action) { executeCommand(action); return; }
+    // 文件分屏内的全选(焦点在路径栏等输入框时由上面的 isEditableTarget
+    // 早退,是输入框原生全选,不抢)
+    if (matchAction('files.selectAll', e) && !terminalInput && document.activeElement?.closest?.('.term-pane.file-pane')) {
+      e.preventDefault();
+      import('./sftp.js').then((m) => { const p = m.focusedFilePane(); if (p) m.selectAllEntries(p); });
+      return;
     }
     if (e.key !== 'Escape') return;
     if (!$('#term-search').classList.contains('hidden')) { closeTermSearch(); return; }
@@ -879,52 +881,75 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       s.term.input('\r');
       return true;
     },
-    /// 终端复制链路探针(T61):向活动会话缓冲写一行标记并选中,再派发真实的
-    /// Ctrl+C / Ctrl+Shift+C keydown(完整走 attachCustomKeyEventHandler 判定),
-    /// 用临时 term.onData 监听捕获 xterm 实际发出的数据 —— 回报是否把
-    /// \x03(SIGINT)发给了 shell。观测点选在 onData 而非 ssh:write:后者要求
-    /// 会话已连接(受其它测试的连接状态影响),而本修复的契约就是
-    /// "有选区 = 不向 shell 发任何数据,无选区 = 放行 \x03"。
-    /// select=false 时先清掉选区(无选区探针)。
-    termCopyProbe: async (opts) => {
+    /// 终端按键路由探针:在活动会话的 xterm textarea 上派发 keydown(完整走
+    /// attachCustomKeyEventHandler → xterm → 冒泡到全局分发),用临时
+    /// term.onData 记录 shell 实际收到的数据。回报:是否 preventDefault、
+    /// shell 收到什么、执行了哪个命令、活动标签是否变化。
+    /// 修饰键取 { ctrl, meta, shift, alt };keyCode 缺省按键名推导 —— new
+    /// KeyboardEvent 的 keyCode 恒为 0,而 xterm 按 keyCode 求值(ctrl+c → \x03
+    /// 依赖 67),不补就会出现"放行后 xterm 什么都不发"的假象。
+    /// select=true 时先写一行标记并选中,false 时清掉选区,缺省不动选区。
+    termKeyProbe: async (opts) => {
       const o = opts || {};
       const s = state.sessions.get(state.activeId);
       if (!s) return { ok: false, why: 'no-session' };
       const term = s.term;
-      await new Promise((r) => term.write('\r\nPROBE-COPY-MARK-9137\r\n', r));
-      const buf = term.buffer.active;
-      let row = -1;
-      for (let i = buf.length - 1; i >= 0; i--) {
-        const l = buf.getLine(i);
-        if (l && l.translateToString(true).includes('PROBE-COPY-MARK-9137')) { row = i; break; }
-      }
-      if (row < 0) return { ok: false, why: 'mark-not-found' };
-      if (o.select === false) { try { term.clearSelection(); } catch { /* ignore */ } }
-      else term.select(0, row, 'PROBE-COPY-MARK-9137'.length);
+      if (o.select === true) {
+        await new Promise((r) => term.write('\r\nPROBE-COPY-MARK-9137\r\n', r));
+        const buf = term.buffer.active;
+        let row = -1;
+        for (let i = buf.length - 1; i >= 0; i--) {
+          const l = buf.getLine(i);
+          if (l && l.translateToString(true).includes('PROBE-COPY-MARK-9137')) { row = i; break; }
+        }
+        if (row < 0) return { ok: false, why: 'mark-not-found' };
+        term.select(0, row, 'PROBE-COPY-MARK-9137'.length);
+      } else if (o.select === false) { try { term.clearSelection(); } catch { /* ignore */ } }
+      const key = o.key || 'c';
+      const letter = /^[a-z]$/i.test(key);
+      const digit = /^[0-9]$/.test(key);
+      const code = o.code || (letter ? 'Key' + key.toUpperCase() : digit ? 'Digit' + key : key);
+      const keyCode = o.keyCode || (letter ? key.toUpperCase().charCodeAt(0) : digit ? key.charCodeAt(0) : key === 'Enter' ? 13 : 0);
       const emitted = [];
+      const commands = [];
+      const onCommand = (e) => commands.push(e.detail.id);
+      document.addEventListener('nebula:command', onCommand);
       const disp = term.onData((d) => emitted.push(d));
+      const tabBefore = state.activeTabId;
+      // 只观测、不投递:派发期间置只读,onData 不会把 \x04 之类真的写进会话
+      // (Ctrl+D 会让远端 shell 登出,影响后续用例)。派发是同步的,随即恢复。
+      const prevRo = s.readOnly;
+      s.readOnly = true;
       let err = '';
       let kbd = null;
       try {
-        kbd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: o.key || 'c', ctrlKey: true, shiftKey: !!o.shift });
-        // new KeyboardEvent 的 keyCode 恒为 0,而 xterm 的 evaluateKeyboardEvent
-        // 按 keyCode 求值(ctrl+c → \x03 依赖 keyCode 67),必须补上真实键值,
-        // 否则无选区分支"放行后 xterm 什么都不发"是合成事件的假象。
-        Object.defineProperty(kbd, 'keyCode', { get: () => 67 });
+        kbd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, code,
+          ctrlKey: !!o.ctrl, metaKey: !!o.meta, shiftKey: !!o.shift, altKey: !!o.alt });
+        Object.defineProperty(kbd, 'keyCode', { get: () => keyCode });
         term.textarea.dispatchEvent(kbd);
       } catch (e) { err = e.message; }
+      s.readOnly = prevRo;
       disp.dispose();
+      document.removeEventListener('nebula:command', onCommand);
       const all = emitted.join('');
-      // prevented = 自定义处理器介入(分流/prefentDefault)的证据:
-      // 旧实现从不 preventDefault,可据此区分新旧行为。
-      return { ok: !err, err, prevented: !!(kbd && kbd.defaultPrevented), hadSelection: !!term.hasSelection(), selection: term.getSelection(), sigintSent: all.includes('\x03'), emitted: all };
+      return { ok: !err, err, prevented: !!(kbd && kbd.defaultPrevented), hadSelection: !!term.hasSelection(), selection: term.getSelection(),
+        sigintSent: all.includes('\x03'), emitted: all, commands, tabChanged: state.activeTabId !== tabBefore };
     },
-    /// 终端粘贴探针(T62):派发真实 Ctrl+V keydown,统计"插入次数"(stub
+    /// 终端复制链路探针(T61):有选区/无选区下按复制键(缺省为平台应用修饰键
+    /// +C),回报是否把 \x03(SIGINT)发给了 shell。观测点选在 onData 而非
+    /// ssh:write:后者要求会话已连接,而契约就是"有选区 = 不向 shell 发任何数据"。
+    termCopyProbe: (opts) => {
+      const o = opts || {};
+      return window.__nbTest.termKeyProbe({ select: o.select !== false, key: o.key || 'c', keyCode: 67,
+        ctrl: o.ctrl ?? PLATFORM !== 'darwin', meta: o.meta ?? PLATFORM === 'darwin', shift: !!o.shift });
+    },
+    /// 终端粘贴探针(T62):派发真实粘贴键 keydown(缺省 ⌘V / Ctrl+V),统计"插入次数"(stub
     /// term.paste)与"原生 paste 事件数" —— 修复前手动 readText 链路 + 浏览器
     /// 默认粘贴(→ xterm 的 paste 监听器)各插一次,粘贴内容翻倍。
     /// stub 不真正粘贴,避免把测试机剪贴板内容打进会话;readOnly 期间 onData
     /// 也不落盘,双保险。
-    termPasteProbe: async () => {
+    termPasteProbe: async (opts) => {
+      const o = opts || {};
       const s = state.sessions.get(state.activeId);
       if (!s) return { ok: false, why: 'no-session' };
       const term = s.term;
@@ -939,7 +964,8 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       let kbd = null;
       let err = '';
       try {
-        kbd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'v', ctrlKey: true });
+        kbd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: o.shift ? 'V' : 'v', code: 'KeyV',
+          ctrlKey: o.ctrl ?? PLATFORM !== 'darwin', metaKey: o.meta ?? PLATFORM === 'darwin', shiftKey: !!o.shift });
         Object.defineProperty(kbd, 'keyCode', { get: () => 86 });
         term.textarea.dispatchEvent(kbd);
       } catch (e) { err = e.message; }

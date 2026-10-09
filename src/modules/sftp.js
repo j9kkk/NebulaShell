@@ -170,7 +170,7 @@ export function buildFilePane(pane) {
       <button class="btn icon fp-selectall" title="全选/全不选(已全选时点击清空;右键=反选)" aria-label="全选或反选">${icon('listChecks')}</button>
       <button class="btn icon fp-upload" title="上传文件(也可直接把文件拖进本分屏)" aria-label="上传文件">${icon('upload')}</button>
       <span class="spacer"></span>
-      <span class="file-toolbar-hint muted" data-title="可多选:%1点选/Shift 区间,右键批量下载 / 复制 / 删除" data-accel="term.copy"></span>
+      <span class="file-toolbar-hint muted" data-title="可多选:%1 点选/Shift 区间,右键批量下载 / 复制 / 删除" data-accel="mod"></span>
     </div>
     <div class="fp-input-row fp-mkdir-row hidden">
       <input class="fp-mkdir-name" type="text" placeholder="名称(新建文件夹 / 重命名)" />

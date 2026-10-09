@@ -83,48 +83,113 @@ async function setup(platform, settings = {}) {
 
 const evt = (key, init = {}) => ({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...init });
 
-test('matchAction honors platform modifier: mod=Cmd on darwin, Ctrl on windows/linux', async () => {
-  for (const platform of ['darwin', 'windows', 'linux']) {
-    const { core, keymap } = await setup(platform);
-    const appKey = platform === 'darwin' ? 'metaKey' : 'ctrlKey';
-    assert.equal(keymap.matchAction('tab.new', evt('t', { [appKey]: true }), true), true, platform);
-    // 另一个平台的修饰键组合不算应用快捷键(对照 isAppModifier 会先挡掉)
-    const other = platform === 'darwin' ? { ctrlKey: true } : { metaKey: true };
-    assert.equal(keymap.matchAction('tab.new', evt('t', other), false), false, platform);
-    // 无修饰键不命中
-    assert.equal(keymap.matchAction('tab.new', evt('t'), false), false, platform);
-    // 大小写不敏感(Shift 按下时 key 会变大写)
-    assert.equal(keymap.matchAction('tab.new', evt('T', { [appKey]: true }), true), true, platform);
-  }
-});
+const APP_KEY = { darwin: { metaKey: true }, windows: { ctrlKey: true, shiftKey: true }, linux: { ctrlKey: true, shiftKey: true } };
 
-test('matchAction requires exact shift/alt state and rejects mac Ctrl combos', async () => {
-  const { core, keymap } = await setup('darwin');
-  assert.equal(keymap.matchAction('pane.zoom', evt('Enter', { metaKey: true, shiftKey: true }), true), true);
-  assert.equal(keymap.matchAction('pane.zoom', evt('Enter', { metaKey: true }), true), false);
-  // mac 上 Ctrl 系列永远属于 shell
-  assert.equal(keymap.matchAction('tab.new', evt('t', { ctrlKey: true }), false), false);
-});
-
-test('accelOf renders per platform: ⌘⇧↵ on darwin, Ctrl+Shift+Enter elsewhere', async () => {
+test('应用快捷键:macOS 用 ⌘,Windows/Linux 用 Ctrl+Shift+同字母', async () => {
   for (const platform of ['darwin', 'windows', 'linux']) {
     const { keymap } = await setup(platform);
-    assert.equal(keymap.accelOf('pane.zoom'), platform === 'darwin' ? '⌘⇧↵' : 'Ctrl+Shift+Enter', platform);
-    assert.equal(keymap.accelOf('tab.new'), platform === 'darwin' ? '⌘T' : 'Ctrl+T', platform);
-    assert.equal(keymap.accelOf('tab.switch'), platform === 'darwin' ? '⌘1..9' : 'Ctrl+1..9', platform);
-    assert.equal(keymap.accelOf('no.such.action'), '', platform);
+    const mods = APP_KEY[platform];
+    for (const [action, key] of [['tab.new', 't'], ['workspace.close', 'w'], ['session.search', 'f'], ['pane.split', 'd']]) {
+      assert.equal(keymap.matchAction(action, evt(key.toUpperCase(), { ...mods, code: 'Key' + key.toUpperCase() })), true, `${platform} ${action}`);
+      assert.equal(keymap.appShortcutOf(evt(key, mods)), action, `${platform} appShortcutOf ${action}`);
+    }
+    // 无修饰键不命中
+    assert.equal(keymap.matchAction('tab.new', evt('t')), false, platform);
   }
 });
 
-test('settings.keybindings overrides defaults; invalid entries fall back', async () => {
-  const { core, keymap } = await setup('windows', { keybindings: { 'tab.new': 'mod+Q', 'pane.zoom': '   ', unknown: 'mod+Z' } });
+test('Ctrl+字母属于 shell:Windows/Linux 的 Ctrl+T/W/F/D 与 macOS 的任何 Ctrl 组合都不是应用快捷键', async () => {
+  for (const platform of ['darwin', 'windows', 'linux']) {
+    const { keymap } = await setup(platform);
+    for (const key of ['t', 'w', 'f', 'd', 'c', 'v', 'a']) {
+      assert.equal(keymap.appShortcutOf(evt(key, { ctrlKey: true })), '', `${platform} Ctrl+${key}`);
+    }
+  }
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.appShortcutOf(evt('t', { ctrlKey: true, metaKey: true })), '', 'mac ⌃⌘T 不是 ⌘T');
+  assert.equal(keymap.matchAction('term.paste', evt('v', { ctrlKey: true })), false, 'mac Ctrl+V 交给 shell');
+  assert.equal(keymap.matchAction('term.copy', evt('c', { ctrlKey: true })), false, 'mac Ctrl+C 一律 SIGINT');
+});
+
+test('修饰键精确匹配:多按 Shift/Alt 不命中', async () => {
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.matchAction('pane.zoom', evt('Enter', { metaKey: true, shiftKey: true })), true);
+  assert.equal(keymap.matchAction('pane.zoom', evt('Enter', { metaKey: true })), false);
+  assert.equal(keymap.matchAction('tab.new', evt('t', { metaKey: true, altKey: true })), false);
+  const win = await setup('windows');
+  assert.equal(win.keymap.matchAction('pane.zoom', evt('Enter', { ctrlKey: true, shiftKey: true })), true);
+  assert.equal(win.keymap.appShortcutOf(evt('Enter', { ctrlKey: true, shiftKey: true })), 'pane.zoom');
+  assert.equal(win.keymap.appShortcutOf(evt('t', { ctrlKey: true, shiftKey: true, altKey: true })), '');
+});
+
+test('切换标签:⌘1..9 / Ctrl+1..9,按物理键位取序号', async () => {
+  for (const platform of ['darwin', 'windows', 'linux']) {
+    const { keymap } = await setup(platform);
+    const mod = platform === 'darwin' ? { metaKey: true } : { ctrlKey: true };
+    for (let n = 1; n <= 9; n++) {
+      const e = evt(String(n), { ...mod, code: 'Digit' + n });
+      assert.equal(keymap.appShortcutOf(e), 'tab.switch', `${platform} ${n}`);
+      assert.equal(keymap.digitOf(e), n);
+    }
+    assert.equal(keymap.appShortcutOf(evt('0', { ...mod, code: 'Digit0' })), '', platform);
+  }
+});
+
+test('非拉丁布局:event.key 不是字母时按 event.code 命中', async () => {
+  const { keymap } = await setup('windows');
+  assert.equal(keymap.appShortcutOf(evt('Е', { ctrlKey: true, shiftKey: true, code: 'KeyT' })), 'tab.new');
+});
+
+test('复制/粘贴/全选按平台分流,且不算应用快捷键', async () => {
+  const mac = await setup('darwin');
+  assert.equal(mac.keymap.matchAction('term.copy', evt('c', { metaKey: true })), true);
+  assert.equal(mac.keymap.matchAction('term.paste', evt('v', { metaKey: true })), true);
+  assert.equal(mac.keymap.matchAction('term.selectAll', evt('a', { metaKey: true })), true);
+  const win = await setup('windows');
+  assert.equal(win.keymap.matchAction('term.paste', evt('v', { ctrlKey: true })), true);
+  assert.equal(win.keymap.matchAction('term.paste', evt('V', { ctrlKey: true, shiftKey: true })), true);
+  assert.equal(win.keymap.matchAction('term.copy', evt('c', { ctrlKey: true })), true);
+  assert.equal(win.keymap.matchAction('term.copy', evt('C', { ctrlKey: true, shiftKey: true })), true);
+  assert.equal(win.keymap.matchAction('term.selectAll', evt('a', { ctrlKey: true })), false, 'Ctrl+A 是行首');
+  assert.equal(win.keymap.matchAction('term.selectAll', evt('A', { ctrlKey: true, shiftKey: true })), true);
+  const linux = await setup('linux');
+  assert.equal(linux.keymap.matchAction('term.paste', evt('v', { ctrlKey: true })), false, 'Linux Ctrl+V 交给 shell');
+  assert.equal(linux.keymap.matchAction('term.paste', evt('V', { ctrlKey: true, shiftKey: true })), true);
+  for (const { keymap } of [mac, win, linux]) {
+    for (const action of ['term.copy', 'term.paste', 'term.selectAll', 'files.selectAll']) assert.ok(!keymap.APP_ACTIONS.includes(action));
+  }
+});
+
+test('accelOf renders per platform', async () => {
+  for (const platform of ['darwin', 'windows', 'linux']) {
+    const { keymap } = await setup(platform);
+    const mac = platform === 'darwin';
+    assert.equal(keymap.accelOf('pane.zoom'), mac ? '⌘⇧↵' : 'Ctrl+Shift+Enter', platform);
+    assert.equal(keymap.accelOf('tab.new'), mac ? '⌘T' : 'Ctrl+Shift+T', platform);
+    assert.equal(keymap.accelOf('workspace.close'), mac ? '⌘W' : 'Ctrl+Shift+W', platform);
+    assert.equal(keymap.accelOf('tab.switch'), mac ? '⌘1..9' : 'Ctrl+1..9', platform);
+    assert.equal(keymap.accelOf('term.selectAll'), mac ? '⌘A' : 'Ctrl+Shift+A', platform);
+    assert.equal(keymap.accelOf('no.such.action'), '', platform);
+  }
+  assert.equal((await setup('windows')).keymap.accelOf('term.paste'), 'Ctrl+V');
+  assert.equal((await setup('linux')).keymap.accelOf('term.paste'), 'Ctrl+Shift+V');
+  assert.equal((await setup('linux')).keymap.accelOf('term.copy'), 'Ctrl+Shift+C');
+});
+
+test('settings.keybindings overrides defaults; mod 仍可用; invalid entries fall back', async () => {
+  const { keymap } = await setup('windows', { keybindings: { 'tab.new': 'mod+Q', 'pane.zoom': '   ', 'pane.split': ['ctrl+alt+D', 'ctrl+shift+E'], unknown: 'mod+Z' } });
   keymap.invalidateKeymapCache();
   assert.equal(keymap.specOf('tab.new'), 'mod+Q');
   assert.equal(keymap.accelOf('tab.new'), 'Ctrl+Q');
-  assert.equal(keymap.matchAction('tab.new', evt('q', { ctrlKey: true }), true), true);
+  assert.equal(keymap.matchAction('tab.new', evt('q', { ctrlKey: true })), true);
+  assert.equal(keymap.matchAction('pane.split', evt('e', { ctrlKey: true, shiftKey: true })), true);
+  assert.deepEqual(keymap.specsOf('pane.split'), ['ctrl+alt+D', 'ctrl+shift+E']);
   // 空/非法回落默认
-  assert.equal(keymap.specOf('pane.zoom'), 'mod+shift+Enter');
-  assert.equal(keymap.specOf('workspace.close'), 'mod+W');
+  assert.equal(keymap.specOf('pane.zoom'), 'ctrl+shift+Enter');
+  assert.equal(keymap.specOf('workspace.close'), 'ctrl+shift+W');
+  const mac = await setup('darwin', { keybindings: { 'tab.new': 'mod+Q' } });
+  mac.keymap.invalidateKeymapCache();
+  assert.equal(mac.keymap.matchAction('tab.new', evt('q', { metaKey: true })), true);
 });
 
 test('applyAccelTitles resolves keymap action names via injected resolver', async () => {

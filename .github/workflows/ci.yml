@@ -69,6 +69,24 @@ jobs:
         # webview2-com 原生 DLL 解析有关,待定位。暂不阻断,防止常红掩盖真回归。
         continue-on-error: ${{ matrix.os == 'windows-2025' }}
 
+  frontend-unit:
+    name: 前端单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # keymap/菜单/命令/布局等前端模块的单测(vm 模块加载,不需要浏览器)
+      - name: 运行前端单测
+        run: npm run test:unit
+
   ui-e2e:
     name: UI 端到端测试 (macOS)
     runs-on: macos-latest

@@ -1363,10 +1363,12 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   border: 0; background: none; padding: 0 10px; border-radius: 6px;
   white-space: nowrap; text-align: left;
 }
-#more-menu .btn:not(:disabled):is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
+#more-menu .btn:not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
 #more-menu .btn:focus-visible { outline-offset: -2px; }
 #more-menu .btn.danger { color: var(--danger); }
-#more-menu .btn.danger:not(:disabled):is(:hover, :focus-visible) { background: rgba(255,107,107,0.12); }
+#more-menu .btn.danger:not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible) { background: rgba(255,107,107,0.12); }
+/* 不可用的菜单项保持可聚焦(aria-disabled),外观与原生 disabled 一致 */
+#more-menu .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 /* 组头和分隔线保持自己的高度,菜单过矮时整页滚动而不是压缩按钮。 */
 #more-menu .mm-head {
   flex: none; padding: 7px 10px 3px; font-size: 11px; color: var(--muted);
@@ -1403,10 +1405,17 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   background: none; color: var(--text); font-size: 12px; text-align: left;
   cursor: pointer;
 }
-#ctx-menu .ctx-item:is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
+#ctx-menu .ctx-item:not([aria-disabled="true"]):is(:hover, :focus-visible) { background: rgba(91,140,255,0.12); }
 #ctx-menu .ctx-item:focus-visible { outline-offset: -2px; }
 #ctx-menu .ctx-label { min-width: 0; overflow-wrap: anywhere; }
-#ctx-menu .ctx-item:disabled { opacity: 0.4; cursor: default; background: none; }
+#ctx-menu .ctx-item:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: default; }
+/* 禁用原因:焦点或鼠标停在禁用项上时出现在菜单底部(core.showMenuReason) */
+:is(#more-menu, #ctx-menu) .menu-reason {
+  position: sticky; bottom: -6px; flex: none; margin: 4px -6px -6px; padding: 7px 16px;
+  border-top: 1px solid var(--border); background: var(--panel);
+  color: var(--muted); font-size: 11px; line-height: 1.4; white-space: normal;
+}
+:is(#more-menu, #ctx-menu) .menu-reason.hidden { display: none; }
 #ctx-menu .ctx-item .ctx-key { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
 /* 破坏性操作(删除)在菜单里标红,避免与"下载/重命名"混在一起误点 */
 #ctx-menu .ctx-item.danger .ctx-label { color: var(--danger, #ff6b6b); }

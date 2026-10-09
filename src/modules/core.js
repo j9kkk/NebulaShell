@@ -108,8 +108,8 @@ export const PLATFORM = (() => {
 export const IS_MAC = PLATFORM === 'darwin';
 export const isAppModifier = (event) => matchAppModifier(event, PLATFORM);
 
-const MAC_KEY = { mod: '⌘', ctrl: '⌃', shift: '⇧', alt: '⌥', enter: '↵', tab: '⇥', space: 'Space', esc: 'Esc' };
-const PC_KEY = { mod: 'Ctrl', ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', enter: 'Enter', tab: 'Tab', space: 'Space', esc: 'Esc' };
+const MAC_KEY = { mod: '⌘', cmd: '⌘', meta: '⌘', ctrl: '⌃', shift: '⇧', alt: '⌥', enter: '↵', tab: '⇥', space: 'Space', esc: 'Esc' };
+const PC_KEY = { mod: 'Ctrl', cmd: 'Win', meta: 'Win', ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', enter: 'Enter', tab: 'Tab', space: 'Space', esc: 'Esc' };
 
 /// 把规范化的快捷键写法('mod+shift+D')渲染成当前平台的显示形式。
 /// macOS 惯例是不加连接符(⌘⇧D),Windows/Linux 用 +(Ctrl+Shift+D)。
@@ -487,20 +487,54 @@ export function makeDraggable(el, handle) {
    而 entry 已经依赖 sftp —— 若把菜单留在 entry,文件面板就得反向依赖它,
    绕成一个环。 */
 
+/// 菜单项是否不可用:菜单里用 aria-disabled(保持可聚焦),也兼容原生 disabled。
+export const isMenuItemDisabled = (item) => !!item && (item.disabled || item.getAttribute('aria-disabled') === 'true');
+
+/// 菜单底部的禁用原因:焦点或鼠标停在禁用项上时显示。原因取自
+/// aria-description(命令注册表与右键菜单都写在这里),读屏已从菜单项本身
+/// 读到,所以这一行对读屏隐藏。右键菜单每次重建内容,这里按需重新创建。
+export function showMenuReason(menu, item) {
+  const text = isMenuItemDisabled(item) ? item.getAttribute('aria-description') || '' : '';
+  let footer = menu.querySelector('.menu-reason');
+  if (!footer) {
+    if (!text) return;
+    footer = document.createElement('div');
+    footer.className = 'menu-reason hidden';
+    footer.setAttribute('aria-hidden', 'true');
+    menu.appendChild(footer);
+  }
+  footer.textContent = text;
+  footer.classList.toggle('hidden', !text);
+}
+
+/// 菜单键盘:由 document 捕获阶段接管,而不是挂在菜单元素上 —— 焦点掉到
+/// body 时(点了组标题等),挂在菜单上的监听就收不到按键,Esc 和方向键全失效。
+/// 只在菜单可见、且焦点在菜单内或无处可落(body)时生效。
 export function bindMenuKeyboard(menu, close, back = null) {
   menu.setAttribute('role', 'menu');
-  menu.addEventListener('keydown', (event) => {
+  document.addEventListener('keydown', (event) => {
+    if (menu.classList.contains('hidden') || !menu.isConnected) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && !menu.contains(active)) return;
     const items = [...menu.querySelectorAll('button:not(:disabled)')].filter((el) => el.getClientRects().length && !el.closest('.hidden'));
-    const index = items.indexOf(document.activeElement);
+    const index = items.indexOf(active);
     let next = null;
     if (event.key === 'ArrowDown') next = items[(index + 1) % items.length];
-    if (event.key === 'ArrowUp') next = items[(index - 1 + items.length) % items.length];
+    if (event.key === 'ArrowUp') next = items[index < 0 ? items.length - 1 : (index - 1 + items.length) % items.length];
     if (event.key === 'Home') next = items[0];
     if (event.key === 'End') next = items.at(-1);
     if (next) { event.preventDefault(); event.stopPropagation(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
     if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); close(); }
     if (event.key === 'ArrowLeft' && back) { event.preventDefault(); event.stopPropagation(); back(); }
+  }, true);
+  // 点组标题、分隔线、空白处不挪焦点(否则焦点掉到 body)
+  menu.addEventListener('mousedown', (event) => { if (!event.target.closest?.('button')) event.preventDefault(); });
+  menu.addEventListener('focusin', (event) => showMenuReason(menu, event.target.closest?.('button')));
+  menu.addEventListener('mouseover', (event) => {
+    const item = event.target.closest?.('button');
+    if (item) showMenuReason(menu, item);
   });
+  menu.addEventListener('mouseleave', () => showMenuReason(menu, menu.contains(document.activeElement) ? document.activeElement : null));
 }
 
 export function closeCtxMenu(restore = true) {
@@ -512,7 +546,8 @@ export function closeCtxMenu(restore = true) {
 }
 
 /// 在 (x, y) 弹出右键菜单。items 元素形如
-/// { label, key?, disabled?, danger?, run() } 或字符串 '-' 表示分隔线。
+/// { label, key?, disabled?, reason?, danger?, run() } 或字符串 '-' 表示分隔线。
+/// reason 是禁用原因,显示在菜单底部。
 export function showCtxMenu(x, y, items) {
   const menu = $('#ctx-menu');
   if (!menu) return;
@@ -537,10 +572,14 @@ export function showCtxMenu(x, y, items) {
     if (it.key) btn.querySelector('.ctx-key').textContent = it.key;
     // 可选 tips:与普通按钮 title 同语义(悬停展示说明)
     if (it.title) btn.title = it.title;
-    btn.disabled = !!it.disabled;
+    if (it.disabled) {
+      btn.setAttribute('aria-disabled', 'true');
+      if (it.reason) btn.setAttribute('aria-description', it.reason);
+    }
     btn.setAttribute('role', it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem');
     if (it.checked !== undefined) btn.setAttribute('aria-checked', String(!!it.checked));
     btn.addEventListener('click', () => {
+      if (it.disabled) return;
       closeCtxMenu();
       Promise.resolve().then(() => it.run()).catch((error) => toast(error.message || '操作失败', 'error'));
     });
@@ -553,7 +592,7 @@ export function showCtxMenu(x, y, items) {
   const py = Math.min(y, window.innerHeight - r.height - 8);
   menu.style.left = `${Math.max(8, px)}px`;
   menu.style.top = `${Math.max(8, py)}px`;
-  menu.querySelector('button:not(:disabled)')?.focus();
+  menu.querySelector('button:not([aria-disabled="true"])')?.focus();
 }
 
 /// 全局右键菜单的收起逻辑:点击别处/滚动/失焦/缩放都收起。

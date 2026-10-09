@@ -19,7 +19,7 @@
 ## ✨ 功能特性
 
 ### 终端与多会话
-- **分屏**：垂直/水平分屏、拖拽调宽、单窗格放大（⌘D / ⌘⇧D / ⌘⇧↵），窗口尺寸变化自动同步远端 PTY
+- **分屏**：按窗口尺寸自动布局、拖拽调宽、单窗格放大（⌘D / ⌘⇧↵），窗口尺寸变化自动同步远端 PTY
 - **多标签**：多会话并行，⌘1..9 快速切换，标签自动滚动定位
 - **广播输入**：一条命令同步下发到多个会话
 - **终端能力**：xterm.js 渲染、Cmd/Ctrl+F 搜索、链接可点击、只读模式、清屏、命令历史采集与回填
@@ -105,22 +105,28 @@ npm run dev            # 开发模式（热重载）
 ## 🚀 快速上手
 
 1. **添加主机**：点击「＋ 新建主机」，填写地址、端口、用户名与凭据
-2. **连接**：点击主机项；或按 `⌘K` 打开命令面板
-3. **分屏**：连上后按 `⌘D`（垂直）或 `⌘⇧D`（水平）
+2. **连接**：点击主机项（按住 `⌘` / `Ctrl` 点击在新标签打开）
+3. **分屏**：连上后按 `⌘D` / `Ctrl+Shift+D`，自动按窗口尺寸选择最优布局
 4. **配置 AI**：点击 ✨ → ⚙ 填写 Base URL / API Key，点「拉取模型」选择模型
 5. **导入云主机**：点击「☁ 导入云主机」，填写云厂商密钥（弹窗内有获取指引）
 
 ### 快捷键
 
-| 操作 | macOS | Windows / Linux |
-| --- | --- | --- |
-| 命令面板 | `⌘K` | `Ctrl+K` |
-| 垂直 / 水平分屏 | `⌘D` / `⌘⇧D` | `Ctrl+D` / `Ctrl+Shift+D` |
-| 放大 / 还原窗格 | `⌘⇧↵` | `Ctrl+Shift+Enter` |
-| 终端搜索 | `⌘F` | `Ctrl+F` |
-| 关闭标签 | `⌘W` | `Ctrl+W` |
-| 切换标签 | `⌘1..9` | `Ctrl+1..9` |
-| 复制 / 粘贴 | `⌘C` / `⌘V` | `Ctrl+C` / `Ctrl+V` |
+Windows / Linux 的应用快捷键统一为 `Ctrl+Shift+字母`，`Ctrl+字母` 留给 shell（如 `Ctrl+W` 删词、`Ctrl+D` 结束输入）；macOS 用 `⌘`，`Ctrl` 组合全部留给 shell。
+
+| 操作 | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| 新建标签 | `⌘T` | `Ctrl+Shift+T` | `Ctrl+Shift+T` |
+| 关闭当前窗格或标签 | `⌘W` | `Ctrl+Shift+W` | `Ctrl+Shift+W` |
+| 分屏 | `⌘D` | `Ctrl+Shift+D` | `Ctrl+Shift+D` |
+| 放大 / 还原窗格 | `⌘⇧↵` | `Ctrl+Shift+Enter` | `Ctrl+Shift+Enter` |
+| 在终端中查找 | `⌘F` | `Ctrl+Shift+F` | `Ctrl+Shift+F` |
+| 切换到第 N 个标签 | `⌘1..9` | `Ctrl+1..9` | `Ctrl+1..9` |
+| 复制 | `⌘C` | `Ctrl+Shift+C`；有选区时 `Ctrl+C` | `Ctrl+Shift+C`；有选区时 `Ctrl+C` |
+| 粘贴 | `⌘V` | `Ctrl+V` 或 `Ctrl+Shift+V` | `Ctrl+Shift+V` |
+| 终端全选 | `⌘A` | `Ctrl+Shift+A` | `Ctrl+Shift+A` |
+
+macOS 上 `Ctrl+C` 始终发送中断信号（SIGINT），不会复制选区。
 
 ---
 

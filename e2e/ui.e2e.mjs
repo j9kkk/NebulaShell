@@ -2916,8 +2916,8 @@ async function main() {
     acc.hasDirectionMenus === false
       && acc.newtab.includes(wantMod) && acc.split.includes(wantMod) && acc.closePane.includes(wantMod)
       && (macLike ? !/Ctrl/.test(acc.split) : !/⌘/.test(acc.split))
-      // macOS 用连接符省略写法(⌘T),其它平台用 Ctrl+T
-      && (macLike ? acc.newtab.includes('⌘T') : acc.newtab.includes('Ctrl+T')),
+      // macOS 用连接符省略写法(⌘T),其它平台用 Ctrl+Shift+T
+      && (macLike ? acc.newtab.includes('⌘T') : acc.newtab.includes('Ctrl+Shift+T')),
     JSON.stringify(acc),
   );
 
@@ -3034,6 +3034,48 @@ async function main() {
     && !!document.activeElement.closest('.mm-page[data-page="root"]:not(.hidden)') && !!document.activeElement.getClientRects().length`) === true);
   await focusedKey('Escape');
 
+  // 用鼠标从终端打开菜单(mousedown 时记录焦点,Chromium 随后把焦点移到 ⋯),
+  // 执行不弹窗的命令后焦点必须回到原终端,而不是 ⋯ 按钮(B9:接着打的字丢失)。
+  await evalJs(`const ta = document.querySelector('.term-pane.focused .xterm-helper-textarea'); window.__e2eOpener = ta; ta.focus();
+    const btn = document.querySelector('#btn-more'); btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    btn.focus(); btn.click(); return 1`);
+  await menuFocus('#btn-sidebar-menu');
+  await focusedKey('Enter');
+  const menuReturn = asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#more-menu').classList.contains('hidden'),
+    back: document.activeElement === window.__e2eOpener, focus: document.activeElement.id || document.activeElement.className,
+    collapsed: document.querySelector('#sidebar').classList.contains('collapsed') })`));
+  check('T60h 从更多菜单执行命令后焦点回到打开菜单前的终端', menuReturn.hidden && menuReturn.back && menuReturn.collapsed, JSON.stringify(menuReturn));
+  await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); delete window.__e2eOpener; return 1`);
+
+  // 不可用项用 aria-disabled:方向键照常经过,底部显示原因,激活不执行也不关菜单。
+  await openMenuPage();
+  const gated = asObj(await evalJs(`return JSON.stringify((() => {
+    const item = document.querySelector('#more-menu .mm-page:not(.hidden) [aria-disabled="true"]');
+    return item ? { id: item.id, reason: item.getAttribute('aria-description') || '', disabled: item.disabled } : null;
+  })())`));
+  if (gated) {
+    await menuFocus('#' + gated.id);
+    const gatedState = asObj(await evalJs(`return JSON.stringify((() => {
+      const footer = document.querySelector('#more-menu .menu-reason');
+      return { focus: document.activeElement.id, footer: footer && !footer.classList.contains('hidden') ? footer.textContent : '' };
+    })())`));
+    const activate = await focusedKey('Enter');
+    const afterDown = await focusedKey('ArrowDown');
+    check('T60i 不可用项可被方向键经过、显示具体原因、激活不执行', !gated.disabled && gated.reason && gated.reason !== '当前状态不可执行'
+      && gatedState.focus === gated.id && gatedState.footer === gated.reason && activate.menuOpen
+      && afterDown.menuOpen && afterDown.focus !== gated.id, JSON.stringify({ gated, gatedState, activate, afterDown }));
+  } else check('T60i 不可用项可被方向键经过、显示具体原因、激活不执行(当前无不可用项,跳过)', true);
+
+  // 点组标题不挪焦点;即使焦点已掉到 body,方向键与 Esc 仍由菜单接管。
+  const headDown = await evalJs(`const head = document.querySelector('#more-menu .mm-page:not(.hidden) .mm-head');
+    const ev = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }); head.dispatchEvent(ev);
+    document.activeElement.blur(); return ev.defaultPrevented`);
+  const bodyArrow = await focusedKey('ArrowDown');
+  await evalJs(`document.activeElement.blur(); return 1`);
+  const bodyEsc = await focusedKey('Escape');
+  check('T60j 点组标题后方向键与 Esc 仍有效', headDown === true && bodyArrow.prevented && bodyArrow.focus !== ''
+    && bodyEsc.prevented && !bodyEsc.menuOpen && bodyEsc.focus === 'btn-more', JSON.stringify({ headDown, bodyArrow, bodyEsc }));
+
   // 模态作用域、队列与当前焦点语义:使用真实 ask* promise,不手改 modal class。
   await openMenuPage('settings');
   await menuFocus('#btn-about');
@@ -3050,7 +3092,7 @@ async function main() {
     const before = window.__nbTest.tabState().tabs;
     document.querySelector('#btn-more').click();
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true,
-      metaKey: window.nebula.platform === 'darwin', ctrlKey: window.nebula.platform !== 'darwin' }));
+      metaKey: window.nebula.platform === 'darwin', ctrlKey: window.nebula.platform !== 'darwin', shiftKey: window.nebula.platform !== 'darwin' }));
     document.querySelector('#btn-newtab').focus();
     const controls = [...prompt.querySelectorAll('input, button')].filter((b) => !b.disabled && b.getClientRects().length);
     const first = controls[0], last = controls.at(-1);
@@ -3087,9 +3129,11 @@ async function main() {
     && promptDone.focus === 'btn-about-close', JSON.stringify(promptDone));
   await evalJs(`document.querySelector('#modal-about').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); return 1`);
   const restoredScope = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.about().open, inert: document.querySelector('#app').inert,
-    focus: document.activeElement.id, modalOpen: document.body.classList.contains('modal-open') })`));
-  check('T65d 父弹窗 backdrop 关闭后解除 inert 并恢复工具按钮焦点', !restoredScope.open && !restoredScope.inert
-    && !restoredScope.modalOpen && restoredScope.focus === 'btn-more', JSON.stringify(restoredScope));
+    focus: document.activeElement.id || (document.activeElement.classList.contains('xterm-helper-textarea') ? 'terminal' : document.activeElement.tagName),
+    modalOpen: document.body.classList.contains('modal-open') })`));
+  // 弹窗由更多菜单打开:关闭后焦点回到打开菜单前的位置(终端),不是 ⋯ 按钮
+  check('T65d 父弹窗 backdrop 关闭后解除 inert 并把焦点还给打开菜单前的终端', !restoredScope.open && !restoredScope.inert
+    && !restoredScope.modalOpen && restoredScope.focus === 'terminal', JSON.stringify(restoredScope));
 
   await evalJs(`window.__e2eDialogResults = [];
     for (const [title, danger] of [['queue-c1', true], ['queue-c2', false], ['queue-c3', true], ['queue-c4', true]]) {
@@ -3109,11 +3153,12 @@ async function main() {
   await focusedKey('Escape');
   await waitEval(`return window.__e2eDialogResults.length`, '4', 10000);
   const confirmDone = asObj(await evalJs(`return JSON.stringify({ results: window.__e2eDialogResults, open: window.__nbTest.confirmOpen(),
-    appInert: document.querySelector('#app').inert, focus: document.activeElement.id })`));
+    appInert: document.querySelector('#app').inert,
+    focus: document.activeElement.id || (document.activeElement.classList.contains('xterm-helper-textarea') ? 'terminal' : document.activeElement.tagName) })`));
   check('T66c queued confirm Enter 服从当前焦点而非默认值,backdrop/Escape 取消且无遗留 waiter',
     JSON.stringify(confirmDone.results) === JSON.stringify([
       { title: 'queue-c1', value: true }, { title: 'queue-c2', value: false }, { title: 'queue-c3', value: false }, { title: 'queue-c4', value: false },
-    ]) && !confirmDone.open && !confirmDone.appInert && confirmDone.focus === 'btn-more', JSON.stringify(confirmDone));
+    ]) && !confirmDone.open && !confirmDone.appInert && confirmDone.focus === 'terminal', JSON.stringify(confirmDone));
   await evalJs(`delete window.__e2eDialogResults; return 1`);
 
   // macOS 的 Ctrl+D/W 属于 shell 控制键,不能触发应用分屏或关闭。
@@ -3132,13 +3177,49 @@ async function main() {
       && JSON.stringify(ctrlShell.beforeIds) === JSON.stringify(ctrlShell.afterIds) && ctrlShell.prevented.every((v) => !v), JSON.stringify(ctrlShell));
   }
 
+  // 终端内按键路由:在 xterm textarea 上派发(经 attachCustomKeyEventHandler → xterm
+  // → 全局分发),观察 shell 实际收到的数据。旧用例派发在 .term-pane 上绕开了 xterm,
+  // 测不出"放大快捷键给 shell 发回车"这类问题。
+  const appKeys = macLike ? { meta: true } : { ctrl: true, shift: true };
+  const probe = async (o) => asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termKeyProbe(${JSON.stringify(o)}))`));
+  const zoomKey = await probe({ key: 'Enter', ...(macLike ? { meta: true, shift: true } : { ctrl: true, shift: true }) });
+  check('T67b 放大快捷键在终端内交给应用:不给 shell 发回车,且拦截默认行为', zoomKey.ok && zoomKey.prevented && zoomKey.emitted === '', JSON.stringify(zoomKey));
+  if (zoomKey.commands.includes('pane.zoom')) await probe({ key: 'Enter', ...(macLike ? { meta: true, shift: true } : { ctrl: true, shift: true }) });
+  const shellKeys = [];
+  for (const key of ['d', 'w', 'f', 't']) {
+    const r = await probe({ key, ctrl: true });
+    shellKeys.push({ key, prevented: r.prevented, emitted: r.emitted, commands: r.commands });
+  }
+  // prevented 不作判据:xterm 把控制字符发给 shell 后自己会取消事件
+  check('T67c Ctrl+D/W/F/T 在终端内原样到达 shell,不触发应用命令', shellKeys.every((r) => r.commands.length === 0
+    && r.emitted === String.fromCharCode(r.key.charCodeAt(0) - 96)), JSON.stringify(shellKeys));
+  const searchKey = await probe({ key: 'f', ...appKeys });
+  const searchOpen = await evalJs(`return !document.querySelector('#term-search').classList.contains('hidden')`);
+  await evalJs(`document.querySelector('#term-search-close').click(); return 1`);
+  check('T67d 查找快捷键在终端内执行一次命令且不发给 shell', searchKey.prevented && searchKey.emitted === ''
+    && JSON.stringify(searchKey.commands) === JSON.stringify(['session.search']) && searchOpen === true, JSON.stringify({ searchKey, searchOpen }));
+  const tabsNow = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
+  const tabIds = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#tabs [data-tab]')].map((t) => t.dataset.tab))`));
+  if (tabIds.length >= 2) {
+    const other = tabIds.findIndex((id) => id !== tabsNow.activeTab);
+    const switched = await probe({ key: String(other + 1), ...(macLike ? { meta: true } : { ctrl: true }) });
+    const activeAfter = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState().activeTab)`));
+    check('T67e 切换标签快捷键在终端内生效且不给 shell 发控制字符', switched.prevented && switched.emitted === '' && activeAfter === tabIds[other],
+      JSON.stringify({ switched, activeAfter, tabIds }));
+    await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(tabsNow.activeTab)} + '"]').click(); return 1`);
+  } else check('T67e 切换标签快捷键在终端内生效(仅一个标签,跳过)', true);
+  if (acc.platform !== 'windows') {
+    const ctrlV = await probe({ key: 'v', ctrl: true });
+    check('T67f macOS/Linux 的 Ctrl+V 交给 shell(\\x16),不当作粘贴', ctrlV.emitted === '\x16' && ctrlV.commands.length === 0, JSON.stringify(ctrlV));
+  }
+
   // 命令统一后每个入口只能新建一个标签/窗格,不能重复绑定产生两个。
   const tabBaseline = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
   for (const route of ['toolbar', 'shortcut', 'context']) {
     if (route === 'toolbar') await evalJs(`document.querySelector('#btn-newtab').click(); return 1`);
     else if (route === 'shortcut') {
       await evalJs(`document.querySelector('#btn-more').focus(); return 1`);
-      await focusedKey('t', { metaKey: macLike, ctrlKey: !macLike });
+      await focusedKey('t', { metaKey: macLike, ctrlKey: !macLike, shiftKey: !macLike });
     } else {
       await evalJs(`const tab = document.querySelector('.tab.active'); const r = tab.getBoundingClientRect();
         tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 8 })); return 1`);
@@ -3153,45 +3234,46 @@ async function main() {
         === JSON.stringify(tabBaseline.sessions.map(({ id, host, tabId }) => ({ id, host, tabId })))
       && created.activeTab !== tabBaseline.activeTab, JSON.stringify(created));
     await evalJs(`document.querySelector('#btn-more').focus(); return 1`);
-    await focusedKey('w', { metaKey: macLike, ctrlKey: !macLike });
+    await focusedKey('w', { metaKey: macLike, ctrlKey: !macLike, shiftKey: !macLike });
     await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(tabBaseline.activeTab)} + '"]').click(); return 1`);
     const closed = asObj(await evalJs(`return JSON.stringify(window.__nbTest.tabState())`));
     check('T68b ' + route + ' 关闭新标签后会话/窗格完整回位', JSON.stringify(closed) === JSON.stringify(tabBaseline), JSON.stringify(closed));
   }
 
-  /* ===== 终端复制三连修(T61):Ctrl+C 按选区分流 / 失败可见 ===== */
+  /* ===== 终端复制(T61):按平台分流 ===== */
 
-  // 有选区:Ctrl+C 必须是复制,不能把 \x03 发给 shell(否则正在跑的命令被误杀);
-  // prevented = 自定义处理器介入的证据(旧实现从不 preventDefault)
+  // 有选区时平台复制键(⌘C / Ctrl+C)必须是复制,不能把 \x03 发给 shell
+  // (否则正在跑的命令被误杀);prevented = 自定义处理器介入的证据。
   const withSel = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: true }))`));
   check(
-    'T61 有选区时 Ctrl+C 复制而不中断(不给 shell 发 \\x03)',
+    'T61 有选区时复制键复制而不中断(不给 shell 发 \\x03)',
     withSel.ok === true && withSel.prevented === true && withSel.hadSelection === true && String(withSel.selection).includes('PROBE-COPY-MARK-9137') && withSel.sigintSent === false && withSel.emitted === '',
     JSON.stringify(withSel),
   );
 
-  // Shift 变形键:Ctrl+Shift+C 的 ev.key 是 'C',旧判定只认小写 'c' —— 此前是死键
-  const shiftC = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: true, key: 'C', shift: true }))`));
-  check(
-    'T61b Ctrl+Shift+C(键面 C)同样复制而不发 \\x03',
-    shiftC.ok === true && shiftC.prevented === true && shiftC.hadSelection === true && shiftC.sigintSent === false && shiftC.emitted === '',
-    JSON.stringify(shiftC),
-  );
-
-  // 无选区:Ctrl+C 维持标准终端行为 —— 放行 \x03(SIGINT)发给 shell,
-  // 同时 preventDefault 拦掉浏览器默认复制(别处 UI 的 DOM 选区)
-  const noSel = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: false }))`));
-  check(
-    'T61c 无选区时 Ctrl+C 仍发送 SIGINT,且拦截浏览器默认复制',
-    noSel.ok === true && noSel.prevented === true && noSel.hadSelection === false && noSel.sigintSent === true,
-    JSON.stringify(noSel),
-  );
+  if (macLike) {
+    // macOS:Ctrl+C 一律是 SIGINT,有选区也不复制(iTerm2 / 系统终端惯例)
+    const ctrlC = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: true, ctrl: true, meta: false }))`));
+    check('T61b macOS 有选区时 Ctrl+C 仍发送 SIGINT', ctrlC.ok === true && ctrlC.sigintSent === true, JSON.stringify(ctrlC));
+    const noSel = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: false }))`));
+    check('T61c macOS 无选区时 ⌘C 不发任何数据,且拦截浏览器默认复制',
+      noSel.ok === true && noSel.prevented === true && noSel.hadSelection === false && noSel.emitted === '', JSON.stringify(noSel));
+  } else {
+    // Shift 变形键:Ctrl+Shift+C 的 ev.key 是 'C'
+    const shiftC = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: true, key: 'C', shift: true }))`));
+    check('T61b Ctrl+Shift+C(键面 C)同样复制而不发 \\x03',
+      shiftC.ok === true && shiftC.prevented === true && shiftC.hadSelection === true && shiftC.sigintSent === false && shiftC.emitted === '', JSON.stringify(shiftC));
+    // 无选区:Ctrl+C 维持标准终端行为 —— 放行 \x03(SIGINT)
+    const noSel = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termCopyProbe({ select: false }))`));
+    check('T61c 无选区时 Ctrl+C 仍发送 SIGINT,且拦截浏览器默认复制',
+      noSel.ok === true && noSel.prevented === true && noSel.hadSelection === false && noSel.sigintSent === true, JSON.stringify(noSel));
+  }
 
   // Ctrl+V 粘贴必须只插一次:浏览器默认粘贴事件被拦截(prevented/pasteEvents=0),
   // 手动链路至多插一次(pasteCalls≤1)—— 修复前两条链路各插一次,内容翻倍
   const paste = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termPasteProbe())`));
   check(
-    'T62 Ctrl+V 只粘贴一次(不触发原生 paste 事件,不重复插入)',
+    'T62 粘贴键只粘贴一次(不触发原生 paste 事件,不重复插入)',
     paste.ok === true && paste.prevented === true && paste.pasteEvents === 0 && paste.pasteCalls <= 1,
     JSON.stringify(paste),
   );

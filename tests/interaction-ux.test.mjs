@@ -528,10 +528,12 @@ test('command availability rejects unknown, disconnected/disabled, and modal-blo
   commands.bindCommandButtons();
   assert.equal(commands.commandState('missing'), null); assert.equal(await commands.executeCommand('missing'), false);
   assert.equal(split.disabled, true); assert.equal(split.getAttribute('aria-description'), 'Connect first');
-  assert.match(split.title, /连接/); assert.equal(await commands.executeCommand('split'), false); assert.equal(runs, 0);
+  assert.equal(split.title, 'Connect first', 'standalone buttons surface the reason in their title');
+  assert.equal(await commands.executeCommand('split'), false); assert.equal(runs, 0);
   connected = true; commands.refreshCommandStates(); assert.equal(split.disabled, false); assert.equal(split.hasAttribute('aria-description'), false);
   core.openModal(confirm); commands.refreshCommandStates();
-  assert.equal(split.disabled, true); assert.equal(await commands.executeCommand('split'), false); assert.equal(runs, 0);
+  assert.equal(split.disabled, true); assert.equal(split.getAttribute('aria-description'), '请先关闭对话框');
+  assert.equal(await commands.executeCommand('split'), false); assert.equal(runs, 0);
   core.closeModal(confirm); commands.refreshCommandStates();
   assert.equal(await commands.executeCommand('split'), true); assert.equal(runs, 1);
 });
@@ -561,23 +563,26 @@ test('terminal state notifications refresh the real workspace split button after
   assert.ok(wiring); assert.ok(notifier);
   vm.runInContext(`${wiring}\n${notifier.replace(/^export /, '')}\nsetupWorkspaceCommands();`, context);
   assert.equal(split.disabled, true);
-  assert.equal(tile.disabled, true, 'one untiled tab cannot enable tiling');
+  const tileOff = () => tile.getAttribute('aria-disabled') === 'true';
+  assert.equal(tileOff(), true, 'one untiled tab cannot enable tiling');
+  assert.equal(tile.disabled, false, 'menu items stay focusable while unavailable');
+  assert.equal(tile.getAttribute('aria-description'), '需要至少 2 个标签');
   assert.equal(tile.getAttribute('aria-checked'), 'false');
   assert.equal(tile.querySelector('.mm-label').textContent, '标签平铺');
   assert.equal(commands.commandState('pane.reflow').label, '整理当前标签分屏');
   assert.equal(await commands.executeCommand('workspace.tile'), false);
   state.tabs.set('second', {}); vm.runInContext('notifyTerminalStateChange()', context);
-  assert.equal(tile.disabled, false);
+  assert.equal(tileOff(), false);
   tile.click(); await flush(); assert.equal(state.workspace.mode, 'tiled');
   assert.equal(tile.getAttribute('role'), 'menuitemcheckbox');
   assert.equal(tile.getAttribute('aria-checked'), 'true');
   assert.equal(tile.querySelector('.mm-state').textContent, '✓');
   state.tabs.delete('second'); vm.runInContext('notifyTerminalStateChange()', context);
-  assert.equal(tile.disabled, false, 'tiling can always be turned off, even after closing to one tab');
-  core.openModal(confirm); assert.equal(tile.disabled, true);
+  assert.equal(tileOff(), false, 'tiling can always be turned off, even after closing to one tab');
+  core.openModal(confirm); assert.equal(tileOff(), true);
   assert.equal(await commands.executeCommand('workspace.tile'), false);
-  core.closeModal(confirm); assert.equal(tile.disabled, false);
-  tile.click(); await flush(); assert.equal(state.workspace.mode, 'single'); assert.equal(tile.disabled, true);
+  core.closeModal(confirm); assert.equal(tileOff(), false);
+  tile.click(); await flush(); assert.equal(state.workspace.mode, 'single'); assert.equal(tileOff(), true);
   split.click(); await flush(); assert.equal(runs, 0);
   session.status = 'connected';
   vm.runInContext('notifyTerminalStateChange()', context);
@@ -675,9 +680,10 @@ test('menu Escape/Tab restore trigger focus, outside dismissal does not steal fo
 });
 
 test('menu action closes, resize repositions, and reopening always resets to root', async () => {
-  const { menu, document, window, more, moreButton, pageLink, root, back, subAction } = await setup();
+  const { menu, document, window, more, moreButton, pageLink, root, back, subAction, trigger } = await setup();
   menu.bindMoreMenu(); moreButton.click(); pageLink.click(); subAction.focus(); subAction.click();
-  assert.equal(more.classList.contains('hidden'), true); assert.equal(document.activeElement, moreButton);
+  assert.equal(more.classList.contains('hidden'), true);
+  assert.equal(document.activeElement, trigger, 'executing an item returns focus to where it was before the menu opened');
   moreButton.click(); assert.equal(root.classList.contains('hidden'), false); assert.equal(document.activeElement, pageLink);
   window.innerWidth = 300; window.innerHeight = 400; window.dispatchEvent(new DomEvent('resize'));
   assert.equal(more.style.left, '8px'); assert.equal(more.style.top, '70px'); assert.equal(more.style.maxHeight, '384px');
@@ -693,4 +699,69 @@ test('context popup clamps edges, skips disabled entries, and restores the invok
   key(copy, 'Escape'); assert.equal(ctx.classList.contains('hidden'), true); assert.equal(document.activeElement, trigger);
   core.showCtxMenu(-100, -100, [{ label: 'Copy', run() {} }]);
   assert.equal(ctx.style.left, '8px'); assert.equal(ctx.style.top, '8px'); core.closeCtxMenu();
+});
+
+test('menu action restores focus BEFORE the item runs, so a dialog it opens returns focus to the opener', async () => {
+  const { core, menu, document, more, moreButton, action, confirm, trigger } = await setup();
+  menu.bindMoreMenu();
+  let focusAtRun = null;
+  action.addEventListener('click', () => { focusAtRun = document.activeElement; core.openModal(confirm); });
+  moreButton.click(); action.focus(); action.click();
+  assert.equal(focusAtRun, trigger); assert.equal(more.classList.contains('hidden'), true);
+  core.closeModal(confirm); assert.equal(document.activeElement, trigger);
+});
+
+test('menu opened from its own button falls back to the focused terminal pane', async () => {
+  const { menu, document, add, app, moreButton, action } = await setup();
+  const pane = add(app, 'div', '', 'term-pane focused');
+  const textarea = add(pane, 'textarea', '', 'xterm-helper-textarea');
+  menu.bindMoreMenu(); moreButton.focus(); moreButton.click(); action.click();
+  assert.equal(document.activeElement, textarea);
+});
+
+test('aria-disabled menu items stay reachable by arrows, cannot run, and show their reason', async () => {
+  const { commands, menu, document, more, moreButton, root, pageLink, action } = await setup();
+  let runs = 0;
+  const item = document.createElement('button'); root.children.splice(root.children.indexOf(action), 0, item); item.parentNode = root;
+  item.dataset.command = 'gated';
+  commands.registerCommand('gated', { label: 'Gated', enabled: () => false, reason: 'Needs two tabs', run: () => { runs++; } });
+  menu.bindMoreMenu(); commands.bindCommandButtons(); moreButton.click();
+  assert.equal(item.getAttribute('aria-disabled'), 'true'); assert.equal(item.disabled, false);
+  key(pageLink, 'ArrowDown'); assert.equal(document.activeElement, item, 'arrow keys pass through unavailable items');
+  const footer = more.querySelector('.menu-reason');
+  assert.ok(footer); assert.equal(footer.textContent, 'Needs two tabs'); assert.equal(footer.classList.contains('hidden'), false);
+  item.click(); await flush();
+  assert.equal(runs, 0); assert.equal(more.classList.contains('hidden'), false, 'activating an unavailable item keeps the menu open');
+  key(item, 'ArrowDown'); assert.equal(document.activeElement, action); assert.equal(footer.classList.contains('hidden'), true);
+});
+
+test('menu keys still work after focus falls to body (e.g. clicking a group header)', async () => {
+  const { menu, document, more, moreButton, pageLink } = await setup();
+  menu.bindMoreMenu(); moreButton.click();
+  document.activeElement = document.body;
+  key(document.body, 'ArrowDown'); assert.equal(document.activeElement, pageLink);
+  document.activeElement = document.body;
+  key(document.body, 'Escape'); assert.equal(more.classList.contains('hidden'), true); assert.equal(document.activeElement, moreButton);
+});
+
+test('context menu disabled entries carry aria-disabled + reason and ignore activation', async () => {
+  const { core, ctx } = await setup();
+  let runs = 0;
+  core.showCtxMenu(10, 10, [{ label: 'Paste', disabled: true, reason: 'Read-only session', run() { runs++; } }, { label: 'Copy', run() {} }]);
+  const [paste] = ctx.querySelectorAll('button');
+  assert.equal(paste.getAttribute('aria-disabled'), 'true'); assert.equal(paste.getAttribute('aria-description'), 'Read-only session');
+  paste.click(); await flush(); assert.equal(runs, 0); assert.equal(ctx.classList.contains('hidden'), false);
+  core.closeCtxMenu();
+});
+
+test('every registered command with an availability condition also declares a disabled reason', async () => {
+  const entry = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
+  const wiring = entry.match(/^function setupWorkspaceCommands\(\) \{[\s\S]*?^\}/m)?.[0];
+  assert.ok(wiring);
+  const chunks = wiring.split('registerCommand(').slice(1);
+  assert.ok(chunks.length > 10);
+  for (const chunk of chunks) {
+    const id = chunk.match(/^'([^']+)'/)?.[1];
+    if (/\benabled:/.test(chunk)) assert.match(chunk, /\breason:/, `${id} has enabled() but no reason`);
+  }
 });

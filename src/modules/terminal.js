@@ -1,7 +1,7 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, isAppModifier, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
+import { $, activeTab, api, askConfirm, askPrompt, closeCtxMenu, copyText, hasOpenModal, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
 import { icon } from '../shared/icons.js';
-import { accelOf } from './keymap.js';
+import { accelOf, appShortcutOf, matchAction } from './keymap.js';
 import { DIVIDER_SIZE, layoutMinSize, paneCapacity, paneMinSize, planGrid } from './terminal-layout.js';
 import { renderSplitTree, replaceLayoutContent } from './split-layout-renderer.js';
 import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, workspaceSignature } from './terminal-workspace.js';
@@ -141,7 +141,7 @@ export function openTabCtxMenu(x, y, tabId) {
       },
     },
     // 文件管理是标签内的分屏之一:与「新增分屏」对称的入口,可连续开多个
-    { label: '新增文件分屏', disabled: ![...state.sessions.values()].some((s) => s.tabId === tabId && s.status === 'connected'), run: () => addFilePane(tabId) },
+    { label: '新增文件分屏', disabled: !!filePaneBlocker(tabId), reason: filePaneBlocker(tabId), run: () => addFilePane(tabId) },
     '-',
     { label: '新建标签', run: () => newTabWithPicker() },
   ]);
@@ -713,13 +713,21 @@ export function splitActive(dir) {
 /// 新增文件分屏:文件管理是标签内的分屏之一,与「新增分屏」(终端)完全对称。
 /// 前置(标签内有已连接会话)、容量、布局(活动分屏右侧分割 + 自动整理)同规则;
 /// 不创建会话 —— 传输通道在每次操作提交时解析(见 sftp.js paneSession)。
-export function addFilePane(tabId) {
+/// 能否在该标签新增文件分屏:可以返回 '',不能返回原因。⋯ 菜单、标签右键与
+/// addFilePane 共用这一个判定,入口的可用状态与执行时的拦截不会各说各的。
+export function filePaneBlocker(tabId) {
   const tab = tabId ? state.tabs.get(tabId) : activeTab();
-  if (!tab) return toast('没有可用标签', 'error');
-  const hasConnected = [...state.sessions.values()].some((s) => s.tabId === tab.id && s.status === 'connected');
-  if (!hasConnected) return toast('请先连接主机再新增文件分屏', 'error');
+  if (!tab) return '没有打开的标签';
+  if (![...state.sessions.values()].some((s) => s.tabId === tab.id && s.status === 'connected')) return '先连接当前标签的主机';
   const cap = maxPaneCapacity();
-  if (tab.panes.size + 1 > cap) return toast(`当前窗口最多容纳 ${cap} 个分屏窗格`, 'error');
+  if (tab.panes.size + 1 > cap) return `当前窗口最多容纳 ${cap} 个分屏窗格`;
+  return '';
+}
+
+export function addFilePane(tabId) {
+  const blocker = filePaneBlocker(tabId);
+  if (blocker) return toast(blocker, 'error');
+  const tab = tabId ? state.tabs.get(tabId) : activeTab();
   const paneId = newPaneId();
   const pane = { id: paneId, kind: 'file', ...createFilePaneState() };
   pane.el = makePaneEl(paneId, tab.id, 'file', pane);
@@ -808,24 +816,17 @@ export function focusedPaneId() {
   return firstLeafPaneId(tab.layout);
 }
 
-/// 关闭标签内"最该关"的那个窗格:**优先空窗格**,其次才是当前焦点窗格。
-/// 为什么不是"直接关焦点窗格":分屏后焦点一直留在会话窗格上(新建的空窗格
-/// 不会抢走 .focused 标记),用户连开几个空窗格再点"关闭当前窗格",若按焦点
-/// 就会先把正在用的连接关掉、把空窗格全留着 —— 与"撤销分屏"的意图正好相反。
-/// 空窗格用后进先出:连续点关闭就是逐个撤销刚才的分屏。
+/// 「关闭当前窗格」/ ⌘W 关闭的就是焦点窗格,与命令名一致(同类终端都如此)。
+/// 曾经优先关空窗格(当年分屏会先生成"选择主机"的空窗格),现在分屏直接复用
+/// 当前主机,空窗格自己也有 ✕,不再需要特殊照顾。
 export function pickPaneToClose(tab) {
-  // 空窗格优先仅针对无会话的终端窗格;文件分屏是内容不是分屏残留,
-  // 不能当"撤销分屏"的牺牲品(焦点落在它上面时才由关闭操作关闭)。
-  const empties = [...tab.panes.values()].filter((p) => !p.sessionId && p.kind !== 'file');
-  if (empties.length) return empties[empties.length - 1].id;
-  return focusedPaneId();
+  if (tab.id === state.activeTabId) return focusedPaneId();
+  return tab.activePaneId && tab.panes.has(tab.activePaneId) ? tab.activePaneId : firstLeafPaneId(tab.layout);
 }
 
 /// 关闭当前活动窗格(窗格内会话一并关闭;空窗格直接摘除)。
-/// 这是"分屏开得进去、退不出来"的入口:此前只有 ⌘W 且必须先聚焦窗格,
-/// 而空窗格(尚未选主机)连 ⌘W 都关不掉 —— 没有会话可关。
 /// targetPaneId:窗格右上角 ✕ 传入的显式目标 —— 点哪个格子就关哪个格子;
-/// 菜单/⌘W 不传,仍按"最该关的那个"解析(优先空窗格,其次焦点窗格)。
+/// 菜单/⌘W 不传,关闭焦点窗格。
 export function closeActivePane(targetPaneId, tabId) {
   const tab = targetPaneId ? paneOwner(targetPaneId, tabId) : (tabId ? state.tabs.get(tabId) : activeTab());
   if (!tab || !tab.layout) return toast('当前没有可分屏的窗格', 'error');
@@ -1109,25 +1110,27 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   });
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
-    const appMod = isAppModifier(ev);
-    const mod = appMod || ev.ctrlKey;
-    // Ctrl/Cmd+C 按"是否存在选区"分流(Windows Terminal 同款规则):
+    // 应用快捷键不进 xterm:否则 Ctrl+Shift+Enter 被当回车发给 shell、
+    // Ctrl+3..7 被转成控制字符。返回 false 时 xterm 不处理也不取消事件,
+    // 它照常冒泡到 entry.js 的全局分发。
+    if (appShortcutOf(ev)) return false;
+    // 复制按"是否存在选区"分流(Windows Terminal 同款规则):
     // 有选区 = 复制意图,绝不把 \x03 发给 shell —— 否则正在跑的命令立即被终止;
-    // 无选区 = 中断意图,放行给 xterm 发 \x03(SIGINT),维持标准终端行为。
-    // Shift/CapsLock 会把 ev.key 变成 'C',两种都要认,否则 Ctrl+Shift+C 是死键。
+    // 无选区的纯 Ctrl+C = 中断意图,放行给 xterm 发 \x03(SIGINT)。
+    // macOS 的复制只认 ⌘C,Ctrl+C 不进这里,一律是 SIGINT。
     // preventDefault 拦掉浏览器默认复制:终端选区是 xterm 内部状态(WebGL 渲染下
     // DOM 里没有选中文本),默认行为只会把别处 UI(AI 面板/主机列表)的 DOM 选区
     // 塞进剪贴板 —— 表现为"复制的不是选中的内容"。
-    if (mod && !ev.altKey && (ev.key === 'c' || ev.key === 'C')) {
+    if (matchAction('term.copy', ev)) {
       ev.preventDefault();
-      if (ev.shiftKey || term.hasSelection()) {
-        const sel = term.getSelection();
-        if (sel) copyText(sel).then((ok) => { if (!ok) toast('复制失败：剪贴板不可用', 'error'); });
+      const sel = term.hasSelection() ? term.getSelection() : '';
+      if (sel) {
+        copyText(sel).then((ok) => { if (!ok) toast('复制失败：剪贴板不可用', 'error'); });
         return false;
       }
-      return true;
+      return ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
     }
-    if (mod && ev.key.toLowerCase() === 'v' && !ev.shiftKey) {
+    if (matchAction('term.paste', ev)) {
       // preventDefault 拦掉浏览器默认粘贴:否则 keydown 的默认动作会在 textarea
       // 上再触发一次原生 paste 事件,xterm 的粘贴监听器插入一次、下面的手动
       // readText 链路又插入一次 —— 粘贴内容出现两遍。
@@ -1135,7 +1138,11 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
       navigator.clipboard.readText().then((t) => { if (t) term.paste(t); }).catch(() => {});
       return false;
     }
-    if (appMod && (ev.key === 'f' || ev.key === 'd')) return false; // 交给全局快捷键(搜索/分屏)
+    if (matchAction('term.selectAll', ev)) {
+      ev.preventDefault();
+      term.selectAll();
+      return false;
+    }
     return true;
   });
 
