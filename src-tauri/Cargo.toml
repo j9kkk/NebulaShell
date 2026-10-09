@@ -8,10 +8,10 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# macos-private-api:titleBarStyle Overlay(原生红绿灯悬浮在 webview 上)需要。
+# 必须全平台开启并与 tauri.conf.json 的 app.macOSPrivateApi 一致:tauri-build 按目标
+# 平台合并配置后校验特性表,不一致即构建失败(该特性在 Windows/Linux 上不生效)。
 tauri = { version = "2", features = ["macos-private-api", "test"] }
-# macos-private-api:titleBarStyle Overlay(原生红绿灯悬浮在 webview 上)需要
-[target.'cfg(target_os = "macos")'.dependencies]
-tauri = { version = "2", features = ["test", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
