@@ -57,7 +57,6 @@ export const state = {
   tabSeq: 0,
   paneSeq: 0,
   broadcast: null,     // E5: Set(sessionId) 广播参与者
-  historyOpen: false,
   aiModels: [],        // 已拉取的模型候选(含 name/ownedBy/created)
   aiSelected: [],      // 已勾选启用、可用于对话的模型(只读自 settings.ai.models)
 };
@@ -440,45 +439,6 @@ function runConfirm(message, { title = '确认操作', okText = '确定', cancel
     setModalDismissHandler(modal, onCancel);
     openModal(modal);
     (defaultFocus === 'cancel' ? cancelBtn : okBtn).focus();
-  });
-}
-
-/// 让浮动面板可拖动(片段/历史这类常驻面板会遮住左侧操作区,须能挪开)。
-/// handle 是拖拽把手(通常标题栏)。定位统一用相对 offsetParent 的 left/top ——
-/// 元素原先若用 right/bottom 定位(如贴右侧的状态栏浮层),必须清掉那一侧:
-/// left 与 right 同时存在时二者互相牵制,拖不到目标位置。
-export function makeDraggable(el, handle) {
-  if (!el || !handle || el._draggable) return;
-  el._draggable = true;
-  handle.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    if (e.target.closest('button, input, select, textarea')) return; // 把手上的控件照常可用
-    e.preventDefault();
-    const rect = el.getBoundingClientRect();
-    const startLeft = el.offsetLeft;
-    const startTop = el.offsetTop;
-    const startClientX = e.clientX;
-    const startClientY = e.clientY;
-    const move = (ev) => {
-      const host = el.offsetParent;
-      const hostW = host ? host.clientWidth : window.innerWidth;
-      const hostH = host ? host.clientHeight : window.innerHeight;
-      // 限制在容器内:拖出可视区就再也点不到了
-      const left = Math.min(Math.max(0, hostW - rect.width), Math.max(0, startLeft + (ev.clientX - startClientX)));
-      const top = Math.min(Math.max(0, hostH - rect.height), Math.max(0, startTop + (ev.clientY - startClientY)));
-      el.style.left = left + 'px';
-      el.style.top = top + 'px';
-      el.style.right = 'auto';
-      el.style.bottom = 'auto';
-    };
-    const up = () => {
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-      document.body.classList.remove('dragging');
-    };
-    document.body.classList.add('dragging');
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
   });
 }
 

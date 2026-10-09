@@ -38,7 +38,7 @@ export const DEFAULT_KEYMAP = {
   'term.selectAll':  { mac: 'cmd+A',           ...pc('ctrl+shift+A'),     label: '全选' },
   // Ctrl+K 是 readline 的"删到行尾",命令面板因此用 ⇧P(VS Code / Windows Terminal 惯例)
   'palette.open':    { mac: 'cmd+shift+P',     ...pc('ctrl+shift+P'),     label: '命令面板' },
-  'settings.terminal': { mac: 'cmd+,',         ...pc('ctrl+,'),           label: '终端设置' },
+  'settings.open':   { mac: 'cmd+,',           ...pc('ctrl+,'),           label: '设置' },
   // ⌘K 清屏是 macOS 终端惯例;Win/Linux 没有不与 shell 冲突的对应键,不设
   'session.clear':   { mac: 'cmd+K',                                      label: '清屏' },
   // 以下两项只由 macOS 菜单栏的加速键触发(页面不拦截,模态打开时也可用)
@@ -49,7 +49,7 @@ export const DEFAULT_KEYMAP = {
 /// 应用级动作:无论焦点在哪(包括终端内)都归应用处理,由全局分发执行。
 /// 复制/粘贴/全选属于所在组件,不在此列;window.close / app.quit 交给菜单栏。
 export const APP_ACTIONS = ['pane.zoom', 'session.search', 'workspace.close', 'tab.new', 'pane.split', 'tab.switch',
-  'palette.open', 'settings.terminal', 'session.clear'];
+  'palette.open', 'settings.open', 'session.clear'];
 
 const platformKey = () => (PLATFORM === 'darwin' ? 'mac' : PLATFORM === 'windows' ? 'win' : 'linux');
 

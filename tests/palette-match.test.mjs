@@ -33,7 +33,7 @@ test('更多常见查询命中预期命令', async () => {
     端口: 'tools.forwards', tunnel: 'tools.forwards',
     导出: 'hosts.export', export: 'hosts.export',
     quit: 'app.quit', 退出: 'app.quit',
-    设置: 'settings.terminal', preferences: 'settings.terminal',
+    设置: 'settings.open', preferences: 'settings.open', 终端设置: 'settings.open', 'api key': 'settings.open', 快捷键: 'settings.open',
     sftp: 'tab.file.add', 文件: 'tab.file.add',
     平铺: 'workspace.tile', 'new tab': 'tab.new', 指纹: 'settings.fingerprints',
   };

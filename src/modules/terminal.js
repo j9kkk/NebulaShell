@@ -7,7 +7,7 @@ import { DIVIDER_SIZE, layoutMinSize, paneCapacity, paneMinSize, planGrid } from
 import { renderSplitTree, replaceLayoutContent } from './split-layout-renderer.js';
 import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, workspaceSignature } from './terminal-workspace.js';
 import { escapeHtml } from './hosts.js';
-import { closeSnippetMenu, renderMonitorBar } from './monitor.js';
+import { renderMonitorBar } from './monitor.js';
 import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSession } from './sftp.js';
 import { confirmTransferInterrupt } from './file-transfer.js';
 import { Terminal } from '@xterm/xterm';
@@ -223,7 +223,6 @@ export function activatePane(tabId, paneId, focus = false) {
   syncFocusedPane(tab.id, paneId);
   syncTabChrome();
   updateStatusbar(null);
-  closeSnippetMenu();
   renderMonitorBar();
 }
 
@@ -1341,7 +1340,6 @@ export function activateSession(sessionId, { focus = true } = {}) {
   syncTabChrome();
   updateStatusbar(s);
   if (selectionChanged) loadSessionLogState(s);
-  closeSnippetMenu();
   renderMonitorBar();
 }
 

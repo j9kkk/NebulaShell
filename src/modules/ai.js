@@ -89,7 +89,7 @@ export function closeAiSettings() {
   state.aiModels = savedModels();
   $('#ai-apikey').value = '';
   closeModelPicker();
-  closeModal('#modal-ai');
+  closeModal('#modal-settings');
   syncSelectedModelsFromSettings();
 }
 
@@ -285,7 +285,7 @@ function aiSyncScrollButton(box = $('#ai-messages')) {
 
 /// 内容写入后的统一收口:贴底才跟随,不打扰上滚阅读的用户。
 /// 面板隐藏(clientHeight 0)时滚动无意义,跳过;重开面板时由
-/// toggleAiPanel/aiDiagnose 再调一次补齐。
+/// right-panel.js 的 onShown 再调一次补齐。
 export function aiStickScroll() {
   const box = $('#ai-messages');
   if (!box || box.clientHeight === 0) return;
@@ -1039,19 +1039,18 @@ export function stripTerminalNoise(s) {
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
 
+/// 返回是否已发出诊断请求;调用方据此切到右侧工具栏的 AI 页签。
 export async function aiDiagnose() {
   const s = state.sessions.get(state.activeId);
-  if (!s) return toast('请先连接主机', 'error');
+  if (!s) { toast('请先连接主机', 'error'); return false; }
   // 只取最后一次输入的命令 + 它提交之后的控制台输出(terminal.js 在 onData/
   // ssh:data 里跟踪),不再扫整屏 —— 全屏里早前的无关输出会稀释诊断焦点。
   const cmd = stripTerminalNoise(String(s.lastCmd || '')).trim();
   const output = stripTerminalNoise(String(s.lastOutput || '')).trim();
-  if (!cmd && !output) return toast('还没有执行过命令,无诊断依据', 'error');
+  if (!cmd && !output) { toast('还没有执行过命令,无诊断依据', 'error'); return false; }
   const recent = `最后一次输入的命令：\n${cmd || '(未捕获)'}\n\n该命令的控制台输出：\n${output || '(无输出)'}`.slice(-3000);
   aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```', undefined, { md: true });
-  $('#ai-panel').classList.remove('hidden');
-  $('#ai-resizer').classList.remove('hidden');
-  aiStickScroll(); // 面板从隐藏到可见:隐藏期间的滚动全是空操作,这里补一次贴底
+  return true;
 }
 
 /* ---------------- 监控条增强(H1/H2):磁盘 + sparkline ---------------- */
@@ -1092,7 +1091,7 @@ export function openAiSettings() {
   $('#ai-apikey').value = '';
   aiDraft = { endpoint: aiEndpointIdentity(draftEndpoint()) };
   onAiEndpointChange();
-  openModal('#modal-ai');
+  openModal('#modal-settings');
 }
 
 export function fillPreset(key) {

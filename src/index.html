@@ -50,21 +50,19 @@
         <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
         <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
         <button id="btn-split-menu" class="btn icon-tb split-caret" title="分屏与布局" aria-label="分屏与布局"><span class="mi" data-icon="chevronDown"></span></button>
-        <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
+        <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="右侧工具栏(AI 助手 / 命令历史 / 常用片段)" aria-label="右侧工具栏">✨</button>
         <button id="btn-more" class="btn icon-tb" aria-label="更多" data-title="更多(命令面板 %1)" data-accel="palette.open"><span class="mi" data-icon="dots"></span></button>
         <!-- 更多菜单只放全局项:命令面板入口、视图开关、设置与关于。会话与布局
-             命令在就近入口(窗格工具条、终端右键、分屏下拉、侧栏「管理」)。 -->
+             命令在就近入口(窗格工具条、终端右键、分屏下拉、侧栏「管理」),
+             AI / 历史 / 片段是右侧工具栏的页签。 -->
         <div id="more-menu" class="hidden" aria-label="更多">
           <button id="btn-palette" class="btn small" data-command="palette.open" data-accel="palette.open" data-title="命令面板(%1)"><span class="mi" data-icon="command"></span><span class="mm-label">命令面板…</span><span class="mm-key"></span></button>
           <div class="mm-sep"></div>
           <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi" data-icon="panelLeft"></span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
-          <button id="btn-ai-menu" class="btn small" data-command="panel.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 助手</span><span class="mm-state"></span></button>
-          <button id="btn-history" class="btn small" data-command="panel.history"><span class="mi" data-icon="clock"></span><span class="mm-label">命令历史</span><span class="mm-state"></span></button>
-          <button id="btn-snippets" class="btn small" data-command="panel.snippets"><span class="mi" data-icon="zap"></span><span class="mm-label">常用片段</span><span class="mm-state"></span></button>
+          <button id="btn-tools-menu" class="btn small" data-command="panel.tools"><span class="mi" data-icon="panelRight"></span><span class="mm-label">右侧工具栏</span><span class="mm-state"></span></button>
           <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi" data-icon="layout"></span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
           <div class="mm-sep"></div>
-          <button id="btn-term-settings" class="btn small" data-command="settings.terminal" data-accel="settings.terminal" data-title="终端设置(%1)"><span class="mi" data-icon="settings"></span><span class="mm-label">终端设置…</span><span class="mm-key"></span></button>
-          <button id="btn-ai-settings-menu" class="btn small" data-command="settings.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 配置…</span></button>
+          <button id="btn-settings" class="btn small" data-command="settings.open" data-accel="settings.open" data-title="设置(%1)"><span class="mi" data-icon="settings"></span><span class="mm-label">设置…</span><span class="mm-key"></span></button>
           <button id="btn-about" class="btn small" data-command="app.about"><span class="mi" data-icon="info"></span><span class="mm-label">关于 NebulaShell</span></button>
         </div>
       </div>
@@ -75,19 +73,6 @@
         <button id="btn-win-min" class="win-ctl" title="最小化" aria-label="最小化"></button>
         <button id="btn-win-max" class="win-ctl" title="最大化" aria-label="最大化"></button>
         <button id="btn-win-close" class="win-ctl win-ctl-close" title="关闭" aria-label="关闭"></button>
-      </div>
-      <div id="snippet-menu" class="hidden">
-        <div class="pop-head">
-          <span class="pop-title">⚡ 常用片段</span>
-          <span class="spacer"></span>
-          <button id="btn-snippet-close" class="btn icon" title="关闭">✕</button>
-        </div>
-        <div id="snippet-list"></div>
-        <div class="snippet-add">
-          <input id="snippet-name" type="text" placeholder="名称" />
-          <input id="snippet-cmd" type="text" placeholder="命令，例如：df -h" />
-          <button id="btn-snippet-add" class="btn small primary">添加</button>
-        </div>
       </div>
       <div id="term-stack">
         <div id="welcome">
@@ -144,17 +129,25 @@
       </div>
     </main>
 
-    <!-- AI 面板 -->
-    <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手面板宽度"></div>
-    <aside id="ai-panel" class="hidden">
+    <!-- 右侧工具栏:AI 助手 / 命令历史 / 常用片段 三个页签(容器沿用 #ai-panel)。
+         页签页叠放在同一格,非活动页只是不可见 —— 滚动位置、过滤词、输入草稿
+         都留在原处(见 right-panel.js)。 -->
+    <div id="ai-resizer" class="resizer hidden" title="拖动调整右侧工具栏宽度"></div>
+    <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="右侧工具栏">
       <!-- 空白处可拖拽窗口(data-tauri-drag-region 只在点按元素本身时生效,
            不影响子按钮);右侧 padding 给 #win-controls 让位(Windows)。 -->
       <div class="ai-header" data-tauri-drag-region>
-        <span class="ai-title">✨ AI 助手</span>
+        <div class="rp-tabs" role="tablist" aria-label="右侧工具栏">
+          <button id="rp-tab-ai" class="rp-tab" type="button" role="tab" data-tab="ai" aria-controls="rp-ai" aria-selected="true" title="AI 助手"><span class="mi" data-icon="sparkles"></span><span class="rp-tab-lbl">AI 助手</span></button>
+          <button id="rp-tab-history" class="rp-tab" type="button" role="tab" data-tab="history" aria-controls="rp-history" aria-selected="false" tabindex="-1" title="命令历史"><span class="mi" data-icon="clock"></span><span class="rp-tab-lbl">命令历史</span></button>
+          <button id="rp-tab-snippets" class="rp-tab" type="button" role="tab" data-tab="snippets" aria-controls="rp-snippets" aria-selected="false" tabindex="-1" title="常用片段"><span class="mi" data-icon="zap"></span><span class="rp-tab-lbl">常用片段</span></button>
+        </div>
         <span class="spacer"></span>
-        <button id="ai-settings-open" class="btn icon" title="AI 设置">⚙</button>
-        <button id="btn-ai-close" class="btn icon" title="收起">✕</button>
+        <button id="ai-settings-open" class="btn icon" title="AI 设置" aria-label="AI 设置">⚙</button>
+        <button id="btn-ai-close" class="btn icon" title="收起右侧工具栏" aria-label="收起右侧工具栏">✕</button>
       </div>
+      <div class="rp-pages">
+      <section id="rp-ai" class="rp-page active" role="tabpanel" data-page="ai" aria-labelledby="rp-tab-ai">
       <!-- 快捷操作已迁移(2026-10-08):「解释选中内容」→ 终端选区末尾的悬浮 🔍
            按钮(terminal.js bindSelectionExplain);「诊断报错」→ 终端右键菜单。
            .ai-quick 行随之移除,消息区上移。 -->
@@ -184,6 +177,25 @@
             <button id="ai-send" class="btn primary ai-send" type="button" title="发送"></button>
           </div>
         </div>
+      </div>
+      </section>
+      <section id="rp-history" class="rp-page" role="tabpanel" data-page="history" aria-labelledby="rp-tab-history">
+        <div class="rp-toolbar">
+          <input id="hist-search" class="inp" type="text" placeholder="过滤历史…" aria-label="过滤命令历史" autocomplete="off" spellcheck="false" />
+          <button id="hist-clear" class="btn small" type="button">清空</button>
+        </div>
+        <div id="hist-list" class="rp-list"></div>
+        <p class="rp-hint muted">点击填入当前终端,不会自动回车</p>
+      </section>
+      <section id="rp-snippets" class="rp-page" role="tabpanel" data-page="snippets" aria-labelledby="rp-tab-snippets">
+        <div id="snippet-list" class="rp-list"></div>
+        <div class="snippet-add">
+          <input id="snippet-name" type="text" placeholder="名称" aria-label="片段名称" />
+          <input id="snippet-cmd" type="text" placeholder="命令，例如：df -h" aria-label="片段命令" />
+          <button id="btn-snippet-add" class="btn small primary" type="button">添加</button>
+        </div>
+        <p class="rp-hint muted">点击在当前终端执行</p>
+      </section>
       </div>
     </aside>
 
@@ -286,10 +298,37 @@
     </div>
   </div>
 
-  <!-- AI 设置弹窗 -->
-  <div id="modal-ai" class="modal hidden">
-    <div class="modal-card">
-      <h3>AI 设置</h3>
+  <!-- 设置窗口:左侧分区(终端 / AI / 快捷键),右侧是当前分区的表单。
+       终端与 AI 两个分区各自保存、各自取消(保存后关闭窗口);快捷键分区只读,
+       内容取自 keymap(settings.js renderKeymapTable)。 -->
+  <div id="modal-settings" class="modal hidden">
+    <div class="modal-card settings-card">
+      <h3>设置</h3>
+      <div class="settings-body">
+        <nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分区">
+          <button id="settings-tab-terminal" class="settings-tab" type="button" role="tab" data-section="terminal" aria-controls="settings-sec-terminal"><span class="mi" data-icon="terminal"></span><span>终端</span></button>
+          <button id="settings-tab-ai" class="settings-tab" type="button" role="tab" data-section="ai" aria-controls="settings-sec-ai"><span class="mi" data-icon="sparkles"></span><span>AI</span></button>
+          <button id="settings-tab-keys" class="settings-tab" type="button" role="tab" data-section="keys" aria-controls="settings-sec-keys"><span class="mi" data-icon="keyboard"></span><span>快捷键</span></button>
+        </nav>
+        <section id="settings-sec-terminal" class="settings-sec" role="tabpanel" data-section="terminal" aria-labelledby="settings-tab-terminal">
+          <div class="form-grid">
+            <label for="term-fontsize">字号</label><input id="term-fontsize" type="number" min="10" max="20" value="13" />
+            <label for="term-theme">配色主题</label>
+            <select id="term-theme">
+              <option value="nebula">星云暗（默认）</option>
+              <option value="light">日蚀亮</option>
+              <option value="forest">森林绿</option>
+            </select>
+            <label for="term-scrollback">回滚行数</label><input id="term-scrollback" type="number" min="1000" max="20000" step="1000" value="2000" />
+            <label for="term-open-tempdir">双击打开缓存目录</label><input id="term-open-tempdir" type="text" placeholder="留空 = 系统临时目录（默认）" style="width:100%;" spellcheck="false" autocomplete="off" />
+          </div>
+          <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。「双击打开缓存目录」是文件管理双击打开文件时临时副本的存放位置，留空用系统临时目录。</p>
+          <div class="modal-actions">
+            <button id="btn-term-cancel" class="btn">取消</button>
+            <button id="btn-term-save" class="btn primary">保存</button>
+          </div>
+        </section>
+        <section id="settings-sec-ai" class="settings-sec hidden" role="tabpanel" data-section="ai" aria-labelledby="settings-tab-ai">
       <div class="form-grid">
         <label>供应商</label>
         <select id="ai-provider"></select>
@@ -323,6 +362,20 @@
         <button id="btn-ai-cancel" class="btn">取消</button>
         <button id="btn-ai-test" class="btn">测试连接</button>
         <button id="btn-ai-save" class="btn primary">保存</button>
+      </div>
+        </section>
+        <section id="settings-sec-keys" class="settings-sec hidden" role="tabpanel" data-section="keys" aria-labelledby="settings-tab-keys">
+          <div class="keys-wrap">
+            <table id="settings-keys-table" class="keys-table">
+              <thead><tr><th>操作</th><th>快捷键</th></tr></thead>
+              <tbody id="settings-keys-tbody"></tbody>
+            </table>
+          </div>
+          <p class="muted small-note">当前平台的默认键位(只读)。其余命令可用命令面板执行。</p>
+          <div class="modal-actions">
+            <button id="btn-keys-close" class="btn">关闭</button>
+          </div>
+        </section>
       </div>
     </div>
   </div>
@@ -486,29 +539,6 @@
         <span class="spacer"></span>
         <button id="btn-fw-save" class="btn primary">保存规则</button>
         <button id="btn-fw-close" class="btn">关闭</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 终端设置弹窗 -->
-  <div id="modal-term" class="modal hidden">
-    <div class="modal-card">
-      <h3>终端设置</h3>
-      <div class="form-grid">
-        <label>字号</label><input id="term-fontsize" type="number" min="10" max="20" value="13" />
-        <label>配色主题</label>
-        <select id="term-theme">
-          <option value="nebula">星云暗（默认）</option>
-          <option value="light">日蚀亮</option>
-          <option value="forest">森林绿</option>
-        </select>
-        <label>回滚行数</label><input id="term-scrollback" type="number" min="1000" max="20000" step="1000" value="2000" />
-        <label>双击打开缓存目录</label><input id="term-open-tempdir" type="text" placeholder="留空 = 系统临时目录（默认）" style="width:100%;" spellcheck="false" autocomplete="off" />
-      </div>
-      <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。「双击打开缓存目录」是文件管理双击打开文件时临时副本的存放位置，留空用系统临时目录。</p>
-      <div class="modal-actions">
-        <button id="btn-term-cancel" class="btn">取消</button>
-        <button id="btn-term-save" class="btn primary">保存</button>
       </div>
     </div>
   </div>

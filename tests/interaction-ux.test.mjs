@@ -555,9 +555,10 @@ test('terminal state notifications refresh the real workspace split button after
     splitActive: () => { runs++; },
     toggleTabTiling: () => { state.workspace.mode = state.workspace.mode === 'single' ? 'tiled' : 'single'; },
   });
-  for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'toggleHistory', 'toggleSnippetMenu', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openTermSettings', 'openAiSettings', 'openFingerprints', 'openAbout', 'toggleSidebar',
+  for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openSettings', 'openFingerprints', 'openAbout', 'toggleSidebar',
     'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts',
-    'focusedPaneId', 'paneOwner', 'activateSession', 'toggleBroadcastMember', 'splitMenuItems', 'hostManageItems']) context[name] = () => {};
+    'focusedPaneId', 'paneOwner', 'activateSession', 'toggleBroadcastMember', 'splitMenuItems', 'hostManageItems',
+    'rightPanelOpen', 'rightTabShown', 'toggleRightPanel', 'toggleRightTab', 'setRightPanel']) context[name] = () => {};
   // Execute production wiring and notifier, with adapters only for unrelated actions.
   const entrySource = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
   const terminalSource = await readFile(new URL('../src/modules/terminal.js', import.meta.url), 'utf8');

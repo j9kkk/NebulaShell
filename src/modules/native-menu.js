@@ -21,7 +21,7 @@ const pre = (item, text) => ({ predefined: item, text });
 export const MENU_SPEC = [
   { submenu: 'NebulaShell', items: [
     cmd('app.about'), sep,
-    cmd('settings.terminal'), cmd('settings.ai'), sep,
+    cmd('settings.open'), sep,
     pre('Services', '服务'), sep,
     pre('Hide', '隐藏 NebulaShell'), pre('HideOthers', '隐藏其他'), pre('ShowAll', '全部显示'), sep,
     cmd('app.quit'),
@@ -38,7 +38,8 @@ export const MENU_SPEC = [
   ] },
   { submenu: '视图', items: [
     cmd('palette.open'), sep,
-    cmd('panel.sidebar'), cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), sep,
+    cmd('panel.sidebar'), cmd('panel.tools'), sep,
+    cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), sep,
     cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), sep,
     pre('Fullscreen', '进入全屏'),
   ] },

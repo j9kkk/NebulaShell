@@ -59,7 +59,7 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     return elements.get(selector);
   };
   const state = {
-    sessions: new Map(), activeId: null, hosts: [], historyOpen: true,
+    sessions: new Map(), activeId: null, hosts: [],
     settings: { snippets: [] },
     tabs: new Map(), activeTabId: 'tab-1', tabSeq: 0, paneSeq: 0,
   };
@@ -404,35 +404,39 @@ test('task terminal state refreshes only panes still browsing the target dir', a
   assert.equal(h.calls.find((c) => c.channel === 'sftp:list').payload.path, '/same');
 });
 
-test('snippet menu stays open if terminal shared write helper declines readonly input', async () => {
+test('snippet page runs through the shared write helper and returns focus to the terminal only on success', async () => {
   const writes = [];
   let allow = false;
   const h = await harness('monitor', { write: async (...args) => { writes.push(args); return allow; } });
-  h.connect('a');
+  const session = h.connect('a');
+  let focused = 0;
+  session.term = { focus: () => { focused++; } };
   h.state.settings.snippets = [{ name: 'snippet', cmd: 'echo safe' }];
   h.module.renderSnippets();
   const row = h.$('#snippet-list').children[0];
   await row.fire('click');
-  assert.equal(h.$('#snippet-menu').classList.contains('hidden'), false);
+  assert.equal(focused, 0, 'declined input (readonly) keeps focus in the page');
   allow = true;
   await row.fire('click');
-  assert.equal(h.$('#snippet-menu').classList.contains('hidden'), true);
+  assert.equal(focused, 1);
   assert.deepEqual(writes, [['a', 'echo safe\r'], ['a', 'echo safe\r']]);
   assert.equal(h.calls.length, 0, 'no direct ssh:write bypass');
 });
 
-test('history stays open if shared write helper declines input and never adds Enter', async () => {
+test('history page fills the terminal without Enter and returns focus only on success', async () => {
   let allow = false;
   const writes = [];
   const h = await harness('tools', { invoke: async () => [{ cmd: 'echo history', host: 'a' }], write: async (...args) => { writes.push(args); return allow; } });
-  h.connect('a');
+  const session = h.connect('a');
+  let focused = 0;
+  session.term = { focus: () => { focused++; } };
   await h.module.renderHistory('');
   const row = h.$('#hist-list').children[0];
   await row.fire('click');
-  assert.equal(h.state.historyOpen, true);
+  assert.equal(focused, 0);
   allow = true;
   await row.fire('click');
-  assert.equal(h.state.historyOpen, false);
+  assert.equal(focused, 1);
   assert.deepEqual(writes, [['a', 'echo history'], ['a', 'echo history']]);
   assert.equal(h.calls.some((c) => c.channel === 'ssh:write'), false);
 });

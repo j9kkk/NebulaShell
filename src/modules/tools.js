@@ -1,6 +1,5 @@
 // 批量执行、命令历史、端口转发
-import { $, api, askConfirm, closeModal, copyText, makeDraggable, openModal, state, stripFpMark, toast } from './core.js';
-import { icon } from '../shared/icons.js';
+import { $, api, askConfirm, closeModal, copyText, openModal, state, stripFpMark, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
 import { writeSessionInput } from './terminal.js';
 
@@ -456,41 +455,22 @@ export async function saveForwardRule() {
 
 /* ---------------- 命令历史(F2) ---------------- */
 
-export async function toggleHistory() {
-  state.historyOpen = !state.historyOpen;
-  let panel = $('#history-panel');
-  if (!state.historyOpen) { if (panel) panel.classList.add('hidden'); return; }
-  if (!panel) {
-    panel = document.createElement('div');
-    panel.id = 'history-panel';
-    // 标题栏兼作拖拽把手;带关闭按钮,不必再靠 Esc 或重复点按钮退出
-    panel.innerHTML = `
-      <div class="pop-head">
-        <span class="pop-title">命令历史</span>
-        <span class="spacer"></span>
-        <input id="hist-search" class="inp" placeholder="过滤历史…" />
-        <button id="hist-clear" class="btn sm">清空</button>
-        <button id="hist-close" class="btn icon" title="关闭">${icon('x')}</button>
-      </div>
-      <div id="hist-list"></div>`;
-    $('#term-stack').appendChild(panel);
-    makeDraggable(panel, panel.querySelector('.pop-head'));
-    panel.querySelector('#hist-search').addEventListener('input', (e) => renderHistory(e.target.value));
-    panel.querySelector('#hist-close').addEventListener('click', () => toggleHistory());
-    panel.querySelector('#hist-clear').addEventListener('click', async () => {
-      if (!(await askConfirm('清空全部命令历史?', { title: '清空历史', okText: '清空' }))) return;
-      await api('history:clear');
-      renderHistory('');
-    });
-  }
-  panel.classList.remove('hidden');
-  renderHistory('');
+/// 命令历史是右侧工具栏的一个页签(见 right-panel.js);这里只绑定页内控件。
+export function bindHistoryPage() {
+  $('#hist-search').addEventListener('input', (e) => renderHistory(e.target.value));
+  $('#hist-clear').addEventListener('click', async () => {
+    if (!(await askConfirm('清空全部命令历史?', { title: '清空历史', okText: '清空' }))) return;
+    await api('history:clear');
+    renderHistory($('#hist-search').value);
+  });
 }
 
-export async function renderHistory(kw) {
+/// 重新拉取并渲染。keepScroll:切回页签时刷新数据但保持阅读位置。
+export async function renderHistory(kw, { keepScroll = false } = {}) {
   const list = await api('history:list', { kw });
   const box = $('#hist-list');
   if (!box) return;
+  const top = box.scrollTop;
   box.innerHTML = '';
   if (!list.length) { box.innerHTML = '<div class="file-empty">暂无历史</div>'; return; }
   for (const h of list) {
@@ -501,13 +481,11 @@ export async function renderHistory(kw) {
     row.addEventListener('click', async () => {
       const s = state.sessions.get(state.activeId);
       if (!s || s.status !== 'connected') return toast('请先连接主机', 'error');
-      if (await writeSessionInput(s.sessionId, h.cmd)) {
-        state.historyOpen = false;
-        $('#history-panel')?.classList.add('hidden');
-      }
+      if (await writeSessionInput(s.sessionId, h.cmd)) s.term?.focus?.();
     });
     box.appendChild(row);
   }
+  if (keepScroll) box.scrollTop = top;
 }
 
 /* ---------------- 只读(D9) / 清屏(D4) / 日志(J1) ---------------- */

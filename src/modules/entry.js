@@ -6,15 +6,16 @@ import { bindMoreMenu, closeMoreMenu } from './menu.js';
 import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
-import { addSnippet, closeSnippetMenu, renderMonitorBar, toggleSnippetMenu } from './monitor.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
+import { addSnippet, renderMonitorBar } from './monitor.js';
 import {
   filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
 } from './sftp.js';
 import { bindTransferUi, confirmTransferInterrupt } from './file-transfer.js';
-import { openTermSettings, saveTermSettings } from './settings.js';
-import { bindBatchUi, openBatchModal, openForwardModal, saveForwardRule, toggleHistory } from './tools.js';
+import { bindSettings, openSettings, settingsOpen, settingsSection } from './settings.js';
+import { bindRightPanel, rightPanelOpen, rightPanelTab, rightTabShown, setRightPanel, toggleRightPanel, toggleRightTab } from './right-panel.js';
+import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, saveForwardRule } from './tools.js';
 import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
 import { bindPalette, isPaletteOpen, openPalette, paletteInput, paletteSnapshot } from './palette.js';
 import { buildNativeMenu, nativeMenuSnapshot } from './native-menu.js';
@@ -213,17 +214,6 @@ function syncSidebarToggle(collapsed) {
   btn.setAttribute('aria-expanded', String(!collapsed));
 }
 
-function toggleAiPanel(force = null) {
-  const panel = $('#ai-panel');
-  const open = force === null ? panel.classList.contains('hidden') : force;
-  panel.classList.toggle('hidden', !open);
-  $('#ai-resizer').classList.toggle('hidden', !open);
-  if (open) aiStickScroll(); // 隐藏期间收到的回复把内容顶出了视口,重开回到底部
-  fitAllVisible();
-  scheduleResizeSync();
-  refreshCommandStates();
-}
-
 function closeCurrent() {
   const tab = activeTab();
   if (!tab) return;
@@ -381,8 +371,9 @@ function setupWorkspaceCommands() {
 
   // 应用
   registerCommand('palette.open', { label: '命令面板', category: 'app', kind: 'dialog', keywords: ['command palette', 'commands', 'shortcuts', 'mlmb', 'mingling', 'kuaijiejian'], run: () => openPalette() });
-  registerCommand('settings.terminal', { label: '终端设置', category: 'app', kind: 'dialog', keywords: ['settings', 'preferences', 'font', 'theme', 'zdsz', 'shezhi'], run: openTermSettings });
-  registerCommand('settings.ai', { label: 'AI 配置', category: 'app', kind: 'dialog', keywords: ['ai settings', 'model', 'api key', 'llm', 'aipz', 'peizhi'], run: openAiSettings });
+  registerCommand('settings.open', { label: '设置', category: 'app', kind: 'dialog',
+    keywords: ['settings', 'preferences', 'font', 'theme', 'ai settings', 'model', 'api key', 'llm', 'keyboard shortcuts', 'sz', 'shezhi', '终端设置', 'zdsz', 'AI 配置', 'aipz', 'peizhi', '快捷键', 'kjj'],
+    run: () => openSettings('terminal') });
   registerCommand('app.about', { label: '关于 NebulaShell', category: 'app', keywords: ['about', 'version', 'gy', 'guanyu', 'banben'], run: openAbout });
   registerCommand('window.close', { label: '关闭窗口', category: 'app', allowInModal: true, keywords: ['close window', 'gbck', 'chuangkou'], run: requestWindowClose });
   registerCommand('app.quit', { label: '退出 NebulaShell', category: 'app', allowInModal: true, keywords: ['quit', 'exit', 'tc', 'tuichu'], run: requestWindowClose });
@@ -430,9 +421,11 @@ function setupWorkspaceCommands() {
 
   // 面板
   registerCommand('panel.sidebar', { label: '主机侧栏', category: 'panel', keywords: ['sidebar', 'hosts', 'zjcl', 'cebianlan'], checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
-  registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'zs', 'zhushou'], checked: () => !$('#ai-panel').classList.contains('hidden'), run: () => toggleAiPanel() });
-  registerCommand('panel.history', { label: '命令历史', category: 'panel', keywords: ['history', 'mlls', 'lishi'], checked: () => state.historyOpen, run: toggleHistory });
-  registerCommand('panel.snippets', { label: '常用片段', category: 'panel', keywords: ['snippets', 'cypd', 'pianduan'], checked: () => !$('#snippet-menu').classList.contains('hidden'), run: toggleSnippetMenu });
+  // 右侧工具栏:panel.tools 开关整个面板;三个页签命令打开对应页签,对正在显示的页签再执行一次则收起
+  registerCommand('panel.tools', { label: '右侧工具栏', category: 'panel', keywords: ['tools', 'right panel', 'toolbar', 'ycgjl', 'gongjulan', 'youce'], checked: () => rightPanelOpen(), run: toggleRightPanel });
+  registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'zs', 'zhushou'], checked: () => rightTabShown('ai'), run: () => toggleRightTab('ai') });
+  registerCommand('panel.history', { label: '命令历史', category: 'panel', keywords: ['history', 'mlls', 'lishi'], checked: () => rightTabShown('history'), run: () => toggleRightTab('history') });
+  registerCommand('panel.snippets', { label: '常用片段', category: 'panel', keywords: ['snippets', 'cypd', 'pianduan'], checked: () => rightTabShown('snippets'), run: () => toggleRightTab('snippets') });
 
   // 会话
   registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return openTermSearch(); } });
@@ -443,7 +436,7 @@ function setupWorkspaceCommands() {
     reason: sessionReason, run: async (ctx) => { const id = session(ctx).sessionId; if (await confirmTransferInterrupt([id])) disconnectSession(id); } });
   registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.readOnly, run: (ctx) => toggleReadonly(session(ctx).sessionId) });
   registerCommand('session.log', { label: '记录会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.logActive, run: (ctx) => toggleSessionLog(session(ctx).sessionId) });
-  registerCommand('session.diagnose', { label: 'AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return aiDiagnose(); } });
+  registerCommand('session.diagnose', { label: 'AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: (ctx) => !!session(ctx), reason: noSession, run: async (ctx) => { focusTarget(ctx); if (await aiDiagnose()) setRightPanel(true, 'ai'); } });
   // 广播随状态换动词,不打 ✓。广播期间,显式目标(窗格工具条、右键菜单)是
   // 该会话的加入 / 退出开关,按下态表示参与。
   const broadcastMember = (ctx) => {
@@ -486,7 +479,7 @@ function setupWorkspaceCommands() {
   registerCommand('settings.fingerprints', { label: '主机指纹', category: 'host', kind: 'dialog', keywords: ['fingerprints', 'known hosts', 'zjzw', 'zhiwen'], run: openFingerprints });
 
   const buttons = {
-    'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.ai', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch',
+    'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
     'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-cloud-import': 'cloud.import', 'btn-welcome-cloud': 'cloud.import',
   };
@@ -548,10 +541,14 @@ export function bindEvents() {
   $('#btn-cloud-import-selected').addEventListener('click', cloudImportSelected);
   $('#btn-cloud-close').addEventListener('click', () => closeModal('#modal-cloud'));
 
-  $('#btn-ai-close').addEventListener('click', () => toggleAiPanel(false));
-  $('#ai-settings-open').addEventListener('click', openAiSettings);
+  bindRightPanel();
+  bindHistoryPage();
+  bindSettings();
+  $('#btn-ai-close').addEventListener('click', () => setRightPanel(false));
+  $('#ai-settings-open').addEventListener('click', () => openSettings('ai'));
   $('#btn-ai-cancel').addEventListener('click', closeAiSettings);
-  setModalDismissHandler('#modal-ai', closeAiSettings);
+  // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都丢弃 AI 分区的草稿
+  setModalDismissHandler('#modal-settings', closeAiSettings);
   setModalDismissHandler('#modal-model-picker', closeModelPicker);
   $('#ai-baseurl').addEventListener('input', onAiEndpointChange);
   $('#ai-protocol').addEventListener('change', onAiEndpointChange);
@@ -589,7 +586,7 @@ export function bindEvents() {
     closeModelMenu();
     switchModel(item.dataset.model).then(renderModelSwitch).catch(() => {});
   });
-  $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openAiSettings(); });
+  $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openSettings('ai'); });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#ai-model-menu, #ai-model-trigger')) closeModelMenu();
   });
@@ -628,12 +625,9 @@ export function bindEvents() {
     }
   });
 
-  // 片段 / 文件 / 终端设置
-  $('#btn-snippet-close').addEventListener('click', closeSnippetMenu);
+  // 片段 / 指纹 / 关于
   $('#btn-snippet-add').addEventListener('click', addSnippet);
   $('#snippet-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') addSnippet(); });
-  $('#btn-term-cancel').addEventListener('click', () => closeModal('#modal-term'));
-  $('#btn-term-save').addEventListener('click', saveTermSettings);
   $('#btn-fp-close').addEventListener('click', () => closeModal('#modal-fp'));
   $('#btn-about-close').addEventListener('click', () => closeModal('#modal-about'));
 
@@ -674,9 +668,7 @@ export function bindEvents() {
       return;
     }
     if (e.key !== 'Escape') return;
-    if (!$('#term-search').classList.contains('hidden')) { closeTermSearch(); return; }
-    if (!$('#snippet-menu').classList.contains('hidden')) { closeSnippetMenu(); refreshCommandStates(); return; }
-    if (state.historyOpen) { toggleHistory(); refreshCommandStates(); }
+    if (!$('#term-search').classList.contains('hidden')) closeTermSearch();
   });
 
   // Workspace scheduling coalesces frames and ignores unchanged geometry; observing
@@ -856,8 +848,9 @@ export async function boot() {
   // data-accel 里的动作名(如 'term.copy')在 core.applyAccelTitles 渲染时
   // 经此查 keymap(core 不反向依赖 keymap,由这里注入解析器)。
   applyAccelTitles._accelSpec = accelSpec;
-  // 解 terminal→ai 循环依赖:选中「解释」按钮点击时经此回调 aiSend
-  bindSelectionExplain._aiSend = aiSend;
+  // 解 terminal→ai 循环依赖:选中「解释」按钮点击时经此回调 aiSend;
+  // 回复在 AI 页签里,先把它切出来
+  bindSelectionExplain._aiSend = (...args) => { setRightPanel(true, 'ai'); return aiSend(...args); };
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
   applyAccelTitles();
   // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
@@ -1010,8 +1003,12 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       streaming: b.classList.contains('streaming'),
       hasSpinner: !!b.querySelector('.ai-spinner'),
     })),
-    // AI 设置弹窗是否还开着(验证 Esc 只关最上层)
-    aiSettingsOpen: () => !$('#modal-ai').classList.contains('hidden'),
+    // 设置窗口的 AI 分区是否还开着(验证 Esc 只关最上层)
+    aiSettingsOpen: () => settingsOpen() && settingsSection() === 'ai',
+    settingsOpen: () => settingsOpen(),
+    settingsSection: () => settingsSection(),
+    // 右侧工具栏:是否打开、当前页签、焦点是否在面板内
+    rightPanel: () => ({ open: rightPanelOpen(), tab: rightPanelTab(), focusInside: $('#ai-panel').contains(document.activeElement) }),
     // 温度设置是否已移除
     hasTempField: () => !!$('#ai-temp'),
     // AI 输入行:发送按钮与输入框是否等高

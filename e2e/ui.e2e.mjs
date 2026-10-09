@@ -451,7 +451,7 @@ async function aiCommandBlockRegressions() {
       document.querySelector('#ai-baseurl').value = ${JSON.stringify(ai.base)} + ${JSON.stringify(suffix)};
       document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
       document.querySelector('#btn-ai-save').click(); return 1`);
-    await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden')`, 'true');
+    await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden')`, 'true');
   };
   const send = async (text) => {
     const count = Number(await evalJs(`document.querySelector('#ai-input').value = ${JSON.stringify(text)};
@@ -1252,7 +1252,7 @@ async function main() {
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
-  await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
+  await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden') ? 1 : 0`, '1', 15000);
   await evalJs(`document.querySelector('#ai-input').value = '慢速测试'; document.querySelector('#ai-send').click(); return 1`);
   const pendingSeen = await waitEval(
     `return JSON.stringify(window.__nbTest.aiBubbles())`, '"pending":true', 10000,
@@ -1317,7 +1317,7 @@ async function main() {
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
-  await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
+  await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden') ? 1 : 0`, '1', 15000);
   await evalJs(`document.querySelector('#ai-input').value = 'utf8测试'; document.querySelector('#ai-send').click(); return 1`);
   await waitEval(`return document.querySelector('#ai-messages').textContent`, '中文测试-要知', 30000);
   const utf8Text = String(await evalJs(`return document.querySelector('#ai-messages').textContent`));
@@ -1341,7 +1341,7 @@ async function main() {
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#ai-apikey').value = 'sk-mock';
     document.querySelector('#btn-ai-save').click(); return 1`);
-  await waitEval(`return document.querySelector('#modal-ai').classList.contains('hidden') ? 1 : 0`, '1', 15000);
+  await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden') ? 1 : 0`, '1', 15000);
   await evalJs(`document.querySelector('#ai-input').value = '长回复滚动测试'; document.querySelector('#ai-send').click(); return 1`);
   // T9x1: 流式期间贴底跟随(在流式窗口内至少一个采样点距底 ≤24px)
   const t9x1 = await waitEval(`return (() => {
@@ -1399,7 +1399,7 @@ async function main() {
   else check('T9x5 空闲态上滚浮现按钮,点击回底后按钮隐藏',
     t9x5a.st <= 2 && t9x5a.btn === true && t9x5b.off <= 2 && t9x5b.btn === false,
     JSON.stringify({ t9x5a, t9x5b }));
-  // T9x6: 面板隐藏期间收到完整回复,经真实入口(#btn-ai-close / #btn-ai-menu)
+  // T9x6: 面板隐藏期间收到完整回复,经真实入口(#btn-ai-close / ✨ 右侧工具栏开关)
   // 重开后自动贴底 —— display:none 下滚动全是空操作,重开必须补一次。
   await evalJs(`document.querySelector('#ai-input').value = '隐藏面板滚动测试'; document.querySelector('#ai-send').click(); return 1`);
   await sleep(400);
@@ -1407,7 +1407,7 @@ async function main() {
   // 第二轮流式正文与第一轮相同,用"第120段"出现次数 ≥2 判断第二轮收完
   await waitEval(`return document.querySelector('#ai-messages').textContent.split('长回复第120段').length - 1 >= 2
     && !document.querySelector('.ai-msg.streaming') ? 'done' : 'wait'`, 'done', 30000);
-  await evalJs(`document.querySelector('#btn-ai-menu').click(); return 1`);
+  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`);
   const t9x6 = await waitEval(`return (() => {
     const b = document.querySelector('#ai-messages');
     const off = Math.round(b.scrollHeight - b.scrollTop - b.clientHeight);
@@ -2391,43 +2391,103 @@ async function main() {
 
 
 
-  // 浮动面板:可拖动 + 有明确关闭入口(此前只能用 Esc 或重复点菜单按钮)
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await sleep(150);
-  await evalJs(`document.querySelector('#btn-snippets').click(); return 1`);
-  await sleep(400);
-  const snip = asObj(await evalJs(`return JSON.stringify((() => {
-    const m = document.querySelector('#snippet-menu');
-    const head = m.querySelector('.pop-head');
-    const hb = head.getBoundingClientRect();
-    const before = m.getBoundingClientRect();
-    const fire = (t, x, y, target) => (target || document).dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
-    fire('mousedown', hb.left + 40, hb.top + 8, head);
-    fire('mousemove', hb.left + 140, hb.top + 88, document);
-    fire('mouseup', hb.left + 140, hb.top + 88, document);
-    const after = m.getBoundingClientRect();
-    return { open: !m.classList.contains('hidden'), hasClose: !!m.querySelector('#btn-snippet-close'), dx: Math.round(after.left - before.left), dy: Math.round(after.top - before.top) };
+  // 右侧工具栏(阶段 3):AI / 命令历史 / 常用片段是同一个面板的三个页签,不再浮在终端上
+  const rp = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.rightPanel())`));
+  const runCmd = async (id) => { await evalJs(`window.__nbTest.runCommand(${JSON.stringify(id)}); return 1`); await sleep(250); };
+  await runCmd('panel.snippets');
+  const snipTab = asObj(await evalJs(`return JSON.stringify((() => {
+    const panel = document.querySelector('#ai-panel');
+    const vis = (sel) => getComputedStyle(document.querySelector(sel)).visibility;
+    const pr = panel.getBoundingClientRect(); const lr = document.querySelector('#layout-root').getBoundingClientRect();
+    return { open: !panel.classList.contains('hidden'), tab: panel.dataset.tab, snippets: vis('#rp-snippets'), ai: vis('#rp-ai'), history: vis('#rp-history'),
+      selected: [...panel.querySelectorAll('.rp-tab')].filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.dataset.tab),
+      inPanel: panel.contains(document.querySelector('#snippet-list')) && panel.contains(document.querySelector('#hist-list')),
+      noOverlap: pr.left >= lr.right - 1, floating: !!document.querySelector('#snippet-menu, #history-panel'),
+      gear: vis('#ai-settings-open'), toolsPressed: document.querySelector('#btn-ai-toggle').getAttribute('aria-pressed'),
+      checked: { tools: window.__nbTest.commandState('panel.tools').checked, snippets: window.__nbTest.commandState('panel.snippets').checked,
+        ai: window.__nbTest.commandState('panel.ai').checked } };
   })())`));
-  check(
-    'T43 片段面板可拖动且有关闭按钮',
-    snip.hasClose && (snip.dx !== 0 || snip.dy !== 0),
-    JSON.stringify(snip),
-  );
-  const snipClosed = await evalJs(`document.querySelector('#btn-snippet-close').click(); return JSON.stringify({ hidden: document.querySelector('#snippet-menu').classList.contains('hidden') })`);
-  check('T44 片段面板关闭按钮可收起', asObj(snipClosed).hidden === true, snipClosed);
+  check('T43 常用片段是右侧工具栏页签:在面板内显示、不遮挡终端、无浮动面板,⚙ 只在 AI 页',
+    snipTab.open && snipTab.tab === 'snippets' && snipTab.snippets === 'visible' && snipTab.ai === 'hidden' && snipTab.history === 'hidden'
+      && JSON.stringify(snipTab.selected) === '["snippets"]' && snipTab.inPanel && snipTab.noOverlap && !snipTab.floating
+      && snipTab.gear === 'hidden' && snipTab.toolsPressed === 'true'
+      && snipTab.checked.tools === true && snipTab.checked.snippets === true && snipTab.checked.ai === false,
+    JSON.stringify(snipTab));
 
-  await evalJs(`document.querySelector('#btn-more').click(); return 1`);
-  await sleep(150);
-  await evalJs(`document.querySelector('#btn-history').click(); return 1`);
-  await sleep(600);
-  const hist = asObj(await evalJs(`return JSON.stringify((() => {
-    const p = document.querySelector('#history-panel');
-    if (!p) return { missing: true };
-    return { open: !p.classList.contains('hidden'), hasClose: !!p.querySelector('#hist-close'), hasSearch: !!p.querySelector('#hist-search') };
-  })())`));
-  check('T45 历史面板有关闭按钮', hist.hasClose === true && hist.hasSearch === true, JSON.stringify(hist));
-  const histClosed = await evalJs(`document.querySelector('#hist-close').click(); return JSON.stringify({ hidden: document.querySelector('#history-panel').classList.contains('hidden') })`);
-  check('T46 历史面板关闭按钮可收起', asObj(histClosed).hidden === true, histClosed);
+  // 开关语义:对正在显示的页签再执行一次 = 收起;别的页签 = 切过去;✨ 开关整个面板并记住页签
+  const toggles = [];
+  await runCmd('panel.snippets'); toggles.push(await rp());
+  await runCmd('panel.history'); toggles.push(await rp());
+  await runCmd('panel.ai'); toggles.push(await rp());
+  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`); await sleep(250); toggles.push(await rp());
+  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`); await sleep(250); toggles.push(await rp());
+  await evalJs(`document.querySelector('#btn-ai-close').click(); return 1`); await sleep(250); toggles.push(await rp());
+  const shape = toggles.map((t) => (t.open ? t.tab : 'closed'));
+  check('T44 页签命令:再执行一次收起、切换页签不收起;✨ 开关整个面板并保留页签;✕ 收起',
+    JSON.stringify(shape) === JSON.stringify(['closed', 'history', 'ai', 'closed', 'ai', 'closed']), JSON.stringify(shape));
+
+  // 各页保留自己的状态:历史的过滤词、AI 对话的滚动位置;方向键在页签间切换
+  await runCmd('panel.history');
+  await evalJs(`const q = document.querySelector('#hist-search'); q.value = 'zz-no-such-cmd'; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
+  await waitEval(`return document.querySelector('#hist-list').textContent`, '暂无历史', 8000);
+  await evalJs(`document.querySelector('#rp-tab-ai').click(); return 1`); await sleep(200);
+  const aiScroll = Number(await evalJs(`const b = document.querySelector('#ai-messages'); b.scrollTop = Math.floor((b.scrollHeight - b.clientHeight) / 2); return Math.round(b.scrollTop)`));
+  await evalJs(`document.querySelector('#rp-tab-ai').focus(); return 1`);
+  const arrow = await focusedKey('ArrowRight'); await sleep(300);
+  const onHistory = asObj(await evalJs(`return JSON.stringify({ tab: window.__nbTest.rightPanel().tab, filter: document.querySelector('#hist-search').value,
+    list: document.querySelector('#hist-list').textContent.trim() })`));
+  await evalJs(`document.querySelector('#rp-tab-ai').click(); return 1`); await sleep(200);
+  const aiScrollBack = Number(await evalJs(`return Math.round(document.querySelector('#ai-messages').scrollTop)`));
+  check('T45 切换页签保留各页状态(过滤词/对话滚动位置),方向键在页签间切换并移动焦点',
+    arrow.prevented && arrow.focus === 'rp-tab-history' && onHistory.tab === 'history' && onHistory.filter === 'zz-no-such-cmd'
+      && onHistory.list === '暂无历史' && (windowHidden || (aiScroll > 0 && Math.abs(aiScrollBack - aiScroll) <= 1)),
+    JSON.stringify({ arrow, onHistory, aiScroll, aiScrollBack, windowHidden }));
+  await evalJs(`const q = document.querySelector('#hist-search'); q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-messages').scrollTop = 1e9; return 1`);
+
+  // Esc:焦点在右侧栏输入框里时还给终端,面板不收起
+  const escFrom = [];
+  for (const [tab, input] of [['history', '#hist-search'], ['ai', '#ai-input']]) {
+    await evalJs(`document.querySelector('#rp-tab-${tab}').click(); document.querySelector('${input}').focus(); return 1`);
+    const r = await focusedKey('Escape'); await sleep(100);
+    escFrom.push({ input, prevented: r.prevented, terminal: await evalJs(`return document.activeElement?.classList.contains('xterm-helper-textarea')`), panel: await rp() });
+  }
+  check('T46 右侧栏输入框里按 Esc 焦点回到终端,面板保持打开',
+    escFrom.every((e) => e.prevented && e.terminal === true && e.panel.open && !e.panel.focusInside), JSON.stringify(escFrom));
+
+  // 设置窗口:⌘, / Ctrl+, 在终端里打开(终端分区);三个分区;⚙ 直接到 AI 分区
+  const isMac = (await evalJs(`return window.nebula.platform`)) === 'darwin';
+  await evalJs(`document.querySelector('.term-pane[data-session="' + window.__nbTest.workspaceState().activeId + '"] .xterm-helper-textarea')?.focus(); return 1`);
+  const comma = asObj(await evalJs(`return JSON.stringify(await window.__nbTest.termKeyProbe(${JSON.stringify({ key: ',', code: 'Comma', keyCode: 188, ...(isMac ? { meta: true } : { ctrl: true }) })}))`));
+  await sleep(200);
+  const settingsSnap = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.settingsOpen(), section: window.__nbTest.settingsSection(),
+    tabs: [...document.querySelectorAll('#modal-settings .settings-tab')].map((t) => t.dataset.section),
+    termForm: !!document.querySelector('#term-fontsize').getClientRects().length, aiForm: !!document.querySelector('#ai-provider').getClientRects().length,
+    focus: document.activeElement?.id, oldModals: !!document.querySelector('#modal-term, #modal-ai') })`));
+  check('T46b ⌘, / Ctrl+, 在终端内打开设置窗口(终端分区,焦点在分区页签),不发给 shell;旧的两个设置弹窗已合并',
+    comma.prevented && comma.emitted === '' && JSON.stringify(comma.commands) === '["settings.open"]'
+      && settingsSnap.open && settingsSnap.section === 'terminal' && JSON.stringify(settingsSnap.tabs) === '["terminal","ai","keys"]'
+      && settingsSnap.termForm && !settingsSnap.aiForm && settingsSnap.focus === 'settings-tab-terminal' && !settingsSnap.oldModals,
+    JSON.stringify({ comma, settingsSnap }));
+  await focusedKey('End'); await sleep(100);
+  const keys = asObj(await evalJs(`return JSON.stringify({ section: window.__nbTest.settingsSection(), focus: document.activeElement?.id,
+    rows: [...document.querySelectorAll('#settings-keys-tbody tr')].map((r) => [r.dataset.action, r.querySelector('.keys-accel').textContent]) })`));
+  const keyOf = (id) => keys.rows.find((r) => r[0] === id)?.[1] || '';
+  await focusedKey('ArrowUp'); await sleep(100);
+  const upToAi = asObj(await evalJs(`return JSON.stringify({ ai: window.__nbTest.aiSettingsOpen(), aiForm: !!document.querySelector('#ai-provider').getClientRects().length })`));
+  check('T46c 设置窗口三个分区:快捷键分区按平台只读列出键位,方向键切换分区',
+    keys.section === 'keys' && keys.focus === 'settings-tab-keys' && keys.rows.length >= 10
+      && keyOf('settings.open') === (isMac ? '⌘,' : 'Ctrl+,') && keyOf('palette.open') === (isMac ? '⌘⇧P' : 'Ctrl+Shift+P')
+      && upToAi.ai && upToAi.aiForm, JSON.stringify({ keys, upToAi }));
+  await focusedKey('Escape'); await sleep(200);
+  const afterEsc = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.settingsOpen(), terminal: document.activeElement?.classList.contains('xterm-helper-textarea') })`));
+  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`); await sleep(200);
+  const gear = asObj(await evalJs(`return JSON.stringify({ section: window.__nbTest.settingsSection(), focus: document.activeElement?.id })`));
+  await evalJs(`document.querySelector('#btn-ai-cancel').click(); return 1`); await sleep(150);
+  check('T46d Esc 关闭设置并把焦点还给终端;AI 面板 ⚙ 直接打开 AI 分区',
+    !afterEsc.open && afterEsc.terminal && gear.section === 'ai' && gear.focus === 'settings-tab-ai' && !(await evalJs(`return window.__nbTest.settingsOpen()`)),
+    JSON.stringify({ afterEsc, gear }));
+  await evalJs(`document.querySelector('#btn-ai-close').click(); return 1`);
 
   // 交互动效:存在动画,且带 prefers-reduced-motion 兜底(无障碍)
   await openMenuPage();
@@ -2618,8 +2678,8 @@ async function main() {
   // —— 7 更多菜单只放全局项;主机库操作在侧栏「管理」菜单 ——
   const moreItems = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#more-menu .btn')].map((b) => b.querySelector('.mm-label').textContent.trim()))`));
   check(
-    'T50 更多菜单扁平 9 项(命令面板/视图开关/设置与关于),无子页,侧栏不再有指纹按钮',
-    JSON.stringify(moreItems) === JSON.stringify(['命令面板…', '主机侧栏', 'AI 助手', '命令历史', '常用片段', '标签平铺', '终端设置…', 'AI 配置…', '关于 NebulaShell'])
+    'T50 更多菜单扁平 6 项(命令面板/视图开关/设置与关于),无子页,侧栏不再有指纹按钮',
+    JSON.stringify(moreItems) === JSON.stringify(['命令面板…', '主机侧栏', '右侧工具栏', '标签平铺', '设置…', '关于 NebulaShell'])
       && !(await evalJs(`return !!document.querySelector('#more-menu .mm-page, #more-menu [data-menu-page], #more-menu [data-menu-back]')`))
       && footer.hasFingerprintBtn === false,
     JSON.stringify({ moreItems, footerHasFp: footer.hasFingerprintBtn }),
@@ -3036,7 +3096,7 @@ async function main() {
   // 收起右键菜单,避免影响后续
   await evalJs(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return 1`);
 
-  // 更多菜单扁平化(阶段 2):无子页、无组标题,分隔线分三段(桥接键盘模拟,Enter 默认激活见 focusedKey)。
+  // 更多菜单扁平化(阶段 2 起;阶段 3 收到 6 项):无子页、无组标题,分隔线分三段(桥接键盘模拟,Enter 默认激活见 focusedKey)。
   await openMenuPage();
   const menuStruct = asObj(await evalJs(`return JSON.stringify((() => {
     const menu = document.querySelector('#more-menu');
@@ -3049,8 +3109,8 @@ async function main() {
       inside: r.left >= 7 && r.top >= 7 && r.right <= innerWidth - 7 && r.bottom <= innerHeight - 7,
       isMac: window.nebula.platform === 'darwin' };
   })())`));
-  check('T60 更多菜单扁平:9 项 / 2 条分隔线 / 无子页与组标题,dots 图标,名称统一为「更多」', menuStruct.heads === 0 && menuStruct.pages === 0
-    && menuStruct.seps === 2 && menuStruct.buttons.length === 9 && menuStruct.icon && menuStruct.label === '更多', JSON.stringify(menuStruct));
+  check('T60 更多菜单扁平:6 项 / 2 条分隔线 / 无子页与组标题,dots 图标,名称统一为「更多」', menuStruct.heads === 0 && menuStruct.pages === 0
+    && menuStruct.seps === 2 && menuStruct.buttons.length === 6 && menuStruct.icon && menuStruct.label === '更多', JSON.stringify(menuStruct));
   check('T60b 可见菜单快捷键列按平台渲染', menuStruct.keys.length > 0
     && menuStruct.keys.every((k) => menuStruct.isMac ? k.includes('⌘') && !k.includes('Ctrl') : k.includes('Ctrl') && !k.includes('⌘')),
     JSON.stringify(menuStruct.keys));
@@ -3619,9 +3679,12 @@ async function main() {
       JSON.stringify({ afterFile: { activeId: afterFile.activeId, activeTabId: afterFile.activeTabId }, fileBar }));
     await evalJs(`for (const b of document.querySelectorAll('.term-pane.file-pane .pane-close-btn')) b.click(); return 1`);
 
-    // 可达性:原更多菜单 21 个命令都有就近入口(附录 A「阶段 2 后」列)
+    // 可达性:原更多菜单 21 个命令都有就近入口(附录 A「阶段 3 后」列)。
+    // 右侧工具栏页签按 panel.<页签> 计;AI 面板 ⚙ 打开设置(AI 分区)
     const surfaces = asObj(await evalJs(`return JSON.stringify({
-      static: [...document.querySelectorAll('#tabbar [data-command], #statusbar [data-command], #sidebar [data-command], .pane-toolbar [data-command]')].map((b) => b.dataset.command),
+      static: [...document.querySelectorAll('#tabbar [data-command], #statusbar [data-command], #sidebar [data-command], .pane-toolbar [data-command]')].map((b) => b.dataset.command)
+        .concat([...document.querySelectorAll('#ai-panel .rp-tab')].map((t) => 'panel.' + t.dataset.tab))
+        .concat(document.querySelector('#ai-panel #ai-settings-open') ? ['settings.open'] : []),
       more: [...document.querySelectorAll('#more-menu [data-command]')].map((b) => b.dataset.command) })`));
     await openTermMenu(A.paneId); const termItems = (await ctxSnapshot()).items; await focusedKey('Escape');
     await evalJs(`const tab = document.querySelector('.tab.active'); const r = tab.getBoundingClientRect();
@@ -3631,14 +3694,16 @@ async function main() {
     await openDropdown('#btn-host-manage'); const manageItems = (await ctxSnapshot()).items; await focusedKey('Escape');
     const near = new Set([...surfaces.static, ...[...termItems, ...tabItems, ...splitItems, ...manageItems].map((i) => i.command).filter(Boolean)]);
     const movedOut = ['pane.reflow', 'tab.file.add', 'pane.zoom', 'workspace.close', 'session.reconnect', 'session.readonly', 'session.log',
-      'tools.forwards', 'tools.broadcast', 'tools.batch', 'hosts.import', 'hosts.export', 'settings.fingerprints'];
-    const keptInMore = ['workspace.tile', 'panel.sidebar', 'panel.ai', 'panel.history', 'panel.snippets', 'settings.terminal', 'settings.ai', 'app.about'];
+      'tools.forwards', 'tools.broadcast', 'tools.batch', 'hosts.import', 'hosts.export', 'settings.fingerprints',
+      'panel.ai', 'panel.history', 'panel.snippets'];
+    const moreFinal = ['palette.open', 'panel.sidebar', 'panel.tools', 'workspace.tile', 'settings.open', 'app.about'];
     const missing = movedOut.filter((id) => !near.has(id));
-    const notInMore = keptInMore.filter((id) => !surfaces.more.includes(id));
     const leaked = movedOut.filter((id) => surfaces.more.includes(id));
-    check('T92f 可达性:移出更多菜单的 13 个命令都有就近入口,保留的 8 个仍在更多菜单,更多菜单不再有会话/布局命令',
-      !missing.length && !notInMore.length && !leaked.length && near.has('workspace.tile') && near.has('panel.sidebar') && near.has('panel.ai'),
-      JSON.stringify({ missing, notInMore, leaked, near: [...near] }));
+    // 命令面板(本身就是键盘总入口)与关于只在更多菜单,其余保留项也都有就近入口
+    const onlyInMore = moreFinal.filter((id) => !['palette.open', 'app.about'].includes(id) && !near.has(id));
+    check('T92f 可达性:移出更多菜单的 16 个命令都有就近入口,更多菜单恰为最终 6 项,除命令面板与「关于」外都另有就近入口',
+      !missing.length && !leaked.length && JSON.stringify(surfaces.more) === JSON.stringify(moreFinal) && !onlyInMore.length,
+      JSON.stringify({ missing, leaked, more: surfaces.more, onlyInMore, near: [...near] }));
 
     // 清理:关掉本组新开的分屏窗格
     if (created) await evalJs(`document.querySelector('.term-pane[data-pane="${created.paneId}"] .pane-close-btn')?.click(); return 1`);

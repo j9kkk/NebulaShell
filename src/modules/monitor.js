@@ -1,5 +1,5 @@
 // 资源监控:指标采集与监控条
-import { $, api, makeDraggable, state, toast } from './core.js';
+import { $, api, state, toast } from './core.js';
 import { writeSessionInput } from './terminal.js';
 
 // 状态栏数值一律定长展示:最多 1 位小数、去掉无意义的尾 .0(100.0→100)。
@@ -48,24 +48,8 @@ export function fmtLat(ms) {
   return Math.round(ms / 1000) + 's';
 }
 
-export function closeSnippetMenu() {
-  const menu = $('#snippet-menu');
-  if (menu) menu.classList.add('hidden');
-}
-
-/// 打开/收起片段面板。首次打开时把标题栏注册为拖拽把手 ——
-/// 面板固定在左上角会遮住主机列表,用户必须能把它挪开。
-export function toggleSnippetMenu() {
-  const menu = $('#snippet-menu');
-  if (!menu) return;
-  const opening = menu.classList.contains('hidden');
-  menu.classList.toggle('hidden');
-  if (opening) {
-    makeDraggable(menu, menu.querySelector('.pop-head'));
-    renderSnippets();
-  }
-}
-
+/// 常用片段是右侧工具栏的一个页签(见 right-panel.js),执行后页签保持打开,
+/// 焦点回到终端,方便接着看输出或继续输入。
 export function renderSnippets() {
   const list = $('#snippet-list');
   list.innerHTML = '';
@@ -84,7 +68,7 @@ export function renderSnippets() {
       if (e.target.classList.contains('s-del')) return;
       const cur = state.sessions.get(state.activeId);
       if (!cur || cur.status !== 'connected') return toast('请先连接主机', 'error');
-      if (await writeSessionInput(cur.sessionId, s.cmd + '\r')) closeSnippetMenu();
+      if (await writeSessionInput(cur.sessionId, s.cmd + '\r')) cur.term?.focus?.();
     });
     row.querySelector('.s-del').addEventListener('click', async (e) => {
       e.stopPropagation();
