@@ -211,6 +211,7 @@ test('防回归:UI 文案禁止写死 ⌘(core 符号表与 keymap 注释除外)
     'src/modules/commands.js', 'src/modules/menu.js', 'src/modules/monitor.js',
     'src/modules/tools.js', 'src/modules/ai.js', 'src/modules/cloud.js',
     'src/modules/file-transfer.js', 'src/modules/interaction.js',
+    'src/modules/palette.js', 'src/modules/native-menu.js', 'src/shared/palette-match.js',
   ];
   for (const f of files) {
     const src = (await readFile(new URL(`../${f}`, import.meta.url), 'utf8'))
@@ -224,4 +225,42 @@ test('防回归:UI 文案禁止写死 ⌘(core 符号表与 keymap 注释除外)
       assert.fail(`${f}:${i + 1} UI 文案写死了 ⌘(Windows/Linux 上提示错误),请改走 keymap 动作名/data-accel:${line.trim()}`);
     }
   }
+});
+
+test('阶段 1 新快捷键:命令面板 ⇧⌘P / Ctrl+Shift+P,设置 ⌘, / Ctrl+,,清屏只在 macOS 有 ⌘K', async () => {
+  const mac = (await setup('darwin')).keymap;
+  assert.equal(mac.appShortcutOf(evt('P', { metaKey: true, shiftKey: true, code: 'KeyP' })), 'palette.open');
+  assert.equal(mac.appShortcutOf(evt(',', { metaKey: true, code: 'Comma' })), 'settings.terminal');
+  assert.equal(mac.appShortcutOf(evt('k', { metaKey: true, code: 'KeyK' })), 'session.clear');
+  assert.equal(mac.appShortcutOf(evt('k', { ctrlKey: true, code: 'KeyK' })), '', 'macOS 的 Ctrl+K 属于 shell(readline 删到行尾)');
+  // 退出 / 关窗只由菜单栏加速键触发,页面不拦截
+  assert.equal(mac.appShortcutOf(evt('q', { metaKey: true, code: 'KeyQ' })), '');
+  assert.equal(mac.appShortcutOf(evt('W', { metaKey: true, shiftKey: true, code: 'KeyW' })), '');
+  for (const platform of ['windows', 'linux']) {
+    const km = (await setup(platform)).keymap;
+    assert.equal(km.appShortcutOf(evt('P', { ctrlKey: true, shiftKey: true, code: 'KeyP' })), 'palette.open', platform);
+    assert.equal(km.appShortcutOf(evt(',', { ctrlKey: true, code: 'Comma' })), 'settings.terminal', platform);
+    assert.equal(km.appShortcutOf(evt('k', { ctrlKey: true, code: 'KeyK' })), '', `${platform} Ctrl+K 留给 shell`);
+    assert.equal(km.specOf('session.clear'), '', `${platform} 没有清屏快捷键`);
+    assert.equal(km.accelOf('palette.open'), 'Ctrl+Shift+P');
+  }
+  assert.equal(mac.accelOf('palette.open'), '⌘⇧P');
+  assert.equal(mac.accelOf('settings.terminal'), '⌘,');
+});
+
+test('keymap spec 转 Tauri 菜单加速键', async () => {
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.toAccelerator('cmd+shift+P'), 'CmdOrCtrl+Shift+P');
+  assert.equal(keymap.toAccelerator('cmd+,'), 'CmdOrCtrl+Comma');
+  assert.equal(keymap.toAccelerator('cmd+shift+Enter'), 'CmdOrCtrl+Shift+Enter');
+  assert.equal(keymap.toAccelerator('cmd+k'), 'CmdOrCtrl+K');
+  assert.equal(keymap.toAccelerator('ctrl+alt+t'), 'Ctrl+Alt+T');
+  assert.equal(keymap.toAccelerator('cmd+1..9'), '', '范围写法没有单一加速键');
+  assert.equal(keymap.toAccelerator(''), '');
+  assert.equal(keymap.toAccelerator('cmd+shift'), '', '只有修饰键不成立');
+  for (const id of ['tab.new', 'workspace.close', 'session.search', 'pane.split', 'pane.zoom', 'palette.open', 'settings.terminal', 'session.clear', 'window.close', 'app.quit']) {
+    assert.ok(keymap.toAccelerator(keymap.specOf(id)), `${id} 在 macOS 菜单栏有加速键`);
+  }
+  assert.equal(keymap.toAccelerator(keymap.specOf('app.quit')), 'CmdOrCtrl+Q');
+  assert.equal(keymap.toAccelerator(keymap.specOf('window.close')), 'CmdOrCtrl+Shift+W');
 });

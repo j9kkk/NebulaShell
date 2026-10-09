@@ -249,9 +249,12 @@ async function tabTilingRegressions() {
     const menu = asObj(await evalJs(`return JSON.stringify({ checked: document.querySelector('#btn-tile-tabs').getAttribute('aria-checked'),
       label: document.querySelector('#btn-auto-layout .mm-label').textContent,
       tileButtons: document.querySelectorAll('[data-command="workspace.tile"]').length,
-      toolbarTile: !!document.querySelector('#tabbar > [data-command="workspace.tile"]'), accel: document.querySelector('#btn-tile-tabs').dataset.accel || '' })`));
-    check('T70b 平铺只在更多根菜单提供勾选入口,整理明确限于当前标签,无快捷键/常驻图标',
-      menu.checked === 'true' && menu.label === '整理当前标签分屏' && menu.tileButtons === 1 && !menu.toolbarTile && !menu.accel, JSON.stringify(menu));
+      toolbarTile: !!document.querySelector('#tabbar > [data-command="workspace.tile"]'), accel: document.querySelector('#btn-tile-tabs').dataset.accel || '',
+      inPalette: window.__nbTest.commands().some((c) => c.id === 'workspace.tile' && c.checked === true),
+      inMenuBar: window.__nbTest.nativeMenu().commandIds.includes('workspace.tile') })`));
+    check('T70b 平铺在更多根菜单有勾选入口并进命令面板/菜单栏,整理明确限于当前标签,无快捷键/常驻图标',
+      menu.checked === 'true' && menu.label === '整理当前标签分屏' && menu.tileButtons === 1 && !menu.toolbarTile && !menu.accel
+      && menu.inPalette && menu.inMenuBar, JSON.stringify(menu));
     await focusedKey('Escape');
     const tileChrome = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('.workspace-tile-header')].map(header => ({
       title: header.querySelector('.workspace-tile-title')?.textContent || '', connected: !!header.querySelector('.tab-dot.connected'),
@@ -3093,6 +3096,10 @@ async function main() {
     document.querySelector('#btn-more').click();
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true,
       metaKey: window.nebula.platform === 'darwin', ctrlKey: window.nebula.platform !== 'darwin', shiftKey: window.nebula.platform !== 'darwin' }));
+    const paletteKey = new KeyboardEvent('keydown', { key: 'P', code: 'KeyP', bubbles: true, cancelable: true, shiftKey: true,
+      metaKey: window.nebula.platform === 'darwin', ctrlKey: window.nebula.platform !== 'darwin' });
+    document.body.dispatchEvent(paletteKey);
+    const paletteBlocked = !window.__nbTest.paletteOpen() && paletteKey.defaultPrevented;
     document.querySelector('#btn-newtab').focus();
     const controls = [...prompt.querySelectorAll('input, button')].filter((b) => !b.disabled && b.getClientRects().length);
     const first = controls[0], last = controls.at(-1);
@@ -3103,11 +3110,11 @@ async function main() {
     return { appInert: document.querySelector('#app').inert, parentInert: parent.inert, parentOpen: !parent.classList.contains('hidden'),
       topInert: prompt.inert, focusInside: prompt.contains(document.activeElement), role: prompt.getAttribute('role'), ariaModal: prompt.getAttribute('aria-modal'),
       reverseWrap, forwardWrap: document.activeElement === first && forward.defaultPrevented,
-      tabsStable: window.__nbTest.tabState().tabs === before, menuClosed: document.querySelector('#more-menu').classList.contains('hidden') };
+      tabsStable: window.__nbTest.tabState().tabs === before, menuClosed: document.querySelector('#more-menu').classList.contains('hidden'), paletteBlocked };
   })())`));
   check('T65 顶层模态隔离背景/下层弹窗,阻止应用快捷键并循环 Tab 焦点', scope.appInert && scope.parentInert && scope.parentOpen
     && !scope.topInert && scope.focusInside && scope.role === 'dialog' && scope.ariaModal === 'true'
-    && scope.reverseWrap && scope.forwardWrap && scope.tabsStable && scope.menuClosed, JSON.stringify(scope));
+    && scope.reverseWrap && scope.forwardWrap && scope.tabsStable && scope.menuClosed && scope.paletteBlocked, JSON.stringify(scope));
   await evalJs(`window.__nbTest.promptFill('must-not-leak'); document.querySelector('#modal-prompt').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); return 1`);
   await waitEval(`window.__nbTest.promptTitle()`, 'queue-p2', 10000);
   const queuedPrompt = asObj(await evalJs(`return JSON.stringify({ results: window.__e2eDialogResults,
@@ -3288,6 +3295,181 @@ async function main() {
     && String(readonlyWrite.error).includes('只读'), JSON.stringify(readonlyWrite));
   await evalJs(`document.querySelector('#btn-readonly').click(); return 1`);
   await waitEval(`return document.querySelector('#toasts').textContent`, '已关闭只读模式', 10000);
+
+  /* ===== 命令面板 / macOS 菜单栏 / 关闭拦截(阶段 1) ===== */
+  const paletteMods = macLike ? { meta: true, shift: true } : { ctrl: true, shift: true };
+  const palette = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.palette())`));
+  const paletteQuery = async (q) => asObj(await evalJs(`return JSON.stringify(window.__nbTest.paletteQuery(${JSON.stringify(q)}))`));
+  const focusWhere = () => evalJs(`return document.activeElement?.classList.contains('xterm-helper-textarea') ? 'terminal'
+    : document.activeElement === document.body ? 'body' : (document.activeElement?.id || document.activeElement?.className || '')`);
+  const closePalette = async () => { if (await evalJs(`return window.__nbTest.paletteOpen()`)) await focusedKey('Escape'); };
+
+  // 在 xterm textarea 上派发:快捷键交给应用、不给 shell 发任何数据
+  await evalJs(`document.querySelector('.term-pane[data-session="' + window.__nbTest.workspaceState().activeId + '"] .xterm-helper-textarea')?.focus(); return 1`);
+  const fromTerm = await probe({ key: 'P', code: 'KeyP', keyCode: 80, ...paletteMods });
+  const termPalette = await palette();
+  const termFocus = await focusWhere();
+  await focusedKey('Escape');
+  const termBack = await focusWhere();
+  check('T90 终端内按命令面板快捷键打开面板,不发给 shell;Esc 关闭后焦点回到终端',
+    fromTerm.prevented && fromTerm.emitted === '' && JSON.stringify(fromTerm.commands) === JSON.stringify(['palette.open'])
+    && termPalette.open && termFocus === 'palette-input' && termBack === 'terminal' && !(await evalJs(`return window.__nbTest.paletteOpen()`)),
+    JSON.stringify({ fromTerm, open: termPalette.open, termFocus, termBack }));
+
+  // 焦点在普通输入框里、以及 ⋯ 打开时也能打开
+  const fromInput = asObj(await evalJs(`return JSON.stringify((() => {
+    const input = document.querySelector('#host-search'); input.focus();
+    const e = new KeyboardEvent('keydown', { key: 'P', code: 'KeyP', bubbles: true, cancelable: true, shiftKey: true,
+      metaKey: ${macLike}, ctrlKey: ${!macLike} });
+    input.dispatchEvent(e);
+    return { prevented: e.defaultPrevented, open: window.__nbTest.paletteOpen() };
+  })())`));
+  await focusedKey('Escape');
+  const inputBack = await focusWhere();
+  await openMenuPage();
+  const fromMenu = await focusedKey('P', { code: 'KeyP', shiftKey: true, metaKey: macLike, ctrlKey: !macLike });
+  const menuPalette = await palette();
+  await focusedKey('Escape');
+  const menuBack = await focusWhere();
+  check('T90b 输入框内与 ⋯ 打开时都能打开命令面板,关闭后焦点回到原处(⋯ 场景回到终端)',
+    fromInput.prevented && fromInput.open && inputBack === 'host-search' && fromMenu.prevented && menuPalette.open && !fromMenu.menuOpen && menuBack === 'terminal',
+    JSON.stringify({ fromInput, inputBack, fromMenu, menuOpen: menuPalette.open, menuBack }));
+
+  // 全部注册命令都在面板里;空查询按分类分组
+  await evalJs(`document.querySelector('.term-pane[data-session="' + window.__nbTest.workspaceState().activeId + '"] .xterm-helper-textarea')?.focus(); window.__nbTest.runCommand('palette.open'); return 1`);
+  await waitEval(`window.__nbTest.paletteOpen()`, 'true', 5000);
+  const all = await palette();
+  const registered = asObj(await evalJs(`return JSON.stringify(window.__nbTest.commands().map((c) => c.id))`));
+  const listedIds = new Set(all.rows.filter((r) => r.type === 'command').map((r) => r.id));
+  const missing = registered.filter((id) => !listedIds.has(id));
+  check('T90c 全部注册命令都出现在命令面板(按分类分组,快捷键按平台渲染)', registered.length >= 30 && missing.length === 0
+    && all.groups.includes('标签与分屏') && all.groups.includes('会话')
+    && all.rows.find((r) => r.id === 'pane.split')?.key === (macLike ? '⌘D' : 'Ctrl+Shift+D'),
+    JSON.stringify({ missing, groups: all.groups, count: registered.length }));
+
+  // 检索:拼音首字母、英文、中文都找得到分屏
+  const searches = {};
+  for (const q of ['fp', 'split', '分屏']) searches[q] = (await paletteQuery(q)).rows[0]?.id;
+  check('T90d 输入 fp / split / 分屏 第一项都是「分屏」', Object.values(searches).every((id) => id === 'pane.split'), JSON.stringify(searches));
+
+  // 禁用命令显示原因,Enter 不执行
+  const emptyQuery = await paletteQuery('');
+  const gatedIndex = emptyQuery.rows.findIndex((r) => r.type === 'command' && r.disabled);
+  if (gatedIndex >= 0) {
+    const steps = (gatedIndex - emptyQuery.active + emptyQuery.rows.length) % emptyQuery.rows.length;
+    for (let i = 0; i < steps; i++) await evalJs(`window.__nbTest.paletteKey('ArrowDown'); return 1`);
+    const atGated = await palette();
+    await evalJs(`window.__gatedCmds = []; window.__gatedListen = (e) => window.__gatedCmds.push(e.detail.id);
+      document.addEventListener('nebula:command', window.__gatedListen); window.__nbTest.paletteKey('Enter'); return 1`);
+    await sleep(100);
+    const gated = asObj(await evalJs(`document.removeEventListener('nebula:command', window.__gatedListen);
+      return JSON.stringify({ open: window.__nbTest.paletteOpen(), cmds: window.__gatedCmds })`));
+    const row = atGated.rows[gatedIndex];
+    check('T90e 禁用命令显示具体原因(灰色副标题),Enter 不执行', row.active && row.reason && row.reason !== '当前状态不可执行'
+      && atGated.activeDescendant === 'pal-opt-' + gatedIndex && gated.open && gated.cmds.length === 0, JSON.stringify({ row, gated }));
+  } else check('T90e 禁用命令显示原因(当前无禁用命令,跳过)', true);
+
+  // 执行命令:先关面板、焦点回原处,再执行;菜单栏勾选随之同步
+  const sidebarBefore = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+  await paletteQuery('主机侧栏');
+  await evalJs(`window.__nbTest.paletteKey('Enter'); return 1`);
+  await sleep(150);
+  const sidebarAfter = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
+  const runBack = await focusWhere();
+  const menuState = asObj(await evalJs(`return JSON.stringify(window.__nbTest.nativeMenu())`));
+  const sidebarItem = menuState.items.find((i) => i.cmd === 'panel.sidebar');
+  check('T90f 面板执行命令:关闭面板、焦点回到终端,命令只执行一次', sidebarAfter.open === !sidebarBefore.open && runBack === 'terminal'
+    && !(await evalJs(`return window.__nbTest.paletteOpen()`)), JSON.stringify({ sidebarBefore, sidebarAfter, runBack }));
+  if (macLike) {
+    check('T91 macOS 菜单栏:八个菜单、覆盖全部命令,开关侧栏后勾选同步', menuState.built
+      && JSON.stringify(menuState.submenus) === JSON.stringify(['NebulaShell', '文件', '编辑', '视图', '主机', '会话', '窗口', '帮助'])
+      && registered.every((id) => menuState.commandIds.includes(id)) && sidebarItem && sidebarItem.checked === sidebarAfter.open
+      && menuState.items.find((i) => i.cmd === 'app.quit')?.accelerator === 'CmdOrCtrl+Q'
+      && menuState.items.find((i) => i.cmd === 'workspace.close')?.accelerator === 'CmdOrCtrl+W',
+      JSON.stringify({ built: menuState.built, submenus: menuState.submenus, sidebarItem }));
+  } else {
+    check('T91 Windows/Linux 不生成菜单栏,菜单规格仍覆盖全部命令', !menuState.built && registered.every((id) => menuState.commandIds.includes(id)), JSON.stringify(menuState));
+  }
+  await evalJs(`window.__nbTest.runCommand('panel.sidebar'); return 1`);
+  await waitEval(`return JSON.stringify(window.__nbTest.sidebar().open)`, String(sidebarBefore.open), 5000);
+
+  // 主机:⌘↵ / Ctrl+↵ 在新标签连接;再次选同一主机时直接切到已有会话,不新建连接
+  const hostBase = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  const pickHost = async () => {
+    const result = await paletteQuery('127.0.0.1');
+    const index = result.rows.findIndex((r) => r.type === 'host' && r.meta.endsWith(`@127.0.0.1:${sshd.port}`));
+    if (index < 0) return null;
+    const steps = (index - result.active + result.rows.length) % result.rows.length;
+    for (let i = 0; i < steps; i++) await evalJs(`window.__nbTest.paletteKey('ArrowDown'); return 1`);
+    return result.rows[index];
+  };
+  await evalJs(`window.__nbTest.runCommand('palette.open'); return 1`);
+  const hostRow = await pickHost();
+  let newTabCheck = null;
+  let switchCheck = null;
+  if (hostRow) {
+    await evalJs(`window.__nbTest.paletteKey('Enter', ${JSON.stringify(macLike ? { meta: true } : { ctrl: true })}); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.status === 'connected').length`,
+      String(hostBase.sessions.filter((x) => x.status === 'connected').length + 1), 20000);
+    const opened = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+    const created = opened.sessions.find((x) => !hostBase.sessions.some((b) => b.id === x.id));
+    newTabCheck = { created, tabs: opened.tabs.length, activeTab: opened.activeTabId };
+    // 回到原标签,再从面板选同一主机(不带修饰键)
+    await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(hostBase.activeTabId)} + '"]').click(); return 1`);
+    await evalJs(`window.__nbTest.runCommand('palette.open'); return 1`);
+    await pickHost();
+    await evalJs(`window.__nbTest.paletteKey('Enter'); return 1`);
+    await sleep(300);
+    const switched = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+    switchCheck = { sessions: switched.sessions.length, tabs: switched.tabs.length,
+      activeHost: switched.sessions.find((x) => x.id === switched.activeId)?.host, open: await evalJs(`return window.__nbTest.paletteOpen()`) };
+    // 清理:关掉 ⌘↵ 新开的标签,回到原标签
+    if (created) {
+      await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(created.tabId)} + '"]').click(); return 1`);
+      await evalJs(`window.__nbTest.runCommand('workspace.close'); return 1`);
+      await waitEval(`return window.__nbTest.workspaceState().tabs.length`, String(hostBase.tabs.length), 10000);
+    }
+    await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(hostBase.activeTabId)} + '"]').click(); return 1`);
+  }
+  await closePalette();
+  check('T90g 面板选主机:修饰键+Enter 在新标签连接;再次选同一主机切到已有会话,不新建标签或连接',
+    !!hostRow && newTabCheck?.created?.status === 'connected' && newTabCheck.created.host === hostRow.id
+    && newTabCheck.tabs === hostBase.tabs.length + 1 && newTabCheck.activeTab === newTabCheck.created.tabId
+    && switchCheck.sessions === hostBase.sessions.length + 1 && switchCheck.tabs === hostBase.tabs.length + 1
+    && switchCheck.activeHost === hostRow.id && !switchCheck.open,
+    JSON.stringify({ hostRow, newTabCheck, switchCheck }));
+
+  // 快速连接:user@host:port → 密码提示 → 新标签连上;用完关闭
+  const quickBefore = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  await evalJs(`window.__nbTest.runCommand('palette.open'); return 1`);
+  const quick = await paletteQuery(`root@127.0.0.1:${sshd.port}`);
+  await evalJs(`window.__nbTest.paletteKey('Enter'); return 1`);
+  await answerPrompt(PASSWORD, '快速连接');
+  await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.status === 'connected').length`, String(quickBefore.sessions.filter((s) => s.status === 'connected').length + 1), 20000);
+  const quickAfter = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  const quickSession = quickAfter.sessions.find((s) => !quickBefore.sessions.some((b) => b.id === s.id));
+  check('T90h 输入 user@host:port 出现快速连接项,执行后在新标签连上', quick.rows[0]?.type === 'quick'
+    && quickSession && quickSession.status === 'connected' && quickAfter.tabs.length === quickBefore.tabs.length + 1
+    && quickAfter.activeTabId === quickSession.tabId, JSON.stringify({ first: quick.rows[0], quickSession }));
+  if (quickSession) {
+    await evalJs(`window.__nbTest.runCommand('workspace.close'); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().tabs.length`, String(quickBefore.tabs.length), 10000);
+    await evalJs(`document.querySelector('[data-tab="' + ${JSON.stringify(quickBefore.activeTabId)} + '"]').click(); return 1`);
+  }
+  await closePalette();
+
+  // 关闭拦截:有已连接会话时,窗口 close()(与红灯/✕/⌘Q 同一条路)先弹确认;取消后窗口与会话都在
+  const closeBefore = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  await evalJs(`window.__nbTest.requestWindowClose(); return 1`);
+  await waitEval(`window.__nbTest.confirmOpen()`, 'true', 10000);
+  const closeAsk = asObj(await evalJs(`return JSON.stringify({ title: window.__nbTest.confirmTitle(), text: window.__nbTest.confirmText(), focus: window.__nbTest.confirmFocus() })`));
+  await evalJs(`window.__nbTest.confirmClickCancel(); return 1`);
+  await sleep(300);
+  const closeAfter = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  check('T91b 有会话时关闭窗口先弹一次确认(列出会话数,默认取消);取消后窗口与会话都在',
+    closeAsk.title === '退出 NebulaShell' && /\d+ 个已连接的会话/.test(closeAsk.text) && closeAsk.focus === 'cancel'
+    && closeAfter.sessions.filter((s) => s.status === 'connected').length === closeBefore.sessions.filter((s) => s.status === 'connected').length,
+    JSON.stringify({ closeAsk, before: closeBefore.sessions.length, after: closeAfter.sessions.length }));
 
   // 无未捕获异常
   const errs = await evalJs(`return JSON.stringify(window.__errs)`);

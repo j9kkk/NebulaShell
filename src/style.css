@@ -763,6 +763,35 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .picker-meta { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 30px 0; }
 
+/* 命令面板:贴近顶部(视线起点),输入框常驻焦点,结果用 activedescendant 高亮 */
+.modal.palette-modal { align-items: flex-start; padding-top: 12vh; background: rgba(4, 8, 16, 0.45); }
+.palette-card { width: 600px; padding: 10px; display: flex; flex-direction: column; overflow: hidden; }
+#palette-input { width: 100%; margin: 0; font-size: 14px; }
+#palette-list {
+  max-height: min(420px, 56vh); overflow-y: auto; margin-top: 8px;
+  overscroll-behavior: contain;
+}
+.pal-group {
+  padding: 8px 8px 3px; font-size: 11px; color: var(--muted);
+  letter-spacing: 0.04em; user-select: none;
+}
+.pal-row {
+  display: flex; align-items: center; gap: 8px; min-height: 30px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.pal-row.active { background: rgba(91, 140, 255, 0.16); }
+.pal-row[aria-disabled="true"] { cursor: default; }
+.pal-row[aria-disabled="true"] .pal-name { color: var(--muted); }
+.pal-check { flex: 0 0 14px; color: var(--accent); text-align: center; }
+.pal-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pal-name, .pal-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-sub { font-size: 11px; color: var(--muted); }
+.pal-cat { flex: none; font-size: 11px; color: var(--muted); }
+.pal-key { flex: none; min-width: 48px; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pal-cat:empty, .pal-key:empty { display: none; }
+.pal-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 0; }
+.palette-foot { margin-top: 8px; padding: 6px 4px 0; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+
 /* 关于弹窗:版本号、平台、技术栈 */
 .about-card { width: 400px; text-align: center; }
 .about-logo { font-size: 40px; line-height: 1; color: var(--accent); margin-bottom: 6px; }

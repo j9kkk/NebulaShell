@@ -49,9 +49,11 @@
         <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
         <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
         <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="AI 助手">✨</button>
-        <button id="btn-more" class="btn icon-tb" title="更多工具">⋯</button>
-        <div id="more-menu" class="hidden" aria-label="工具菜单">
+        <button id="btn-more" class="btn icon-tb" aria-label="更多" data-title="更多(命令面板 %1)" data-accel="palette.open">⋯</button>
+        <div id="more-menu" class="hidden" aria-label="更多">
           <div class="mm-page" data-page="root">
+            <button id="btn-palette" class="btn small" data-command="palette.open" data-accel="palette.open" data-title="命令面板(%1)"><span class="mi" data-icon="command"></span><span class="mm-label">命令面板…</span><span class="mm-key"></span></button>
+            <div class="mm-sep"></div>
             <div class="mm-head">布局</div>
             <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi" data-icon="layout"></span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
             <button id="btn-auto-layout" class="btn small" data-command="pane.reflow"><span class="mi" data-icon="layout"></span><span class="mm-label">整理当前标签分屏</span></button>
@@ -80,7 +82,7 @@
           </div>
           <div class="mm-page hidden" data-page="settings">
             <button class="btn small mm-back" data-menu-back><span class="mi">‹</span><span class="mm-label">返回 · 设置与管理</span></button>
-            <button id="btn-term-settings" class="btn small" data-command="settings.terminal"><span class="mi" data-icon="settings"></span><span class="mm-label">终端设置</span></button>
+            <button id="btn-term-settings" class="btn small" data-command="settings.terminal" data-accel="settings.terminal" data-title="终端设置(%1)"><span class="mi" data-icon="settings"></span><span class="mm-label">终端设置…</span><span class="mm-key"></span></button>
             <button id="btn-ai-settings-menu" class="btn small" data-command="settings.ai"><span class="mi" data-icon="sparkles"></span><span class="mm-label">AI 配置</span></button>
             <div class="mm-sep"></div>
             <button id="btn-hosts-import" class="btn small"><span class="mi" data-icon="import"></span><span class="mm-label">导入主机</span></button>
@@ -453,6 +455,17 @@
   </div>
 
   <!-- 关于弹窗(版本号此前挤在侧边栏左下角,信息零散且碍眼) -->
+  <!-- 命令面板:combobox(输入框)+ listbox(结果),行由 modules/palette.js 渲染 -->
+  <div id="modal-palette" class="modal palette-modal hidden" aria-label="命令面板">
+    <div class="modal-card palette-card">
+      <input id="palette-input" class="inp" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list"
+        aria-autocomplete="list" aria-label="搜索命令、标签或主机" placeholder="输入命令、标签名、主机名，或 user@host:port 快速连接…"
+        autocomplete="off" spellcheck="false" />
+      <div id="palette-list" role="listbox" aria-label="命令面板结果"></div>
+      <div id="palette-foot" class="palette-foot" aria-hidden="true"></div>
+    </div>
+  </div>
+
   <div id="modal-about" class="modal hidden">
     <div class="modal-card about-card">
       <div class="about-logo">✦</div>

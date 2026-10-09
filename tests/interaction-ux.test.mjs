@@ -542,7 +542,8 @@ test('terminal state notifications refresh the real workspace split button after
   const { core, commands, document, window, add, app, confirm, root } = await setup();
   const tile = add(root, 'button', 'btn-tile-tabs'); tile.dataset.command = 'workspace.tile';
   add(tile, 'span', '', 'mm-label'); add(tile, 'span', '', 'mm-state');
-  for (const id of ['btn-newtab', 'btn-split', 'btn-ai-toggle', 'btn-sidebar-toggle', 'btn-batch', 'btn-readonly', 'btn-log-toggle', 'btn-clear', 'btn-reconnect', 'btn-disconnect']) add(app, 'button', id);
+  for (const id of ['btn-newtab', 'btn-split', 'btn-ai-toggle', 'btn-sidebar-toggle', 'btn-batch', 'btn-readonly', 'btn-log-toggle', 'btn-clear', 'btn-reconnect', 'btn-disconnect',
+    'btn-add-host', 'btn-welcome-add', 'btn-cloud-import', 'btn-welcome-cloud', 'btn-hosts-import', 'btn-hosts-export']) add(app, 'button', id);
   add(app, 'aside', 'sidebar'); add(app, 'aside', 'ai-panel', 'hidden');
   const split = document.querySelector('#btn-split');
   const session = { status: 'connecting' };
@@ -554,7 +555,8 @@ test('terminal state notifications refresh the real workspace split button after
     splitActive: () => { runs++; },
     toggleTabTiling: () => { state.workspace.mode = state.workspace.mode === 'single' ? 'tiled' : 'single'; },
   });
-  for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'toggleHistory', 'toggleSnippetMenu', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openTermSettings', 'openAiSettings', 'openFingerprints', 'openAbout', 'toggleSidebar']) context[name] = () => {};
+  for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'toggleHistory', 'toggleSnippetMenu', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openTermSettings', 'openAiSettings', 'openFingerprints', 'openAbout', 'toggleSidebar',
+    'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts']) context[name] = () => {};
   // Execute production wiring and notifier, with adapters only for unrelated actions.
   const entrySource = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
   const terminalSource = await readFile(new URL('../src/modules/terminal.js', import.meta.url), 'utf8');
@@ -764,4 +766,47 @@ test('every registered command with an availability condition also declares a di
     const id = chunk.match(/^'([^']+)'/)?.[1];
     if (/\benabled:/.test(chunk)) assert.match(chunk, /\breason:/, `${id} has enabled() but no reason`);
   }
+});
+
+test('command palette modal does not block commands; other modals do, except allowInModal commands', async () => {
+  const { core, commands, document, add } = await setup();
+  const palette = add(document.body, 'div', 'modal-palette', 'modal hidden');
+  add(palette, 'input', 'palette-input');
+  const other = add(document.body, 'div', 'modal-other', 'modal hidden');
+  add(other, 'button', 'other-ok');
+  let runs = 0;
+  commands.registerCommand('plain', { label: 'Plain', run: () => { runs++; } });
+  commands.registerCommand('dlg', { label: 'Settings', kind: 'dialog', run: () => {} });
+  commands.registerCommand('quit', { label: 'Quit', allowInModal: true, run: () => { runs++; } });
+  assert.equal(commands.commandState('dlg').label, 'Settings…', 'dialog commands get an ellipsis');
+  core.openModal(palette);
+  assert.equal(commands.commandState('plain').enabled, true, 'the palette itself never disables commands');
+  core.closeModal(palette);
+  core.openModal(other);
+  assert.equal(commands.commandState('plain').enabled, false);
+  assert.equal(commands.commandState('plain').reason, '请先关闭对话框');
+  assert.equal(await commands.executeCommand('plain'), false);
+  assert.equal(await commands.executeCommand('quit'), true, 'quit/close-window work while a dialog is open');
+  core.closeModal(other);
+  assert.equal(runs, 1);
+  const listed = commands.listCommands();
+  const plain = listed.find((c) => c.id === 'plain');
+  assert.deepEqual([plain.category, plain.kind, plain.shortcut, plain.enabled], ['app', 'action', 'plain', true]);
+  assert.equal(listed.find((c) => c.id === 'dlg').kind, 'dialog');
+});
+
+test('every registered command has a category and keywords, and appears in the macOS menu bar spec', async () => {
+  const entry = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
+  const menuSource = await readFile(new URL('../src/modules/native-menu.js', import.meta.url), 'utf8');
+  const wiring = entry.match(/^function setupWorkspaceCommands\(\) \{[\s\S]*?^\}/m)?.[0];
+  const ids = [...wiring.matchAll(/registerCommand\('([^']+)'/g)].map((m) => m[1]);
+  const menuIds = new Set([...menuSource.matchAll(/\bcmd\('([^']+)'/g)].map((m) => m[1]));
+  assert.ok(ids.length >= 30, `expected the full command list, got ${ids.length}`);
+  for (const chunk of wiring.split('registerCommand(').slice(1)) {
+    const id = chunk.match(/^'([^']+)'/)?.[1];
+    assert.match(chunk, /\bcategory: '(app|layout|panel|session|host)'/, `${id} needs a category`);
+    assert.match(chunk, /\bkeywords: \[/, `${id} needs search keywords`);
+    assert.ok(menuIds.has(id), `${id} is missing from the macOS menu bar`);
+  }
+  for (const id of menuIds) assert.ok(ids.includes(id), `menu bar references unregistered command ${id}`);
 });

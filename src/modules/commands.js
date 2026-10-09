@@ -1,33 +1,69 @@
-import { applyAccelTitles, hasOpenModal, toast } from './core.js';
+import { applyAccelTitles, toast, topModal } from './core.js';
 
 const commands = new Map();
 
+/// 命令分类:命令面板按此分组,也是检索词之一。
+export const CATEGORY_LABEL = { app: '应用', layout: '标签与分屏', panel: '面板', session: '会话', host: '主机' };
+
+/// 命令面板自身也是模态,但不应让面板里的命令全部显示为禁用。
+export const PALETTE_MODAL_ID = 'modal-palette';
+
+/// definition 字段:
+///   label     名称,字符串或 (ctx) => 字符串
+///   category  app / layout / panel / session / host
+///   keywords  英文别名 + 拼音首字母,供命令面板检索
+///   shortcut  keymap 动作名(缺省同 id),提示和菜单栏加速键都从 keymap 读
+///   kind      action / toggle / dialog;dialog 的名称自动加"…"
+///   enabled / reason / checked / run  均可接收 ctx(缺省为当前焦点)
+///   allowInModal  模态打开时仍可执行(退出、关闭窗口)
 export function registerCommand(id, definition) { commands.set(id, definition); }
 
-export function commandState(id) {
+const evaluate = (value, ctx) => (typeof value === 'function' ? value(ctx) : value);
+
+function labelOf(command, ctx) {
+  const label = evaluate(command.label, ctx) || '';
+  return command.kind === 'dialog' && label && !label.endsWith('…') ? label + '…' : label;
+}
+
+function blockedByModal(command) {
+  if (command.allowInModal) return false;
+  const top = topModal();
+  return !!top && top.id !== PALETTE_MODAL_ID;
+}
+
+export function commandState(id, ctx) {
   const command = commands.get(id);
   if (!command) return null;
-  const modal = hasOpenModal();
-  const enabled = !modal && (command.enabled ? !!command.enabled() : true);
+  const modal = blockedByModal(command);
+  const enabled = !modal && (command.enabled ? !!command.enabled(ctx) : true);
   let reason = '';
-  if (!enabled) {
-    reason = modal ? '请先关闭对话框'
-      : (typeof command.reason === 'function' ? command.reason() : command.reason) || '当前状态不可执行';
-  }
+  if (!enabled) reason = modal ? '请先关闭对话框' : evaluate(command.reason, ctx) || '当前状态不可执行';
   return {
-    label: typeof command.label === 'function' ? command.label() : command.label,
+    label: labelOf(command, ctx),
     enabled,
-    checked: command.checked ? !!command.checked() : undefined,
+    checked: command.checked ? !!command.checked(ctx) : undefined,
     reason,
   };
 }
 
-export async function executeCommand(id) {
+/// 全部注册命令的静态描述 + 当前状态,供命令面板、菜单栏和可达性测试使用。
+export function listCommands(ctx) {
+  return [...commands.entries()].map(([id, command]) => ({
+    id,
+    category: command.category || 'app',
+    keywords: command.keywords || [],
+    shortcut: command.shortcut === undefined ? id : command.shortcut,
+    kind: command.kind || (command.checked ? 'toggle' : 'action'),
+    ...commandState(id, ctx),
+  }));
+}
+
+export async function executeCommand(id, ctx) {
   const command = commands.get(id);
-  const info = commandState(id);
+  const info = commandState(id, ctx);
   if (!command || !info?.enabled) return false;
   document.dispatchEvent(Object.assign(new Event('nebula:command'), { detail: { id } }));
-  try { await command.run(); return true; }
+  try { await command.run(ctx); return true; }
   catch (error) { toast(error.message || '操作失败', 'error'); return false; }
   finally { refreshCommandStates(); }
 }

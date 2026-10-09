@@ -22,6 +22,46 @@ mod ssh_test;
 #[cfg(test)]
 mod store_test;
 
+#[cfg(test)]
+mod close_tests {
+    use super::{active_transfer_count, should_block_close};
+    use serde_json::json;
+
+    #[test]
+    fn close_is_blocked_by_sessions_or_transfers_until_forced() {
+        assert!(!should_block_close(false, 0, Some(0)), "空闲时直接关闭");
+        assert!(
+            should_block_close(false, 0, Some(2)),
+            "有已建立的会话要确认"
+        );
+        assert!(
+            should_block_close(false, 1, Some(0)),
+            "有进行中的传输要确认"
+        );
+        assert!(
+            should_block_close(false, 0, None),
+            "会话表读不到时按有会话处理"
+        );
+        assert!(!should_block_close(true, 3, Some(4)), "确认退出后放行");
+        assert!(!should_block_close(true, 0, None));
+    }
+
+    #[test]
+    fn only_unfinished_transfers_count() {
+        let list = vec![
+            json!({ "stage": "running" }),
+            json!({ "stage": "queued" }),
+            json!({ "stage": "done" }),
+            json!({ "stage": "failed" }),
+            json!({ "stage": "cancelled" }),
+            json!({ "stage": "interrupted" }),
+            json!({ "stage": "partial" }),
+            json!({ "stage": "done-partial" }),
+        ];
+        assert_eq!(active_transfer_count(&list), 2);
+    }
+}
+
 use commands::AppState;
 use serde_json::json;
 use std::collections::HashMap;
@@ -70,52 +110,29 @@ pub fn run() {
             nebula_test_result,
             nebula_test_pin_window
         ])
-        // 有未完成传输任务时拦截窗口关闭:emit 询问事件,由前端确认底座
-        // 决定退出(app:exit 置 force_exit 后放行)。无任务时保持原有关闭手感。
+        // 关窗即退出(应用只有一个窗口):有已建立的会话或未完成的传输时拦截,
+        // emit 询问事件,由前端确认底座决定(app:exit 置 force_exit 后放行)。
+        // ⌘Q、⇧⌘W(自定义菜单项走窗口 close)、红灯、窗口 ✕、Alt+F4 都汇到这里。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let allow = window
-                    .app_handle()
-                    .try_state::<AppState>()
-                    .map(|state| {
-                        let active = state.transfers.list().iter().any(|t| {
-                            !matches!(
-                                t["stage"].as_str().unwrap_or(""),
-                                "done"
-                                    | "done-partial"
-                                    | "partial"
-                                    | "failed"
-                                    | "cancelled"
-                                    | "interrupted"
-                            )
-                        });
-                        state.force_exit.load(std::sync::atomic::Ordering::SeqCst) || !active
-                    })
-                    .unwrap_or(true);
-                if !allow {
+                let Some(state) = window.app_handle().try_state::<AppState>() else {
+                    return;
+                };
+                let force = state.force_exit.load(std::sync::atomic::Ordering::SeqCst);
+                let transfers = active_transfer_count(&state.transfers.list());
+                // 窗口事件回调是同步的:会话表是 tokio 锁,只能 try_lock;
+                // 锁正忙按"有会话"处理(None),宁可多问一次也不静默断开
+                let sessions = state.ssh.sessions.try_lock().ok().map(|m| m.len());
+                if should_block_close(force, transfers, sessions) {
                     api.prevent_close();
-                    let count = window
-                        .app_handle()
-                        .state::<AppState>()
-                        .transfers
-                        .list()
-                        .iter()
-                        .filter(|t| {
-                            !matches!(
-                                t["stage"].as_str().unwrap_or(""),
-                                "done"
-                                    | "done-partial"
-                                    | "partial"
-                                    | "failed"
-                                    | "cancelled"
-                                    | "interrupted"
-                            )
-                        })
-                        .count();
                     ai::emit_evt(
                         window.app_handle(),
                         "app:closeRequest",
-                        json!({ "count": count }),
+                        json!({
+                            "count": transfers,
+                            "transfers": transfers,
+                            "sessions": sessions.map(|n| n as i64).unwrap_or(-1),
+                        }),
                     );
                 }
             }
@@ -190,6 +207,28 @@ fn stop_session_logs(state: &AppState) {
             eprintln!("[log] {}: {}", log.file.display(), error);
         }
     }
+}
+
+/// 未结束的传输任务数(终态之外的都算进行中)。
+fn active_transfer_count(list: &[serde_json::Value]) -> usize {
+    list.iter()
+        .filter(|t| {
+            !matches!(
+                t["stage"].as_str().unwrap_or(""),
+                "done" | "done-partial" | "partial" | "failed" | "cancelled" | "interrupted"
+            )
+        })
+        .count()
+}
+
+/// 关闭是否需要先确认:用户已确认退出(force_exit)时放行;否则有进行中的
+/// 传输,或有已建立的会话(sessions 为 None 表示读不到,按有会话处理)就拦截。
+fn should_block_close(force_exit: bool, transfers: usize, sessions: Option<usize>) -> bool {
+    let has_sessions = match sessions {
+        Some(n) => n > 0,
+        None => true,
+    };
+    !force_exit && (transfers > 0 || has_sessions)
 }
 
 fn void<T>(_: T) {}

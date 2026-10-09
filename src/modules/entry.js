@@ -1,9 +1,9 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
-import { bindCommandButtons, executeCommand, refreshCommandStates, registerCommand } from './commands.js';
+import { bindCommandButtons, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { bindMoreMenu, closeMoreMenu } from './menu.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, autoLayoutTab, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openAiSettings, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
@@ -16,6 +16,8 @@ import { bindTransferUi, confirmTransferInterrupt } from './file-transfer.js';
 import { openTermSettings, saveTermSettings } from './settings.js';
 import { bindBatchUi, openBatchModal, openForwardModal, saveForwardRule, toggleHistory } from './tools.js';
 import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
+import { bindPalette, isPaletteOpen, openPalette, paletteInput, paletteSnapshot } from './palette.js';
+import { buildNativeMenu, nativeMenuSnapshot } from './native-menu.js';
 import { bindWindowControls } from './window-controls.js';
 import { hydrateIcons } from '../shared/icons.js';
 
@@ -193,43 +195,182 @@ function closeCurrent() {
   else closeTab(tab.id);
 }
 
+/// 云导入:每次打开都回到账号列表视图
+async function openCloudImport() {
+  closeCloudForm();
+  openModal('#modal-cloud');
+  try {
+    await refreshCloudAccounts();
+  } catch (e) {
+    toast('读取云账号失败：' + e.message, 'error');
+  }
+}
+
+async function exportHosts() {
+  try {
+    // 导出文件常被复制/同步/转发,明文密码落盘后很难收回,因此默认不含凭据。
+    // 需连同凭据迁移时,在同一步里输入口令(留空 = 只导出主机信息)。
+    const pass = await askPrompt(
+      '输入口令以加密导出凭据;留空则只导出主机信息(不含密码/私钥),导入后需重新填写。',
+      {
+        title: '导出主机',
+        okText: '导出',
+        hint: '口令不会保存在任何地方,请自行记牢(至少 8 位)',
+        validate: (v) => (v.length > 0 && v.length < 8 ? '口令至少 8 位(或留空以不含凭据导出)' : null),
+      },
+    );
+    if (pass === null) return; // 取消 = 中止导出
+
+    let passphrase = null;
+    if (pass.length > 0) {
+      const again = await askPrompt('请再次输入同一口令以确认。', {
+        title: '确认口令', okText: '确定',
+        validate: (v) => (v !== pass ? '两次输入的口令不一致' : null),
+      });
+      if (again === null) return;
+      passphrase = pass;
+    }
+
+    const r = await api('hosts:exportFile', {
+      includeCredentials: !!passphrase,
+      passphrase: passphrase || undefined,
+    });
+    if (r) {
+      toast(
+        passphrase
+          ? `已导出 ${r.count} 台主机（凭据已加密）到 ${r.path}`
+          : `已导出 ${r.count} 台主机（不含凭据）到 ${r.path}`,
+        'success',
+      );
+    }
+  } catch (e) {
+    toast('导出失败：' + e.message, 'error');
+  }
+}
+
+async function importHosts() {
+  try {
+    // 首次不带口令:文件不含凭据时一次完成;含凭据则返回 needsPassphrase,
+    // 此时弹出口令框并复用同一路径重试(不让用户重选文件)。
+    let r = await api('hosts:importFile');
+    if (r && r.needsPassphrase) {
+      const pass = await askPrompt('该导出文件包含加密凭据,请输入导出时设置的口令。', {
+        title: '输入解密口令', okText: '解密导入',
+      });
+      if (pass === null) return;
+      r = await api('hosts:importFile', { passphrase: pass, path: r.path });
+    }
+    if (r) {
+      const parts = [`新增 ${r.added} 台`, `保留重复 ${r.skipped} 台`];
+      if (r.updated) parts.push(`更新 ${r.updated} 台`);
+      if (r.credentialsFilled) parts.push(`补全凭据 ${r.credentialsFilled} 台`);
+      if (r.withCredentials) parts.push(`恢复凭据 ${r.withCredentials} 台`);
+      toast(`导入完成：${parts.join('，')}`, 'success');
+      if (r.legacyPlaintext) {
+        toast('该文件是旧版明文导出,已导入;建议删除该文件并改用加密导出', 'error');
+      }
+      refreshHosts();
+    }
+  } catch (e) {
+    toast('导入失败：' + e.message, 'error');
+  }
+}
+
+/// 退出与关窗:与红灯、窗口 ✕、Alt+F4 一样走窗口 close(),由 Rust 的
+/// CloseRequested 统一拦截(有会话或传输时 emit app:closeRequest 询问)。
+/// 应用只有一个窗口,关掉它就是退出。
+function requestWindowClose() {
+  const win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!win) { toast('当前环境无法关闭窗口', 'error'); return; }
+  return win.close();
+}
+
+let closePrompt = null;
+/// 关闭确认:会话数优先用后端读到的值;后端读锁失败时(-1)用前端的已连接数。
+async function confirmAppClose({ transfers = 0, sessions = -1 } = {}) {
+  if (closePrompt) return closePrompt;
+  const live = sessions >= 0 ? sessions
+    : [...state.sessions.values()].filter((s) => ['connected', 'connecting'].includes(s.status)).length;
+  const parts = [];
+  if (live > 0) parts.push(`${live} 个已连接的会话`);
+  if (transfers > 0) parts.push(`${transfers} 个未完成的传输任务`);
+  const what = parts.length ? `当前有 ${parts.join('和')}。` : '可能还有进行中的会话。';
+  const effect = transfers > 0 ? '退出将断开所有会话并中断传输(已完成的文件不受影响)。' : '退出将断开所有会话。';
+  closePrompt = askConfirm(`${what}${effect}确定退出?`, {
+    title: '退出 NebulaShell', okText: '退出', cancelText: '取消',
+  }).then(async (ok) => {
+    if (ok) await api('app:exit');
+    return ok;
+  }).finally(() => { closePrompt = null; });
+  return closePrompt;
+}
+
 function setupWorkspaceCommands() {
   const session = () => state.sessions.get(state.activeId);
   const count = () => leafCount(activeTab()?.layout);
-  registerCommand('tab.new', { label: '新建标签', run: newTabWithPicker });
-  // 有 enabled 的命令都要给出 reason:⋯ 菜单底部、按钮 title、读屏都显示它。
+  // 字段约定见 commands.js registerCommand。有 enabled 的命令都要给出 reason:
+  // ⋯ 菜单底部、命令面板副标题、按钮 title、读屏都显示它。
   const noSession = '没有活动会话';
+  const noTab = '没有打开的标签';
   const sessionReason = () => (session() ? '会话未连接' : noSession);
-  registerCommand('pane.split', { label: '新增分屏', enabled: () => session()?.status === 'connected' && count() < maxPaneCapacity(),
+
+  // 应用
+  registerCommand('palette.open', { label: '命令面板', category: 'app', kind: 'dialog', keywords: ['command palette', 'commands', 'shortcuts', 'mlmb', 'mingling', 'kuaijiejian'], run: () => openPalette() });
+  registerCommand('settings.terminal', { label: '终端设置', category: 'app', kind: 'dialog', keywords: ['settings', 'preferences', 'font', 'theme', 'zdsz', 'shezhi'], run: openTermSettings });
+  registerCommand('settings.ai', { label: 'AI 配置', category: 'app', kind: 'dialog', keywords: ['ai settings', 'model', 'api key', 'llm', 'aipz', 'peizhi'], run: openAiSettings });
+  registerCommand('app.about', { label: '关于 NebulaShell', category: 'app', keywords: ['about', 'version', 'gy', 'guanyu', 'banben'], run: openAbout });
+  registerCommand('window.close', { label: '关闭窗口', category: 'app', allowInModal: true, keywords: ['close window', 'gbck', 'chuangkou'], run: requestWindowClose });
+  registerCommand('app.quit', { label: '退出 NebulaShell', category: 'app', allowInModal: true, keywords: ['quit', 'exit', 'tc', 'tuichu'], run: requestWindowClose });
+
+  // 标签与分屏
+  registerCommand('tab.new', { label: '新建标签', category: 'layout', keywords: ['new tab', 'xjbq', 'biaoqian'], run: newTabWithPicker });
+  registerCommand('tab.rename', { label: '重命名标签', category: 'layout', kind: 'dialog', keywords: ['rename tab', 'cmm', 'cmmbq', 'chongmingming'], enabled: () => !!activeTab(), reason: noTab, run: () => renameTab(state.activeTabId) });
+  registerCommand('pane.split', { label: '分屏', category: 'layout', keywords: ['split', 'split pane', 'fenping', 'fp'], enabled: () => session()?.status === 'connected' && count() < maxPaneCapacity(),
     reason: () => (session()?.status !== 'connected' ? '先连接当前窗格的主机' : `当前窗口最多容纳 ${maxPaneCapacity()} 个分屏窗格`), run: () => splitActive() });
-  registerCommand('workspace.tile', { label: '标签平铺', checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, reason: '需要至少 2 个标签', run: toggleTabTiling });
-  registerCommand('pane.reflow', { label: '整理当前标签分屏', enabled: () => count() > 1, reason: '当前标签只有一个窗格', run: autoLayoutTab });
-  registerCommand('pane.zoom', { label: () => state.zoomPaneId ? '还原窗格' : '放大当前窗格', enabled: () => count() > 1 && !!state.panes.get(focusedPaneId())?.sessionId,
+  // 文件分屏:与「分屏」对称的入口,作用于当前标签
+  registerCommand('tab.file.add', { label: '新增文件分屏', category: 'layout', keywords: ['files', 'sftp', 'file manager', 'wenjian', 'wjfp', 'xzwjfp'], enabled: () => !filePaneBlocker(), reason: () => filePaneBlocker(), run: () => { addFilePane(); refreshCommandStates(); } });
+  registerCommand('pane.zoom', { label: '放大当前窗格', category: 'layout', keywords: ['zoom', 'maximize pane', 'fd', 'fangda', 'fdck'], enabled: () => count() > 1 && !!state.panes.get(focusedPaneId())?.sessionId,
     reason: () => (count() > 1 ? '焦点窗格不是终端会话' : '当前标签只有一个窗格'), checked: () => !!state.zoomPaneId, run: () => togglePaneZoom(state.zoomPaneId || focusedPaneId()) });
-  registerCommand('workspace.close', { label: () => count() > 1 ? '关闭当前窗格' : '关闭当前标签', enabled: () => !!activeTab(), reason: '没有打开的标签', run: closeCurrent });
-  registerCommand('panel.sidebar', { label: '主机侧栏', checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
-  registerCommand('panel.ai', { label: 'AI 助手', checked: () => !$('#ai-panel').classList.contains('hidden'), run: () => toggleAiPanel() });
-  // 文件分屏:与「新增分屏」对称的入口,作用于当前标签
-  registerCommand('tab.file.add', { label: '新增文件分屏', enabled: () => !filePaneBlocker(), reason: () => filePaneBlocker(), run: () => { addFilePane(); refreshCommandStates(); } });
-  registerCommand('panel.history', { label: '命令历史', checked: () => state.historyOpen, run: toggleHistory });
-  registerCommand('panel.snippets', { label: '常用片段', checked: () => !$('#snippet-menu').classList.contains('hidden'), run: toggleSnippetMenu });
-  registerCommand('session.reconnect', { label: '重连当前会话', enabled: () => !!session() && !['connected', 'connecting'].includes(session().status),
+  registerCommand('pane.reflow', { label: '整理当前标签分屏', category: 'layout', keywords: ['reflow', 'arrange', 'layout', 'zl', 'zhengli', 'buju'], enabled: () => count() > 1, reason: '当前标签只有一个窗格', run: autoLayoutTab });
+  registerCommand('workspace.tile', { label: '标签平铺', category: 'layout', keywords: ['tile tabs', 'grid', 'bqpp', 'pingpu'], checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, reason: '需要至少 2 个标签', run: toggleTabTiling });
+  registerCommand('workspace.close', { label: () => count() > 1 ? '关闭当前窗格' : '关闭当前标签', category: 'layout', keywords: ['close', 'close pane', 'close tab', 'gb', 'guanbi'], enabled: () => !!activeTab(), reason: noTab, run: closeCurrent });
+
+  // 面板
+  registerCommand('panel.sidebar', { label: '主机侧栏', category: 'panel', keywords: ['sidebar', 'hosts', 'zjcl', 'cebianlan'], checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
+  registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'zs', 'zhushou'], checked: () => !$('#ai-panel').classList.contains('hidden'), run: () => toggleAiPanel() });
+  registerCommand('panel.history', { label: '命令历史', category: 'panel', keywords: ['history', 'mlls', 'lishi'], checked: () => state.historyOpen, run: toggleHistory });
+  registerCommand('panel.snippets', { label: '常用片段', category: 'panel', keywords: ['snippets', 'cypd', 'pianduan'], checked: () => !$('#snippet-menu').classList.contains('hidden'), run: toggleSnippetMenu });
+
+  // 会话
+  registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: () => !!session(), reason: noSession, run: openTermSearch });
+  registerCommand('session.clear', { label: '清屏', category: 'session', keywords: ['clear', 'cls', 'qp', 'qingping'], enabled: () => !!session(), reason: noSession, run: clearActiveTerm });
+  registerCommand('session.reconnect', { label: '重连当前会话', category: 'session', keywords: ['reconnect', 'cl', 'chonglian'], enabled: () => !!session() && !['connected', 'connecting'].includes(session().status),
     reason: () => (!session() ? noSession : session().status === 'connecting' ? '会话正在连接' : '会话已连接'), run: () => reconnectSession(state.activeId) });
-  registerCommand('session.disconnect', { enabled: () => !!session() && (['connected', 'connecting'].includes(session().status) || session().reconnectScheduled),
+  registerCommand('session.disconnect', { label: '断开连接', category: 'session', keywords: ['disconnect', 'dk', 'duankai'], enabled: () => !!session() && (['connected', 'connecting'].includes(session().status) || session().reconnectScheduled),
     reason: sessionReason, run: async () => { if (await confirmTransferInterrupt([state.activeId])) disconnectSession(state.activeId); } });
-  registerCommand('session.readonly', { label: '只读模式', enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.readOnly, run: toggleReadonly });
-  registerCommand('session.log', { label: () => session()?.logActive ? '停止记录日志' : '记录会话日志（仅输出）', enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.logActive, run: toggleSessionLog });
-  registerCommand('session.clear', { enabled: () => !!session(), reason: noSession, run: clearActiveTerm });
-  registerCommand('session.search', { enabled: () => !!session(), reason: noSession, run: openTermSearch });
-  registerCommand('tools.broadcast', { label: '广播输入', enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly),
-    reason: '没有可写入的已连接会话（只读会话不参与广播）', checked: () => !!state.broadcast, run: openBroadcastPicker });
-  registerCommand('tools.batch', { label: '批量执行', run: openBatchModal });
-  registerCommand('tools.forwards', { label: '端口转发', run: openForwardModal });
-  registerCommand('settings.terminal', { label: '终端设置', run: openTermSettings });
-  registerCommand('settings.ai', { label: 'AI 配置', run: openAiSettings });
-  registerCommand('settings.fingerprints', { label: '主机指纹', run: openFingerprints });
-  registerCommand('app.about', { label: '关于', run: openAbout });
-  const buttons = { 'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.ai', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch', 'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect' };
+  registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'], enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.readOnly, run: toggleReadonly });
+  registerCommand('session.log', { label: '记录会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'], enabled: () => session()?.status === 'connected', reason: sessionReason, checked: () => !!session()?.logActive, run: toggleSessionLog });
+  registerCommand('session.diagnose', { label: 'AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: () => !!session(), reason: noSession, run: aiDiagnose });
+  // 广播随状态换动词,不打 ✓
+  registerCommand('tools.broadcast', { label: () => (state.broadcast ? '停止广播' : '广播输入…'), category: 'session', keywords: ['broadcast', 'multi input', 'gbsr', 'guangbo'],
+    enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly),
+    reason: '没有可写入的已连接会话（只读会话不参与广播）', run: openBroadcastPicker });
+  registerCommand('tools.batch', { label: '批量执行', category: 'session', kind: 'dialog', keywords: ['batch', 'run on hosts', 'plzx', 'piliang'], run: openBatchModal });
+  registerCommand('tools.forwards', { label: '端口转发', category: 'session', kind: 'dialog', keywords: ['port forward', 'tunnel', 'dkzf', 'zhuanfa'], run: openForwardModal });
+
+  // 主机
+  registerCommand('host.new', { label: '新建主机', category: 'host', kind: 'dialog', keywords: ['new host', 'add host', 'xjzj', 'zhuji'], run: () => openHostModal(null) });
+  registerCommand('cloud.import', { label: '从云导入', category: 'host', kind: 'dialog', keywords: ['cloud', 'tencent', 'aliyun', 'cydr', 'yun'], run: openCloudImport });
+  registerCommand('hosts.import', { label: '导入主机', category: 'host', kind: 'dialog', keywords: ['import hosts', 'drzj', 'daoru'], run: importHosts });
+  registerCommand('hosts.export', { label: '导出主机', category: 'host', kind: 'dialog', keywords: ['export hosts', 'backup', 'dczj', 'daochu'], run: exportHosts });
+  registerCommand('settings.fingerprints', { label: '主机指纹', category: 'host', kind: 'dialog', keywords: ['fingerprints', 'known hosts', 'zjzw', 'zhiwen'], run: openFingerprints });
+
+  const buttons = {
+    'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.ai', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch',
+    'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
+    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-cloud-import': 'cloud.import', 'btn-welcome-cloud': 'cloud.import',
+    'btn-hosts-import': 'hosts.import', 'btn-hosts-export': 'hosts.export',
+  };
   for (const [id, command] of Object.entries(buttons)) document.getElementById(id).dataset.command = command;
   bindCommandButtons();
   document.addEventListener('nebula:state-change', refreshCommandStates);
@@ -237,18 +378,6 @@ function setupWorkspaceCommands() {
 }
 
 export function bindEvents() {
-  $('#btn-add-host').addEventListener('click', () => openHostModal(null));
-  $('#btn-welcome-add').addEventListener('click', () => openHostModal(null));
-  $('#btn-cloud-import').addEventListener('click', async () => {
-    closeCloudForm(); // 每次打开都回到账号列表视图
-    openModal('#modal-cloud');
-    try {
-      await refreshCloudAccounts();
-    } catch (e) {
-      toast('读取云账号失败：' + e.message, 'error');
-    }
-  });
-  $('#btn-welcome-cloud').addEventListener('click', () => $('#btn-cloud-import').click());
   $('#btn-cloud-add-account').addEventListener('click', () => editCloudAccount(null));
   $('#cloud-form-vendor').addEventListener('change', () => {
     syncCloudFormLabels();
@@ -361,13 +490,10 @@ export function bindEvents() {
   // 任务中心:事件接入 + 内部拖拽 + 状态栏入口
   bindTransferUi();
 
-  // 退出拦截:有未完成传输任务时后端拦下关闭请求,由确认底座决定
-  window.nebula.on('app:closeRequest', async ({ count }) => {
-    const ok = await askConfirm(
-      `有 ${count} 个传输任务未完成,退出将中断它们(已完成文件不受影响)。确定退出?`,
-      { title: '传输进行中', okText: '中断任务并退出' },
-    );
-    if (ok) await api('app:exit');
+  // 退出拦截:有已连接会话或未完成传输时,后端拦下关闭请求(⌘Q、⇧⌘W、红灯、
+  // 窗口 ✕、Alt+F4 都汇到这里),由确认底座决定是否退出
+  window.nebula.on('app:closeRequest', (payload) => {
+    confirmAppClose({ transfers: payload?.transfers ?? payload?.count ?? 0, sessions: payload?.sessions ?? -1 });
   });
 
   // 「解释选中内容」按钮已移除:入口迁移为终端选区末尾的悬浮 🔍 按钮
@@ -378,76 +504,6 @@ export function bindEvents() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       aiSend();
-    }
-  });
-
-  // 主机导入/导出/克隆
-  $('#btn-hosts-export').addEventListener('click', async () => {
-    try {
-      // 导出文件常被复制/同步/转发,明文密码落盘后很难收回,因此默认不含凭据。
-      // 需连同凭据迁移时,在同一步里输入口令(留空 = 只导出主机信息)。
-      const pass = await askPrompt(
-        '输入口令以加密导出凭据;留空则只导出主机信息(不含密码/私钥),导入后需重新填写。',
-        {
-          title: '导出主机',
-          okText: '导出',
-          hint: '口令不会保存在任何地方,请自行记牢(至少 8 位)',
-          validate: (v) => (v.length > 0 && v.length < 8 ? '口令至少 8 位(或留空以不含凭据导出)' : null),
-        },
-      );
-      if (pass === null) return; // 取消 = 中止导出
-
-      let passphrase = null;
-      if (pass.length > 0) {
-        const again = await askPrompt('请再次输入同一口令以确认。', {
-          title: '确认口令', okText: '确定',
-          validate: (v) => (v !== pass ? '两次输入的口令不一致' : null),
-        });
-        if (again === null) return;
-        passphrase = pass;
-      }
-
-      const r = await api('hosts:exportFile', {
-        includeCredentials: !!passphrase,
-        passphrase: passphrase || undefined,
-      });
-      if (r) {
-        toast(
-          passphrase
-            ? `已导出 ${r.count} 台主机（凭据已加密）到 ${r.path}`
-            : `已导出 ${r.count} 台主机（不含凭据）到 ${r.path}`,
-          'success',
-        );
-      }
-    } catch (e) {
-      toast('导出失败：' + e.message, 'error');
-    }
-  });
-  $('#btn-hosts-import').addEventListener('click', async () => {
-    try {
-      // 首次不带口令:文件不含凭据时一次完成;含凭据则返回 needsPassphrase,
-      // 此时弹出口令框并复用同一路径重试(不让用户重选文件)。
-      let r = await api('hosts:importFile');
-      if (r && r.needsPassphrase) {
-        const pass = await askPrompt('该导出文件包含加密凭据,请输入导出时设置的口令。', {
-          title: '输入解密口令', okText: '解密导入',
-        });
-        if (pass === null) return;
-        r = await api('hosts:importFile', { passphrase: pass, path: r.path });
-      }
-      if (r) {
-        const parts = [`新增 ${r.added} 台`, `保留重复 ${r.skipped} 台`];
-        if (r.updated) parts.push(`更新 ${r.updated} 台`);
-        if (r.credentialsFilled) parts.push(`补全凭据 ${r.credentialsFilled} 台`);
-        if (r.withCredentials) parts.push(`恢复凭据 ${r.withCredentials} 台`);
-        toast(`导入完成：${parts.join('，')}`, 'success');
-        if (r.legacyPlaintext) {
-          toast('该文件是旧版明文导出,已导入;建议删除该文件并改用加密导出', 'error');
-        }
-        refreshHosts();
-      }
-    } catch (e) {
-      toast('导入失败：' + e.message, 'error');
     }
   });
 
@@ -478,6 +534,8 @@ export function bindEvents() {
     const action = appShortcutOf(e);
     if (action) e.preventDefault();
     if (hasOpenModal()) return;
+    // 命令面板是键盘总入口:焦点在终端、输入框里,或 ⋯ / 右键菜单打开时都能打开
+    if (action === 'palette.open') { executeCommand(action); return; }
     if (!$('#more-menu').classList.contains('hidden') || !$('#ctx-menu').classList.contains('hidden')) return;
     const terminalInput = !!e.target.closest?.('.term-pane');
     if (isEditableTarget(e.target) && !terminalInput) return;
@@ -681,6 +739,7 @@ export async function boot() {
   bindAiCodeActions();
   bindAiScroll();
   bindEvents();
+  bindPalette();
   setupResizers();
   bindContextMenu();
   bindWindowControls();
@@ -689,6 +748,9 @@ export async function boot() {
   setAiBusy(false);
   // 启动时同步一次收起按钮的状态(侧栏默认展开):此后由 toggleSidebar 维护
   syncSidebarToggle($('#sidebar').classList.contains('collapsed'));
+  // macOS 菜单栏在命令注册之后生成;生成前仍是 Tauri 默认菜单(其 ⌘W 已由
+  // 全局 keydown 的 preventDefault 挡住)
+  buildNativeMenu();
   state.settings = await api('settings:get');
   await refreshHosts();
   await refreshAiModels();
@@ -975,6 +1037,24 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       term.paste = origPaste;
       return { ok: !err, err, prevented: !!(kbd && kbd.defaultPrevented), pasteEvents, pasteCalls };
     },
+    /// 命令面板(T90 系列):打开、查询、执行当前项、快照
+    palette: () => paletteSnapshot(),
+    paletteOpen: () => isPaletteOpen(),
+    paletteQuery: (q) => { paletteInput(q); return paletteSnapshot(); },
+    paletteKey: (key, mods = {}) => {
+      const input = $('#palette-input');
+      const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, metaKey: !!mods.meta, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift });
+      input.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    },
+    /// 命令注册表:全部命令及当前状态
+    commands: () => listCommands(),
+    commandState: (id) => commandState(id),
+    runCommand: (id) => executeCommand(id),
+    /// macOS 菜单栏:规格覆盖的命令 + 最近一次写入原生菜单的状态
+    nativeMenu: () => nativeMenuSnapshot(),
+    /// 关闭拦截:与红灯/✕ 同一条路(窗口 close() → Rust CloseRequested)
+    requestWindowClose: () => requestWindowClose(),
     paneCount: () => state.panes.size,
     // 标签/窗格状态:供 e2e 断言"同主机可多开标签且互不干扰"
     tabState: () => ({

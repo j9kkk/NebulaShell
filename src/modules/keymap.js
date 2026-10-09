@@ -36,11 +36,20 @@ export const DEFAULT_KEYMAP = {
   // Linux 的 Ctrl+V 留给 shell(readline 原样插入 / vim 列选择)。
   'term.paste':      { mac: 'cmd+V', win: ['ctrl+V', 'ctrl+shift+V'], linux: 'ctrl+shift+V', label: '粘贴' },
   'term.selectAll':  { mac: 'cmd+A',           ...pc('ctrl+shift+A'),     label: '全选' },
+  // Ctrl+K 是 readline 的"删到行尾",命令面板因此用 ⇧P(VS Code / Windows Terminal 惯例)
+  'palette.open':    { mac: 'cmd+shift+P',     ...pc('ctrl+shift+P'),     label: '命令面板' },
+  'settings.terminal': { mac: 'cmd+,',         ...pc('ctrl+,'),           label: '终端设置' },
+  // ⌘K 清屏是 macOS 终端惯例;Win/Linux 没有不与 shell 冲突的对应键,不设
+  'session.clear':   { mac: 'cmd+K',                                      label: '清屏' },
+  // 以下两项只由 macOS 菜单栏的加速键触发(页面不拦截,模态打开时也可用)
+  'window.close':    { mac: 'cmd+shift+W',                                label: '关闭窗口' },
+  'app.quit':        { mac: 'cmd+Q',                                      label: '退出' },
 };
 
 /// 应用级动作:无论焦点在哪(包括终端内)都归应用处理,由全局分发执行。
-/// 复制/粘贴/全选属于所在组件,不在此列。
-export const APP_ACTIONS = ['pane.zoom', 'session.search', 'workspace.close', 'tab.new', 'pane.split', 'tab.switch'];
+/// 复制/粘贴/全选属于所在组件,不在此列;window.close / app.quit 交给菜单栏。
+export const APP_ACTIONS = ['pane.zoom', 'session.search', 'workspace.close', 'tab.new', 'pane.split', 'tab.switch',
+  'palette.open', 'settings.terminal', 'session.clear'];
 
 const platformKey = () => (PLATFORM === 'darwin' ? 'mac' : PLATFORM === 'windows' ? 'win' : 'linux');
 
@@ -111,6 +120,7 @@ function keyMatches(b, event) {
   // 字母键再认物理键位:Shift 组合、非拉丁布局(如俄文)下 event.key 不是该字母
   if (/^[a-z]$/.test(b.key)) return event.code === 'Key' + b.key.toUpperCase();
   if (/^[0-9]$/.test(b.key)) return event.code === 'Digit' + b.key;
+  if (b.key === ',') return event.code === 'Comma';
   return false;
 }
 
@@ -136,6 +146,31 @@ export function appShortcutOf(event) {
 /// 直接复用 core.accel,符号表只有 core.js 一份。
 export function accelOf(actionId) {
   return accel(specOf(actionId));
+}
+
+const ACCEL_KEY = { ',': 'Comma', enter: 'Enter', esc: 'Escape', escape: 'Escape', tab: 'Tab', space: 'Space' };
+
+/// keymap spec → Tauri(muda)菜单加速键:'cmd+shift+P' → 'CmdOrCtrl+Shift+P'。
+/// 范围写法(1..9)和无法表达的 spec 返回 ''(菜单项不带加速键)。
+export function toAccelerator(spec) {
+  const parts = String(spec || '').split('+').map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return '';
+  const mods = [];
+  let key = '';
+  for (const part of parts) {
+    const k = part.toLowerCase();
+    if (k === 'cmd' || k === 'meta' || k === 'mod') mods.push('CmdOrCtrl');
+    else if (k === 'ctrl') mods.push('Ctrl');
+    else if (k === 'alt') mods.push('Alt');
+    else if (k === 'shift') mods.push('Shift');
+    else key = part;
+  }
+  if (!key || key.includes('..')) return '';
+  const named = ACCEL_KEY[key.toLowerCase()];
+  if (named) key = named;
+  else if (key.length === 1) key = key.toUpperCase();
+  else return '';
+  return [...mods, key].join('+');
 }
 
 /// 提示统一入口:参数是动作名则查 keymap(自定义键位生效),否则按裸 spec
