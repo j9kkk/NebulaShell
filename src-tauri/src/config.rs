@@ -564,6 +564,116 @@ impl Store {
         true
     }
 
+    // ===== 文件分屏书签:{ hostId, path, name?, at },按 hostId 共享,数组顺序即显示顺序 =====
+
+    /// 书签数组;字段被写坏(非数组)时重置为空数组,而不是 panic。
+    fn bookmarks_mut(data: &mut Value) -> &mut Vec<Value> {
+        if !data["bookmarks"].is_array() {
+            data["bookmarks"] = json!([]);
+        }
+        match data["bookmarks"].as_array_mut() {
+            Some(list) => list,
+            None => unreachable!("bookmarks was just reset to an array"),
+        }
+    }
+
+    fn same_bookmark(b: &Value, host_id: &str, path: &str) -> bool {
+        b["hostId"].as_str() == Some(host_id) && b["path"].as_str() == Some(path)
+    }
+
+    /// 收藏目录;已收藏则不重复。返回是否新增。
+    pub fn add_bookmark(&self, host_id: &str, path: &str) -> bool {
+        if host_id.is_empty() || !path.starts_with('/') {
+            return false;
+        }
+        let added = {
+            let mut data = self.data.lock().unwrap();
+            let list = Self::bookmarks_mut(&mut data);
+            let exists = list.iter().any(|b| Self::same_bookmark(b, host_id, path));
+            if !exists {
+                list.push(json!({ "hostId": host_id, "path": path, "at": chrono::Utc::now().timestamp_millis() }));
+            }
+            !exists
+        };
+        if added {
+            self.save().ok();
+        }
+        added
+    }
+
+    /// 取消收藏。返回是否删除了。
+    pub fn remove_bookmark(&self, host_id: &str, path: &str) -> bool {
+        let removed = {
+            let mut data = self.data.lock().unwrap();
+            let list = Self::bookmarks_mut(&mut data);
+            let before = list.len();
+            list.retain(|b| !Self::same_bookmark(b, host_id, path));
+            list.len() != before
+        };
+        if removed {
+            self.save().ok();
+        }
+        removed
+    }
+
+    /// 设置书签别名(去首尾空白,最长 64 字符);空串清除别名。返回是否找到该书签。
+    pub fn update_bookmark(&self, host_id: &str, path: &str, name: &str) -> bool {
+        let found = {
+            let mut data = self.data.lock().unwrap();
+            let list = Self::bookmarks_mut(&mut data);
+            match list
+                .iter_mut()
+                .find(|b| Self::same_bookmark(b, host_id, path))
+            {
+                Some(b) => {
+                    let name: String = name.trim().chars().take(64).collect();
+                    match b.as_object_mut() {
+                        Some(obj) if name.is_empty() => {
+                            obj.remove("name");
+                        }
+                        Some(obj) => {
+                            obj.insert("name".into(), json!(name));
+                        }
+                        None => {}
+                    }
+                    true
+                }
+                None => false,
+            }
+        };
+        if found {
+            self.save().ok();
+        }
+        found
+    }
+
+    /// 按 paths 的顺序重排某主机的书签。只动该主机的条目:它们依次填回自己原来占的
+    /// 位置,其他主机的条目位置不变;paths 里没有的书签保持原相对顺序排在后面。
+    pub fn reorder_bookmarks(&self, host_id: &str, paths: &[String]) {
+        {
+            let mut data = self.data.lock().unwrap();
+            let list = Self::bookmarks_mut(&mut data);
+            let slots: Vec<usize> = list
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b["hostId"].as_str() == Some(host_id))
+                .map(|(i, _)| i)
+                .collect();
+            let mut mine: Vec<Value> = slots.iter().map(|&i| list[i].clone()).collect();
+            // 稳定排序:不在 paths 里的条目同为 usize::MAX,保持原相对顺序
+            mine.sort_by_key(|b| {
+                paths
+                    .iter()
+                    .position(|p| b["path"].as_str() == Some(p.as_str()))
+                    .unwrap_or(usize::MAX)
+            });
+            for (slot, b) in slots.into_iter().zip(mine) {
+                list[slot] = b;
+            }
+        }
+        self.save().ok();
+    }
+
     /// 测试用:禁用 keyring,凭据走 base64 回退
     pub fn load_plain(dir: PathBuf) -> Store {
         let mut s = Store::load(dir);

@@ -11,64 +11,11 @@ import { state } from './core.js';
 import { commandState, executeCommand } from './commands.js';
 import { specOf, toAccelerator } from './keymap.js';
 import { closePalette, isPaletteOpen } from './palette.js';
+import { menuCommandIds, SEP, specFor } from '../shared/menu-spec.js';
 
-const sep = '-';
-const cmd = (id, extra = {}) => ({ cmd: id, ...extra });
-const pre = (item, text) => ({ predefined: item, text });
-
-/// 菜单规格:结构即附录 C。{ cmd } 是命令,{ predefined } 是系统预定义项,
-/// '-' 是分隔线;submenu 的 role 指定窗口 / 帮助菜单。
-export const MENU_SPEC = [
-  { submenu: 'NebulaShell', items: [
-    cmd('app.about'), sep,
-    cmd('settings.open'), sep,
-    pre('Services', '服务'), sep,
-    pre('Hide', '隐藏 NebulaShell'), pre('HideOthers', '隐藏其他'), pre('ShowAll', '全部显示'), sep,
-    cmd('app.quit'),
-  ] },
-  { submenu: '文件', items: [
-    cmd('tab.new'), cmd('tab.rename'), sep,
-    cmd('pane.split'), cmd('tab.file.add'), sep,
-    cmd('workspace.close'), cmd('window.close'),
-  ] },
-  { submenu: '编辑', items: [
-    pre('Undo', '撤销'), pre('Redo', '重做'), sep,
-    pre('Cut', '剪切'), pre('Copy', '拷贝'), pre('Paste', '粘贴'), pre('SelectAll', '全选'), sep,
-    cmd('session.search'), cmd('session.clear'),
-  ] },
-  { submenu: '视图', items: [
-    cmd('palette.open'), sep,
-    cmd('panel.sidebar'), cmd('panel.tools'), sep,
-    cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), sep,
-    cmd('tabs.list'), cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), sep,
-    pre('Fullscreen', '进入全屏'),
-  ] },
-  { submenu: '主机', items: [
-    cmd('host.new'), cmd('cloud.import'), sep,
-    cmd('hosts.import'), cmd('hosts.export'), sep,
-    cmd('settings.fingerprints'), cmd('tools.forwards'), cmd('tools.batch'),
-  ] },
-  { submenu: '会话', items: [
-    cmd('session.reconnect'), cmd('session.disconnect'), sep,
-    cmd('session.readonly'), cmd('session.log'), sep,
-    cmd('tools.broadcast'), cmd('session.diagnose'),
-  ] },
-  { submenu: '窗口', role: 'window', items: [
-    pre('Minimize', '最小化'), pre('Maximize', '缩放'), sep,
-    pre('BringAllToFront', '前置全部窗口'),
-  ] },
-  { submenu: '帮助', role: 'help', items: [
-    cmd('palette.open', { text: '命令与快捷键…', accelerator: false, alias: 'help' }),
-  ] },
-];
-
-/// 规格里出现的全部命令 id(可达性测试用)。
-export function menuCommandIds(spec = MENU_SPEC) {
-  const ids = new Set();
-  const walk = (items) => { for (const it of items) { if (it.cmd) ids.add(it.cmd); if (it.items) walk(it.items); } };
-  walk(spec);
-  return [...ids];
-}
+// 菜单表与 Windows/Linux 菜单栏共用(shared/menu-spec.js),这里取 macOS 的那份
+const MAC_SPEC = specFor('mac');
+const sep = SEP;
 
 /// 生成后的菜单项:{ entry, item, applied: { enabled, checked, text } }。
 const tracked = [];
@@ -149,7 +96,7 @@ export async function buildNativeMenu() {
   const api = window.__TAURI__.menu;
   try {
     const items = [];
-    for (const entry of MENU_SPEC) items.push(await makeItem(api, entry));
+    for (const entry of MAC_SPEC) items.push(await makeItem(api, entry));
     const menu = await api.Menu.new({ items });
     await menu.setAsAppMenu();
     built = true;
@@ -168,8 +115,8 @@ export async function buildNativeMenu() {
 export function nativeMenuSnapshot() {
   return {
     built,
-    commandIds: menuCommandIds(),
-    submenus: MENU_SPEC.map((entry) => entry.submenu),
+    commandIds: menuCommandIds(MAC_SPEC),
+    submenus: MAC_SPEC.map((entry) => entry.submenu),
     items: tracked.map(({ entry, applied }) => ({ cmd: entry.cmd, alias: entry.alias || '', ...applied,
       accelerator: entry.accelerator === false ? '' : toAccelerator(specOf(entry.cmd)) })),
   };

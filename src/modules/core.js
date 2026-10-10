@@ -147,7 +147,9 @@ export function applyAccelTitles(root = document) {
 /// 通知图标按类型区分;长消息(如具体失败原因)自动换行完整展示。
 const TOAST_ICONS = { success: 'checkCircle', error: 'xCircle', warn: 'alert', info: 'info' };
 
-export function toast(msg, type = '') {
+/// opts.action = { label, run }:提示里带一个按钮(如「在文件夹中显示」),点了即关闭提示;
+/// 带按钮的提示默认停留 10 秒,opts.duration 可改。
+export function toast(msg, type = '', opts = {}) {
   const el = document.createElement('div');
   el.className = 'toast ' + type;
   const iconEl = document.createElement('span');
@@ -157,8 +159,20 @@ export function toast(msg, type = '') {
   body.className = 'toast-body';
   body.textContent = msg;
   el.appendChild(iconEl); el.appendChild(body);
+  const action = opts?.action;
+  if (action?.label && typeof action.run === 'function') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      el.remove();
+      Promise.resolve().then(action.run).catch((e) => toast(e?.message || String(e), 'error'));
+    });
+    el.appendChild(button);
+  }
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), 6000);
+  setTimeout(() => el.remove(), opts?.duration ?? (action ? 10000 : 6000));
 }
 
 /// 复制文本到剪贴板:优先 async Clipboard API,被拒时退回 execCommand('copy')。
@@ -497,18 +511,16 @@ export function bindMenuKeyboard(menu, close, back = null) {
   menu.addEventListener('mouseleave', () => showMenuReason(menu, menu.contains(document.activeElement) ? document.activeElement : null));
 }
 
+/// restore === false:关闭但不挪焦点(按在菜单外、或开新菜单前先关旧的)。
 export function closeCtxMenu(restore = true) {
   const m = $('#ctx-menu');
   if (!m || m.classList.contains('hidden')) return;
-  const focused = m.contains(document.activeElement);
+  // 焦点掉到 body(点了分隔线、组标题)也算还在菜单上,关闭后照样还给打开前的位置
+  const focused = m.contains(document.activeElement) || document.activeElement === document.body;
   m.classList.add('hidden');
   const trigger = m._trigger;
   m._trigger = null;
-  if (trigger) {
-    trigger.setAttribute('aria-expanded', 'false');
-    m._closedTrigger = trigger;
-    m._closedAt = performance.now();
-  }
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
   if (restore && focused && m._returnFocus?.isConnected) m._returnFocus.focus();
 }
 
@@ -522,7 +534,8 @@ export function showCtxMenu(x, y, items, opts = {}) {
   const menu = $('#ctx-menu');
   if (!menu) return;
   const modal = topModal();
-  if (modal && !modal.contains(document.activeElement)) return;
+  // 对话框打开时只允许它里面的菜单:按钮下拉看按钮本身(背景按钮被程序点击也不弹),右键菜单看焦点
+  if (modal && !modal.contains(opts.trigger || document.activeElement)) return;
   document.dispatchEvent(new Event('nebula:close-menus'));
   closeCtxMenu(false);
   menu._returnFocus = opts.returnFocus || opts.trigger || document.activeElement;
@@ -581,7 +594,8 @@ export function showCtxMenu(x, y, items, opts = {}) {
   const py = Math.min(y, window.innerHeight - r.height - 8);
   menu.style.left = `${Math.max(8, px)}px`;
   menu.style.top = `${Math.max(8, py)}px`;
-  menu.querySelector('button:not([aria-disabled="true"])')?.focus();
+  // 没有可用项(如未连接时的「会话」菜单)也把焦点放进菜单,方向键与 Esc 才有落点
+  (menu.querySelector('button:not([aria-disabled="true"])') || menu.querySelector('button'))?.focus();
 }
 
 /// 按钮触发的下拉菜单:点击 / Enter / Space / ↓ 打开,挂在按钮下方(右边缘对齐
@@ -628,7 +642,15 @@ export function bindCtxMenuDismiss() {
   bindCtxMenuDismiss._bound = true;
   window.addEventListener('mousedown', (e) => {
     const menu = $('#ctx-menu');
-    if (menu && !menu.classList.contains('hidden') && !e.target.closest('#ctx-menu')) closeCtxMenu(false);
+    if (!menu || menu.classList.contains('hidden') || e.target.closest('#ctx-menu')) return;
+    const trigger = menu._trigger;
+    closeCtxMenu(false);
+    // 只有按下引起的关闭才记下:紧随其后落在同一按钮上的 click 是"收起",不再打开。
+    // Esc、键盘切换菜单等关闭不记,之后立刻重新打开不受影响。
+    if (trigger) {
+      menu._closedTrigger = trigger;
+      menu._closedAt = performance.now();
+    }
   }, true);
   window.addEventListener('resize', closeCtxMenu);
   window.addEventListener('blur', closeCtxMenu);

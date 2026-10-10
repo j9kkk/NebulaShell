@@ -41,6 +41,11 @@ export const DEFAULT_KEYMAP = {
   'settings.open':   { mac: 'cmd+,',           ...pc('ctrl+,'),           label: '设置' },
   // ⌘K 清屏是 macOS 终端惯例;Win/Linux 没有不与 shell 冲突的对应键,不设
   'session.clear':   { mac: 'cmd+K',                                      label: '清屏' },
+  // 面板开关(标题栏左右两个按钮)。Win/Linux 不用 Ctrl+B:readline 的后退一个字符
+  'panel.sidebar':   { mac: 'cmd+B',           ...pc('ctrl+shift+B'),     label: '主机侧栏' },
+  'panel.tools':     { mac: 'alt+cmd+B',       ...pc('ctrl+shift+alt+B'), label: '右侧工具栏' },
+  // F11 全屏(Windows Terminal 惯例);macOS 用系统的「进入全屏」(⌃⌘F)
+  'window.fullscreen': { ...pc('F11'),                                    label: '全屏' },
   // 以下两项只由 macOS 菜单栏的加速键触发(页面不拦截,模态打开时也可用)
   'window.close':    { mac: 'cmd+shift+W',                                label: '关闭窗口' },
   'app.quit':        { mac: 'cmd+Q',                                      label: '退出' },
@@ -49,7 +54,7 @@ export const DEFAULT_KEYMAP = {
 /// 应用级动作:无论焦点在哪(包括终端内)都归应用处理,由全局分发执行。
 /// 复制/粘贴/全选属于所在组件,不在此列;window.close / app.quit 交给菜单栏。
 export const APP_ACTIONS = ['pane.zoom', 'session.search', 'workspace.close', 'tab.new', 'pane.split', 'tab.switch',
-  'palette.open', 'settings.open', 'session.clear'];
+  'palette.open', 'settings.open', 'session.clear', 'panel.sidebar', 'panel.tools', 'window.fullscreen'];
 
 const platformKey = () => (PLATFORM === 'darwin' ? 'mac' : PLATFORM === 'windows' ? 'win' : 'linux');
 

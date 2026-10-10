@@ -231,7 +231,7 @@ async function setup({ platform = 'darwin', width = 800, height = 600 } = {}) {
   Object.assign(window, { innerWidth: width, innerHeight: height, nebula: { platform } });
   const timers = new Map(); let timerId = 0;
   const context = vm.createContext({
-    console, document, window, navigator: { userAgent: '' }, Event: DomEvent,
+    console, document, window, navigator: { userAgent: '' }, Event: DomEvent, performance,
     MutationObserver: class {
       constructor(callback) { this.callback = callback; }
       observe() { document.observers.push(this.callback); }
@@ -250,20 +250,18 @@ async function setup({ platform = 'darwin', width = 800, height = 600 } = {}) {
     ));
     return cache.get(name);
   }
-  const menuModule = await load('menu.js');
-  await menuModule.link((specifier) => load(specifier.startsWith('../') ? specifier : specifier.replace('./', '')));
-  await menuModule.evaluate();
+  const entryModule = await load('menubar.js');
+  await entryModule.link((specifier) => load(specifier.startsWith('../') ? specifier : specifier.replace('./', '')));
+  await entryModule.evaluate();
   const core = cache.get('core.js').namespace;
   const interaction = cache.get('interaction.js').namespace;
   const commands = cache.get('commands.js').namespace;
-  const menu = menuModule.namespace;
+  const menubar = entryModule.namespace;
   const add = (parent, tag, id = '', classes = '') => {
     const element = document.createElement(tag); element.id = id; element.className = classes; parent.appendChild(element); return element;
   };
   const app = add(document.body, 'main', 'app');
   const trigger = add(app, 'button', 'dialog-trigger');
-  const moreButton = add(app, 'button', 'btn-more');
-  moreButton.rect = { left: width - 60, right: width - 10, top: 30, bottom: 60, width: 50, height: 30 };
   const ctx = add(document.body, 'div', 'ctx-menu', 'hidden');
   add(document.body, 'div', 'toasts');
   const confirm = add(document.body, 'div', 'modal-confirm', 'modal hidden');
@@ -276,21 +274,14 @@ async function setup({ platform = 'darwin', width = 800, height = 600 } = {}) {
   add(prompt, 'label', 'prompt-hint');
   const cancelPrompt = add(prompt, 'button', 'btn-prompt-cancel');
   const okPrompt = add(prompt, 'button', 'btn-prompt-ok');
-  const more = add(app, 'div', 'more-menu', 'hidden');
-  more.rect = { left: 0, right: 240, top: 0, bottom: 260, width: 240, height: 260 };
-  const root = add(more, 'div', '', 'mm-page'); root.dataset.page = 'root';
-  const disabledRoot = add(root, 'button'); disabledRoot.disabled = true;
-  const pageLink = add(root, 'button');
-  const action = add(root, 'button');
-  const sessionPage = add(more, 'div', '', 'mm-page hidden'); sessionPage.dataset.page = 'session';
-  const back = add(sessionPage, 'button'); back.setAttribute('data-menu-back', '');
-  const disabledSession = add(sessionPage, 'button'); disabledSession.disabled = true;
-  const subAction = add(sessionPage, 'button');
+  // 常驻菜单容器(role=menu):里面的命令项走菜单语义(aria-disabled 保持可聚焦、menuitemcheckbox)
+  const menuBox = add(app, 'div', 'test-menu');
+  menuBox.setAttribute('role', 'menu');
+  const root = add(menuBox, 'div');
   core.bindModalInteractions(); trigger.focus();
   return {
-    core, interaction, commands, menu, document, window, add, timers, app, trigger, ctx,
-    confirm, cancelConfirm, okConfirm, prompt, input, cancelPrompt, okPrompt,
-    more, moreButton, root, pageLink, action, sessionPage, back, subAction,
+    core, interaction, commands, menubar, document, window, add, timers, app, trigger, ctx,
+    confirm, cancelConfirm, okConfirm, prompt, input, cancelPrompt, okPrompt, root,
   };
 }
 
@@ -634,55 +625,6 @@ test('failed command surfaces an error and refreshes post-failure state rather t
   assert.equal(document.querySelector('#toasts').children[0].classList.contains('error'), true);
 });
 
-test('more menu moves outside toolbar, clamps to viewport, and keyboard skips disabled/hidden page items', async () => {
-  const { menu, document, more, moreButton, pageLink, action, back } = await setup({ width: 420, height: 320 });
-  menu.bindMoreMenu(); moreButton.click();
-  assert.equal(more.parentNode, document.body); assert.equal(more.getAttribute('role'), 'menu');
-  assert.equal(moreButton.getAttribute('aria-haspopup'), 'menu'); assert.equal(moreButton.getAttribute('aria-expanded'), 'true');
-  assert.equal(document.activeElement, pageLink); assert.equal(more.style.left, '170px'); assert.equal(more.style.top, '52px');
-  assert.equal(key(pageLink, 'ArrowDown').defaultPrevented, true); assert.equal(document.activeElement, action);
-  key(action, 'ArrowDown'); assert.equal(document.activeElement, pageLink, 'wrap only within visible root page');
-  key(pageLink, 'ArrowUp'); assert.equal(document.activeElement, action);
-  key(action, 'Home'); assert.equal(document.activeElement, pageLink);
-  key(pageLink, 'End'); assert.equal(document.activeElement, action);
-  assert.notEqual(document.activeElement, back); assert.equal(action.lastScroll.block, 'nearest');
-});
-
-test('menu positioning uses the untransformed layout box during animation', async () => {
-  const { menu, more, moreButton } = await setup({ width: 420, height: 320 });
-  more.getBoundingClientRect = () => ({ ...more.rect, width: more.rect.width * 0.98, height: more.rect.height * 0.98 });
-  menu.bindMoreMenu(); moreButton.click();
-  assert.equal(more.style.left, '170px');
-  assert.equal(more.style.top, '52px');
-});
-
-test('menu Escape/Tab restore trigger focus, outside dismissal does not steal focus, and modal blocks opening', async () => {
-  const { core, menu, document, trigger, confirm, more, moreButton, pageLink, window } = await setup();
-  menu.bindMoreMenu();
-  for (const name of ['Escape', 'Tab']) {
-    moreButton.click(); key(pageLink, name);
-    assert.equal(more.classList.contains('hidden'), true); assert.equal(document.activeElement, moreButton);
-    assert.equal(moreButton.getAttribute('aria-expanded'), 'false');
-  }
-  moreButton.click(); trigger.focus(); backdrop(trigger);
-  assert.equal(more.classList.contains('hidden'), true); assert.equal(document.activeElement, trigger);
-  moreButton.click(); window.dispatchEvent(new DomEvent('blur')); assert.equal(more.classList.contains('hidden'), true);
-  core.openModal(confirm); moreButton.click(); assert.equal(more.classList.contains('hidden'), true);
-  core.closeModal(confirm); moreButton.click(); document.dispatchEvent(new DomEvent('nebula:close-menus'));
-  assert.equal(more.classList.contains('hidden'), true);
-});
-
-test('menu action closes, resize repositions, and reopening focuses the first item', async () => {
-  const { menu, document, window, more, moreButton, pageLink, action, trigger } = await setup();
-  menu.bindMoreMenu(); moreButton.click(); action.focus(); action.click();
-  assert.equal(more.classList.contains('hidden'), true);
-  assert.equal(document.activeElement, trigger, 'executing an item returns focus to where it was before the menu opened');
-  moreButton.click(); assert.equal(document.activeElement, pageLink);
-  window.innerWidth = 300; window.innerHeight = 400; window.dispatchEvent(new DomEvent('resize'));
-  assert.equal(more.style.left, '8px'); assert.equal(more.style.top, '70px'); assert.equal(more.style.maxHeight, '384px');
-  key(action, 'Escape'); moreButton.click(); assert.equal(document.activeElement, pageLink);
-});
-
 test('context popup clamps edges, skips disabled entries, and restores the invoking control on Escape', async () => {
   const { core, document, ctx, trigger } = await setup({ width: 400, height: 300 });
   core.showCtxMenu(999, 999, [{ label: 'Unavailable', disabled: true, run() {} }, '-', { label: 'Copy', key: '⌘C', checked: true, run() {} }]);
@@ -692,49 +634,6 @@ test('context popup clamps edges, skips disabled entries, and restores the invok
   key(copy, 'Escape'); assert.equal(ctx.classList.contains('hidden'), true); assert.equal(document.activeElement, trigger);
   core.showCtxMenu(-100, -100, [{ label: 'Copy', run() {} }]);
   assert.equal(ctx.style.left, '8px'); assert.equal(ctx.style.top, '8px'); core.closeCtxMenu();
-});
-
-test('menu action restores focus BEFORE the item runs, so a dialog it opens returns focus to the opener', async () => {
-  const { core, menu, document, more, moreButton, action, confirm, trigger } = await setup();
-  menu.bindMoreMenu();
-  let focusAtRun = null;
-  action.addEventListener('click', () => { focusAtRun = document.activeElement; core.openModal(confirm); });
-  moreButton.click(); action.focus(); action.click();
-  assert.equal(focusAtRun, trigger); assert.equal(more.classList.contains('hidden'), true);
-  core.closeModal(confirm); assert.equal(document.activeElement, trigger);
-});
-
-test('menu opened from its own button falls back to the focused terminal pane', async () => {
-  const { menu, document, add, app, moreButton, action } = await setup();
-  const pane = add(app, 'div', '', 'term-pane focused');
-  const textarea = add(pane, 'textarea', '', 'xterm-helper-textarea');
-  menu.bindMoreMenu(); moreButton.focus(); moreButton.click(); action.click();
-  assert.equal(document.activeElement, textarea);
-});
-
-test('aria-disabled menu items stay reachable by arrows, cannot run, and show their reason', async () => {
-  const { commands, menu, document, more, moreButton, root, pageLink, action } = await setup();
-  let runs = 0;
-  const item = document.createElement('button'); root.children.splice(root.children.indexOf(action), 0, item); item.parentNode = root;
-  item.dataset.command = 'gated';
-  commands.registerCommand('gated', { label: 'Gated', enabled: () => false, reason: 'Needs two tabs', run: () => { runs++; } });
-  menu.bindMoreMenu(); commands.bindCommandButtons(); moreButton.click();
-  assert.equal(item.getAttribute('aria-disabled'), 'true'); assert.equal(item.disabled, false);
-  key(pageLink, 'ArrowDown'); assert.equal(document.activeElement, item, 'arrow keys pass through unavailable items');
-  const footer = more.querySelector('.menu-reason');
-  assert.ok(footer); assert.equal(footer.textContent, 'Needs two tabs'); assert.equal(footer.classList.contains('hidden'), false);
-  item.click(); await flush();
-  assert.equal(runs, 0); assert.equal(more.classList.contains('hidden'), false, 'activating an unavailable item keeps the menu open');
-  key(item, 'ArrowDown'); assert.equal(document.activeElement, action); assert.equal(footer.classList.contains('hidden'), true);
-});
-
-test('menu keys still work after focus falls to body (e.g. clicking a group header)', async () => {
-  const { menu, document, more, moreButton, pageLink } = await setup();
-  menu.bindMoreMenu(); moreButton.click();
-  document.activeElement = document.body;
-  key(document.body, 'ArrowDown'); assert.equal(document.activeElement, pageLink);
-  document.activeElement = document.body;
-  key(document.body, 'Escape'); assert.equal(more.classList.contains('hidden'), true); assert.equal(document.activeElement, moreButton);
 });
 
 test('context menu disabled entries carry aria-disabled + reason and ignore activation', async () => {
@@ -786,22 +685,39 @@ test('command palette modal does not block commands; other modals do, except all
   assert.equal(listed.find((c) => c.id === 'dlg').kind, 'dialog');
 });
 
-test('every registered command has a category and keywords, and appears in the macOS menu bar spec', async () => {
+test('every registered command has a category and keywords and is reachable from a menu bar (macOS or Windows/Linux)', async () => {
   const entry = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
-  const menuSource = await readFile(new URL('../src/modules/native-menu.js', import.meta.url), 'utf8');
+  const { SEP, specFor, menuCommandIds } = await import('../src/shared/menu-spec.js');
   const wiring = entry.match(/^function setupWorkspaceCommands\(\) \{[\s\S]*?^\}/m)?.[0];
   const ids = [...wiring.matchAll(/registerCommand\('([^']+)'/g)].map((m) => m[1]);
-  const menuIds = new Set([...menuSource.matchAll(/\bcmd\('([^']+)'/g)].map((m) => m[1]));
+  const mac = new Set(menuCommandIds(specFor('mac')));
+  const pc = new Set(menuCommandIds(specFor('pc')));
   assert.ok(ids.length >= 30, `expected the full command list, got ${ids.length}`);
   for (const chunk of wiring.split('registerCommand(').slice(1)) {
     const id = chunk.match(/^'([^']+)'/)?.[1];
     assert.match(chunk, /\bcategory: '(app|layout|panel|session|host)'/, `${id} needs a category`);
     assert.match(chunk, /\bkeywords: \[/, `${id} needs search keywords`);
-    assert.ok(menuIds.has(id), `${id} is missing from the macOS menu bar`);
+    assert.ok(mac.has(id) || pc.has(id), `${id} is missing from both menu bars`);
   }
-  for (const id of menuIds) assert.ok(ids.includes(id), `menu bar references unregistered command ${id}`);
+  for (const id of new Set([...mac, ...pc])) assert.ok(ids.includes(id), `menu bar references unregistered command ${id}`);
+  // 平台专属:系统预定义项只在 macOS;Windows/Linux 的复制/粘贴/全屏是窗口内菜单才有的命令
+  assert.equal(JSON.stringify(specFor('pc')).includes('predefined'), false);
+  for (const id of ['term.copy', 'term.paste', 'window.fullscreen']) {
+    assert.equal(pc.has(id), true, `${id} in the Windows/Linux menu bar`);
+    assert.equal(mac.has(id), false, `${id} not in the macOS menu bar`);
+  }
+  assert.deepEqual(specFor('mac').map((m) => m.submenu), ['NebulaShell', '文件', '编辑', '视图', '主机', '会话', '窗口', '帮助']);
+  assert.deepEqual(specFor('pc').map((m) => m.submenu), ['文件', '编辑', '视图', '主机', '会话', '帮助']);
+  // 过滤后不留首尾、连续的分隔线
+  for (const platform of ['mac', 'pc']) {
+    for (const menu of specFor(platform)) {
+      const items = menu.items;
+      assert.notEqual(items[0], SEP, `${platform} ${menu.submenu} starts with a separator`);
+      assert.notEqual(items.at(-1), SEP, `${platform} ${menu.submenu} ends with a separator`);
+      assert.equal(items.some((it, i) => it === SEP && items[i + 1] === SEP), false, `${platform} ${menu.submenu} has doubled separators`);
+    }
+  }
 });
-
 test('explicit command targets: element ctx drives state, labels and execution; menu items carry the command id', async () => {
   const { commands, add, app } = await setup();
   const seen = [];
@@ -840,4 +756,146 @@ test('context menu items expose data-command and a check column only when a togg
   core.showCtxMenu(10, 10, [{ label: 'Only', run() {} }]);
   assert.equal(ctx.querySelector('.ctx-check'), null);
   core.closeCtxMenu();
+});
+
+// ---- Windows/Linux 菜单栏(menubar.js):标题栏一级菜单,下拉复用 #ctx-menu ----
+
+async function menubarSetup() {
+  const h = await setup({ platform: 'windows', width: 1000, height: 700 });
+  h.document.body.classList.add('platform-nonmacos');
+  const bar = h.add(h.document.body, 'nav', 'menubar');
+  const terminal = h.add(h.app, 'textarea', 'term-input');
+  let checked = true; let blockedRuns = 0; const runs = [];
+  h.commands.registerCommand('tab.new', { label: '新建标签', run: () => { runs.push('tab.new'); } });
+  h.commands.registerCommand('panel.sidebar', { label: '主机侧栏', checked: () => checked, run: () => { checked = !checked; runs.push('panel.sidebar'); } });
+  h.commands.registerCommand('session.search', { label: '在终端中查找', enabled: () => false, reason: '没有活动会话', run: () => { blockedRuns++; } });
+  h.commands.registerCommand('palette.open', { label: '命令面板', kind: 'dialog', run: () => { runs.push('palette.open'); } });
+  h.commands.registerCommand('app.about', { label: '关于 NebulaShell', run: () => { runs.push('app.about'); } });
+  assert.equal(h.menubar.buildMenubar(), true);
+  const titles = () => bar.querySelectorAll('.menubar-item');
+  const title = (text) => titles().find((t) => t.textContent === text);
+  const items = () => h.ctx.querySelectorAll('.ctx-item').map((b) => ({ label: b.querySelector('.ctx-label').textContent,
+    checked: b.getAttribute('aria-checked'), disabled: b.getAttribute('aria-disabled') === 'true', command: b.dataset.command || '' }));
+  const isOpen = () => !h.ctx.classList.contains('hidden');
+  return { ...h, bar, terminal, title, titles, items, isOpen, runs, blockedRuns: () => blockedRuns };
+}
+
+test('menu bar renders the Windows/Linux titles only, and each menu lists registered commands with state', async () => {
+  const h = await menubarSetup();
+  assert.deepEqual(h.titles().map((t) => t.textContent), ['文件', '编辑', '视图', '主机', '会话', '帮助']);
+  assert.equal(h.menubar.buildMenubar(), false, 'building twice is a no-op');
+  h.title('视图').click();
+  assert.equal(h.isOpen(), true);
+  assert.equal(h.title('视图').getAttribute('aria-expanded'), 'true');
+  const view = h.items();
+  // 未注册的命令(本测试只注册了少数几个)不出现;勾选态来自注册表
+  assert.deepEqual(view.map((i) => i.command), ['palette.open', 'panel.sidebar']);
+  assert.equal(view.find((i) => i.command === 'panel.sidebar').checked, 'true');
+  h.title('编辑').click();
+  assert.deepEqual(h.items().map((i) => [i.label, i.disabled]), [['在终端中查找', true]], 'disabled items stay listed with their reason');
+  h.ctx.querySelector('.ctx-item').click();
+  assert.equal(h.blockedRuns(), 0, 'an unavailable item cannot run');
+  // 帮助菜单:命令面板显示为「命令与快捷键…」,并带「关于」
+  h.title('帮助').click();
+  assert.deepEqual(h.items().map((i) => i.label), ['命令与快捷键…', '关于 NebulaShell']);
+  assert.deepEqual(plain(h.menubar.menubarSnapshot().titles.map((t) => t.text)), ['文件', '编辑', '视图', '主机', '会话', '帮助']);
+});
+
+test('menu bar: ←/→ and hover switch menus, Esc closes and returns focus to where the user was', async () => {
+  const h = await menubarSetup();
+  h.terminal.focus();
+  h.title('文件').dispatchEvent(new DomEvent('mousedown', { bubbles: true }));
+  h.title('文件').click();
+  assert.equal(h.isOpen(), true);
+  assert.equal(h.ctx._trigger, h.title('文件'));
+  key(h.document.activeElement, 'ArrowRight');
+  assert.equal(h.ctx._trigger, h.title('编辑'), 'ArrowRight moves to the next menu');
+  key(h.document.activeElement, 'ArrowLeft'); key(h.document.activeElement, 'ArrowLeft');
+  assert.equal(h.ctx._trigger, h.title('帮助'), 'ArrowLeft wraps around');
+  h.title('视图').dispatchEvent(new DomEvent('mouseenter'));
+  assert.equal(h.ctx._trigger, h.title('视图'), 'hovering another title while open switches');
+  key(h.document.activeElement, 'Escape');
+  assert.equal(h.isOpen(), false);
+  assert.equal(h.document.activeElement, h.terminal, 'focus goes back to the terminal, not to the title');
+  assert.equal(h.title('视图').getAttribute('aria-expanded'), 'false');
+  // 未打开时悬停不弹出
+  h.title('主机').dispatchEvent(new DomEvent('mouseenter'));
+  assert.equal(h.isOpen(), false);
+});
+
+test('menu bar: clicking the open title closes it; an item restores focus before running; dialogs disable the titles', async () => {
+  const h = await menubarSetup();
+  let focusAtRun = null;
+  h.commands.registerCommand('panel.tools', { label: '右侧工具栏', run: () => { focusAtRun = h.document.activeElement; } });
+  h.terminal.focus();
+  h.title('视图').click();
+  assert.equal(h.isOpen(), true);
+  h.title('视图').click();
+  assert.equal(h.isOpen(), false, 'second click on the open title closes the menu (keyboard activation path)');
+  assert.equal(h.document.activeElement, h.terminal);
+  h.title('视图').click();
+  assert.equal(h.isOpen(), true, 'a keyboard re-activation right after closing reopens');
+  // 真实点击:全局 mousedown 先收起菜单,紧接着落在同一标题上的 click 不能把它再打开(300ms 窗口)
+  h.core.bindCtxMenuDismiss();
+  const press = (el) => {
+    h.window.dispatchEvent(new DomEvent('mousedown', { bubbles: true, target: el }));
+    el.dispatchEvent(new DomEvent('mousedown', { bubbles: true }));
+    el.click();
+  };
+  press(h.title('视图'));
+  assert.equal(h.isOpen(), false, 'pressing the open title closes it');
+  press(h.title('视图'));
+  assert.equal(h.isOpen(), false, 'a click right after the closing press does not reopen');
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  h.title('视图').click();
+  h.ctx.querySelectorAll('.ctx-item').find((b) => b.dataset.command === 'panel.tools').click();
+  await flush();
+  assert.equal(focusAtRun, h.terminal, 'focus returns to the terminal before the command runs');
+  h.core.openModal(h.confirm);
+  assert.equal(h.titles().every((t) => t.disabled), true, 'titles are disabled while a dialog is open');
+  h.core.closeModal(h.confirm);
+  assert.equal(h.titles().some((t) => t.disabled), false);
+});
+
+test('toast action button runs once and closes its toast; plain toasts have no button', async () => {
+  const { core, document } = await setup();
+  let runs = 0;
+  core.toast('已下载 a.txt', 'success', { action: { label: '在文件夹中显示', run: () => { runs++; } } });
+  core.toast('普通提示', 'error');
+  const box = document.querySelector('#toasts');
+  assert.equal(box.children.length, 2);
+  const button = box.children[0].querySelector('.toast-action');
+  assert.equal(button.textContent, '在文件夹中显示');
+  assert.equal(box.children[1].querySelector('.toast-action'), null);
+  button.click();
+  await flush();
+  assert.equal(runs, 1);
+  assert.deepEqual(box.children.map((t) => t.querySelector('.toast-body').textContent), ['普通提示'], 'the clicked toast closes');
+});
+
+test('dropdown: Esc then ↓ reopens at once; Esc after focus fell to body returns focus to the button; a background button cannot open a menu over a dialog', async () => {
+  const { core, document, add, app, ctx, confirm } = await setup();
+  core.bindCtxMenuDismiss();
+  const button = add(app, 'button', 'dd-button');
+  core.bindMenuButton(button, () => [{ label: 'One', run() {} }, '-', { label: 'Two', run() {} }]);
+  button.focus();
+  key(button, 'ArrowDown');
+  assert.equal(ctx.classList.contains('hidden'), false);
+  key(document.activeElement, 'Escape');
+  assert.equal(ctx.classList.contains('hidden'), true);
+  assert.equal(document.activeElement, button);
+  key(button, 'ArrowDown');
+  assert.equal(ctx.classList.contains('hidden'), false, 'closing with Esc does not swallow an immediate reopen');
+  // 点分隔线后焦点掉到 body:↓ 与 Esc 仍归菜单,Esc 把焦点还给按钮
+  document.activeElement = document.body;
+  key(document.body, 'ArrowDown');
+  assert.equal(ctx.contains(document.activeElement), true);
+  document.activeElement = document.body;
+  key(document.body, 'Escape');
+  assert.equal(ctx.classList.contains('hidden'), true);
+  assert.equal(document.activeElement, button, 'focus returns to the button, not left on body');
+  core.openModal(confirm);
+  button.click();
+  assert.equal(ctx.classList.contains('hidden'), true, 'a button behind the dialog cannot open its menu even when clicked programmatically');
+  core.closeModal(confirm);
 });

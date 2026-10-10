@@ -278,7 +278,7 @@ pub async fn upload_with_policy<
     };
     let mut buf = vec![0u8; 64 * 1024];
     let mut sent: u64 = 0;
-    let mut last_pct = -1;
+    let mut throttle = ProgressThrottle::new();
     let mut cancelled = false;
     loop {
         if cancel
@@ -306,16 +306,12 @@ pub async fn upload_with_policy<
             return Err(e.to_string());
         }
         sent += n as u64;
-        if total > 0 {
-            let pct = (sent * 100 / total) as i64;
-            if pct != last_pct {
-                last_pct = pct;
-                crate::ai::emit_evt(
-                    &app,
-                    "sftp:progress",
-                    json!({ "sessionId": session_id, "taskId": task_id, "op": "upload", "name": chosen_name, "remoteDir": remote_dir, "remotePath": final_path, "pct": pct }),
-                );
-            }
+        if let Some(pct) = throttle.tick(sent, total) {
+            crate::ai::emit_evt(
+                &app,
+                "sftp:progress",
+                json!({ "sessionId": session_id, "taskId": task_id, "op": "upload", "name": chosen_name, "remoteDir": remote_dir, "remotePath": final_path, "pct": pct, "bytes": sent, "total": total }),
+            );
         }
     }
     if cancelled {
@@ -340,7 +336,9 @@ pub async fn upload_with_policy<
         let _ = sftp.remove_file(&part_path).await;
         return Err(format!("发布上传文件失败: {e}"));
     }
-    Ok(json!({ "remotePath": final_path, "renamed": chosen_name != name, "skipped": false }))
+    Ok(
+        json!({ "remotePath": final_path, "renamed": chosen_name != name, "skipped": false, "bytes": sent }),
+    )
 }
 
 /// op 用于进度事件的文案(前端按 op 显示「下载/打开 x 42%」);普通下载传 "download"。
@@ -448,8 +446,8 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
                 Ok::<(), String>(())
             }));
         }
-        // 等全部段完成;进度变化即上报,取消立即中止所有段。
-        let mut last_pct = -1i64;
+        // 等全部段完成;进度按节奏上报,取消立即中止所有段。
+        let mut throttle = ProgressThrottle::new();
         loop {
             if cancelled() {
                 for h in &handles {
@@ -460,17 +458,11 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
             }
             let all_done = handles.iter().all(|h| h.is_finished());
             let now = got.load(std::sync::atomic::Ordering::Relaxed);
-            let pct = if total > 0 {
-                (now * 100 / total) as i64
-            } else {
-                100
-            };
-            if pct != last_pct {
-                last_pct = pct;
+            if let Some(pct) = throttle.tick(now, total) {
                 emit_evt(
                     &app,
                     "sftp:progress",
-                    json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct }),
+                    json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct, "bytes": now, "total": total }),
                 );
             }
             if all_done {
@@ -491,7 +483,7 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
     } else {
         let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; BUF_LEN];
-        let mut last_pct = -1i64;
+        let mut throttle = ProgressThrottle::new();
         loop {
             if cancelled() {
                 drop(local);
@@ -511,21 +503,17 @@ pub async fn download<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
                 e.to_string()
             })?;
             let now = got.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed) + n as u64;
-            if total > 0 {
-                let pct = (now * 100 / total) as i64;
-                if pct != last_pct {
-                    last_pct = pct;
-                    emit_evt(
-                        &app,
-                        "sftp:progress",
-                        json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct }),
-                    );
-                }
+            if let Some(pct) = throttle.tick(now, total) {
+                emit_evt(
+                    &app,
+                    "sftp:progress",
+                    json!({ "sessionId": session_id, "taskId": task_id, "op": op, "name": name, "pct": pct, "bytes": now, "total": total }),
+                );
             }
         }
     }
     local.flush().await.ok();
-    Ok(json!({ "localPath": local_path }))
+    Ok(json!({ "localPath": local_path, "bytes": got.load(std::sync::atomic::Ordering::Relaxed) }))
 }
 
 /// 双击「打开」:把远端文件下载到本机临时目录后交给系统默认程序。
@@ -586,24 +574,107 @@ pub async fn open_remote<
     if test_mode {
         return Ok(json!({ "localPath": local_str, "opened": false }));
     }
+    open_with_default_app(&local);
+    Ok(json!({ "localPath": local_str, "opened": true }))
+}
+
+/// 用系统默认程序打开本机文件或目录(目录 = 在文件管理器中打开)。
+///
+/// Windows 不能走 `cmd /C start "" <path>`:文件名来自远端,`&`、`^` 等是 cmd
+/// 元字符,而 Rust 只给含空格的参数加引号 —— `a&calc.txt` 会被 cmd 拆成两条
+/// 命令执行。explorer.exe 不经过 shell;路径整体加引号,逗号也不会被它拆开
+/// (Windows 路径里不可能出现 `"`)。
+pub fn open_with_default_app(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(&local_str).spawn();
+        let _ = std::process::Command::new("open").arg(path).spawn();
     }
     #[cfg(target_os = "windows")]
     {
-        // start 的第一个引号参数是窗口标题,必须补一个空串占位
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", &local_str])
+        use std::os::windows::process::CommandExt;
+        let mut arg = std::ffi::OsString::from("\"");
+        arg.push(path.as_os_str());
+        arg.push("\"");
+        let _ = std::process::Command::new("explorer.exe")
+            .raw_arg(arg)
             .spawn();
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&local_str)
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
+/// 在系统文件管理器中显示并选中本机文件(目录同样是在其父目录中选中)。
+pub fn reveal_in_file_manager(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
             .spawn();
     }
-    Ok(json!({ "localPath": local_str, "opened": true }))
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // `/select,"路径"` 必须原样到达 explorer:交给 Rust 转义会变成
+        // `"/select,路径"`,带空格的路径时 explorer 退化为打开"文档"
+        let mut arg = std::ffi::OsString::from("/select,\"");
+        arg.push(path.as_os_str());
+        arg.push("\"");
+        let _ = std::process::Command::new("explorer.exe")
+            .raw_arg(arg)
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // FileManager1.ShowItems 能选中文件(Nautilus/Dolphin/Nemo/Thunar 实现了它);
+        // 没有实现者时 --print-reply 让 dbus-send 返回失败,退回打开所在目录。
+        // 在线程里等应答,不阻塞 IPC。
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            use std::process::Stdio;
+            let shown = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--print-reply",
+                    "--reply-timeout=5000",
+                    "--dest=org.freedesktop.FileManager1",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                ])
+                .arg(format!(
+                    "array:string:{}",
+                    file_uri(&path.to_string_lossy())
+                ))
+                .arg("string:")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !shown {
+                let dir = path.parent().unwrap_or(&path).to_path_buf();
+                let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+            }
+        });
+    }
+}
+
+/// 本机绝对路径 → file:// URI。除非保留字符一律百分号编码:dbus-send 的
+/// `array:string:` 以逗号分隔元素,文件名里的逗号必须编码掉。
+#[cfg(any(target_os = "linux", test))]
+fn file_uri(path: &str) -> String {
+    let mut out = String::from("file://");
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// 远端文件名落本机盘前的净化:路径分隔与 Windows 非法字符换 '_',拖尾的
@@ -700,6 +771,16 @@ mod list_path_tests {
         assert_eq!(normalize_abs("/../etc"), "/etc");
         assert_eq!(normalize_abs("/中文/目录"), "/中文/目录");
     }
+
+    #[test]
+    fn file_uri_encodes_separators_and_non_ascii() {
+        use super::file_uri;
+        assert_eq!(
+            file_uri("/home/u/a b/x,y&z.txt"),
+            "file:///home/u/a%20b/x%2Cy%26z.txt"
+        );
+        assert_eq!(file_uri("/tmp/下载"), "file:///tmp/%E4%B8%8B%E8%BD%BD");
+    }
 }
 
 /// 清理 open 目录下超过 24h 的旧副本(尽力而为,失败忽略;
@@ -758,6 +839,8 @@ pub async fn download_tree<
     let mut done: u64 = 0;
     let mut skipped: u64 = 0;
     let mut failed: u64 = 0;
+    // 本任务已完成文件的字节数(进度事件的 taskBytes = 它 + 当前文件已传)
+    let mut task_bytes: u64 = 0;
     let mut last_error: Option<String> = None;
     // (remote_dir, local_dir, display) 栈式遍历,避免 async 递归装箱
     // 顶层项先 lstat 分型:单文件直接 download_one,目录才入栈遍历
@@ -792,12 +875,13 @@ pub async fn download_tree<
             &local_target,
             &root_name,
             task_id,
+            (0, 0),
             cancel.as_ref(),
         )
         .await
         {
-            Ok(()) => Ok(
-                json!({ "cancelled": false, "done": 1, "skipped": 0, "failed": 0, "lastError": None::<String> }),
+            Ok(bytes) => Ok(
+                json!({ "cancelled": false, "done": 1, "skipped": 0, "failed": 0, "bytes": bytes, "lastError": None::<String> }),
             ),
             Err(e) if e == "__cancelled__" => Ok(
                 json!({ "cancelled": true, "done": 0, "skipped": 0, "failed": 0, "lastError": None::<String> }),
@@ -815,7 +899,7 @@ pub async fn download_tree<
     while let Some((remote_dir, local_dir, display)) = stack.pop() {
         if cancelled() {
             return Ok(
-                json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed }),
+                json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed, "bytes": task_bytes }),
             );
         }
         if let Err(e) = tokio::fs::create_dir_all(&local_dir).await {
@@ -850,7 +934,7 @@ pub async fn download_tree<
         for entry in entries {
             if cancelled() {
                 return Ok(
-                    json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed }),
+                    json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed, "bytes": task_bytes }),
                 );
             }
             let child = entry.file_name();
@@ -892,14 +976,18 @@ pub async fn download_tree<
                 &local_dir.join(&child),
                 &display,
                 task_id,
+                (task_bytes, done),
                 cancel.as_ref(),
             )
             .await
             {
-                Ok(()) => done += 1,
+                Ok(bytes) => {
+                    done += 1;
+                    task_bytes += bytes;
+                }
                 Err(e) if e == "__cancelled__" => {
                     return Ok(
-                        json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed }),
+                        json!({ "cancelled": true, "done": done, "skipped": skipped, "failed": failed, "bytes": task_bytes }),
                     );
                 }
                 Err(e) => {
@@ -917,8 +1005,44 @@ pub async fn download_tree<
         }
     }
     Ok(
-        json!({ "cancelled": false, "done": done, "skipped": skipped, "failed": failed, "lastError": last_error }),
+        json!({ "cancelled": false, "done": done, "skipped": skipped, "failed": failed, "bytes": task_bytes, "lastError": last_error }),
     )
+}
+
+/// sftp:progress 的上报节奏:百分比变化,或距上次 ≥500ms 且字节有变化。
+/// 大文件 1% 可能要几十秒,只按百分比上报算不出速度与剩余时间;总量未知时 pct 为 -1。
+struct ProgressThrottle {
+    last_pct: i64,
+    last_bytes: u64,
+    last_at: std::time::Instant,
+}
+
+impl ProgressThrottle {
+    fn new() -> Self {
+        Self {
+            last_pct: -1,
+            last_bytes: 0,
+            last_at: std::time::Instant::now(),
+        }
+    }
+
+    /// 需要上报时返回此刻的百分比。
+    fn tick(&mut self, bytes: u64, total: u64) -> Option<i64> {
+        let pct = if total > 0 {
+            (bytes.min(total) * 100 / total) as i64
+        } else {
+            -1
+        };
+        let due = bytes != self.last_bytes
+            && self.last_at.elapsed() >= std::time::Duration::from_millis(500);
+        if pct == self.last_pct && !due {
+            return None;
+        }
+        self.last_pct = pct;
+        self.last_bytes = bytes;
+        self.last_at = std::time::Instant::now();
+        Some(pct)
+    }
 }
 
 /// 单文件下载(带 .part 原子发布):download 的原子化变体,进度事件带 display。
@@ -939,8 +1063,9 @@ async fn download_one<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
     local_path: &std::path::Path,
     display: &str,
     task_id: Option<&str>,
+    progress_base: (u64, u64),
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     use std::sync::atomic::Ordering;
     const CHUNK: usize = 64 * 1024;
     let cancelled = || cancel.map(|c| c.load(Ordering::Acquire)).unwrap_or(false);
@@ -982,7 +1107,8 @@ async fn download_one<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
         .map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; CHUNK];
     let mut got: u64 = 0;
-    let mut last_pct = -1;
+    let mut throttle = ProgressThrottle::new();
+    let (task_bytes_before, files_done) = progress_base;
     loop {
         if cancelled() {
             drop(local);
@@ -1001,19 +1127,17 @@ async fn download_one<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
             return Err(e.to_string());
         }
         got += n as u64;
-        if total > 0 {
-            let pct = (got * 100 / total) as i64;
-            if pct != last_pct {
-                last_pct = pct;
-                emit_evt(
-                    app,
-                    "sftp:progress",
-                    json!({
-                        "sessionId": session_id, "taskId": task_id, "op": "download",
-                        "name": display, "remoteDir": remote_dir_of(remote_path), "pct": pct,
-                    }),
-                );
-            }
+        if let Some(pct) = throttle.tick(got, total) {
+            emit_evt(
+                app,
+                "sftp:progress",
+                json!({
+                    "sessionId": session_id, "taskId": task_id, "op": "download",
+                    "name": display, "remoteDir": remote_dir_of(remote_path), "pct": pct,
+                    "bytes": got, "total": total,
+                    "taskBytes": task_bytes_before + got, "filesDone": files_done,
+                }),
+            );
         }
     }
     if let Err(e) = local.flush().await {
@@ -1025,7 +1149,7 @@ async fn download_one<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + S
         let _ = tokio::fs::remove_file(&part_path);
         return Err(e.to_string());
     }
-    Ok(())
+    Ok(got)
 }
 
 #[cfg(test)]

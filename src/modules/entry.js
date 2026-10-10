@@ -2,24 +2,24 @@
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
-import { bindMoreMenu, closeMoreMenu } from './menu.js';
 import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
 import { addSnippet, renderMonitorBar } from './monitor.js';
 import {
-  filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
+  filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
 } from './sftp.js';
-import { bindTransferUi, confirmTransferInterrupt } from './file-transfer.js';
+import { bindTransferUi, confirmTransferInterrupt, lastDownloadLocation, revealLastDownload } from './file-transfer.js';
 import { bindSettings, openSettings, settingsOpen, settingsSection } from './settings.js';
 import { bindRightPanel, rightPanelOpen, rightPanelTab, rightTabShown, setRightPanel, toggleRightPanel, toggleRightTab } from './right-panel.js';
 import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, saveForwardRule } from './tools.js';
 import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
 import { bindPalette, isPaletteOpen, openPalette, paletteInput, paletteSnapshot } from './palette.js';
 import { buildNativeMenu, nativeMenuSnapshot } from './native-menu.js';
-import { bindWindowControls } from './window-controls.js';
+import { bindWindowControls, toggleFullscreen } from './window-controls.js';
+import { buildMenubar, menubarSnapshot } from './menubar.js';
 import { hydrateIcons } from '../shared/icons.js';
 
 export function termFromEvent(e) {
@@ -179,10 +179,9 @@ export async function openAbout() {
 /// shim 的 window.nebula.platform 由 UA 推导(→ "darwin")。
 const PLATFORM_LABEL = { darwin: 'macOS', macos: 'macOS', windows: 'Windows', linux: 'Linux' };
 
-/// 侧边栏收缩:面板 + 拖拽把手同步显隐。收起时侧栏塌缩为一个窄条,
-/// 底部的收起/展开按钮仍留在条上(收起后必须有入口展开,按钮不能随面板消失)。
-/// 展开态用按钮文字+图标反映;工具栏按钮(已移除)、更多菜单、
-/// 把手双击三处共用这一个入口。
+/// 侧边栏收缩:面板 + 拖拽把手同步显隐。收起时侧栏塌缩为图标窄条;展开/收起
+/// 开关在顶层标题栏(位置固定,收起后仍可点),命令 panel.sidebar、快捷键与
+/// 把手双击共用这一个入口。
 let expandedSidebarWidth = null;
 function toggleSidebar() {
   const sb = $('#sidebar');
@@ -202,16 +201,10 @@ function toggleSidebar() {
   refreshCommandStates();
 }
 
-/// 收起/展开按钮的状态呈现:图标(☰/»)+ 文案(收起侧边栏/展开侧边栏)。
+/// 标题栏开关的按下态(.active / aria-pressed)由命令注册表的 checked 驱动,
+/// 这里只维护它与侧栏的展开关系。
 function syncSidebarToggle(collapsed) {
-  const btn = $('#btn-sidebar-toggle');
-  btn.classList.toggle('active', !collapsed);
-  $('#sidebar-toggle-icon').textContent = collapsed ? '»' : '«';
-  const label = collapsed ? '展开主机侧栏' : '收起主机侧栏';
-  $('#sidebar-toggle-text').textContent = label;
-  btn.title = label;
-  btn.setAttribute('aria-label', label);
-  btn.setAttribute('aria-expanded', String(!collapsed));
+  $('#btn-sidebar-toggle').setAttribute('aria-expanded', String(!collapsed));
 }
 
 function closeCurrent() {
@@ -363,7 +356,7 @@ function setupWorkspaceCommands() {
     return s;
   };
   // 字段约定见 commands.js registerCommand。有 enabled 的命令都要给出 reason:
-  // 更多菜单底部、命令面板副标题、按钮 title、读屏都显示它。
+  // 菜单底部、命令面板副标题、按钮 title、读屏都显示它。
   const noSession = '没有活动会话';
   const noTab = '没有打开的标签';
   const sessionReason = (ctx) => (session(ctx) ? '会话未连接' : noSession);
@@ -377,6 +370,25 @@ function setupWorkspaceCommands() {
   registerCommand('app.about', { label: '关于 NebulaShell', category: 'app', keywords: ['about', 'version', 'gy', 'guanyu', 'banben'], run: openAbout });
   registerCommand('window.close', { label: '关闭窗口', category: 'app', allowInModal: true, keywords: ['close window', 'gbck', 'chuangkou'], run: requestWindowClose });
   registerCommand('app.quit', { label: '退出 NebulaShell', category: 'app', allowInModal: true, keywords: ['quit', 'exit', 'tc', 'tuichu'], run: requestWindowClose });
+  // 全屏:Windows/Linux 的 F11 与菜单栏「视图 › 全屏」;macOS 菜单栏用系统的「进入全屏」
+  registerCommand('window.fullscreen', { label: '全屏', category: 'app', keywords: ['fullscreen', 'full screen', 'quanping'], run: () => toggleFullscreen() });
+  // 编辑:Windows/Linux 菜单栏的复制 / 粘贴(macOS 菜单栏用系统预定义的拷贝/粘贴),
+  // 作用于活动终端,与终端右键菜单同一套行为
+  const selectionOf = (s) => { try { return s?.term?.getSelection() || ''; } catch { return ''; } };
+  registerCommand('term.copy', { label: '复制', category: 'session', keywords: ['copy', 'fz', 'fuzhi'],
+    enabled: (ctx) => !!selectionOf(session(ctx)), reason: '终端里没有选中的内容',
+    run: (ctx) => {
+      const text = selectionOf(session(ctx));
+      return copyText(text).then((ok) => toast(ok ? `已复制 ${text.length} 个字符` : '复制失败：剪贴板不可用', ok ? 'success' : 'error'));
+    } });
+  registerCommand('term.paste', { label: '粘贴', category: 'session', keywords: ['paste', 'zt', 'zhantie'],
+    enabled: (ctx) => { const s = session(ctx); return !!s && s.status === 'connected' && !s.readOnly; },
+    reason: (ctx) => (!session(ctx) ? noSession : session(ctx).readOnly ? '只读会话不能粘贴' : '会话未连接'),
+    run: (ctx) => {
+      const s = session(ctx);
+      focusTarget(ctx);
+      return navigator.clipboard.readText().then((text) => { if (text && !s.readOnly) s.term.paste(text); });
+    } });
 
   // 标签与分屏
   registerCommand('tab.new', { label: '新建标签', category: 'layout', keywords: ['new tab', 'xjbq', 'biaoqian'], run: newTabWithPicker });
@@ -387,6 +399,10 @@ function setupWorkspaceCommands() {
   registerCommand('tab.file.add', { label: '新增文件分屏', category: 'layout', keywords: ['files', 'sftp', 'file manager', 'wenjian', 'wjfp', 'xzwjfp'],
     enabled: (ctx) => !filePaneBlocker(targetOf(ctx).tab?.id), reason: (ctx) => filePaneBlocker(targetOf(ctx).tab?.id),
     run: (ctx) => { const t = targetOf(ctx); addFilePane(t.tab?.id, t.explicit ? t.paneId : undefined); refreshCommandStates(); } });
+  // 单文件下载:在文件夹中选中该文件;批量下载:打开目标文件夹
+  registerCommand('files.revealLastDownload', { label: '打开最近下载位置', category: 'app',
+    keywords: ['downloads', 'show in folder', 'reveal', 'open folder', 'xiazai', 'zjxz', 'dkzjxzwz', 'wenjianjia'],
+    enabled: () => !!lastDownloadLocation(), reason: '还没有完成的下载', run: () => revealLastDownload() });
   // 显式目标(窗格工具条 ⤢、右键菜单)时名称随状态换成「还原分屏布局」,不打 ✓
   registerCommand('pane.zoom', { label: (ctx) => {
     const t = targetOf(ctx);
@@ -597,7 +613,6 @@ export function bindEvents() {
   // 「诊断报错」按钮已移除:入口迁移至终端右键菜单(openTermCtxMenu)。
 
   setupWorkspaceCommands();
-  bindMoreMenu();
   $('#btn-fw-save').addEventListener('click', saveForwardRule);
   $('#btn-fw-close').addEventListener('click', () => closeModal('#modal-forward'));
   bindBatchUi();
@@ -650,9 +665,9 @@ export function bindEvents() {
     const action = appShortcutOf(e);
     if (action) e.preventDefault();
     if (hasOpenModal()) return;
-    // 命令面板是键盘总入口:焦点在终端、输入框里,或 ⋯ / 右键菜单打开时都能打开
+    // 命令面板是键盘总入口:焦点在终端、输入框里,或下拉 / 右键菜单打开时都能打开
     if (action === 'palette.open') { executeCommand(action); return; }
-    if (!$('#more-menu').classList.contains('hidden') || !$('#ctx-menu').classList.contains('hidden')) return;
+    if (!$('#ctx-menu').classList.contains('hidden')) return;
     const terminalInput = !!e.target.closest?.('.term-pane');
     if (isEditableTarget(e.target) && !terminalInput) return;
     if (action === 'tab.switch') {
@@ -771,16 +786,6 @@ export function bindEvents() {
   });
 }
 
-/// 更多菜单的快捷键列:HTML 只声明 data-accel,这里按运行平台渲染成 ⌘D / Ctrl+D。
-/// 与 tooltip(applyAccelTitles)同一份数据源 —— 加菜单项时两处一起生效,
-/// 菜单因此成为快捷键的"教育层"(此前更多菜单不带任何快捷键提示)。
-function fillMenuKeys() {
-  for (const btn of document.querySelectorAll('#more-menu [data-accel]')) {
-    const keyEl = btn.querySelector('.mm-key');
-    if (keyEl) keyEl.textContent = accelSpec(String(btn.dataset.accel).split('|')[0].trim());
-  }
-}
-
 /// 面板边界拖拽调宽:sidebar(左边界)、ai-panel(右边界)。
 /// 拖动时直接写面板的 width,上下限交给面板自己的 min/max-width 兜底;
 /// 结束后 fitAllVisible() 让 xterm 按新宽度重新排字。
@@ -856,11 +861,11 @@ export async function boot() {
   applyAccelTitles();
   // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
   hydrateIcons(document);
-  fillMenuKeys();
   bindModalInteractions();
   bindAiCodeActions();
   bindAiScroll();
   bindEvents();
+  buildMenubar();
   bindPalette();
   bindPaneToolbars();
   bindTabStrip();
@@ -1181,6 +1186,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     runCommand: (id) => executeCommand(id),
     /// macOS 菜单栏:规格覆盖的命令 + 最近一次写入原生菜单的状态
     nativeMenu: () => nativeMenuSnapshot(),
+    menubar: () => menubarSnapshot(),
     /// 关闭拦截:与红灯/✕ 同一条路(窗口 close() → Rust CloseRequested)
     requestWindowClose: () => requestWindowClose(),
     paneCount: () => state.panes.size,
@@ -1265,7 +1271,9 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
         toolbar: [...elp.querySelectorAll('.file-toolbar .btn')].map((b) => ({
           cls: b.className, text: b.textContent.trim(), title: b.title,
         })),
-        bookmarks: [...elp.querySelectorAll('.file-bookmarks .bm-chip')].map((c) => c.textContent),
+        // 书签读缓存(下拉与管理对话框的数据源);bookmarked = 当前目录的 ★ 是否实心
+        bookmarks: filePaneBookmarks(pane).paths,
+        bookmarked: filePaneBookmarks(pane).marked,
         // 状态:加载中的输入行可见性(重命名/新建共用)
         mkdirRowOpen: !g('.fp-mkdir-row')?.classList.contains('hidden'),
         chmodRowOpen: !g('.fp-chmod-row')?.classList.contains('hidden'),
@@ -1291,26 +1299,28 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       statusBarBtn: !$('#btn-file-tasks-status')?.classList.contains('hidden'),
       tasks: [...document.querySelectorAll('#file-task-list .fp-task')].map((row) => ({
         label: row.querySelector('.fp-task-label')?.textContent ?? '',
-        // 单行布局:状态文字在行首图标的 title;sub = 行尾 info(进度/错误)
+        // 状态文字在行首图标的 title;sub = 信息行(进度/速度/剩余,完成后大小/用时/位置)
         stage: row.querySelector('.fp-task-dot')?.title ?? '',
         dot: row.querySelector('.fp-task-dot')?.className.replace('fp-task-dot', '').trim() ?? '',
         sub: row.querySelector('.fp-task-info')?.textContent ?? '',
-        actions: [],
+        subTitle: row.querySelector('.fp-task-info')?.title ?? '',
+        bar: row.querySelector('.fp-task-bar:not(.hidden) > i')?.style.width || null,
+        actions: [...row.querySelectorAll('.fp-task-actions button')].map((b) => b.dataset.action + (b.disabled ? ':disabled' : '')),
       })),
     }),
-    /// 任务中心操作:按标签找任务行并执行动作(取消=点行;清除=点行尾 ✕)
+    /// 任务中心操作:按标签(精确,其次包含)找任务行。'行' = 点整行;
+    /// 取消/显示/打开/清除 = 点行尾对应按钮
     fileTaskClick: (label, action) => {
       const rows = [...document.querySelectorAll('#file-task-list .fp-task')];
-      const row = rows.find((r) => r.querySelector('.fp-task-label')?.textContent === label);
+      const text = (r) => r.querySelector('.fp-task-label')?.textContent ?? '';
+      const row = rows.find((r) => text(r) === label) || rows.find((r) => text(r).includes(label));
       if (!row) return false;
-      if (action === '取消') { row.click(); return true; }
-      if (action === '清除') {
-        const btn = row.querySelector('.fp-task-clear');
-        if (!btn) return false;
-        btn.click();
-        return true;
-      }
-      return false;
+      if (action === '行') { row.click(); return true; }
+      const cls = { 取消: 'cancel', 显示: 'reveal', 打开: 'open', 清除: 'clear' }[action];
+      const btn = cls && row.querySelector('.fp-task-' + cls);
+      if (!btn || btn.disabled) return false;
+      btn.click();
+      return true;
     },
     /// 内部拖拽(应用内复制):从 fromName 行按下,移动到 toName 目录行或
     /// 'pane:<index>'(第 N 个可见文件分屏空白处),松开 —— 完整走 pointer 事件链。
@@ -1405,21 +1415,26 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       // .side-footer 元素已整体移除:底部只剩快捷连接框
       text: document.querySelector('.side-footer') ? document.querySelector('.side-footer').textContent.trim() : '',
     }),
-    // 更多菜单项
-    moreMenuItems: () => [...document.querySelectorAll('#more-menu .btn')].map((b) => b.textContent.trim()),
-    // 更多菜单几何:用于断言"菜单不遮挡主内容区"
-    moreMenuGeom: () => {
-      const mm = $('#more-menu');
-      const wasHidden = mm.classList.contains('hidden');
-      if (wasHidden) $('#btn-more').click();
-      const mr = mm.getBoundingClientRect();
-      const pr = $('#term-stack').getBoundingClientRect();
-      const overlap = mr.right > pr.left && mr.left < pr.right && mr.bottom > pr.top && mr.top < pr.bottom;
-      if (wasHidden) closeMoreMenu();
+    // 顶层标题栏:各控件矩形、带拖拽属性的元素(须全在标题栏子树)、与二级区是否重叠
+    titlebar: () => {
+      const box = (el) => {
+        if (!el || !el.getClientRects().length) return null;
+        const r = el.getBoundingClientRect();
+        return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) };
+      };
+      const bar = $('#titlebar');
+      const hit = (a, b) => !!a && !!b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      const self = box(bar);
+      const secondary = { tabbar: box($('#tabbar')), sidebar: box($('#sidebar')), aiHeader: box($('.ai-header')), statusbar: box($('#statusbar')) };
       return {
-        menu: [Math.round(mr.left), Math.round(mr.top), Math.round(mr.right), Math.round(mr.bottom)],
-        panel: [Math.round(pr.left), Math.round(pr.top), Math.round(pr.right), Math.round(pr.bottom)],
-        overlap,
+        bar: self,
+        sidebarToggle: box($('#btn-sidebar-toggle')), toolsToggle: box($('#btn-ai-toggle')),
+        brand: box(bar.querySelector('.tb-brand')), traffic: box(bar.querySelector('.tb-traffic')),
+        menubar: box($('#menubar')), winControls: box($('#win-controls')),
+        dragRegions: [...document.querySelectorAll('[data-tauri-drag-region]')].map((el) => ({
+          sel: el.id ? '#' + el.id : '.' + String(el.className).split(' ')[0], value: el.getAttribute('data-tauri-drag-region'), inTitlebar: bar.contains(el) })),
+        overlaps: Object.entries(secondary).filter(([, r]) => hit(self, r)).map(([name]) => name),
+        fullscreen: document.body.classList.contains('is-fullscreen'),
       };
     },
     // 窗格几何网格:用于断言"新增分屏后自动整理为均衡网格"

@@ -24,7 +24,7 @@ function makeButton(id) {
   };
 }
 
-function makeEnv({ macos = false, tauri = true, maximized = false } = {}) {
+function makeEnv({ macos = false, tauri = true, maximized = false, fullscreen = false, tauriOnMac = false } = {}) {
   const buttons = {
     'btn-win-min': makeButton('btn-win-min'),
     'btn-win-max': makeButton('btn-win-max'),
@@ -39,6 +39,8 @@ function makeEnv({ macos = false, tauri = true, maximized = false } = {}) {
     toggleMaximize: async () => {},
     close: async () => { winApi.closed = true; },
     onResized: (cb) => { winApi.resizedCb = cb; },
+    isFullscreen: async () => fullscreen,
+    setFullscreen: async (value) => { fullscreen = value; winApi.fullscreenSet = value; },
   };
   const document = {
     body,
@@ -46,7 +48,7 @@ function makeEnv({ macos = false, tauri = true, maximized = false } = {}) {
   };
   const context = vm.createContext({
     document,
-    window: tauri && !macos ? { __TAURI__: { window: { getCurrentWindow: () => winApi } } } : {},
+    window: tauri && (!macos || tauriOnMac) ? { __TAURI__: { window: { getCurrentWindow: () => winApi } } } : {},
     navigator: { userAgent: '' },
   });
   return { context, buttons, winBox, body, winApi };
@@ -86,6 +88,28 @@ test('无 Tauri(浏览器调试):按钮组隐藏', async () => {
   const env = makeEnv({ tauri: false });
   await bind(env);
   assert.equal(env.winBox.classList.contains('hidden'), true);
+});
+
+test('全屏状态同步到 body.is-fullscreen;macOS 同步全屏但不绑定按钮', async () => {
+  for (const macos of [false, true]) {
+    const env = makeEnv({ macos, tauriOnMac: true, fullscreen: true });
+    if (macos) env.body.classList.add('platform-darwin');
+    await bind(env);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(env.body.classList.contains('is-fullscreen'), true, macos ? 'macOS' : 'Windows/Linux');
+    assert.equal(env.buttons['btn-win-min'].listeners.size, macos ? 0 : 1);
+  }
+});
+
+test('toggleFullscreen 切换窗口全屏并同步 body class', async () => {
+  const env = makeEnv();
+  const mod = await bind(env);
+  assert.equal(await mod.namespace.toggleFullscreen(), true);
+  assert.equal(env.winApi.fullscreenSet, true);
+  assert.equal(env.body.classList.contains('is-fullscreen'), true);
+  const noTauri = makeEnv({ tauri: false });
+  const plain = await bind(noTauri);
+  assert.equal(await plain.namespace.toggleFullscreen(), false);
 });
 
 test('最大化状态同步还原图标', async () => {

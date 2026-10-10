@@ -10,9 +10,14 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.');
 const dist = path.join(root, 'dist');
-// HTML/CSS 分支 class:macOS 构建留 darwin,Windows/Linux 留 nonmacos
-const macosBuild = process.platform === 'darwin';
-const keep = macosBuild ? 'platform-darwin' : 'platform-nonmacos';
+// HTML/CSS 分支 class:macOS 构建留 darwin,Windows/Linux 留 nonmacos。
+// NEBULA_UI_PLATFORM=darwin|nonmacos 可覆盖:在 macOS 上构建 Windows/Linux 外观,
+// 供假后端截图与几何审计使用。正式打包不要设置。
+const uiPlatform = process.env.NEBULA_UI_PLATFORM || (process.platform === 'darwin' ? 'darwin' : 'nonmacos');
+if (!['darwin', 'nonmacos'].includes(uiPlatform)) {
+  throw new Error(`NEBULA_UI_PLATFORM 只能是 darwin 或 nonmacos,收到 ${uiPlatform}`);
+}
+const keep = `platform-${uiPlatform}`;
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
@@ -26,19 +31,11 @@ await build({
   logLevel: 'warning',
 });
 
-// index.html:body class 只保留本平台的那个;side-header 上的
-// data-platform-darwin-only="tl-row" 转成 macOS 构建的实际 class,
-// 非 macOS 构建移除该属性(无红绿灯,不需要让位行)。
-let html = await readFile(path.join(root, 'src/index.html'), 'utf8');
-html = html
-  .replace(`<body class="platform-darwin platform-nonmacos">`, `<body class="${keep}">`)
-  .replace(
-    /<div class="side-header"([^>]*)data-platform-darwin-only="tl-row">/,
-    macosBuild
-      ? '<div class="side-header tl-row"$1>'
-      : '<div class="side-header"$1>',
-  );
-await writeFile(path.join(dist, 'index.html'), html);
+// index.html:body class 只保留本平台的那个
+const placeholder = '<body class="platform-darwin platform-nonmacos">';
+const source = await readFile(path.join(root, 'src/index.html'), 'utf8');
+if (!source.includes(placeholder)) throw new Error('index.html 的 body 平台 class 占位已变,build.mjs 需同步');
+await writeFile(path.join(dist, 'index.html'), source.replace(placeholder, `<body class="${keep}">`));
 
 // CSS:esbuild 处理 app.js 的 `import '@xterm/xterm/css/xterm.css'` 与
 // `import './style.css'`,合并输出到 dist/app.css。绝不能在这里再 cp
@@ -48,4 +45,4 @@ await cp(path.join(root, 'src/nebula-shim.js'), path.join(dist, 'nebula-shim.js'
 // AI 头像引用的应用图标(单一来源:src-tauri/icons/icon.svg,勿在 JS 里复制)
 await cp(path.join(root, 'src-tauri/icons/icon.svg'), path.join(dist, 'icon.svg'));
 
-console.log(`[build] frontend -> dist/ (platform: ${macosBuild ? 'darwin' : 'nonmacos'})`);
+console.log(`[build] frontend -> dist/ (platform: ${uiPlatform})`);

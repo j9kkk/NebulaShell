@@ -536,3 +536,82 @@ fn add_history_cleans_dedups_and_survives_corrupt_field() {
     assert!(store.flush_if_dirty());
     let _ = std::fs::remove_dir_all(&store.dir);
 }
+
+/// 文件分屏书签:增删幂等,别名可设可清,重排只动该主机的条目(其他主机位置不变),
+/// bookmarks 字段被写坏时重置而不是 panic。
+#[test]
+fn bookmarks_add_alias_reorder_are_host_scoped() {
+    let store = tmp_store("bookmarks");
+    let paths = |store: &Store| -> Vec<(String, String, String)> {
+        let data = store.data.lock().unwrap();
+        data["bookmarks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                (
+                    b["hostId"].as_str().unwrap().to_string(),
+                    b["path"].as_str().unwrap().to_string(),
+                    b["name"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    };
+    assert!(store.add_bookmark("h1", "/etc/nginx"));
+    assert!(store.add_bookmark("h2", "/srv"));
+    assert!(store.add_bookmark("h1", "/var/log"));
+    assert!(store.add_bookmark("h1", "/opt/app"));
+    assert!(!store.add_bookmark("h1", "/var/log"), "重复收藏不新增");
+    assert!(!store.add_bookmark("h1", "relative/dir"), "只收藏绝对路径");
+    assert!(!store.add_bookmark("", "/tmp"), "没有主机不收藏");
+
+    assert!(store.update_bookmark("h1", "/var/log", "  日志  "));
+    assert!(
+        !store.update_bookmark("h1", "/nope", "x"),
+        "找不到的书签返回 false"
+    );
+    assert_eq!(paths(&store)[2].2, "日志", "别名去首尾空白");
+    let long = "长".repeat(80);
+    assert!(store.update_bookmark("h1", "/etc/nginx", &long));
+    assert_eq!(paths(&store)[0].2.chars().count(), 64, "别名最长 64 字符");
+    assert!(store.update_bookmark("h1", "/etc/nginx", "   "));
+    assert_eq!(paths(&store)[0].2, "", "空别名清除");
+
+    // h1 的三条按新顺序填回原位置(0、2、3),h2 的 /srv 仍在第 1 位;
+    // 未列出的 /etc/nginx 排在列出的之后,未知路径忽略
+    store.reorder_bookmarks(
+        "h1",
+        &[
+            "/opt/app".to_string(),
+            "/var/log".to_string(),
+            "/unknown".to_string(),
+        ],
+    );
+    let after: Vec<(String, String)> = paths(&store).into_iter().map(|(h, p, _)| (h, p)).collect();
+    assert_eq!(
+        after,
+        vec![
+            ("h1".to_string(), "/opt/app".to_string()),
+            ("h2".to_string(), "/srv".to_string()),
+            ("h1".to_string(), "/var/log".to_string()),
+            ("h1".to_string(), "/etc/nginx".to_string()),
+        ]
+    );
+    assert_eq!(paths(&store)[2].2, "日志", "重排保留别名");
+
+    assert!(store.remove_bookmark("h1", "/var/log"));
+    assert!(!store.remove_bookmark("h1", "/var/log"));
+    // 重启后顺序与别名仍在
+    let reloaded = Store::load_plain(store.dir.clone());
+    assert_eq!(paths(&reloaded).len(), 3);
+    {
+        let mut data = reloaded.data.lock().unwrap();
+        data["bookmarks"] = json!({ "broken": true });
+    }
+    assert!(
+        reloaded.add_bookmark("h1", "/tmp"),
+        "字段被写坏时重置为空数组再收藏"
+    );
+    assert_eq!(paths(&reloaded).len(), 1);
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

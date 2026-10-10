@@ -380,7 +380,7 @@ export function syncTabChrome() {
 // —— 分屏布局(E3):二叉布局树,leaf 持有 paneId ——
 export function newPaneId() { return 'pane-' + (++state.paneSeq); }
 
-// 窗格工具条(右上角):[已放大·还原] [文件][端口转发][广播] / [重连] │ [✕][⤢]。
+// 窗格工具条(终端窗格右上角;文件分屏在文件工具栏行尾):[已放大·还原] [文件][端口转发][广播] / [重连] │ [✕][⤢]。
 // ✕⤢ 常驻(关闭对空窗格同样有效 —— 没有会话的窗格此前关不掉);其余按钮在
 // 悬停或键盘聚焦工具条时浮现,广播期间广播按钮一直显示本会话是否参与。
 // 所有按钮带显式目标(data-cmd-pane/tab),名称与可用状态取自命令注册表,
@@ -433,7 +433,9 @@ export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
   zoomBtn.innerHTML = icon('zoom');
   zoomBtn.title = '放大该窗格';
   for (const child of [extra, sep, closeBtn, zoomBtn]) bar.appendChild(child);
-  el.appendChild(bar);
+  // 文件分屏:✕⤢ 放进文件工具栏行尾。悬浮在右上角会盖住窄窗格里的工具按钮
+  const host = el.classList?.contains?.('file-pane') ? el.querySelector('.file-toolbar') || el : el;
+  host.appendChild(bar);
 }
 
 /// 工具条的形态随窗格变化:data-kind = term / file / empty,data-conn =

@@ -11,25 +11,18 @@
 // - 所有远端操作以提交时的快照(paneId+sessionId+cwd)为准,确认框期间
 //   切换目录不改投目标;后端再做 epoch 校验。
 
-import { $, api, applyAccelTitles, askConfirm, askPrompt, copyText, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, api, applyAccelTitles, askConfirm, askPrompt, bindMenuButton, closeModal, copyText, openModal, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
+import { fmtDateTime, fmtMtime, fmtSize } from '../shared/format.js';
 import { accelOf } from './keymap.js';
 import { escapeHtml } from './hosts.js';
-import { registerUploadTask, registerDownloadTask, registerTreeDownloadTask, taskProgressFromEvent, wasRecentDrag, submitCopyTask } from './file-transfer.js';
+import { openLocalPath, registerUploadTask, registerDownloadTask, registerTreeDownloadTask, revealLocalPath, taskProgressFromEvent, wasRecentDrag, submitCopyTask } from './file-transfer.js';
 
 export function fileParent(p) {
   const trimmed = String(p || '/').replace(/\/+$/, '');
   if (!trimmed || trimmed === '') return '/';
   const idx = trimmed.lastIndexOf('/');
   return idx <= 0 ? '/' : trimmed.slice(0, idx);
-}
-
-export function fmtSize(n) {
-  if (n == null) return '';
-  if (n < 1024) return n + ' B';
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB';
 }
 
 export function validEntryName(name) {
@@ -165,10 +158,15 @@ export function buildFilePane(pane) {
       <button class="btn icon fp-forward" title="前进">${icon('arrowRight')}</button>
       <button class="btn icon fp-up" title="上一级">${icon('arrowUp')}</button>
       <button class="btn icon fp-refresh" title="刷新当前目录">${icon('refresh')}</button>
-      <button class="btn icon fp-bookmark" title="收藏当前目录" aria-label="收藏当前目录">${icon('star')}</button>
+      <span class="split-group fp-bookmark-group" role="group" aria-label="书签">
+        <button class="btn icon fp-bookmark" title="收藏当前目录" aria-label="收藏当前目录" aria-pressed="false">${icon('star')}</button>
+        <button class="btn icon split-caret fp-bookmark-menu" title="书签" aria-label="书签列表">${icon('chevronDown')}</button>
+      </span>
       <button class="btn icon fp-mkdir" title="新建文件夹">${icon('folderPlus')}</button>
       <button class="btn icon fp-selectall" title="全选/全不选(已全选时点击清空;右键=反选)" aria-label="全选或反选">${icon('listChecks')}</button>
       <button class="btn icon fp-upload" title="上传文件(也可直接把文件拖进本分屏)" aria-label="上传文件">${icon('upload')}</button>
+      <!-- 窄窗格(<400px)时低频按钮收进这里;宽窗格隐藏(见 style.css 容器查询) -->
+      <button class="btn icon fp-more" title="更多文件操作" aria-label="更多文件操作">${icon('dots')}</button>
       <span class="spacer"></span>
       <span class="file-toolbar-hint muted" data-title="可多选:%1 点选/Shift 区间,右键批量下载 / 复制 / 删除" data-accel="mod"></span>
     </div>
@@ -183,9 +181,8 @@ export function buildFilePane(pane) {
       <button class="btn small primary fp-chmod-ok">应用</button>
       <button class="btn small fp-chmod-cancel">取消</button>
     </div>
-    <!-- 路径栏是输入框:回车跳转、Esc/失焦还原;右键可收藏当前目录 -->
+    <!-- 路径栏是输入框:回车跳转、Esc/失焦还原;右键可收藏 / 取消收藏当前目录 -->
     <input class="file-path" type="text" spellcheck="false" autocomplete="off" />
-    <div class="file-bookmarks"></div>
     <div class="file-list"></div>
     <div class="file-drop-hint hidden">松开即上传到当前目录</div>
   `;
@@ -197,7 +194,8 @@ export function buildFilePane(pane) {
   q('.fp-forward').addEventListener('click', () => fileNavForward(pane));
   q('.fp-up').addEventListener('click', () => fileNavUp(pane));
   q('.fp-refresh').addEventListener('click', () => fileRefresh(pane));
-  q('.fp-bookmark').addEventListener('click', () => addBookmark(pane));
+  q('.fp-bookmark').addEventListener('click', () => toggleBookmark(pane));
+  bindMenuButton(q('.fp-bookmark-menu'), () => bookmarkMenuItems(pane), { label: '书签' });
   // 全选/反选一体:单击 ☑ = 智能切换(全选 ↔ 全不选),右键 = 反选。
   // 选中数与条目数相同即视为"已全选",再点一次清空 —— 与资源管理器惯例一致。
   const selectAllBtn = q('.fp-selectall');
@@ -217,6 +215,19 @@ export function buildFilePane(pane) {
     e.stopPropagation();
     invertSelection(pane);
   });
+  // ⋯:窄窗格里被收起的按钮(前进 / 新建文件夹 / 全选 / 反选)。按钮是否被收起
+  // 以它此刻是否显示为准,项列表与可见按钮从不重复。
+  const folded = (sel) => !q(sel)?.getClientRects().length;
+  bindMenuButton(q('.fp-more'), () => {
+    const total = pane.entries.length;
+    const allPicked = total > 0 && (pane.selectedNames || []).length === total;
+    return [
+      folded('.fp-forward') && { label: '前进', disabled: !(pane.histIdx < (pane.hist || []).length - 1), reason: '没有可前进的目录', run: () => fileNavForward(pane) },
+      { label: '新建文件夹', run: () => q('.fp-mkdir').click() },
+      { label: allPicked ? '全不选' : '全选', disabled: !total, reason: '当前目录为空', run: () => selectAllBtn.click() },
+      { label: '反选', disabled: !total, reason: '当前目录为空', run: () => invertSelection(pane) },
+    ];
+  }, { label: '文件操作', alignRight: true });
   q('.fp-mkdir').addEventListener('click', () => {
     const target = paneSnapshot(pane);
     if (!target) return toast('请先连接并打开目录', 'error');
@@ -240,7 +251,7 @@ export function buildFilePane(pane) {
     e.preventDefault();
     e.stopPropagation();
     showCtxMenu(e.clientX, e.clientY, [
-      { label: '收藏当前目录', disabled: !pane.cwd, run: () => addBookmark(pane) },
+      { label: isBookmarked(pane) ? '取消收藏当前目录' : '收藏当前目录', disabled: !pane.cwd, run: () => toggleBookmark(pane) },
       { label: '复制当前路径', disabled: !pane.cwd, run: () => { copyText(pane.cwd).then((ok) => toast(ok ? '已复制路径' : '复制失败', ok ? 'success' : 'error')); } },
     ]);
   });
@@ -424,10 +435,11 @@ function renderFileList(pane) {
     row.dataset.name = en.name;
     row.dataset.dir = en.dir ? '1' : '0';
     row.dataset.idx = String(idx);
-    row.innerHTML = `<span class="f-ic">${icon(en.dir ? 'folder' : 'file')}</span><span class="f-name"></span><span class="f-size"></span>`;
+    row.innerHTML = `<span class="f-ic">${icon(en.dir ? 'folder' : 'file')}</span><span class="f-name"></span><span class="f-size"></span><span class="f-mtime"></span>`;
     row.querySelector('.f-name').textContent = en.name;
     row.querySelector('.f-size').textContent = en.dir ? '' : fmtSize(en.size);
-    row.title = en.dir ? `${en.name}/` : `${en.name}  ${fmtSize(en.size)}`;
+    row.querySelector('.f-mtime').textContent = fmtMtime(en.mtime);
+    row.title = (en.dir ? `${en.name}/` : `${en.name}  ${fmtSize(en.size)}`) + (en.mtime ? `\n修改时间 ${fmtDateTime(en.mtime)}` : '');
     row.addEventListener('click', (e) => {
       if (wasRecentDrag()) return;
       selectEntries(pane, en, idx, e);
@@ -714,9 +726,9 @@ export async function downloadEntry(en, paneArg, groupOverride = null) {
         setFilePaneStatus(target, `已取消下载 ${single.name}`);
         return;
       }
-      task.done();
+      task.done(r?.bytes);
       setFilePaneStatus(target, `已保存到 ${localPath}`);
-      toast('下载完成', 'success');
+      toast(`已下载 ${single.name}`, 'success', { action: { label: '在文件夹中显示', run: () => revealLocalPath(localPath) } });
     } catch (e) {
       task.failed(e.message);
       setFilePaneStatus(target, '下载失败:' + e.message);
@@ -741,6 +753,7 @@ export async function downloadSelectionToFolder(sel, target) {
     for (const name of names) {
       if (task.isCancelled()) { cancelled = true; break; }
       const r = await api('sftp:downloadTree', { sessionId: target.sessionId, remotePath: remoteEntryPath(target.cwd, name), localPath: localRoot, taskId: task.taskId });
+      task.itemDone(r);
       done += r.done || 0;
       skipped += r.skipped || 0;
       failed += r.failed || 0;
@@ -755,7 +768,7 @@ export async function downloadSelectionToFolder(sel, target) {
     task.finish(failed ? 'partial' : 'done', { done, skipped, failed });
     const summary = `下载完成:${done} 成功 / ${skipped} 跳过 / ${failed} 失败`;
     setFilePaneStatus(target, summary);
-    toast(summary, failed ? 'error' : 'success');
+    toast(summary, failed ? 'error' : 'success', done ? { action: { label: '打开文件夹', run: () => openLocalPath(localRoot) } } : undefined);
   } catch (e) {
     task.failed(e.message);
     setFilePaneStatus(target, '下载失败:' + e.message);
@@ -855,46 +868,184 @@ export async function removeEntry(en, paneArg) {
 
 /* ---------------- 书签(按 hostId 共享) ---------------- */
 
-export async function renderFileBookmarks(pane) {
-  const box = q(pane, '.file-bookmarks');
-  if (!box) return;
+// 书签缓存:首次用到时拉取,增删改后刷新;导航只读缓存,不再每次请求后端。
+// 数组顺序即显示顺序(管理对话框可调整)。
+let bookmarkCache = null;
+let bookmarkLoading = null;
+const BOOKMARK_MENU_LIMIT = 15;
+
+function loadBookmarks(force = false) {
+  if (bookmarkCache && !force) return Promise.resolve(bookmarkCache);
+  if (bookmarkLoading && !force) return bookmarkLoading;
+  const loading = api('bookmarks:list')
+    .then((list) => { bookmarkCache = Array.isArray(list) ? list : []; return bookmarkCache; })
+    .finally(() => { if (bookmarkLoading === loading) bookmarkLoading = null; });
+  bookmarkLoading = loading;
+  return loading;
+}
+
+const hostBookmarks = (hostId) => (bookmarkCache || []).filter((b) => b.hostId === hostId);
+const lastSegment = (path) => String(path).replace(/\/+$/, '').split('/').pop() || '/';
+
+function isBookmarked(pane) {
   const s = paneSession(pane);
-  box.innerHTML = '';
-  if (!s || pane.stale) return;
-  let list = [];
-  try { list = await api('bookmarks:list'); } catch { return; }
-  // 异步返回期间窗格可能已换主机/换通道:宿主不一致就放弃本次渲染
-  const cur = paneSession(pane);
-  if (!cur || cur.sessionId !== s.sessionId) return;
-  const mine = (list || []).filter((b) => b.hostId === s.host.id);
-  if (!mine.length) return;
-  for (const b of mine) {
-    const chip = document.createElement('span');
-    chip.className = 'bm-chip';
-    chip.innerHTML = icon('star') + '<span class="bm-path">' + escapeHtml(b.path) + '</span>';
-    chip.title = `跳转到 ${b.path}(右键移除书签)`;
-    chip.addEventListener('click', () => loadFileDir(pane, b.path));
-    chip.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      showCtxMenu(e.clientX, e.clientY, [
-        { label: '移除此书签', danger: true, run: async () => {
-          await api('bookmarks:remove', { hostId: s.host.id, path: b.path });
-          renderFileBookmarks(pane);
-        } },
-      ]);
-    });
-    box.appendChild(chip);
+  return !!(s && pane.cwd && hostBookmarks(s.host.id).some((b) => b.path === pane.cwd));
+}
+
+/// 下拉里的书签名:别名优先,否则末级目录名;末级名重名时带上级目录区分。
+export function bookmarkLabels(list) {
+  const counts = new Map();
+  for (const b of list) if (!b.name) counts.set(lastSegment(b.path), (counts.get(lastSegment(b.path)) || 0) + 1);
+  return list.map((b) => {
+    if (b.name) return b.name;
+    const last = lastSegment(b.path);
+    return counts.get(last) > 1 ? `${last}(${fileParent(String(b.path).replace(/\/+$/, '') || '/')})` : last;
+  });
+}
+
+/// 测试观测:窗格所在主机的书签路径与 ★ 状态。
+export function filePaneBookmarks(pane) {
+  const s = paneSession(pane);
+  return { paths: s ? hostBookmarks(s.host.id).map((b) => b.path) : [], marked: isBookmarked(pane) };
+}
+
+function refreshBookmarkButtons() {
+  for (const tab of state.tabs.values()) {
+    for (const pane of tab.panes.values()) if (pane.kind === 'file') renderFileBookmarks(pane);
   }
 }
 
-export async function addBookmark(pane) {
-  if (!pane || !pane.cwd) return toast('请先连接并打开目录', 'error');
+/// ★ 实心 = 当前目录已收藏;缓存未就绪时先拉取再画。
+export function renderFileBookmarks(pane) {
+  const star = q(pane, '.fp-bookmark');
+  if (!star) return Promise.resolve();
+  const paint = () => {
+    const marked = isBookmarked(pane);
+    const label = marked ? '取消收藏当前目录' : '收藏当前目录';
+    star.classList.toggle('marked', marked);
+    star.setAttribute('aria-pressed', String(marked));
+    star.setAttribute('aria-label', label);
+    star.title = label;
+  };
+  paint();
+  return bookmarkCache ? Promise.resolve() : loadBookmarks().then(paint, () => {});
+}
+
+export async function toggleBookmark(pane) {
+  const s = paneSession(pane);
+  if (!s || !pane?.cwd) return toast('请先连接并打开目录', 'error');
+  await loadBookmarks();
+  const marked = isBookmarked(pane);
+  await api(marked ? 'bookmarks:remove' : 'bookmarks:add', { hostId: s.host.id, path: pane.cwd });
+  await loadBookmarks(true);
+  refreshBookmarkButtons();
+  toast(marked ? '已取消收藏当前目录' : '已收藏当前目录', 'success');
+}
+
+/// ▾ 下拉(同步生成,读缓存):最多 15 个书签,当前目录打勾;之后是「全部书签」与「管理书签」。
+function bookmarkMenuItems(pane) {
+  const s = paneSession(pane);
+  if (!s) return [{ label: '未连接主机', disabled: true, reason: '请先连接并打开目录' }];
+  if (!bookmarkCache) {
+    loadBookmarks().catch(() => {});
+    return [{ label: '正在读取书签…', disabled: true, reason: '稍后再打开' }];
+  }
+  const list = hostBookmarks(s.host.id);
+  const shown = list.slice(0, BOOKMARK_MENU_LIMIT);
+  const labels = bookmarkLabels(shown);
+  const items = shown.map((b, i) => ({ label: labels[i], title: b.path, checked: b.path === pane.cwd, run: () => loadFileDir(pane, b.path) }));
+  if (!items.length) items.push({ label: '还没有书签', disabled: true, reason: '点星标按钮收藏当前目录' });
+  items.push('-');
+  if (list.length > BOOKMARK_MENU_LIMIT) items.push({ label: `全部书签(${list.length})…`, run: () => openBookmarkManager(pane) });
+  items.push({ label: '管理书签…', disabled: !list.length, reason: '还没有书签', run: () => openBookmarkManager(pane) });
+  return items;
+}
+
+// 管理对话框:本主机的书签,可过滤、改别名、上移/下移、删除
+let managerPane = null;
+
+export function openBookmarkManager(pane) {
   const s = paneSession(pane);
   if (!s) return toast('请先连接并打开目录', 'error');
-  await api('bookmarks:add', { hostId: s.host.id, path: pane.cwd });
-  await renderFileBookmarks(pane);
-  toast('已收藏当前目录', 'success');
+  if (!openBookmarkManager.bound) {
+    openBookmarkManager.bound = true;
+    $('#bm-filter').addEventListener('input', renderBookmarkManager);
+    $('#btn-bm-done').addEventListener('click', () => closeModal('#modal-bookmarks'));
+  }
+  managerPane = pane;
+  $('#bm-host').textContent = `${s.host.name} · ${s.host.username}@${s.host.host}`;
+  $('#bm-filter').value = '';
+  // 打开时重新拉取:先画缓存,拿到最新列表后重画
+  loadBookmarks(true).then(() => { refreshBookmarkButtons(); renderBookmarkManager(); }, () => {});
+  renderBookmarkManager();
+  openModal('#modal-bookmarks');
+  $('#bm-filter').focus();
+}
+
+async function afterBookmarkChange() {
+  await loadBookmarks(true);
+  refreshBookmarkButtons();
+  renderBookmarkManager();
+}
+
+function renderBookmarkManager() {
+  const box = $('#bm-list');
+  const s = managerPane && paneSession(managerPane);
+  if (!box) return;
+  box.innerHTML = '';
+  if (!s) { box.innerHTML = '<div class="file-empty">主机已断开</div>'; return; }
+  const all = hostBookmarks(s.host.id);
+  const kw = $('#bm-filter').value.trim().toLowerCase();
+  const list = kw ? all.filter((b) => `${b.path} ${b.name || ''}`.toLowerCase().includes(kw)) : all;
+  if (!list.length) { box.innerHTML = `<div class="file-empty">${all.length ? '没有匹配的书签' : '还没有书签'}</div>`; return; }
+  for (const b of list) {
+    const index = all.indexOf(b);
+    const row = document.createElement('div');
+    row.className = 'bm-row';
+    row.innerHTML = '<input class="inp bm-name" type="text" maxlength="64" spellcheck="false" autocomplete="off" />'
+      + '<span class="bm-path"></span>'
+      + `<button class="btn icon bm-up" type="button">${icon('arrowUp')}</button>`
+      + `<button class="btn icon bm-down" type="button">${icon('arrowDown')}</button>`
+      + `<button class="btn icon bm-del" type="button" title="删除书签" aria-label="删除书签">${icon('trash')}</button>`;
+    const name = row.querySelector('.bm-name');
+    name.value = b.name || '';
+    name.placeholder = `别名(默认 ${lastSegment(b.path)})`;
+    name.setAttribute('aria-label', `${b.path} 的别名`);
+    const pathEl = row.querySelector('.bm-path');
+    pathEl.textContent = b.path;
+    pathEl.title = b.path;
+    name.addEventListener('change', async () => {
+      if (name.value.trim() === (b.name || '')) return;
+      await api('bookmarks:update', { hostId: s.host.id, path: b.path, name: name.value });
+      await afterBookmarkChange();
+    });
+    name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
+    const up = row.querySelector('.bm-up');
+    const down = row.querySelector('.bm-down');
+    // 过滤时位置关系不完整,不允许调整顺序
+    up.disabled = !!kw || index === 0;
+    down.disabled = !!kw || index === all.length - 1;
+    up.title = kw ? '清空过滤后才能调整顺序' : '上移';
+    down.title = kw ? '清空过滤后才能调整顺序' : '下移';
+    up.setAttribute('aria-label', '上移');
+    down.setAttribute('aria-label', '下移');
+    const move = async (delta) => {
+      const order = all.map((x) => x.path);
+      const [moved] = order.splice(index, 1);
+      order.splice(index + delta, 0, moved);
+      await api('bookmarks:reorder', { hostId: s.host.id, paths: order });
+      await afterBookmarkChange();
+      const rows = [...box.querySelectorAll('.bm-row')];
+      rows[index + delta]?.querySelector(delta < 0 ? '.bm-up:not(:disabled)' : '.bm-down:not(:disabled)')?.focus();
+    };
+    up.addEventListener('click', () => move(-1));
+    down.addEventListener('click', () => move(1));
+    row.querySelector('.bm-del').addEventListener('click', async () => {
+      await api('bookmarks:remove', { hostId: s.host.id, path: b.path });
+      await afterBookmarkChange();
+    });
+    box.appendChild(row);
+  }
 }
 
 /* ---------------- 上传(队列快照 + 任务中心) ---------------- */
@@ -987,7 +1138,7 @@ async function runUploadQueue(paths, target) {
         continue;
       }
       results.push({ localPath, ...result, ok: !result?.skipped });
-      handle.mark(name, result?.skipped ? 'skipped' : 'done');
+      handle.mark(name, result?.skipped ? 'skipped' : 'done', undefined, result?.bytes);
       setFilePaneStatus(target, result?.skipped ? `已跳过 ${name}` : `已上传 ${result?.remotePath || name}`);
     } catch (e) {
       results.push({ localPath, error: e.message, ok: false });

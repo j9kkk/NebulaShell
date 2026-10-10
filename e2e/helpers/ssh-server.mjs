@@ -64,7 +64,8 @@ function memFsStat(tree, rp) {
 
 // 挂载最小 SFTP 服务端：REALPATH / OPENDIR / READDIR / OPEN / READ / WRITE / CLOSE / MKDIR / RMDIR / REMOVE / STAT
 // opts.readDelayMs: 每个 READ 响应人为延迟(模拟慢网/慢盘),0 = 不延迟;仅测试床使用,默认关闭。
-function attachMockSftp(session, tree, emit = () => {}, { readDelayMs = 0 } = {}) {
+// 每次 READ 现读 opts:运行中可调(setSftpReadDelay),已建立的 SFTP 会话同样生效。
+function attachMockSftp(session, tree, emit = () => {}, opts = {}) {
   // 注意:ssh2 在存在 'sftp' 监听器时只发 'sftp' 事件、不发 'subsystem'
   // (见 ssh2/lib/server.js 的 case 'subsystem'),故计数必须挂在 'sftp' 上。
   session.on('subsystem', (accept) => accept && accept()); // russh 客户端需显式请求 sftp 子系统
@@ -140,7 +141,8 @@ function attachMockSftp(session, tree, emit = () => {}, { readDelayMs = 0 } = {}
       const slice = (node.data || Buffer.alloc(0)).slice(offset, offset + size);
       if (!slice.length) return sftp.status(reqId, SFTP_STATUS_CODE.EOF);
       const reply = () => sftp.data(reqId, slice);
-      if (readDelayMs > 0) setTimeout(reply, readDelayMs);
+      const delay = opts.readDelayMs || 0;
+      if (delay > 0) setTimeout(reply, delay);
       else reply();
     });
     sftp.on('WRITE', (reqId, h, offset, data) => {
@@ -236,6 +238,7 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     .generateKeyPairSync('rsa', { modulusLength: 2048 })
     .privateKey.export({ type: 'pkcs1', format: 'pem' });
   const tree = makeMemFs();
+  const sftpOpts = { readDelayMs: sftpReadDelayMs };
 
   const clientListenServers = [];
   const windowChanges = [];
@@ -260,7 +263,7 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept();
-        attachMockSftp(session, tree, emit, { readDelayMs: sftpReadDelayMs });
+        attachMockSftp(session, tree, emit, sftpOpts);
         session.on('pty', (ac) => ac());
         session.on('shell', (ac) => {
           emit('shell', +1);
@@ -484,6 +487,10 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     windowChanges,
     shellWrites,
     shellCommands,
+    /// 运行中调整 SFTP READ 延迟(制造可观测的在途传输),0 = 关闭
+    setSftpReadDelay: (ms) => { sftpOpts.readDelayMs = ms; },
+    putFile: (p, data) => tree.set(p, { type: 'file', data: Buffer.from(data), mtime: Math.floor(Date.now() / 1000), target: null }),
+    removePath: (p) => tree.delete(p),
     close: () => new Promise((r) => {
       for (const s of clientListenServers) { try { s.close(); } catch { /* ignore */ } }
       server.close(r);

@@ -76,6 +76,7 @@ async function fixture() {
   const modules = new Map([
     ['./core.js', synthetic(core)],
     ['./terminal.js', synthetic({ connectHost: (id) => connections.push(id) })],
+    ['../shared/icons.js', synthetic({ icon: (name) => `<svg data-icon="${name}"></svg>` })],
   ]);
   for (const name of ['hosts', 'cloud']) {
     modules.set(`./${name}.js`, new vm.SourceTextModule(await readFile(new URL(`../src/modules/${name}.js`, import.meta.url), 'utf8'), { context }));

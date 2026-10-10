@@ -6,7 +6,6 @@
 import { $, accel, closeCtxMenu, closeModal, IS_MAC, openModal, state, toast, topModal } from './core.js';
 import { CATEGORY_LABEL, executeCommand, listCommands, PALETTE_MODAL_ID } from './commands.js';
 import { accelOf } from './keymap.js';
-import { closeMoreMenu } from './menu.js';
 import { activateTab, connectHost, quickConnect } from './terminal.js';
 import { quickTargetOf, rankItems } from '../shared/palette-match.js';
 
@@ -196,8 +195,7 @@ async function activate(row, { newTab = false } = {}) {
 export function openPalette(query = '') {
   if (isPaletteOpen()) { $('#palette-input').focus(); return; }
   if (topModal()) return;
-  // 先把焦点还给 ⋯ / 右键菜单打开前的位置,openModal 记下的归还目标才是它
-  closeMoreMenu('opener');
+  // 先把焦点还给下拉 / 右键菜单打开前的位置,openModal 记下的归还目标才是它
   closeCtxMenu();
   const input = $('#palette-input');
   input.value = query;

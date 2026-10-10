@@ -196,6 +196,29 @@ pub async fn nebula_invoke(
             ok(json!(null))
         }
 
+        // 下载完成后的「在文件夹中显示」/「打开」:只接受已存在的本机绝对路径;
+        // test_mode 不派生进程(e2e 机器上会真弹窗),回显动作供断言
+        "local:reveal" | "local:open" => {
+            let path = payload["path"].as_str().unwrap_or("");
+            let p = std::path::Path::new(path);
+            if path.contains('\0') || !p.is_absolute() || !p.exists() {
+                return err_msg(format!("本地文件不存在: {}", path));
+            }
+            let action = if channel == "local:reveal" {
+                "reveal"
+            } else {
+                "open"
+            };
+            if !state.test_mode {
+                if action == "reveal" {
+                    crate::sftp::reveal_in_file_manager(p);
+                } else {
+                    crate::sftp::open_with_default_app(p);
+                }
+            }
+            ok(json!({ "action": action, "path": path }))
+        }
+
         "hosts:list" => ok(json!(state.store.list_hosts())),
         "hosts:save" => match state.store.save_host(&payload) {
             Ok(h) => ok(h),
@@ -892,29 +915,38 @@ pub async fn nebula_invoke(
             ok(data["bookmarks"].clone())
         }
         "bookmarks:add" => {
-            {
-                let mut data = state.store.data.lock().unwrap();
-                let list = data["bookmarks"].as_array_mut().unwrap();
-                let host_id = payload["hostId"].as_str().unwrap_or("");
-                let path = payload["path"].as_str().unwrap_or("");
-                if !list.iter().any(|b| {
-                    b["hostId"].as_str() == Some(host_id) && b["path"].as_str() == Some(path)
-                }) {
-                    list.push(json!({ "hostId": host_id, "path": path, "at": chrono::Utc::now().timestamp_millis() }));
-                }
-            }
-            state.store.save().ok();
+            state.store.add_bookmark(
+                payload["hostId"].as_str().unwrap_or(""),
+                payload["path"].as_str().unwrap_or(""),
+            );
             ok(json!(null))
         }
         "bookmarks:remove" => {
-            {
-                let mut data = state.store.data.lock().unwrap();
-                data["bookmarks"].as_array_mut().unwrap().retain(|b| {
-                    !(b["hostId"].as_str() == Some(payload["hostId"].as_str().unwrap_or(""))
-                        && b["path"].as_str() == Some(payload["path"].as_str().unwrap_or("")))
-                });
-            }
-            state.store.save().ok();
+            state.store.remove_bookmark(
+                payload["hostId"].as_str().unwrap_or(""),
+                payload["path"].as_str().unwrap_or(""),
+            );
+            ok(json!(null))
+        }
+        // 书签别名(空串清除);返回是否找到该书签
+        "bookmarks:update" => ok(json!(state.store.update_bookmark(
+            payload["hostId"].as_str().unwrap_or(""),
+            payload["path"].as_str().unwrap_or(""),
+            payload["name"].as_str().unwrap_or(""),
+        ))),
+        // 重排某主机的书签(只动该主机的条目)
+        "bookmarks:reorder" => {
+            let paths: Vec<String> = payload["paths"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            state
+                .store
+                .reorder_bookmarks(payload["hostId"].as_str().unwrap_or(""), &paths);
             ok(json!(null))
         }
 

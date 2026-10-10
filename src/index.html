@@ -10,12 +10,36 @@
      platform-darwin(macOS,原生红绿灯) / platform-nonmacos(Windows/Linux,
      自绘 #win-controls)。见 style.css 对应分支。 -->
 <body class="platform-darwin platform-nonmacos">
+  <!-- 顶层标题栏:整宽、层级最高,只放窗口级元素 —— 红绿灯占位(macOS)、logo、
+       主机侧栏开关、一级菜单(Windows/Linux)、拖拽区、右侧工具栏开关、窗口按钮
+       (Windows/Linux)。标签行、主机侧栏、右侧工具栏都在它下面,互不重合。
+       窗口拖拽只在本节点子树:裸 data-tauri-drag-region 只在点在元素自身时生效,
+       logo 用 deep 整块可拖;双击空白处最大化/还原。macOS 的顺序(红绿灯 → 侧栏
+       开关 → logo)由 CSS order 调整,HTML 只写一份。 -->
+  <header id="titlebar" data-tauri-drag-region>
+    <div class="tb-traffic" data-tauri-drag-region aria-hidden="true"></div>
+    <div class="tb-brand" data-tauri-drag-region="deep">
+      <span class="logo">✦ <span class="logo-text">NebulaShell</span></span>
+    </div>
+    <button id="btn-sidebar-toggle" class="tb-btn" type="button" aria-label="主机侧栏" data-title="主机侧栏(%1)" data-accel="panel.sidebar"><span class="mi" data-icon="panelLeft"></span></button>
+    <span class="tb-sep tb-pc" aria-hidden="true"></span>
+    <!-- 一级菜单(Windows/Linux):menubar.js 按 shared/menu-spec.js 渲染;macOS 用系统菜单栏 -->
+    <nav id="menubar" class="tb-pc" role="menubar" aria-label="主菜单"></nav>
+    <div class="tb-drag" data-tauri-drag-region></div>
+    <button id="btn-ai-toggle" class="tb-btn" type="button" aria-label="右侧工具栏" data-title="右侧工具栏(%1)" data-accel="panel.tools"><span class="mi" data-icon="panelRight"></span></button>
+    <span class="tb-sep tb-pc" aria-hidden="true"></span>
+    <!-- 窗口控制(Windows/Linux):图标由 window-controls.js 按最大化状态写入;
+         macOS 用原生红绿灯,CSS 隐藏本组 -->
+    <div id="win-controls" role="group" aria-label="窗口控制">
+      <button id="btn-win-min" class="win-ctl" title="最小化" aria-label="最小化"></button>
+      <button id="btn-win-max" class="win-ctl" title="最大化" aria-label="最大化"></button>
+      <button id="btn-win-close" class="win-ctl win-ctl-close" title="关闭" aria-label="关闭"></button>
+    </div>
+  </header>
   <div id="app">
     <!-- 侧边栏：主机列表 -->
     <aside id="sidebar">
-      <div class="side-header" data-tauri-drag-region data-platform-darwin-only="tl-row">
-        <div class="logo">✦ <span class="logo-text">NebulaShell</span></div>
-        <div class="logo-sub">星云终端 · SSH Client</div>
+      <div class="side-header">
         <div class="side-actions">
           <!-- 图标与文字分 span:收起态窄条里 .lbl 隐藏,只留 .mi 图标(见 style.css 收起态) -->
           <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建主机</span></button>
@@ -26,12 +50,6 @@
         <input id="host-search" type="text" placeholder="搜索主机名称 / IP…" />
       </div>
       <nav id="host-list"></nav>
-      <!-- 折叠态保留底部开关，不随主机列表滚动。 -->
-      <div class="side-foot">
-        <button id="btn-sidebar-toggle" class="btn small side-foot-toggle" title="收起/展开主机侧边栏">
-          <span class="mi" id="sidebar-toggle-icon" data-icon="panelLeft"></span><span id="sidebar-toggle-text">收起侧边栏</span>
-        </button>
-      </div>
     </aside>
     <div id="sidebar-resizer" class="resizer" title="拖动调整侧边栏宽度"></div>
 
@@ -42,11 +60,9 @@
            macOS(⌘⇧⌥)/ Windows·Linux(Ctrl+Shift+Alt)重写为 title。
            取值优先写 keymap 动作名(自定义键位生效),也兼容裸 spec。
            不再写死 ⌘ —— 在 Windows/Linux 上那是错的提示。 -->
-      <!-- decorations:false 后本行是窗口唯一的"标题栏":空白处可拖拽/双击最大化
-           (data-tauri-drag-region 只在点按元素本身时生效,不影响子按钮),
-           行尾是最小化/最大化/关闭窗口控制按钮(见 modules/window-controls.js)。 -->
-      <div id="tabbar" data-tauri-drag-region>
-        <div id="tabs" data-tauri-drag-region></div>
+      <!-- 主机标签行是二级区:不是窗口拖拽区(拖拽只在顶层 #titlebar) -->
+      <div id="tabbar">
+        <div id="tabs"></div>
         <!-- 全部标签:仅在标签条溢出时显示,数字是标签数(terminal.js bindTabStrip) -->
         <button id="btn-tab-list" class="btn icon-tb hidden" type="button" title="全部标签" aria-label="全部标签"><span class="tab-count">0</span><span class="mi" data-icon="chevronDown"></span></button>
         <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
@@ -54,29 +70,6 @@
           <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
           <button id="btn-split-menu" class="btn icon-tb split-caret" title="分屏与布局" aria-label="分屏与布局"><span class="mi" data-icon="chevronDown"></span></button>
         </div>
-        <button id="btn-ai-toggle" class="btn icon-tb ai-btn" title="右侧工具栏(AI 助手 / 命令历史 / 常用命令)" aria-label="右侧工具栏">✨</button>
-        <button id="btn-more" class="btn icon-tb" aria-label="更多" data-title="更多(命令面板 %1)" data-accel="palette.open"><span class="mi" data-icon="dots"></span></button>
-        <!-- 更多菜单只放全局项:命令面板入口、视图开关、设置与关于。会话与布局
-             命令在就近入口(窗格工具条、终端右键、分屏下拉、侧栏「管理」),
-             AI / 历史 / 常用命令是右侧工具栏的页签。 -->
-        <div id="more-menu" class="hidden" aria-label="更多">
-          <button id="btn-palette" class="btn small" data-command="palette.open" data-accel="palette.open" data-title="命令面板(%1)"><span class="mi" data-icon="command"></span><span class="mm-label">命令面板…</span><span class="mm-key"></span></button>
-          <div class="mm-sep"></div>
-          <button id="btn-sidebar-menu" class="btn small" data-command="panel.sidebar"><span class="mi" data-icon="panelLeft"></span><span class="mm-label">主机侧栏</span><span class="mm-state"></span></button>
-          <button id="btn-tools-menu" class="btn small" data-command="panel.tools"><span class="mi" data-icon="panelRight"></span><span class="mm-label">右侧工具栏</span><span class="mm-state"></span></button>
-          <button id="btn-tile-tabs" class="btn small" data-command="workspace.tile"><span class="mi" data-icon="layout"></span><span class="mm-label">标签平铺</span><span class="mm-state"></span></button>
-          <div class="mm-sep"></div>
-          <button id="btn-settings" class="btn small" data-command="settings.open" data-accel="settings.open" data-title="设置(%1)"><span class="mi" data-icon="settings"></span><span class="mm-label">设置…</span><span class="mm-key"></span></button>
-          <button id="btn-about" class="btn small" data-command="app.about"><span class="mi" data-icon="info"></span><span class="mm-label">关于 NebulaShell</span></button>
-        </div>
-      </div>
-      <!-- 窗口控制(Windows/Linux):fixed 锚在视口右上角,不随 #main/AI 面板
-           挤动。图标由 window-controls.js 按最大化状态写入;关闭 hover 红色;
-           macOS(原生红绿灯)由 window-controls.js 隐藏本块。 -->
-      <div id="win-controls" role="group" aria-label="窗口控制">
-        <button id="btn-win-min" class="win-ctl" title="最小化" aria-label="最小化"></button>
-        <button id="btn-win-max" class="win-ctl" title="最大化" aria-label="最大化"></button>
-        <button id="btn-win-close" class="win-ctl win-ctl-close" title="关闭" aria-label="关闭"></button>
       </div>
       <div id="term-stack">
         <div id="welcome">
@@ -138,9 +131,7 @@
          都留在原处(见 right-panel.js)。 -->
     <div id="ai-resizer" class="resizer hidden" title="拖动调整右侧工具栏宽度"></div>
     <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="右侧工具栏">
-      <!-- 空白处可拖拽窗口(data-tauri-drag-region 只在点按元素本身时生效,
-           不影响子按钮);右侧 padding 给 #win-controls 让位(Windows)。 -->
-      <div class="ai-header" data-tauri-drag-region>
+      <div class="ai-header">
         <div class="rp-tabs" role="tablist" aria-label="右侧工具栏">
           <button id="rp-tab-ai" class="rp-tab" type="button" role="tab" data-tab="ai" aria-controls="rp-ai" aria-selected="true" title="AI 助手"><span class="mi" data-icon="sparkles"></span><span class="rp-tab-lbl">AI 助手</span></button>
           <button id="rp-tab-history" class="rp-tab" type="button" role="tab" data-tab="history" aria-controls="rp-history" aria-selected="false" tabindex="-1" title="命令历史"><span class="mi" data-icon="clock"></span><span class="rp-tab-lbl">命令历史</span></button>
@@ -483,6 +474,17 @@
       </table>
       <p class="muted small-note">TOFU 首次信任记录;主机指纹变更会被拒绝连接,此处可重置信任。</p>
       <div class="modal-actions"><button id="btn-fp-close" class="btn">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 文件分屏书签管理(sftp.js openBookmarkManager):本主机的书签,改别名、调顺序、删除 -->
+  <div id="modal-bookmarks" class="modal hidden">
+    <div class="modal-card bm-card">
+      <h3>管理书签</h3>
+      <p id="bm-host" class="muted small-note"></p>
+      <input id="bm-filter" class="inp" type="text" placeholder="过滤书签(路径或别名)…" aria-label="过滤书签" autocomplete="off" spellcheck="false" />
+      <div id="bm-list" class="bm-list"></div>
+      <div class="modal-actions"><button id="btn-bm-done" class="btn primary">完成</button></div>
     </div>
   </div>
 

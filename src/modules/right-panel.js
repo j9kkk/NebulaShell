@@ -54,9 +54,6 @@ export function setRightPanel(open, tab = null) {
   if (!open && wasOpen && panel().contains(document.activeElement)) focusTerminal();
   panel().classList.toggle('hidden', !open);
   $('#ai-resizer').classList.toggle('hidden', !open);
-  // Windows/Linux 的窗口按钮浮在右上角:面板打开时它压在面板标题行上,标签行不必再让位。
-  // 用 body class 而不是 :has(),较老的 WebKitGTK 不支持 :has()
-  document.body.classList.toggle('rp-open', open);
   if (open && (!wasOpen || target !== before)) onShown(target);
   if (open !== wasOpen) { fitAllVisible(); scheduleResizeSync(); }
   refreshCommandStates();

@@ -108,7 +108,7 @@ const isTransient = (button) => !!button.closest?.('#ctx-menu');
 /// 状态变化禁用后,方向键和 Esc 全部失效),aria-disabled 保持可聚焦,
 /// 方向键照常经过,原因由菜单底部显示。独立按钮仍用 disabled,原因并进 title。
 function applyEnabled(button, info) {
-  const inMenu = !!button.closest('[role="menu"], #more-menu');
+  const inMenu = !!button.closest('[role="menu"]');
   if (inMenu) {
     button.disabled = false;
     if (info.enabled) button.removeAttribute('aria-disabled');
@@ -150,7 +150,7 @@ function refreshButton(button) {
     button.classList.toggle('active', info.checked);
     const state = button.querySelector('.mm-state');
     if (state) state.textContent = info.checked ? '✓' : '';
-    if (button.closest('#more-menu')) {
+    if (button.closest('[role="menu"]')) {
       button.setAttribute('role', 'menuitemcheckbox');
       button.setAttribute('aria-checked', String(info.checked));
     } else button.setAttribute('aria-pressed', String(info.checked));
@@ -175,7 +175,7 @@ export function refreshCommandStates(scope) {
 export function bindCommandButton(button) {
   if (button._commandBound || isTransient(button) || button.dataset.commandDirect) return;
   button._commandBound = true;
-  if (button.closest('#more-menu')) button.setAttribute('role', 'menuitem');
+  if (button.closest('[role="menu"]')) button.setAttribute('role', 'menuitem');
   button.addEventListener('click', () => executeCommand(button.dataset.command, commandCtxOf(button)));
 }
 

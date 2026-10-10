@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import * as format from '../src/shared/format.js';
 
 class Element {
   constructor() {
@@ -32,8 +33,22 @@ class Element {
   }
   set innerHTML(value) { this.html = value; this.children = []; this.elements.clear(); }
   get innerHTML() { return this.html || ''; }
-  appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+  appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
   append(...kids) { kids.forEach((k) => this.appendChild(k)); }
+  insertBefore(child, ref) {
+    child.remove();
+    child.parentElement = this;
+    const i = ref ? this.children.indexOf(ref) : -1;
+    if (i < 0) this.children.push(child);
+    else this.children.splice(i, 0, child);
+    return child;
+  }
+  get firstChild() { return this.children[0] || null; }
+  get nextSibling() {
+    const siblings = this.parentElement?.children || [];
+    const i = siblings.indexOf(this);
+    return i < 0 ? null : siblings[i + 1] || null;
+  }
   replaceChildren(...children) { this.children = children; }
   querySelector(selector) {
     if (!this.elements.has(selector)) this.elements.set(selector, new Element());
@@ -48,7 +63,13 @@ class Element {
   focus() {}
   select() {}
   close() {}
-  remove() {}
+  remove() {
+    const siblings = this.parentElement?.children;
+    const i = siblings ? siblings.indexOf(this) : -1;
+    if (i >= 0) siblings.splice(i, 1);
+    this.parentElement = null;
+  }
+  click() { return this.fire('click', { stopPropagation() {}, target: this }); }
   showModal() {}
 }
 
@@ -73,6 +94,9 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
   const document = { createElement: () => new Element(), body: new Element(), getElementById: () => null, addEventListener: () => {}, dispatchEvent: () => {} };
   const context = vm.createContext({
     console, document, setTimeout, clearTimeout, Blob, URL,
+    // 任务中心的每秒刷新:unref 免得测试进程等它
+    setInterval: (fn, ms) => { const timer = setInterval(fn, ms); timer.unref(); return timer; },
+    clearInterval,
     crypto: { randomUUID: () => 'test-uuid-' + Math.random() },
     Event: class { constructor(type) { this.type = type; } },
     window: {
@@ -83,7 +107,7 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
   });
   const imports = {
     './core.js': { $, api, state, askConfirm: confirm, askPrompt: async () => null, copyText: async () => true, toast: (...args) => toasts.push(args),
-      showCtxMenu: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
+      showCtxMenu: () => {}, bindMenuButton: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
       setModalDismissHandler: (element, handler) => { element.dismiss = handler; },
       hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim(),
       applyAccelTitles: () => {} },
@@ -104,13 +128,18 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
       },
       registerTreeDownloadTask: ({ names, localRoot }) => {
         calls.push({ channel: 'task:registerTreeDownload', payload: { names, localRoot } });
-        return { taskId: 'dt-stub', isCancelled: () => false, finish: () => {}, failed: () => {}, cancelled: () => {} };
+        return { taskId: 'dt-stub', isCancelled: () => false, itemDone: () => {}, finish: () => {}, failed: () => {}, cancelled: () => {} };
       },
+      revealLocalPath: async (path) => { calls.push({ channel: 'task:reveal', payload: { path } }); return true; },
+      openLocalPath: async (path) => { calls.push({ channel: 'task:open', payload: { path } }); return true; },
       taskProgressFromEvent: () => false,
       wasRecentDrag: () => false,
       submitCopyTask: async (params) => { calls.push({ channel: 'task:submitCopy', payload: params }); return {}; },
     },
     './interaction.js': { popupPosition: () => ({ left: 100, top: 200 }) },
+    './commands.js': { refreshCommandStates: () => {} },
+    // 显示格式是纯函数,用真实实现
+    '../shared/format.js': { ...format },
     // SVG 图标注册表:sftp.js/file-transfer.js 动态拼图标,单测只要 svg 串存在
     '../shared/icons.js': { icon: (name) => `<svg data-icon="${name}"></svg>` },
     // sftp.js 右键菜单标签用 accelOf 渲染快捷键提示;单测断言不涉及具体键位
@@ -606,4 +635,83 @@ test('task popover re-parents to body, positions on open, toggles with tasks', a
   assert.equal(h.$('#file-task-badge').textContent, '2');
   t2.finish('done');
   assert.equal(h.$('#file-task-badge').textContent, '1');
+});
+
+// 任务中心两行布局:行 = [head(dot,label,actions), bar, info]
+const taskRow = (h, i = 0) => {
+  const row = h.$('#file-task-list').children[i];
+  const [head, bar, info] = row.children;
+  const [, label, actions] = head.children;
+  return { row, label, actions, bar, fill: bar.children[0], info, buttons: () => actions.children.map((b) => b.dataset.action) };
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('task center: single download shows bytes/speed/remaining, then size/duration/place with reveal and open', async () => {
+  const h = await harness('file-transfer', { invoke: async (channel, payload) => ({ action: channel, path: payload?.path }) });
+  h.module.bindTransferUi();
+  const task = h.module.registerDownloadTask({ paneId: 'p1', sessionId: 'host-a', name: 'big.tar', remotePath: '/r/big.tar', localPath: '/Users/me/Downloads/big.tar' });
+  const r = taskRow(h);
+  assert.deepEqual(r.buttons(), ['cancel']);
+  const cancelBtn = r.actions.children[0];
+  h.module.taskProgressFromEvent({ taskId: task.taskId, op: 'download', name: 'big.tar', pct: 0, bytes: 0, total: 4 * 1024 * 1024 });
+  await sleep(350);
+  h.module.taskProgressFromEvent({ taskId: task.taskId, op: 'download', name: 'big.tar', pct: 25, bytes: 1024 * 1024, total: 4 * 1024 * 1024 });
+  h.module.toggleTaskPopover(true);
+  assert.match(r.info.textContent, /^1\.0 MB \/ 4\.0 MB · [\d.]+ MB\/s · 剩余 /);
+  assert.equal(r.fill.style.width, '25%');
+  assert.equal(r.bar.classes.has('hidden'), false);
+  assert.equal(r.actions.children[0], cancelBtn, '进度更新不重建按钮(按下与松开之间换元素会丢点击)');
+  task.done();
+  assert.deepEqual(r.buttons(), ['reveal', 'open', 'clear']);
+  assert.equal(r.bar.classes.has('hidden'), true);
+  assert.match(r.info.textContent, /^4\.0 MB · 用时 .+ · \d\d:\d\d 完成 · 位于 Downloads$/);
+  assert.match(r.info.title, /本地:\/Users\/me\/Downloads\/big\.tar/);
+  await r.actions.children[0].click();
+  await r.actions.children[1].click();
+  const local = h.calls.filter((c) => c.channel.startsWith('local:'));
+  assert.deepEqual(local.map((c) => [c.channel, c.payload.path]), [
+    ['local:reveal', '/Users/me/Downloads/big.tar'], ['local:open', '/Users/me/Downloads/big.tar'],
+  ]);
+  assert.deepEqual({ ...h.module.lastDownloadLocation() }, { path: '/Users/me/Downloads/big.tar', isDir: false });
+  await r.actions.children[2].click();
+  assert.equal(h.$('#btn-file-tasks-status').classes.has('hidden'), true, '清除最后一条后入口隐藏');
+  assert.deepEqual({ ...h.module.lastDownloadLocation() }, { path: '/Users/me/Downloads/big.tar', isDir: false }, '清除记录不影响最近下载位置');
+});
+
+test('task center: clicking a running row never cancels; ⏹ cancels once and then shows pending', async () => {
+  const h = await harness('file-transfer');
+  h.module.bindTransferUi();
+  const up = h.module.registerUploadTask({ paneId: 'p1', sessionId: 'host-a', dstDir: '/srv', names: ['a.txt', 'b.txt'] });
+  const r = taskRow(h);
+  await r.row.click();
+  assert.equal(h.calls.some((c) => c.channel === 'sftp:cancel'), false, '整行点击不再是取消');
+  assert.equal(up.isCancelled(), false);
+  await r.actions.children[0].click();
+  assert.deepEqual(h.calls.filter((c) => c.channel === 'sftp:cancel').map((c) => c.payload.taskId), [up.taskId]);
+  assert.equal(up.isCancelled(), true, '上传队列在文件边界停下');
+  assert.equal(r.actions.children[0].disabled, true);
+  assert.equal(r.info.textContent, '正在取消…');
+  await r.actions.children[0].click();
+  assert.equal(h.calls.filter((c) => c.channel === 'sftp:cancel').length, 1, '取消只发一次');
+});
+
+test('task center: batch download accumulates bytes across downloadTree calls and opens the target folder', async () => {
+  const h = await harness('file-transfer');
+  h.module.bindTransferUi();
+  const task = h.module.registerTreeDownloadTask({ paneId: 'p1', sessionId: 'host-a', names: ['logs', 'conf'], localRoot: '/tmp/dl' });
+  const r = taskRow(h);
+  h.module.taskProgressFromEvent({ taskId: task.taskId, op: 'download', name: 'logs/a.log', bytes: 300, total: 300, taskBytes: 300, filesDone: 0 });
+  task.itemDone({ bytes: 500, done: 2 });
+  // 第二次 downloadTree:taskBytes 从 0 重新累计,任务级字节接着前一项
+  h.module.taskProgressFromEvent({ taskId: task.taskId, op: 'download', name: 'conf/x.ini', bytes: 100, total: 900, taskBytes: 100, filesDone: 0 });
+  h.module.toggleTaskPopover(true);
+  assert.match(r.info.textContent, /^已下载 2 个文件 · 600 B · 当前 conf\/x\.ini$/);
+  assert.equal(r.bar.classes.has('hidden'), true, '批量任务总量未知,不画进度条');
+  task.itemDone({ bytes: 900, done: 1 });
+  task.finish('done', { done: 3, skipped: 1, failed: 0 });
+  assert.deepEqual(r.buttons(), ['reveal', 'clear']);
+  assert.equal(r.actions.children[0].title, '打开文件夹');
+  assert.match(r.info.textContent, /^3 个文件 · 跳过 1 · 1\.4 KB · 用时 /);
+  await r.actions.children[0].click();
+  assert.deepEqual(h.calls.filter((c) => c.channel.startsWith('local:')).map((c) => [c.channel, c.payload.path]), [['local:open', '/tmp/dl']]);
 });

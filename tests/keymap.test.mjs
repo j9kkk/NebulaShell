@@ -208,10 +208,11 @@ test('防回归:UI 文案禁止写死 ⌘(core 符号表与 keymap 注释除外)
     'src/index.html',
     'src/modules/entry.js', 'src/modules/terminal.js', 'src/modules/sftp.js',
     'src/modules/hosts.js', 'src/modules/settings.js', 'src/modules/keymap.js',
-    'src/modules/commands.js', 'src/modules/menu.js', 'src/modules/monitor.js',
+    'src/modules/commands.js', 'src/modules/menubar.js', 'src/modules/monitor.js',
     'src/modules/tools.js', 'src/modules/ai.js', 'src/modules/cloud.js',
     'src/modules/file-transfer.js', 'src/modules/interaction.js',
     'src/modules/palette.js', 'src/modules/native-menu.js', 'src/shared/palette-match.js',
+    'src/modules/right-panel.js', 'src/modules/window-controls.js', 'src/shared/menu-spec.js',
   ];
   for (const f of files) {
     const src = (await readFile(new URL(`../${f}`, import.meta.url), 'utf8'))
@@ -246,6 +247,28 @@ test('阶段 1 新快捷键:命令面板 ⇧⌘P / Ctrl+Shift+P,设置 ⌘, / Ct
   }
   assert.equal(mac.accelOf('palette.open'), '⌘⇧P');
   assert.equal(mac.accelOf('settings.open'), '⌘,');
+});
+
+test('0.3.0 面板开关与全屏:⌘B / ⌥⌘B;Ctrl+Shift+B / Ctrl+Shift+Alt+B;F11 只在 Windows/Linux', async () => {
+  const mac = (await setup('darwin')).keymap;
+  assert.equal(mac.appShortcutOf(evt('b', { metaKey: true, code: 'KeyB' })), 'panel.sidebar');
+  // ⌥ 组合在 macOS 上 event.key 是变音字符(∫),按物理键位命中
+  assert.equal(mac.appShortcutOf(evt('∫', { metaKey: true, altKey: true, code: 'KeyB' })), 'panel.tools');
+  assert.equal(mac.appShortcutOf(evt('b', { ctrlKey: true, code: 'KeyB' })), '', 'macOS 的 Ctrl+B 属于 shell');
+  assert.equal(mac.appShortcutOf(evt('F11', { code: 'F11' })), '', 'macOS 用系统的进入全屏');
+  assert.equal(mac.accelOf('panel.sidebar'), '⌘B');
+  assert.equal(mac.accelOf('panel.tools'), '⌥⌘B');
+  assert.equal(mac.toAccelerator(mac.specOf('panel.tools')), 'Alt+CmdOrCtrl+B');
+  for (const platform of ['windows', 'linux']) {
+    const km = (await setup(platform)).keymap;
+    assert.equal(km.appShortcutOf(evt('B', { ctrlKey: true, shiftKey: true, code: 'KeyB' })), 'panel.sidebar', platform);
+    assert.equal(km.appShortcutOf(evt('B', { ctrlKey: true, shiftKey: true, altKey: true, code: 'KeyB' })), 'panel.tools', platform);
+    assert.equal(km.appShortcutOf(evt('b', { ctrlKey: true, code: 'KeyB' })), '', `${platform} 的 Ctrl+B 留给 shell(readline 后退一个字符)`);
+    assert.equal(km.appShortcutOf(evt('F11', { code: 'F11' })), 'window.fullscreen', platform);
+    assert.equal(km.accelOf('panel.sidebar'), 'Ctrl+Shift+B');
+    assert.equal(km.accelOf('panel.tools'), 'Ctrl+Shift+Alt+B');
+    assert.equal(km.accelOf('window.fullscreen'), 'F11');
+  }
 });
 
 test('keymap spec 转 Tauri 菜单加速键', async () => {
