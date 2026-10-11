@@ -310,32 +310,37 @@ fn ai_credentials_are_endpoint_and_protocol_scoped_and_explicitly_clearable() {
     let s = &f.0;
     s.save_settings(
         &json!({"ai":{"baseUrl":"https://one.test/v1/","protocol":"openai","apiKey":"one-key"}}),
-    );
-    let unchanged = s.save_settings(
-        &json!({"ai":{"baseUrl":" https://one.test/v1 ","protocol":"openai","apiKey":""}}),
-    );
+    )
+    .unwrap();
+    let unchanged = s
+        .save_settings(&json!({
+            "ai":{"baseUrl":" https://one.test/v1 ","protocol":"openai","apiKey":""}
+        }))
+        .unwrap();
     assert_eq!(unchanged["ai"]["apiKeySet"], json!(true));
     assert_eq!(
-        s.save_settings(&json!({"ai":{"baseUrl":"https://two.test/v1","apiKey":""}}))["ai"]
-            ["apiKeySet"],
+        s.save_settings(&json!({"ai":{"baseUrl":"https://two.test/v1","apiKey":""}}))
+            .unwrap()["ai"]["apiKeySet"],
         json!(false)
     );
     assert_eq!(
-        s.save_settings(&json!({"ai":{"apiKey":"two-key"}}))["ai"]["apiKeySet"],
+        s.save_settings(&json!({"ai":{"apiKey":"two-key"}}))
+            .unwrap()["ai"]["apiKeySet"],
         json!(true)
     );
     assert_eq!(
-        s.save_settings(&json!({"ai":{"protocol":"anthropic"}}))["ai"]["apiKeySet"],
+        s.save_settings(&json!({"ai":{"protocol":"anthropic"}}))
+            .unwrap()["ai"]["apiKeySet"],
         json!(false)
     );
     assert_eq!(
-        s.save_settings(&json!({"ai":{"baseUrl":"https://three.test","apiKey":"three-key"}}))["ai"]
-            ["apiKeySet"],
+        s.save_settings(&json!({"ai":{"baseUrl":"https://three.test","apiKey":"three-key"}}))
+            .unwrap()["ai"]["apiKeySet"],
         json!(true)
     );
     assert_eq!(
-        s.save_settings(&json!({"ai":{"clearApiKey":true,"apiKey":"must-not-win"}}))["ai"]
-            ["apiKeySet"],
+        s.save_settings(&json!({"ai":{"clearApiKey":true,"apiKey":"must-not-win"}}))
+            .unwrap()["ai"]["apiKeySet"],
         json!(false)
     );
     assert_eq!(

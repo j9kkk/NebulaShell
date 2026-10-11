@@ -107,6 +107,7 @@ fn make_state(tag: &str) -> AppState {
         force_exit: std::sync::atomic::AtomicBool::new(false),
         monitors: Mutex::new(HashMap::new()),
         logs: Mutex::new(HashMap::new()),
+        log_hosts: Mutex::new(HashMap::new()),
         ai_aborts: Arc::new(Mutex::new(HashMap::new())),
         batch_aborts: Arc::new(Mutex::new(HashMap::new())),
         test_results: Arc::new(Mutex::new(HashMap::new())),
