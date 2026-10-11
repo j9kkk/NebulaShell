@@ -1082,6 +1082,96 @@ async function main() {
       reconnected.bannerGone === true && reconnected.sameTerm === true, JSON.stringify(reconnected));
   }
 
+  // ============ 会话日志:断线续录与保存入口(T86) ============
+  // 0.4.1 行为:日志属于会话而非某一次连接 —— 手动断开/网络中断只暂停(按钮
+  // 呈"已暂停"、仍可停止),重连后继续写同一个文件,日志里有断开/重连标记;
+  // 测试模式下日志落在 NEBULA_USER_DATA/session-logs(隔离,不碰真实主目录)。
+  {
+    const st0 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+    const target = st0.sessions.find((s) => s.status === 'connected');
+    if (!target) throw new Error('T86 会话日志 E2E 需要至少一个已连接会话');
+    await evalJs(`const pane = document.querySelector('.term-pane[data-pane="${target.paneId}"]');
+      pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      pane.querySelector('textarea')?.focus(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().activeId`, target.id);
+    const logStatus = `window.nebula.invoke('log:status', { sessionId: '${target.id}' })`;
+    const logActiveExpr = `(async () => { const r = await ${logStatus}; return String(!!(r.data && r.data.active)); })()`;
+    // 从"未录制"开始(重跑残留清理),再经状态栏按钮开始记录
+    await evalJs(`return (async () => { await window.nebula.invoke('log:stop', { sessionId: '${target.id}' }); return 1; })()`);
+    await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
+    await waitEval(`return ${logActiveExpr}`, 'true', 10000);
+    const started = asObj(await evalJs(`return (async () => { const r = await ${logStatus}; return JSON.stringify(r.data); })()`));
+    check('T86a 开始记录:后端激活,文件落在测试隔离目录',
+      started.active === true && started.file.startsWith(path.join(userData, 'session-logs')) && !!started.name, JSON.stringify(started));
+    const logPath = started.file;
+    // 手动断开:后端不停录,按钮变"已暂停"且仍可点击
+    await evalJs(`document.querySelector('#btn-disconnect').click(); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === '${target.id}').status`, 'disconnected', 10000);
+    const paused = asObj(await evalJs(`return JSON.stringify({
+      log: (await ${logStatus}).data,
+      btn: (() => { const b = document.querySelector('#btn-log-toggle');
+        return { disabled: b.disabled, paused: b.classList.contains('paused'), title: b.title }; })() })`));
+    check('T86b 手动断开:日志未停止,按钮=可点击的"已暂停"',
+      paused.log.active === true && paused.btn.disabled === false && paused.btn.paused === true && paused.btn.title.includes('已暂停'),
+      JSON.stringify(paused));
+    // 回车就地重连:同一文件续录(不重新 log:start),标记顺序正确
+    await evalJs(`const pane = document.querySelector('.term-pane[data-pane="${target.paneId}"]');
+      pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      pane.querySelector('textarea')?.focus(); return 1`);
+    await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === '${target.id}').status`, 'connected', 30000);
+    let content1 = '';
+    for (let i = 0; i < 30 && !(content1 = fs.readFileSync(logPath, 'utf8')).includes('已重新连接'); i++) await sleep(300);
+    check('T86c 手动断开→回车重连:同一文件续录,含「已手动断开」「已重新连接」标记',
+      content1.includes('已手动断开') && content1.includes('已重新连接'),
+      JSON.stringify({ markers: ['已手动断开', '已重新连接'].map((m) => content1.includes(m)) }));
+    // 敲一条命令:回显进入日志
+    await evalJs(`window.__nbTest.sendText('${target.paneId}', 'whoami'); return 1`);
+    await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+    await waitEval(`return window.__nbTest.workspaceState(true).sessions.find(s => s.id === '${target.id}').buffer.includes('root')`, 'true', 10000);
+    // 停止:按钮提示带文件名,保存提示带「在文件夹中显示」
+    await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
+    await waitEval(`return ${logActiveExpr}`, 'false', 10000);
+    const stopToast = await waitEval(`return [...document.querySelectorAll('#toasts .toast-action')].some((b) => b.textContent === '在文件夹中显示')`, 'true', 10000);
+    const content2 = fs.readFileSync(logPath, 'utf8');
+    check('T86d 停止:写入记录停止标记,保存提示带「在文件夹中显示」',
+      stopToast === 'true' && content2.includes('记录停止（手动停止）'), JSON.stringify({ stopToast, tail: content2.slice(-120) }));
+    // 网络中断:重新开始 → dropClients → 数据泵写断开标记(与前端无关)→
+    // 同一文件续录。自动重连依赖前端定时器(遮挡环境会冻结),就地回车重连兜底,
+    // 自动重连本身由前端单测覆盖。
+    await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
+    await waitEval(`return ${logActiveExpr}`, 'true', 10000);
+    const started2 = asObj(await evalJs(`return (async () => { const r = await ${logStatus}; return JSON.stringify(r.data); })()`));
+    check('T86e 再次开始:新建文件(绝不覆盖)', started2.active === true && started2.file !== logPath, JSON.stringify(started2));
+    const dropped = sshd.dropClients();
+    check('T86f 模拟网络中断:mock sshd 断开了客户端 TCP', dropped >= 1, `dropped=${dropped}`);
+    let content3 = '';
+    for (let i = 0; i < 40 && !(content3 = fs.readFileSync(started2.file, 'utf8')).includes('连接已断开：网络中断'); i++) await sleep(300);
+    check('T86g 网络中断:数据泵写入「连接已断开：网络中断」标记',
+      content3.includes('连接已断开：网络中断'), JSON.stringify({ tail: content3.slice(-160) }));
+    // 自动重连(前端定时器,hidden 下定时器仍运行只是节流):先等它自己恢复,
+    // 超时再就地回车兜底。断言目标是同一文件续录 + 「已重新连接」标记。
+    let reconnected = false;
+    for (let i = 0; i < 24 && !reconnected; i++) {
+      await sleep(500);
+      reconnected = (await evalJs(`return window.__nbTest.workspaceState().sessions.find(s => s.id === '${target.id}').status`) === 'connected');
+    }
+    if (!reconnected) {
+      await evalJs(`const pane = document.querySelector('.term-pane[data-pane="${target.paneId}"]');
+        pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+        pane.querySelector('textarea')?.focus(); return 1`);
+      await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+      await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === '${target.id}').status`, 'connected', 30000);
+    }
+    let content4 = '';
+    for (let i = 0; i < 40 && !(content4 = fs.readFileSync(started2.file, 'utf8')).includes('已重新连接'); i++) await sleep(300);
+    check('T86h 网络中断→重连:同一文件续录,含「已重新连接」标记',
+      content4.includes('已重新连接'), JSON.stringify({ markers: { reconnected: content4.includes('已重新连接') } }));
+    // 收尾:停掉录制,不留状态给后续用例
+    await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
+    await waitEval(`return ${logActiveExpr}`, 'false', 10000);
+  }
+
   // 删除确认对话框(回归:confirm 在 WKWebView 失效 → 已换应用内实现)
   await evalJs(`
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));

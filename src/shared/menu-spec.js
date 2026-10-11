@@ -43,7 +43,7 @@ export const MENU_SPEC = [
   ] },
   { submenu: '会话', items: [
     cmd('session.reconnect'), cmd('session.disconnect'), SEP,
-    cmd('session.readonly'), cmd('session.log'), SEP,
+    cmd('session.readonly'), cmd('session.log'), cmd('session.log.folder'), SEP,
     cmd('tools.broadcast'), cmd('session.diagnose'),
   ] },
   { submenu: '窗口', role: 'window', only: 'mac', items: [

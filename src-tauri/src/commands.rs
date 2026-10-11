@@ -4,6 +4,7 @@ use crate::forward::ForwardService;
 use crate::ssh::SshService;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -69,18 +70,90 @@ impl Drop for RequestRegistration {
     }
 }
 
-pub fn record_session_log<R: tauri::Runtime>(
+/// 日志目录:测试模式(NEBULA_TEST=1)下隔离到 NEBULA_USER_DATA/session-logs,
+/// e2e 不再往真实主目录写文件。
+pub(crate) fn default_log_dir(test_mode: bool) -> PathBuf {
+    if test_mode {
+        if let Ok(dir) = std::env::var("NEBULA_USER_DATA") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir).join("session-logs");
+            }
+        }
+        return std::env::temp_dir().join("NebulaShell-test-logs");
+    }
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join("NebulaShell-logs")
+}
+
+fn open_log_file_checked(
+    dir: &Path,
+    label: &str,
+    stamp: &str,
+) -> Result<(PathBuf, std::fs::File), String> {
+    crate::session_log::open_log_file(dir, label, stamp).map_err(|e| {
+        format!(
+            "无法创建日志文件 {}_{}.log：{}",
+            label,
+            stamp,
+            crate::session_log::friendly_io_error(&e)
+        )
+    })
+}
+
+fn file_name_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn emit_log_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     sid: &str,
-    data: &str,
-    input: bool,
+    file: &Path,
+    active: bool,
+    reason: &str,
+    message: &str,
 ) {
+    let bytes = app
+        .try_state::<AppState>()
+        .and_then(|state| state.logs.lock().unwrap().get(sid).cloned())
+        .map(|entry| entry.bytes())
+        .unwrap_or(0);
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    crate::ai::emit_evt(
+        app,
+        "log:state",
+        json!({
+            "sessionId": sid,
+            "active": active,
+            "file": file.to_string_lossy(),
+            "name": name,
+            "bytes": bytes,
+            "reason": reason,
+            "message": message,
+        }),
+    );
+}
+
+fn log_entry_bytes<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str) -> u64 {
+    app.try_state::<AppState>()
+        .and_then(|state| state.logs.lock().unwrap().get(sid).cloned())
+        .map(|entry| entry.bytes())
+        .unwrap_or(0)
+}
+
+pub fn record_session_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str, data: &str) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
     let entry = state.logs.lock().unwrap().get(sid).cloned();
     if let Some(entry) = entry {
-        if let Err(message) = entry.record(data, input) {
+        if let Err(message) = entry.record(data) {
             let current = state
                 .logs
                 .lock()
@@ -88,13 +161,47 @@ pub fn record_session_log<R: tauri::Runtime>(
                 .get(sid)
                 .is_some_and(|current| Arc::ptr_eq(current, &entry));
             if current {
-                crate::ai::emit_evt(
-                    app,
-                    "log:error",
-                    json!({ "sessionId": sid, "file": entry.file.to_string_lossy(), "message": message }),
-                );
+                emit_log_state(app, sid, &entry.file, false, "error", &message);
             }
         }
+    }
+}
+
+/// 会话事件(已连接/连接已断开/已手动断开)写入日志:独立一行,只在日志仍归属
+/// 该会话时写入。写失败同样只报一次。
+pub fn record_session_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str, text: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let entry = state.logs.lock().unwrap().get(sid).cloned();
+    let Some(entry) = entry else { return };
+    if let Err(message) = entry.event(text) {
+        let current = state
+            .logs
+            .lock()
+            .unwrap()
+            .get(sid)
+            .is_some_and(|current| Arc::ptr_eq(current, &entry));
+        if current {
+            emit_log_state(app, sid, &entry.file, false, "error", &message);
+        }
+    }
+}
+
+/// 连接成功:置位 ever_connected;重连续录时写"已重新连接"标记。
+pub fn record_session_connected<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    sid: &str,
+    label: &str,
+) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let entry = state.logs.lock().unwrap().get(sid).cloned();
+    let Some(entry) = entry else { return };
+    let reconnected = entry.mark_connected();
+    if reconnected {
+        record_session_event(app, sid, &format!("已重新连接 {}", label));
     }
 }
 
@@ -425,15 +532,8 @@ pub async fn nebula_invoke(
             )
             .await
         {
-            Ok(_) => {
-                record_session_log(
-                    &app,
-                    payload["sessionId"].as_str().unwrap_or(""),
-                    payload["data"].as_str().unwrap_or(""),
-                    true,
-                );
-                ok(json!(null))
-            }
+            // 日志只记录服务器输出;输入靠回显进入日志,原始按键(含密码)永不落盘。
+            Ok(_) => ok(json!(null)),
             Err(e) => err_msg(e),
         },
         "ssh:setReadonly" => {
@@ -461,6 +561,19 @@ pub async fn nebula_invoke(
         },
         "ssh:disconnect" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
+            // 日志跟会话走,断开不停录(前端显示"已暂停",重连后继续写同一个文件);
+            // 但要在连接还活着时留下"已手动断开"标记:数据泵随后不会再发状态。
+            let was_alive = state
+                .ssh
+                .sessions
+                .lock()
+                .await
+                .get(&sid)
+                .map(|s| s.alive.load(Ordering::Acquire))
+                .unwrap_or(false);
+            if was_alive {
+                record_session_event(&app, &sid, "已手动断开");
+            }
             let lifecycle = state.connection_lifecycle(&sid);
             lifecycle.cancel();
             let _activation = lifecycle.activation.lock().await;
@@ -952,24 +1065,19 @@ pub async fn nebula_invoke(
 
         "log:start" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
-            let dir = dirs::home_dir()
-                .unwrap_or_default()
-                .join("NebulaShell-logs");
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let label = payload["hostLabel"].as_str().unwrap_or("session").replace(
-                |c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_',
-                "_",
+            let dir = default_log_dir(state.test_mode);
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                format!(
+                    "无法创建日志目录 {}：{}",
+                    dir.display(),
+                    crate::session_log::friendly_io_error(&e)
+                )
+            })?;
+            let label = crate::session_log::sanitize_label(
+                payload["hostLabel"].as_str().unwrap_or("session"),
             );
-            let stamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
-            let file = dir.join(format!("{}-{}-{}.log", label, stamp, uid()));
-            let mut options = std::fs::OpenOptions::new();
-            options.create_new(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let handle = options.open(&file).map_err(|e| e.to_string())?;
+            let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+            let (file, handle) = open_log_file_checked(&dir, &label, &stamp)?;
             let file_str = file.to_string_lossy().to_string();
             let app_log = app.clone();
             let sid_log = sid.clone();
@@ -978,7 +1086,7 @@ pub async fn nebula_invoke(
                 file,
                 handle,
                 payload["timestamps"].as_bool().unwrap_or(true),
-                payload["recordInput"].as_bool().unwrap_or(false),
+                true, // 手动开始时会话已连接:下一次连接成功必是重连
                 move |message| {
                     let current = app_log.try_state::<AppState>().is_some_and(|state| {
                         state
@@ -989,11 +1097,7 @@ pub async fn nebula_invoke(
                             .is_some_and(|entry| entry.file == log_file)
                     });
                     if current {
-                        crate::ai::emit_evt(
-                            &app_log,
-                            "log:error",
-                            json!({ "sessionId": sid_log, "file": log_file.to_string_lossy(), "message": message }),
-                        );
+                        emit_log_state(&app_log, &sid_log, &log_file, false, "error", &message);
                     }
                 },
             ) {
@@ -1002,32 +1106,73 @@ pub async fn nebula_invoke(
             };
             let previous = state.logs.lock().unwrap().insert(sid.clone(), entry);
             if let Some(previous) = previous {
-                let previous_file = previous.file.to_string_lossy().to_string();
-                let failure = match tokio::task::spawn_blocking(move || previous.stop()).await {
-                    Ok(Ok(())) => None,
-                    Ok(Err(error)) => Some(error),
-                    Err(error) => Some(error.to_string()),
-                };
+                let previous_file = previous.file.clone();
+                let failure =
+                    match tokio::task::spawn_blocking(move || previous.stop("手动停止")).await {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error),
+                        Err(error) => Some(error.to_string()),
+                    };
                 if let Some(message) = failure {
-                    crate::ai::emit_evt(
-                        &app,
-                        "log:error",
-                        json!({ "sessionId": sid, "file": previous_file, "message": message }),
-                    );
+                    emit_log_state(&app, &sid, &previous_file, false, "error", &message);
                 }
             }
-            ok(json!({ "file": file_str }))
+            emit_log_state(
+                &app,
+                &sid,
+                std::path::Path::new(&file_str),
+                true,
+                "started",
+                "",
+            );
+            ok(json!({ "file": file_str, "name": file_name_of(&file_str) }))
         }
         "log:stop" => {
             let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
+            let reason = match payload["reason"].as_str() {
+                Some("closed") => "会话已关闭",
+                _ => "手动停止",
+            };
             let entry = state.logs.lock().unwrap().remove(&sid);
             match entry {
                 Some(entry) => {
                     let file = entry.file.to_string_lossy().to_string();
-                    match tokio::task::spawn_blocking(move || entry.stop()).await {
-                        Ok(Ok(())) => ok(json!({ "file": file })),
-                        Ok(Err(error)) => err_msg(error),
-                        Err(error) => err_msg(error),
+                    let name = entry.name();
+                    let bytes = entry.bytes();
+                    match tokio::task::spawn_blocking(move || entry.stop(reason)).await {
+                        Ok(Ok(())) => {
+                            emit_log_state(
+                                &app,
+                                &sid,
+                                std::path::Path::new(&file),
+                                false,
+                                "stopped",
+                                "",
+                            );
+                            ok(json!({ "file": file, "name": name, "bytes": bytes }))
+                        }
+                        Ok(Err(error)) => {
+                            emit_log_state(
+                                &app,
+                                &sid,
+                                std::path::Path::new(&file),
+                                false,
+                                "error",
+                                &error,
+                            );
+                            err_msg(error)
+                        }
+                        Err(error) => {
+                            emit_log_state(
+                                &app,
+                                &sid,
+                                std::path::Path::new(&file),
+                                false,
+                                "error",
+                                &error.to_string(),
+                            );
+                            err_msg(error.to_string())
+                        }
                     }
                 }
                 None => ok(json!({ "file": null })),
@@ -1038,10 +1183,24 @@ pub async fn nebula_invoke(
             let logs = state.logs.lock().unwrap();
             match logs.get(&sid) {
                 Some(e) => ok(
-                    json!({ "active": e.active(), "file": e.file.to_string_lossy(), "recordInput": e.record_input }),
+                    json!({ "active": e.active(), "file": e.file.to_string_lossy(), "name": e.name(), "bytes": e.bytes() }),
                 ),
                 None => ok(json!({ "active": false, "file": null })),
             }
+        }
+        // 解析日志目录(不存在则创建):「打开日志文件夹」与设置页共用
+        "log:dir" => {
+            let dir = default_log_dir(state.test_mode);
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                format!(
+                    "无法创建日志目录 {}：{}",
+                    dir.display(),
+                    crate::session_log::friendly_io_error(&e)
+                )
+            })?;
+            ok(json!({
+                "dir": dir.to_string_lossy(),
+            }))
         }
 
         "plugins:info" => ok(json!({

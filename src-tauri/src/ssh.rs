@@ -307,6 +307,17 @@ fn is_alive(session: &Session) -> bool {
     session.alive.load(Ordering::Relaxed)
 }
 
+/// 会话日志的断开原因文案(与 ssh:status 载荷对应)。
+pub(crate) fn pump_exit_reason(st: &serde_json::Value) -> String {
+    match st["state"].as_str() {
+        Some("exited") => match st.get("code") {
+            Some(code) => format!("远端会话已退出（退出码 {}）", code),
+            None => "远端会话被信号终止".into(),
+        },
+        _ => "网络中断".into(),
+    }
+}
+
 /// 彻底关闭一个会话:断开跳板链与主连接。
 ///
 /// 必须显式调用:russh 的 `Handle::drop` 只打一条 debug 日志,**不会**关闭连接。
@@ -820,6 +831,12 @@ impl SshService {
             "ssh:status",
             json!({ "sessionId": session_id.clone(), "state": "connected", "label": format!("{}@{}", user, host_addr) }),
         );
+        // 重连续录:先写标记再启动数据泵,保证标记排在新连接的第一个字节之前
+        crate::commands::record_session_connected(
+            &app,
+            &session_id,
+            &format!("{}@{}", user, host_addr),
+        );
         drop(pending);
         if let Some(old) = replaced {
             tokio::spawn(shut_down_session(old));
@@ -896,6 +913,7 @@ impl SshService {
                                         if let Err(error) = channel.data(&bytes[..]).await {
                                             if is_alive(&pump_session) {
                                                 crate::ai::emit_evt(&pump_app, "ssh:status", json!({ "sessionId": pump_sid, "state": "disconnected", "reason": "network", "error": error.to_string() }));
+                                                crate::commands::record_session_event(&pump_app, &pump_sid, "连接已断开：网络中断");
                                             }
                                             break 'pump;
                                         }
@@ -937,7 +955,7 @@ impl SshService {
                     pending.extend_from_slice(&batch);
                     let text = take_utf8(&mut pending);
                     if !text.is_empty() && is_alive(&pump_session) {
-                        crate::commands::record_session_log(&pump_app, &pump_sid, &text, false);
+                        crate::commands::record_session_log(&pump_app, &pump_sid, &text);
                         crate::ai::emit_evt(
                             &pump_app,
                             "ssh:data",
@@ -946,9 +964,15 @@ impl SshService {
                     }
                 }
 
-                // 4) 通道结束:发退出状态后退出泵
+                // 4) 通道结束:发退出状态后退出泵。日志同步写"连接已断开"标记,
+                //    只在仍是该会话主人时写(避免旧泵污染重连后的新日志)。
                 if let Some(st) = exit {
                     if is_alive(&pump_session) {
+                        crate::commands::record_session_event(
+                            &pump_app,
+                            &pump_sid,
+                            &format!("连接已断开：{}", pump_exit_reason(&st)),
+                        );
                         crate::ai::emit_evt(&pump_app, "ssh:status", st);
                     }
                     break 'pump;

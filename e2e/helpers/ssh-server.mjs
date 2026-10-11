@@ -246,10 +246,17 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
   const shellWrites = [];
   const shellCommands = [];
   let shellSeq = 0;
+  // 活动客户端 socket:dropClients() 用于模拟网络中断(TCP 直接断,不走 SSH 协议)。
+  // 必须用 ssh2 回调里的 client._sock —— net.Server 层 'connection' 给出的 socket
+  // 对象销毁后连接仍然存活(0.4.1 e2e 三轮失败才定位到这里)。
+  const clientSockets = new Set();
   // 生命周期计数器(可选):用于断言连接/通道是否被正确回收。
   const emit = (kind, delta) => { try { onEvent && onEvent(kind, delta); } catch { /* ignore */ } };
   const server = new Server({ hostKeys: [hostPrivateKey], debug: process.env.SSHD_DEBUG ? (l) => console.log('[SSHD]', l) : undefined }, (client) => {
     emit('client', +1);
+    const rawSock = client._sock || client;
+    clientSockets.add(rawSock);
+    rawSock.on('close', () => clientSockets.delete(rawSock));
     client.on('close', () => emit('client', -1));
     client.on('authentication', (ctx) => {
       // ssh2 服务端认证上下文用 ctx.method 区分认证方式
@@ -489,6 +496,14 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     shellCommands,
     /// 运行中调整 SFTP READ 延迟(制造可观测的在途传输),0 = 关闭
     setSftpReadDelay: (ms) => { sftpOpts.readDelayMs = ms; },
+    /// 模拟网络中断:直接销毁所有客户端 TCP 连接(不经过 SSH 协议层)。
+    /// 返回断开的连接数;0 表示当时没有活动连接。
+    dropClients: () => {
+      const n = clientSockets.size;
+      for (const sock of clientSockets) { try { sock.destroy(); } catch { /* ignore */ } }
+      clientSockets.clear();
+      return n;
+    },
     putFile: (p, data) => tree.set(p, { type: 'file', data: Buffer.from(data), mtime: Math.floor(Date.now() / 1000), target: null }),
     removePath: (p) => tree.delete(p),
     close: () => new Promise((r) => {

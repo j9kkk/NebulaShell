@@ -223,7 +223,7 @@ fn stop_session_logs(state: &AppState) {
         .map(|(_, log)| log)
         .collect();
     for log in logs {
-        if let Err(error) = log.stop() {
+        if let Err(error) = log.stop("应用退出") {
             eprintln!("[log] {}: {}", log.file.display(), error);
         }
     }

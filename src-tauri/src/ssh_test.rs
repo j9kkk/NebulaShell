@@ -193,3 +193,25 @@ fn connect_err_prefers_recorded_mismatch_over_generic_message() {
         "回填后应输出可机读标记,实际: {tagged}"
     );
 }
+
+// ---------- 会话日志断开原因(与 ssh:status 载荷一一对应) ----------
+
+#[test]
+fn pump_exit_reason_maps_status_payloads() {
+    assert_eq!(
+        crate::ssh::pump_exit_reason(&json!({ "state": "exited", "code": 0 })),
+        "远端会话已退出（退出码 0）"
+    );
+    assert_eq!(
+        crate::ssh::pump_exit_reason(&json!({ "state": "exited", "code": 127 })),
+        "远端会话已退出（退出码 127）"
+    );
+    assert_eq!(
+        crate::ssh::pump_exit_reason(&json!({ "state": "exited", "reason": "exit-signal" })),
+        "远端会话被信号终止"
+    );
+    assert_eq!(
+        crate::ssh::pump_exit_reason(&json!({ "state": "disconnected", "reason": "network" })),
+        "网络中断"
+    );
+}

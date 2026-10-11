@@ -9,7 +9,8 @@ import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, wo
 import { escapeHtml } from './hosts.js';
 import { renderMonitorBar } from './monitor.js';
 import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSession } from './sftp.js';
-import { confirmTransferInterrupt } from './file-transfer.js';
+import { confirmTransferInterrupt, revealLocalPath } from './file-transfer.js';
+import { fmtSize } from '../shared/format.js';
 import { appendTrusted, createLine, feed as feedLine, firstCommandLine, resetLine } from '../shared/cmdline.js';
 import { endsWithCommand, logicalLineEnd, normalizeSpace, readCommandFromBuffer } from '../shared/term-text.js';
 import { Terminal } from '@xterm/xterm';
@@ -1442,7 +1443,7 @@ function closeSessionNow(sessionId) {
   const s = state.sessions.get(sessionId);
   if (!s) return;
   disconnectSession(sessionId);
-  stopLogIfActive(sessionId);
+  void stopSessionLog(sessionId);
   if (s._paintTimer) { clearInterval(s._paintTimer); s._paintTimer = null; }
   resetCommandCapture(s);
   s.term.dispose();
@@ -1514,12 +1515,22 @@ export function updateStatusbar(session, error = session?.lastError) {
   const label = `${session.host.username}@${session.host.host}:${session.host.port}`;
   const connected = session.status === 'connected';
   const connecting = session.status === 'connecting';
+  const logOn = !!session.logActive && connected;
+  const logPaused = !!session.logActive && !connected;
+  const logName = String(session.logFile || '').replace(/\\/g, '/').split('/').pop();
   roBadge.classList.toggle('hidden', !session.readOnly);
   setBtn(btnRo, connected, connected ? (session.readOnly ? '关闭只读模式' : '只读模式,防止误触') : '连接后才可切换只读');
   setBtn(btnClear, connected, connected ? '清屏并清空回滚' : '连接后才可清屏');
-  setBtn(btnLog, connected, connected ? (session.logActive ? `停止输出日志${session.logFile ? ' · ' + session.logFile : ''}` : '记录终端输出到文件（不记录输入）') : '连接后才可记录日志');
-  // 录制中用红色呼吸点表达(此前靠文字"⏺ 记录中"切换,图标化后移到颜色与 title 上)
-  btnLog.classList.toggle('recording', connected && !!session.logActive);
+  // 日志按钮:已连接可开始;录制中断开=已暂停(红点常亮),仍可点击停止
+  setBtn(btnLog, (connected || session.logActive) && !session.logBusy,
+    session.logBusy ? '正在处理日志操作…'
+    : logOn ? `停止记录会话日志${logName ? ' · ' + logName : ''}`
+    : logPaused ? '会话日志已暂停（未连接），重连后自动继续 · 点击停止'
+    : connected ? '开始记录会话日志' : '连接后才能记录会话日志');
+  // 录制中用红色呼吸点表达(此前靠文字"⏺ 记录中"切换,图标化后移到颜色与 title 上);
+  // 已暂停(录制中但未连接)红色常亮,不呼吸。
+  btnLog.classList.toggle('recording', logOn);
+  btnLog.classList.toggle('paused', logPaused);
   if (connected) {
     dot.className = 'dot connected';
     text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 广播中' : '');
@@ -2069,7 +2080,8 @@ export function handleSessionStatus({ sessionId, state: status, error, reason, c
     s.reconnectAttempt = 0;
     scheduleResizeSync();
   } else if (status === 'disconnected' || status === 'error' || status === 'exited') {
-    stopLogIfActive(sessionId);
+    // 日志跟会话走:断开只写标记并显示"已暂停",不停止录制,重连后继续写
+    // 同一个文件。唯一停止入口是用户操作、关闭会话/标签和应用退出。
     const why = error || (reason === 'network' ? 'network connection closed' : '');
     if (why && code == null) scheduleReconnect(sessionId, why);
   }
@@ -2292,27 +2304,84 @@ export function clearActiveTerm(sessionId = state.activeId) {
   try { s.term.clear(); s.term.write('\x1b[2J\x1b[H'); } catch { /* ignore */ }
 }
 
-export async function toggleSessionLog(sessionId = state.activeId) {
-  const s = state.sessions.get(sessionId);
-  if (!s || s.status !== 'connected') return toast('请先连接主机', 'error');
-  try {
-    if (s.logActive) {
-      try {
-        const r = await api('log:stop', { sessionId: s.sessionId });
-        toast('日志已保存到 ' + (r.file || ''), 'success');
-      } finally { s.logActive = false; }
-    } else {
-      const r = await api('log:start', { sessionId: s.sessionId, hostLabel: `${s.host.name || s.host.host}`, timestamps: true, recordInput: false });
-      s.logActive = true;
-      s.logFile = r.file;
-      toast('正在记录终端输出（不记录输入）:' + r.file, 'success');
-    }
-  } finally { if (state.activeId === s.sessionId) updateStatusbar(s); }
+/* ---------------- 会话日志(J1/J2) ----------------
+   日志属于会话,不属于某一次连接:断开(网络中断/远端退出/手动断开)只写标记
+   并显示"已暂停",重连后继续写同一个文件;只有手动停止、关闭会话/标签、退出
+   应用会结束录制。界面状态以后端 log:state 事件为准(entry.js 镜像),
+   这里的 api 调用是发起方,提示也由发起方弹,避免与事件重复。 */
+
+/// 待提示的保存结果(停止/关闭会话产生):延时合并,closeTab 一次关掉多个
+/// 录制中的会话时只弹一条;单份带「在文件夹中显示」,多份带「打开日志文件夹」。
+const pendingLogSaves = [];
+let logSaveFlushTimer = null;
+
+function flushLogSaves() {
+  logSaveFlushTimer = null;
+  const saved = pendingLogSaves.splice(0);
+  if (!saved.length) return;
+  if (saved.length === 1) {
+    const { file, name, bytes } = saved[0];
+    toast(`会话日志已保存：${name || file}（${fmtSize(bytes) || '0 B'}）`, 'success', {
+      action: { label: '在文件夹中显示', run: () => revealLocalPath(file) },
+    });
+  } else {
+    toast(`已保存 ${saved.length} 份会话日志`, 'success', { action: { label: '打开日志文件夹', run: openLogFolder } });
+  }
 }
 
-export function stopLogIfActive(sessionId) {
+export async function openLogFolder() {
+  try {
+    const r = await api('log:dir', {});
+    await api('local:open', { path: r.dir });
+  } catch (e) {
+    toast('无法打开日志文件夹：' + (e?.message || e), 'error');
+  }
+}
+
+export async function toggleSessionLog(sessionId = state.activeId) {
   const s = state.sessions.get(sessionId);
-  if (s && s.logActive) { api('log:stop', { sessionId }).catch(() => {}); s.logActive = false; }
+  if (!s || s.logBusy) return;
+  // 开始仍要求已连接;停止不要求 —— 断开期间按钮是唯一的停止入口。
+  if (!s.logActive && s.status !== 'connected') return toast('请先连接主机', 'error');
+  s.logBusy = true;
+  const btnLog = $('#btn-log-toggle');
+  if (btnLog) btnLog.disabled = true;
+  try {
+    if (s.logActive) {
+      const r = await api('log:stop', { sessionId: s.sessionId, reason: 'manual' });
+      s.logActive = false;
+      if (r && r.file) pendingLogSaves.push(r);
+      if (!logSaveFlushTimer) logSaveFlushTimer = setTimeout(flushLogSaves, 200);
+    } else {
+      const r = await api('log:start', { sessionId: s.sessionId, hostLabel: `${s.host.name || s.host.host}`, timestamps: true });
+      s.logActive = true;
+      s.logFile = r.file;
+      toast(`开始记录会话日志：${r.name || r.file || ''}`, 'success', {
+        action: { label: '在文件夹中显示', run: () => revealLocalPath(r.file) },
+      });
+    }
+  } catch (e) {
+    toast('会话日志操作失败：' + (e?.message || e), 'error');
+  } finally {
+    s.logBusy = false;
+    if (state.activeId === s.sessionId) updateStatusbar(s);
+    else refreshCommandStates();
+  }
+}
+
+/// 停止该会话的日志(关闭会话/标签时调用)。不直接弹提示:结果进汇总队列,
+/// 由 flushLogSaves 统一展示。停止失败不阻塞会话关闭,退出应用还有兜底收尾。
+export async function stopSessionLog(sessionId) {
+  const s = state.sessions.get(sessionId);
+  if (!s || !s.logActive) return;
+  s.logActive = false;
+  try {
+    const r = await api('log:stop', { sessionId, reason: 'closed' });
+    if (r && r.file) {
+      pendingLogSaves.push(r);
+      if (!logSaveFlushTimer) logSaveFlushTimer = setTimeout(flushLogSaves, 400);
+    }
+  } catch { /* 静默:会话关闭流程不应被日志收尾打断 */ }
 }
 
 export function loadSessionLogState(s) {

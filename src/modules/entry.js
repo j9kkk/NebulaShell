@@ -452,7 +452,11 @@ function setupWorkspaceCommands() {
   registerCommand('session.disconnect', { label: '断开连接', category: 'session', keywords: ['disconnect', 'dk', 'duankai'], enabled: (ctx) => live(session(ctx)) || !!session(ctx)?.reconnectScheduled,
     reason: sessionReason, run: async (ctx) => { const id = session(ctx).sessionId; if (await confirmTransferInterrupt([id])) disconnectSession(id); } });
   registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.readOnly, run: (ctx) => toggleReadonly(session(ctx).sessionId) });
-  registerCommand('session.log', { label: '记录会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.logActive, run: (ctx) => toggleSessionLog(session(ctx).sessionId) });
+  registerCommand('session.log', { label: '记录会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'],
+    enabled: (ctx) => { const s = session(ctx); return !!s && !s.logBusy && (s.status === 'connected' || !!s.logActive); },
+    reason: (ctx) => { const s = session(ctx); if (!s) return noSession; if (s.logBusy) return '正在处理日志操作'; return '会话未连接'; },
+    checked: (ctx) => !!session(ctx)?.logActive, run: (ctx) => toggleSessionLog(session(ctx).sessionId) });
+  registerCommand('session.log.folder', { label: '打开日志文件夹', category: 'session', keywords: ['log folder', 'logs', 'rzwjj', 'rizhi'], run: () => openLogFolder() });
   registerCommand('session.diagnose', { label: 'AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: (ctx) => !!session(ctx), reason: noSession, run: async (ctx) => { focusTarget(ctx); if (await aiDiagnose()) setRightPanel(true, 'ai'); } });
   // 广播随状态换动词,不打 ✓。广播期间,显式目标(窗格工具条、右键菜单)是
   // 该会话的加入 / 退出开关,按下态表示参与。
@@ -731,13 +735,21 @@ export function bindEvents() {
     state.metrics.set(m.sessionId, m);
     if (m.sessionId === state.activeId) renderMonitorBar();
   });
-  window.nebula.on('log:error', ({ sessionId, file, message }) => {
-    const session = state.sessions.get(sessionId);
-    if (session && (!file || !session.logFile || session.logFile === file)) {
-      session.logActive = false;
-      if (state.activeId === sessionId) updateStatusbar(session);
+  // 会话日志状态:后端是唯一事实源,这里只做镜像。started/stopped 由发起方
+  // (toggleSessionLog / 关闭会话)弹提示,事件不再重复;error/dropped 由事件弹。
+  window.nebula.on('log:state', (st) => {
+    const session = state.sessions.get(st.sessionId);
+    if (session && (!st.file || !session.logFile || session.logFile === st.file)) {
+      session.logActive = !!st.active;
+      if (st.file) session.logFile = st.file;
+      updateTab(session);
+      if (state.activeId === st.sessionId) updateStatusbar(session);
     }
-    toast('日志记录失败：' + message, 'error');
+    if (st.reason === 'error') {
+      toast(`会话日志写入失败，已停止记录：${st.message || '未知原因'}${st.name ? `（${st.name}）` : ''}`, 'error', { action: { label: '打开日志文件夹', run: openLogFolder } });
+    } else if (st.reason === 'dropped') {
+      toast(`磁盘写入跟不上，会话日志丢失部分输出，已在日志里标注${st.name ? `（${st.name}）` : ''}`, 'warn');
+    }
   });
   // 进度按归属路由:任务中心(taskId)+ 会话/目录匹配的视图状态栏,
   // 不再把 A 主机的进度覆盖到 B 的面板上。
@@ -960,6 +972,8 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
         id: session.sessionId, host: session.host.id, tabId: session.tabId, paneId: session.paneId,
         status: session.status, readOnly: !!session.readOnly, mounted: !!session.pane?.isConnected, visible,
         cols: session.term.cols, rows: session.term.rows,
+        // 会话日志状态(断线续录的 e2e 断言用):logFile 是完整路径,日志只读字段
+        logActive: !!session.logActive, logFile: session.logFile || null,
         ...(details ? { identity: identity(session), termIdentity: identity(session.term), fitIdentity: identity(session.fit), paneIdentity: identity(session.pane), surface: rect(session.pane?.querySelector('.term-surface')), proposed, buffer } : {}),
       };
     }),

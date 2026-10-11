@@ -9,19 +9,20 @@ import * as layout from './terminal-layout.js';
 import { parseFpError, stripFpMark } from './core.js';
 import * as cmdline from '../shared/cmdline.js';
 import * as termText from '../shared/term-text.js';
+import * as fmt from '../shared/format.js';
 import xtermPkg from '@xterm/xterm';
 
 const moduleSource = (await readFile(new URL('./terminal.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '');
 const source = moduleSource.replace(/\bexport /g, '');
 
-function harness({ renderStatusbar = false, terminal = null, clock = null } = {}) {
-  const calls = [], timers = new Map(), notices = [], closedTabs = [], confirmations = [], elements = new Map();
+function harness({ renderStatusbar = false, terminal = null, clock = null, stubLog = true } = {}) {
+  const calls = [], timers = new Map(), notices = [], closedTabs = [], confirmations = [], elements = new Map(), reveals = [];
   let timerSeq = 0, modal = false, password = 'quick-secret', confirm = false, implementation = async () => ({});
   const element = (selector) => {
     if (!elements.has(selector)) {
       const classes = new Set();
-      elements.set(selector, { textContent: '', className: '', disabled: false, title: '',
+      elements.set(selector, { textContent: '', className: '', disabled: false, title: '', classes,
         classList: { add: (name) => classes.add(name), toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name) } });
     }
     return elements.get(selector);
@@ -62,7 +63,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null } = {}
   }
   class Addon { fit() {} onContextLoss() {} }
   const context = vm.createContext({
-    ...layout, ...cmdline, feedLine: cmdline.feed, ...termText, state, crypto: webcrypto, console, Terminal: terminal || Terminal,
+    ...layout, ...cmdline, feedLine: cmdline.feed, ...termText, ...fmt, state, crypto: webcrypto, console, Terminal: terminal || Terminal,
     ...(clock ? { Date: class extends Date { static now() { return clock.now; } } } : {}),
     FitAddon: Addon, SearchAddon: Addon, WebLinksAddon: Addon, WebglAddon: Addon,
     window: {}, getComputedStyle: () => ({ getPropertyValue: () => '' }),
@@ -77,6 +78,8 @@ function harness({ renderStatusbar = false, terminal = null, clock = null } = {}
     parseFpError, stripFpMark,
     toast: (...args) => notices.push(args),
     renderMonitorBar() {},
+    refreshCommandStates() {},
+    revealLocalPath: async (path) => { reveals.push(path); return true; },
     setTimeout: (fn, delay) => { const id = ++timerSeq; timers.set(id, { fn, delay }); return id; },
     clearTimeout: (id) => timers.delete(id),
     setInterval: () => ++timerSeq, clearInterval() {},
@@ -86,7 +89,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null } = {}
     updateStatusbar = renderStatusbar ? updateStatusbar : () => {};
     refreshBroadcast = () => {};
     scheduleResizeSync = () => {};
-    stopLogIfActive = () => {};
+    ${stubLog ? 'stopLogIfActive = () => {};' : 'void stopSessionLog;'}
     closeTab = (id) => closedTabs.push(id);
     createTab = () => state.tabs.get('tab-a');
     const createInputSession = createSession;
@@ -106,7 +109,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null } = {}
     initFilePane = async () => {};
     createFilePaneState = () => ({});
     confirmTransferInterrupt = async () => true;
-    loadSessionLogState = () => {};
+    ${stubLog ? 'loadSessionLogState = () => {};' : 'void loadSessionLogState;'}
     makePaneEl = paneElement;
     appendPaneButtons = () => {};
     globalThis.subject = {writeSessionInput, disconnectSession, reconnectSession, runSessionConnection, makePaneEl: realMakePaneEl,
@@ -115,7 +118,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null } = {}
       syncPaneStatusBanner,
       getCommandBlockTarget, commandBlockTargetStatus, submitCommandBlock, feedTrusted,
       activateSession, activatePane, setActiveTabId, closeSession, createInputSession,
-      consumeCommandKeys, setAltScreen};
+      consumeCommandKeys, setAltScreen, toggleSessionLog, stopSessionLog, openLogFolder};
   `, Object.assign(context, { closedTabs, addSession, paneElement }));
   function addSession(host = { id: 'host-a', host: 'example.invalid', username: 'root', port: 22 }) {
     const s = {
@@ -131,7 +134,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null } = {}
     tab.layout = tab.layout ? { type: 'h', a: tab.layout, b: leaf } : leaf;
     return s;
   }
-  return { ...context.subject, state, tab, calls, timers, notices, closedTabs, confirmations, elements, addSession,
+  return { ...context.subject, state, tab, calls, timers, notices, closedTabs, confirmations, elements, reveals, addSession,
     __buildFilePaneCalls: context.__buildFilePaneCalls,
     setModal: (value) => modal = value, setPassword: (value) => password = value,
     setConfirm: (value) => confirm = value,
@@ -1062,4 +1065,104 @@ test('makePaneEl 构建文件分屏前已回填 pane.el', () => {
   assert.equal(h.__buildFilePaneCalls[0], true, 'buildFilePane 调用时 pane.el 必须已就绪');
   assert.ok(pane.el, 'pane 对象应持有创建出的元素引用');
   assert.equal(pane.el.dataset.pane, 'pane-file');
+});
+
+// —— 会话日志(J1):日志属于会话 ——
+// 断开(手动/网络/远端退出)只暂停,重连续录同一个文件;只有停止/关闭会话结束录制。
+test('session log: manual disconnect pauses recording, reconnect keeps the same file', async () => {
+  const h = harness({ stubLog: false, renderStatusbar: true }), s = h.addSession();
+  s.status = 'connected';
+  h.setAPI(async (name) => name === 'log:start' ? { file: '/l/web_1.log', name: 'web_1.log' } : {});
+  await h.toggleSessionLog(s.sessionId);
+  assert.equal(s.logActive, true);
+  // 手动断开:不再停止日志(此前这里静默停录、界面却显示按钮不可用)
+  await h.disconnectSession(s.sessionId);
+  assert.equal(s.logActive, true);
+  assert.equal(h.calls.some((c) => c.name === 'log:stop'), false);
+  const btn = h.elements.get('#btn-log-toggle');
+  assert.equal(btn.disabled, false, '断开期间按钮仍可点(=停止)');
+  assert.equal(btn.classes.has('paused'), true);
+  assert.match(btn.title, /已暂停/);
+  // 重连:不再重新 log:start,继续写同一个文件
+  assert.equal(await h.reconnectSession(s.sessionId), true);
+  assert.equal(s.logActive, true);
+  assert.equal(h.calls.filter((c) => c.name === 'log:start').length, 1);
+  const btn2 = h.elements.get('#btn-log-toggle');
+  assert.equal(btn2.classes.has('recording'), true);
+});
+
+test('session log: network drop pauses instead of stopping, auto-reconnect resumes', async () => {
+  const h = harness({ stubLog: false, renderStatusbar: true }), s = h.addSession();
+  s.status = 'connected'; s.everConnected = true;
+  h.setAPI(async (name) => name === 'log:start' ? { file: '/l/web_1.log', name: 'web_1.log' } : {});
+  await h.toggleSessionLog(s.sessionId);
+  h.handleSessionStatus({ sessionId: s.sessionId, state: 'disconnected', reason: 'network' });
+  assert.equal(s.logActive, true);
+  assert.equal(h.calls.some((c) => c.name === 'log:stop'), false, '网络断开不再静默停录');
+  assert.equal(h.elements.get('#btn-log-toggle').classes.has('paused'), true);
+  assert.ok(h.timers.size > 0, '已排队自动重连');
+  await h.tick();
+  assert.equal(s.status, 'connected');
+  assert.equal(s.logActive, true);
+  assert.equal(h.calls.filter((c) => c.name === 'log:start').length, 1);
+  assert.equal(h.elements.get('#btn-log-toggle').classes.has('recording'), true);
+});
+
+test('session log: rapid double toggle starts only one log', async () => {
+  const h = harness({ stubLog: false }), s = h.addSession();
+  s.status = 'connected';
+  let release; const gate = new Promise((r) => { release = r; });
+  h.setAPI(async (name) => { if (name === 'log:start') { await gate; return { file: '/l/a.log', name: 'a.log' }; } return {}; });
+  const first = h.toggleSessionLog(s.sessionId);
+  const second = h.toggleSessionLog(s.sessionId);
+  release();
+  await Promise.all([first, second]);
+  assert.equal(h.calls.filter((c) => c.name === 'log:start').length, 1);
+  assert.equal(s.logActive, true);
+});
+
+test('session log: stopping shows a save toast with a reveal action', async () => {
+  const h = harness({ stubLog: false }), s = h.addSession();
+  s.status = 'connected'; s.logActive = true; s.logFile = '/l/web_1.log';
+  h.setAPI(async (name) => name === 'log:stop' ? { file: '/l/web_1.log', name: 'web_1.log', bytes: 2048 } : {});
+  await h.toggleSessionLog(s.sessionId);
+  assert.equal(s.logActive, false);
+  while (h.timers.size) await h.tick();
+  const saved = h.notices.find((n) => String(n[0]).startsWith('会话日志已保存'));
+  assert.ok(saved, JSON.stringify(h.notices));
+  assert.match(saved[0], /web_1\.log（2\.0 KB）/);
+  assert.equal(saved[2].action.label, '在文件夹中显示');
+  await saved[2].action.run();
+  assert.deepEqual(h.reveals, ['/l/web_1.log']);
+});
+
+test('session log: closing a tab with several recording sessions aggregates the toast', async () => {
+  const h = harness({ stubLog: false });
+  const a = h.addSession(), b = h.addSession(), c = h.addSession();
+  for (const s of [a, b, c]) { s.logActive = true; s.logFile = '/l/' + s.sessionId + '.log'; }
+  h.setAPI(async (name, payload) => name === 'log:stop' ? { file: '/l/' + payload.sessionId + '.log', name: payload.sessionId + '.log', bytes: 10 } : {});
+  await h.closeSession(a.sessionId, { checkTransfers: false });
+  await h.closeSession(b.sessionId, { checkTransfers: false });
+  await h.closeSession(c.sessionId, { checkTransfers: false });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.calls.filter((x) => x.name === 'log:stop').length, 3);
+  assert.ok(h.calls.every((x) => x.name !== 'log:stop' || x.payload.reason === 'closed'));
+  while (h.timers.size) await h.tick();
+  const aggregate = h.notices.find((n) => n[0] === '已保存 3 份会话日志');
+  assert.ok(aggregate, JSON.stringify(h.notices));
+  assert.equal(aggregate[2].action.label, '打开日志文件夹');
+});
+
+test('session log: statusbar button covers startable, busy and no-session states', async () => {
+  const h = harness({ stubLog: false, renderStatusbar: true }), s = h.addSession();
+  s.status = 'connected';
+  h.updateStatusbar(s);
+  const btn = h.elements.get('#btn-log-toggle');
+  assert.equal(btn.disabled, false);
+  assert.match(btn.title, /^开始记录会话日志/);
+  s.logBusy = true;
+  h.updateStatusbar(s);
+  assert.equal(btn.disabled, true, '在途操作期间禁用');
+  h.updateStatusbar(null);
+  assert.equal(btn.disabled, true);
 });

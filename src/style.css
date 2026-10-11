@@ -315,8 +315,10 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 #statusbar > .dot, #statusbar > .ro-badge { flex: 0 0 auto; }
 #statusbar > .spacer { flex: 1 1 0; min-width: 0; }
 #statusbar > .btn { flex: 0 0 auto; }
-/* 会话日志录制中:状态点脉动的同款语言,图标变红呼吸 */
+/* 会话日志录制中:状态点脉动的同款语言,图标变红呼吸;
+   已暂停(录制中但未连接)红色常亮,不呼吸。 */
 #btn-log-toggle.recording { color: var(--danger, #ff6b6b); animation: pulse 1s infinite; }
+#btn-log-toggle.paused { color: var(--danger, #ff6b6b); }
 .dot { width: 8px; height: 8px; border-radius: 50%; }
 .dot.idle { background: var(--muted); }
 .dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
