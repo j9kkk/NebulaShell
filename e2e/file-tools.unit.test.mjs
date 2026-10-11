@@ -138,6 +138,11 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     },
     './interaction.js': { popupPosition: () => ({ left: 100, top: 200 }) },
     './commands.js': { refreshCommandStates: () => {} },
+    // tools.js 引 monitor.js 的收藏助手;桩记录调用并回"已收藏",点亮态断言用它驱动
+    './monitor.js': {
+      addSnippetFromCmd: async (cmd) => { calls.push({ channel: 'snippet:addFromCmd', payload: { cmd } }); return true; },
+      isSnippetCmd: (cmd) => cmd === 'echo favorited',
+    },
     // 显示格式是纯函数,用真实实现
     '../shared/format.js': { ...format },
     // SVG 图标注册表:sftp.js/file-transfer.js 动态拼图标,单测只要 svg 串存在
@@ -437,6 +442,7 @@ test('task terminal state refreshes only panes still browsing the target dir', a
 
 // 发送、可用性判定与焦点归还都在 terminal.js 的 submitCommandBlock(见 terminal.test.mjs);
 // 这里只断言页面走可信路径、参数正确,失败时把原因告诉用户。
+// ▶ 是唯一执行入口(常显);整行点击不再执行,避免远程误触。
 test('snippet page executes through the trusted command path and reports why it was declined', async () => {
   const sent = [];
   let result = { ok: false, reason: '目标会话处于只读模式' };
@@ -446,13 +452,72 @@ test('snippet page executes through the trusted command path and reports why it 
   h.module.renderSnippets();
   const row = h.$('#snippet-list').children[0];
   await row.fire('click');
+  assert.equal(sent.length, 0, 'row click is not an execute affordance any more');
+  await row.querySelector('.s-exec').fire('click');
   assert.deepEqual(h.toasts, [['目标会话处于只读模式', 'error']], 'declined input surfaces the reason');
   result = { ok: true };
-  await row.fire('click');
+  await row.querySelector('.s-exec').fire('click');
   assert.equal(h.toasts.length, 1);
   // 选项对象建在 vm 上下文里(另一套原型),按 JSON 比较
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), [['echo safe', { execute: true }], ['echo safe', { execute: true }]]);
   assert.equal(h.calls.length, 0, 'no direct ssh:write bypass');
+});
+
+// 行内编辑:✏ 展开(同时只允许一行)、Enter 保存、Esc 取消、空值不发保存请求
+test('snippet inline edit commits through settings:save and Esc discards', async () => {
+  const h = await harness('monitor', { invoke: async (channel, payload) => (channel === 'settings:save' ? payload : []) });
+  h.state.settings.snippets = [{ name: 'old', cmd: 'df -h' }];
+  h.module.renderSnippets();
+  const row = h.$('#snippet-list').children[0];
+  await row.querySelector('.s-edit').fire('click');
+  const editor = h.$('#snippet-list').children[0];
+  // 编辑态以 .s-edit-name 输入框预填为标志(桩不解析 innerHTML,以值区分展示/编辑态)
+  const name = editor.querySelector('.s-edit-name');
+  const cmd = editor.querySelector('.s-edit-cmd');
+  assert.equal(name.value, 'old');
+  assert.equal(cmd.value, 'df -h');
+  // 空名称不发保存请求
+  name.value = '  ';
+  await editor.querySelector('.s-save').fire('click');
+  assert.equal(h.calls.some((c) => c.channel === 'settings:save'), false, 'empty name is rejected locally');
+  assert.deepEqual(h.toasts.at(-1), ['请填写名称和命令', 'error']);
+  // Esc 取消:回到展示态且不改数据
+  name.value = 'x'; cmd.value = 'y';
+  await cmd.fire('keydown', { key: 'Escape', preventDefault() {}, isComposing: false });
+  const shown = h.$('#snippet-list').children[0];
+  assert.equal(shown.querySelector('.s-name').textContent, 'old', 'Esc restores the display row');
+  assert.equal(h.state.settings.snippets[0].name, 'old');
+  // 再次进入编辑,Enter 保存生效
+  await shown.querySelector('.s-edit').fire('click');
+  const editor2 = h.$('#snippet-list').children[0];
+  editor2.querySelector('.s-edit-name').value = '磁盘';
+  editor2.querySelector('.s-edit-cmd').value = 'df -hT';
+  await editor2.querySelector('.s-edit-cmd').fire('keydown', { key: 'Enter', preventDefault() {}, isComposing: false });
+  const saved = h.calls.find((c) => c.channel === 'settings:save');
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.payload.snippets)), [{ name: '磁盘', cmd: 'df -hT' }]);
+  assert.equal(h.$('#snippet-list').children[0].querySelector('.s-name').textContent, '磁盘', 'row re-renders with new values');
+});
+
+// 收藏自历史:去重(命令相同不重复添加)、默认名截 16 字符、重名自动 (N) 后缀
+test('favorite from history dedupes by command and suffixes colliding names', async () => {
+  const h = await harness('monitor', { invoke: async (channel, payload) => (channel === 'settings:save' ? payload : []) });
+  h.state.settings.snippets = [{ name: 'df -h', cmd: 'df --human-readable' }];
+  // 命令相同:提示已收藏,不新增
+  assert.equal(await h.module.addSnippetFromCmd('df --human-readable'), false);
+  assert.deepEqual(h.toasts.at(-1), ['该命令已在常用命令中', 'info']);
+  assert.equal(h.state.settings.snippets.length, 1);
+  // 长命令:名称取前 16 字符 + …
+  assert.equal(h.module.snippetNameFor('systemctl restart nginx now'), 'systemctl restar…');
+  // 名称与现有条目撞车:追加 (2);两条长命令截出同一名称 → 再撞再递增
+  await h.module.addSnippetFromCmd('df -h');
+  await h.module.addSnippetFromCmd('systemctl restart nginx-one');
+  await h.module.addSnippetFromCmd('systemctl restart nginx-two');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(h.state.settings.snippets.map((s) => s.name))),
+    ['df -h', 'df -h(2)', 'systemctl restar…', 'systemctl restar…(2)'],
+  );
+  assert.equal(h.state.settings.snippets[1].cmd, 'df -h');
+  assert.equal(h.calls.filter((c) => c.channel === 'settings:save').length, 3, 'each favorite persists once');
 });
 
 test('history page fills the terminal through the trusted path without Enter and reports failures', async () => {
@@ -469,6 +534,25 @@ test('history page fills the terminal through the trusted path without Enter and
   assert.equal(h.toasts.length, 1);
   assert.deepEqual(sent, [['echo history'], ['echo history']], 'fill only: no execute option, no Enter');
   assert.equal(h.calls.some((c) => c.channel === 'ssh:write'), false);
+});
+
+// ★ 收藏接线:已收藏命令点亮,点击委托 addSnippetFromCmd 并原地点亮(不整列表重渲染)
+test('history rows expose a favorite star that delegates to the snippet helper', async () => {
+  const h = await harness('tools', { invoke: async () => [
+    { cmd: 'echo favorited', host: 'a' },
+    { cmd: 'echo fresh', host: 'b' },
+  ] });
+  await h.module.renderHistory('');
+  const rows = h.$('#hist-list').children;
+  const known = rows[0].querySelector('.h-fav');
+  assert.equal(known.classes.has('active'), true, 'already-favorited command lights up');
+  assert.equal(known.title, '已在常用命令中');
+  assert.equal(rows[1].querySelector('.h-fav').title, '收藏为常用命令');
+  // 点击 ★ 走收藏助手,行本身的填入语义不受影响(桩 fire 不冒泡,行点击独立)
+  await rows[1].querySelector('.h-fav').fire('click', { stopPropagation() {}, target: rows[1].querySelector('.h-fav') });
+  assert.deepEqual(h.calls.filter((c) => c.channel === 'snippet:addFromCmd').map((c) => c.payload.cmd), ['echo fresh']);
+  assert.equal(rows[1].querySelector('.h-fav').classes.has('active'), true, 'row lights up in place after favoriting');
+  assert.equal(rows[1].querySelector('.h-fav').title, '已在常用命令中');
 });
 
 test('batch detail and exported results retain output and explicitly flag backend truncation', async () => {

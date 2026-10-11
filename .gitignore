@@ -25,3 +25,6 @@ Thumbs.db
 # 运行产物
 *.log
 reports/
+
+# ZCode 会话工作区(工作流存档等,不入库)
+.zcode/

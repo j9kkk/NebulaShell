@@ -65,7 +65,8 @@ export function rankItems(query, items) {
 export function quickTargetOf(query) {
   const m = String(query || '').trim().match(/^([\w.-]+)@([\w.-]+)(?::(\d{1,5}))?$/);
   if (!m) return null;
-  const port = Number(m[3]) || 22;
+  // 显式端口(含 0)不做 || 22 兜底:0 非法,该报错就报错,不能静默连 22
+  const port = m[3] === undefined ? 22 : Number(m[3]);
   if (port < 1 || port > 65535) return null;
   return { username: m[1], host: m[2], port };
 }

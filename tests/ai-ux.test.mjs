@@ -200,7 +200,9 @@ test('failed model switch rolls dropdown back and leaves saved settings unchange
   await assert.rejects(ai.switchModel('m2'), /disk failure/);
   assert.equal(state.settings.ai.model, 'm1');
   assert.equal(ai.savedAiModelId(), 'm1');
-  assert.equal($('#ai-model-switch').disabled, false);
+  // 回滚后触发钮必须恢复可用(switchModel 的 finally 里 modelSwitchPending=false
+  // → renderModelSwitch 重置 disabled;#ai-model-switch 元素已删,旧断言恒真)
+  assert.equal($('#ai-model-trigger').disabled, false);
 });
 
 test('manual model fallback stays draft-only until save; cancellation restores saved controls', async () => {

@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
 import { addSnippet, renderMonitorBar } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -562,7 +562,6 @@ export function bindEvents() {
   bindHistoryPage();
   bindSettings();
   $('#btn-ai-close').addEventListener('click', () => setRightPanel(false));
-  $('#ai-settings-open').addEventListener('click', () => openSettings('ai'));
   $('#btn-ai-cancel').addEventListener('click', closeAiSettings);
   // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都丢弃 AI 分区的草稿
   setModalDismissHandler('#modal-settings', closeAiSettings);
@@ -743,6 +742,21 @@ export function bindEvents() {
   // 进度按归属路由:任务中心(taskId)+ 会话/目录匹配的视图状态栏,
   // 不再把 A 主机的进度覆盖到 B 的面板上。
   window.nebula.on('sftp:progress', routeProgress);
+  window.nebula.on('ai:progress', ({ requestId }) => {
+    // 心跳:响应头到达、role/usage/keep-alive 等非内容帧都会触发。
+    // 空闲超时的语义因此是"60 秒内后端一个活跃信号都没有",而不是
+    // "60 秒没吐正文" —— 思考型模型纯推理期不再被误判超时。
+    aiTouchRequest(requestId);
+  });
+  window.nebula.on('ai:thinking', ({ requestId, text }) => {
+    const h = state.aiReq;
+    if (!h || h.id !== requestId) return;
+    aiTouchRequest(requestId);
+    h.thinking = (h.thinking || '') + text;
+    if (!h.bubble) return;
+    markBubbleStreaming(h.bubble);
+    aiShowThinking(h.bubble, h.thinking);
+  });
   window.nebula.on('ai:delta', ({ requestId, text }) => {
     const h = state.aiReq;
     if (!h || h.id !== requestId) return;
@@ -751,6 +765,8 @@ export function bindEvents() {
     if (!h.bubble) return;
     // 首个 token:撤掉"正在思考…"占位,转入流式态
     markBubbleStreaming(h.bubble);
+    // 正文开始后思考已结束:头部从"思考中…"切换为收起态文案,点击仍可展开回看
+    aiSealThinking(h.bubble);
     // 同一帧内的多个 delta 合并成一次 DOM 写入:逐 token 直接写会让长回复
     // 每帧重排几十次(气泡在滚动容器里,每次都要重算 scrollHeight),
     // 表现为卡顿。用 rAF 合帧后视觉上仍是逐字出现。
@@ -990,18 +1006,6 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     modelChipActive: () => ($('#ai-model-chips .model-chip.active .model-chip-name') || {}).textContent || '',
     modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-menu-list .ai-model-menu-item')].map((b) => b.dataset.model),
     modelSwitchValue: () => savedAiModelId(),
-    // AI 头部两个按钮的间距(第 6 条)
-    aiHeaderGap: () => {
-      const a = $('#ai-settings-open').getBoundingClientRect();
-      const b = $('#btn-ai-close').getBoundingClientRect();
-      return Math.round(b.left - a.right);
-    },
-    // 头部按钮高度对比(第 7 条;模型选择已移入 composer,不再参与对比)
-    aiHeaderHeights: () => {
-      const g = $('#ai-settings-open').getBoundingClientRect();
-      const x = $('#btn-ai-close').getBoundingClientRect();
-      return { settings: Math.round(g.height), close: Math.round(x.height) };
-    },
     // 对话气泡的状态类与文本:等待态/流式态渲染的观测点
     aiBubbles: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
       role: b.className.replace(/ai-msg\s*/, '').trim(),

@@ -45,6 +45,8 @@ async function setup(invoke) {
     },
     './hosts.js': { escapeHtml: String },
     './terminal.js': { feedTrusted: async () => ({ ok: true }) },
+    // tools.js 引 monitor.js 的收藏助手(renderHistory 的 ★);导出链路用不到,给最小桩
+    './monitor.js': { addSnippetFromCmd: async () => false, isSnippetCmd: () => false },
   };
   // Blob/URL deliberately absent: this export must go through native IPC only.
   const context = vm.createContext({ document });

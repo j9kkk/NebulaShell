@@ -95,7 +95,9 @@ body { display: flex; flex-direction: column; }
 body.resizing { cursor: col-resize; user-select: none; }
 body.resizing iframe, body.resizing xterm { pointer-events: none; }
 
-/* 侧边栏 */
+/* 侧边栏。展开/收起做宽度过渡:内容 overflow:hidden,过渡期间裁掉旧布局,
+   避免内容在收窄过程中换行挤动。flex-basis 必须保持 auto(跟随 width):
+   若收起态写 flex:0 0 40px,basis(auto→40px)不可插值,过渡到一半会瞬间跳窄。 */
 #sidebar {
   width: 264px;
   flex-shrink: 0; min-height: 0;
@@ -104,6 +106,8 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  transition: width var(--dur) var(--ease), min-width var(--dur) var(--ease), max-width var(--dur) var(--ease);
 }
 /* 侧栏头部:logo 与红绿灯都在顶层标题栏,这里只有操作按钮与搜索框 */
 .side-header { flex: none; padding: 12px 14px 10px; border-bottom: 1px solid var(--border); }
@@ -319,12 +323,24 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .dot.connected { background: var(--accent2); }
 .dot.exited, .dot.error { background: var(--danger); }
 
-/* AI 面板 */
+/* AI 面板(右侧工具栏容器)。展开/收起做宽度过渡;visibility 一并过渡是关键:
+   收起时面板在整个动画期间保持可见,展开时立即可见(visibility 插值规则:
+   一端为 visible 则过渡全程可见)。overflow:hidden 裁掉过渡期间的挤动。 */
 #ai-panel {
   width: 360px; min-width: 260px; max-width: 60vw; flex-shrink: 0; min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--panel);
   display: flex; flex-direction: column;
+  overflow: hidden;
+  transition: width var(--dur) var(--ease), min-width var(--dur) var(--ease), visibility var(--dur) var(--ease);
+}
+/* 收起态仍留在布局里(宽度压到 0 + visibility:hidden),宽度过渡才能双向生效,
+   因此显式覆盖 .hidden 的 display:none !important(width 需 !important 压过拖拽写入的内联宽)。 */
+#ai-panel.hidden {
+  display: flex !important;
+  width: 0 !important; min-width: 0 !important;
+  border-left-width: 0;
+  visibility: hidden;
 }
 /* 头部:标题 / 模型下拉 / 设置 / 关闭 之间留出统一间距。
    原先只有 .spacer 撑开,设置与关闭按钮贴在一起(第 6 条)。
@@ -351,8 +367,6 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .rp-tab[aria-selected="true"] { color: var(--text); background: rgba(91,140,255,0.16); border-color: rgba(91,140,255,0.35); font-weight: 600; }
 .rp-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 @container (max-width: 330px) { .rp-tab .rp-tab-lbl { display: none; } .rp-tab { padding: 0 7px; } }
-/* ⚙ 只属于 AI 页;别的页签上隐藏但保留占位,✕ 不随页签挪动 */
-#ai-panel:not([data-tab="ai"]) #ai-settings-open { visibility: hidden; }
 /* 页签页叠在同一格:非活动页只是不可见(visibility 而非 display:none),
    滚动位置、过滤词、输入草稿原样保留,也不打断隐藏期间 AI 回复的贴底跟随。
    子元素可能自设 visibility:visible(如"回到底部"按钮),一并压住。 */
@@ -461,6 +475,28 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   animation: ai-caret 1s step-end infinite;
 }
 @keyframes ai-caret { 50% { opacity: 0; } }
+
+/* 思考内容(reasoning/thinking)折叠块:独立于 .ai-body,插在正文之前。
+   默认收起只留一行头部;流式期间头部带"思考中"动效,正文开始后 seal。
+   展开后为淡色小字,不与正文抢视觉;max-height 限制超长推理的占屏。 */
+.ai-thinking { margin: 2px 0 6px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.ai-thinking-head {
+  display: block; width: 100%; text-align: left;
+  font-family: inherit; font-size: 12px; line-height: 1.4;
+  color: var(--muted); background: none; border: none;
+  padding: 4px 8px; cursor: pointer; user-select: none;
+}
+.ai-thinking-head:hover { color: var(--text); }
+.ai-thinking.streaming .ai-thinking-head::after {
+  content: '…'; animation: ai-caret 1s step-end infinite;
+}
+.ai-thinking-text {
+  display: none; padding: 2px 8px 6px;
+  color: var(--muted); font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 40vh; overflow-y: auto;
+}
+.ai-thinking.open .ai-thinking-text { display: block; }
 
 /* 每条消息的复制按钮:悬停气泡时浮现,点一下复制原文。锚定在气泡本体
    (.ai-col,position:relative)右上角 —— 元信息行移出气泡后按钮仍贴着气泡,
@@ -1001,21 +1037,42 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #monitor-bar.mon-unsupported .mon-spark { display: none; }
 #mon-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
-/* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page) */
-.snippet-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+/* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page)。
+   行内按钮几何统一 20×20 圆角方块:▶ 常显(主操作),✏/🗑/★ 悬停显现。
+   整行点击不再执行命令(误触代价是在远程主机上跑命令),行只是悬停容器。 */
+.snippet-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; }
 .snippet-row:hover { background: rgba(91,140,255,0.12); }
-.snippet-row .s-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.snippet-row .s-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; max-width: 45%; overflow: hidden; text-overflow: ellipsis; flex: none; }
 .snippet-row .s-cmd { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.snippet-row .s-del { visibility: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--danger, #ff6b6b); cursor: pointer; }
+.snippet-row .s-edit, .snippet-row .s-del { visibility: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; }
+.snippet-row .s-edit { color: var(--muted); }
+.snippet-row .s-del { color: var(--danger, #ff6b6b); }
 .snippet-row .s-del:hover { background: rgba(255,107,107,0.12); }
-.snippet-row:hover .s-del { visibility: visible; }
+.snippet-row .s-edit:hover { background: rgba(139,150,168,0.15); }
+.snippet-row:hover .s-edit, .snippet-row:hover .s-del { visibility: visible; }
+.snippet-row .s-exec { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--accent); cursor: pointer; }
+.snippet-row .s-exec:hover { background: rgba(91,140,255,0.15); }
+/* 行内编辑态:两行输入 + 右列保存/取消;input 显式 width:100% 保证两行等宽对齐 */
+.snippet-row.editing { align-items: center; }
+.snippet-row.editing .s-edit-form { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.snippet-row.editing .s-edit-line input { width: 100%; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; }
+.snippet-row.editing .s-edit-actions { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.snippet-row.editing .s-save, .snippet-row.editing .s-cancel { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.snippet-row.editing .s-save { color: var(--accent); }
+.snippet-row.editing .s-cancel { color: var(--muted); }
+.snippet-row.editing .s-save:hover { background: rgba(91,140,255,0.15); }
+.snippet-row.editing .s-cancel:hover { background: rgba(139,150,168,0.15); }
 /* 添加行锁 --footer-h(含上边框):上边框与左侧状态栏上边框横向齐平 */
 .snippet-add { flex: none; display: flex; align-items: center; gap: 6px; height: var(--footer-h); padding: 0 12px; border-top: 1px solid var(--border); }
 .snippet-add input { flex: 1; min-width: 0; font-size: 12px; }
-.hist-row { display: flex; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
+.hist-row { display: flex; gap: 8px; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
 .hist-row:hover { background: rgba(91,140,255,0.12); }
 .hist-row .h-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Menlo, monospace; }
 .hist-row .h-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.hist-row .h-fav { visibility: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--muted); cursor: pointer; }
+.hist-row .h-fav:hover { background: rgba(139,150,168,0.15); }
+.hist-row:hover .h-fav { visibility: visible; }
+.hist-row .h-fav.active { color: var(--warn); }
 
 /* 文件分屏内容(窗格外壳/布局/焦点由 .term-pane 契约提供) */
 /* 工具栏锁高 --tabbar-h:与顶部标签栏行高一致;窗格 ✕⤢ 在行尾(见下方 .file-toolbar
@@ -1247,10 +1304,10 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ===== P1 批次新增 ===== */
-/* 收起态:侧栏塌缩为窄条。主机列表/搜索框隐藏,头部只留新建主机/云导入/批量/管理
+/* 收起态:侧栏塌缩为窄条。主机列表/搜索框隐藏,头部只留新建主机/云导入/批量执行/管理
    四个图标按钮纵向排列(28×28,窄条 40px 减去两侧 6px 内距);文字标签隐藏,
    靠 title 提示。展开/收起开关在顶层标题栏。 */
-#sidebar.collapsed { flex: 0 0 40px; width: 40px; min-width: 40px; max-width: 40px; }
+#sidebar.collapsed { width: 40px; min-width: 40px; max-width: 40px; }
 #sidebar.collapsed .side-header { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 6px; border-bottom: none; }
 #sidebar.collapsed #host-search { display: none; }
 #sidebar.collapsed .side-actions { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 0; }
@@ -1404,6 +1461,8 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 /* 转发/指纹表格 */
 #fw-table, #fp-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 #fw-table th, #fw-table td, #fp-table th, #fp-table td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+#fp-table td.fp-actions { white-space: nowrap; }
+.fp-row-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
 .badge-run { color: var(--accent2); }
 .badge-stop { color: var(--muted); }
 .mono { font-family: Menlo, monospace; font-size: 11px; }
@@ -1626,13 +1685,12 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 .modal:not(.hidden) { animation: fade-in var(--dur-fast) ease-out; }
 .modal:not(.hidden) .modal-card { animation: card-in var(--dur) var(--ease); }
 
-/* 侧边面板(文件/AI):滑入。用 transform 而非改宽度 —— 宽度动画每帧都要
-   重排终端区并触发 fit(),代价高且画面发抖。 */
-@keyframes slide-in-right {
-  from { opacity: 0; transform: translateX(12px); }
-  to { opacity: 1; transform: none; }
-}
-#ai-panel:not(.hidden) { animation: slide-in-right var(--dur) var(--ease); }
+/* 侧边面板(#sidebar / #ai-panel)展开与收起:宽度过渡,规则写在各自定义处。
+   早期版本用 transform 滑入规避宽度动画(每帧重排 + xterm fit 的开销),但
+   transform 撑不开布局,收起方向也无从动画;实际每帧 fit 与手动拖拽调宽走的是
+   同一条 ResizeObserver 路径,开销可接受,故改为双向宽度过渡。
+   拖拽调宽逐帧写 width,过渡必须关掉,否则拖动不跟手。 */
+body.resizing #sidebar, body.resizing #ai-panel { transition: none; }
 
 /* 标签页:新建/切换时轻微反馈,让"切到哪一个"更明确 */
 .tab { transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }

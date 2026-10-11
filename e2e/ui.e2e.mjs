@@ -151,6 +151,13 @@ async function openDropdown(selector) {
   await focusedKey('ArrowDown');
 }
 
+// 打开 AI 设置(分区已定位到 AI):AI 面板头部 ⚙ 已移除(2026-10-11),
+// 走 composer 模型菜单的「管理模型」。菜单隐藏时 JS click 照常触发其处理器。
+async function openAiSettings() {
+  await evalJs(`document.querySelector('#ai-model-manage').click(); return 1`);
+  await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden') ? 'closed' : 'open'`, 'open', 10000);
+}
+
 // 在 #ctx-menu 里用方向键走到目标项(右键菜单、下拉菜单共用)。
 async function ctxFocus(selector) {
   for (let i = 0; i < 40; i++) {
@@ -415,8 +422,8 @@ async function aiCommandBlockRegressions() {
     await waitEval(`return window.__nbTest.workspaceState().activeId`, s.id);
   };
   const setBase = async (suffix) => {
-    await evalJs(`document.querySelector('#ai-settings-open').click();
-      document.querySelector('#ai-baseurl').value = ${JSON.stringify(ai.base)} + ${JSON.stringify(suffix)};
+    await openAiSettings();
+    await evalJs(`document.querySelector('#ai-baseurl').value = ${JSON.stringify(ai.base)} + ${JSON.stringify(suffix)};
       document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
       document.querySelector('#btn-ai-save').click(); return 1`);
     await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden')`, 'true');
@@ -1101,7 +1108,7 @@ async function main() {
 
   // AI:配置 + 拉取模型 + 对话
   await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`);
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
     document.querySelector('#ai-provider').dispatchEvent(new Event('change', { bubbles: true }));
@@ -1204,15 +1211,12 @@ async function main() {
   await evalJs(`document.querySelector('#btn-ai-cancel').click(); return 1`);
   await sleep(200);
 
-  // AI 头部:设置/关闭按钮有间距且等高(第 6 条;模型选择已移入 composer)
-  const headGeom = asObj(await evalJs(`return JSON.stringify({ gap: window.__nbTest.aiHeaderGap(), h: window.__nbTest.aiHeaderHeights() })`));
-  check('T9o AI 头部:设置与关闭按钮留间距且等高',
-    headGeom.gap >= 6 && headGeom.h.settings === headGeom.h.close,
-    JSON.stringify(headGeom));
+  // (T9o「设置/关闭按钮间距与等高」已移除:头部 ⚙ 已于 2026-10-11 删除,
+  // 全局设置与模型菜单「管理模型」是仅存的两个 AI 设置入口。)
 
   // 流式渲染:先出现"正在思考…"等待态,再逐段落地为正文。
   // 必须走 /slow 端点 —— 正常端点几十毫秒就跑完,等待态一闪而过,断言不可靠。
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}/slow';
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
@@ -1244,7 +1248,7 @@ async function main() {
     JSON.stringify({ streamingSeen, lastBubble }));
 
   // 还原 base,后续用例仍走正常端点
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}';
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
@@ -1277,7 +1281,7 @@ async function main() {
 
   // 中文跨 chunk 乱码回归:mock 逐字节发送含中文的 SSE,多字节字符被拦腰
   // 切开时,按 chunk 做 from_utf8_lossy 会把一个字变两个 �。修复后按行攒字节。
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}/utf8split';
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
@@ -1291,7 +1295,7 @@ async function main() {
     utf8Text.includes('中文测试-要知') && !utf8Text.includes('\uFFFD'),
     utf8Text.slice(-120));
   // 还原 base,后续用例仍走正常端点
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}';
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
@@ -1301,7 +1305,7 @@ async function main() {
 
   // —— 滚动行为:贴底跟随 + "回到底部"按钮(T9x 系列) ——
   // /long 端点 120 段 × 60ms 流式,把消息区撑出滚动条。断言全部走 DOM 桥。
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}/long';
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
@@ -1381,7 +1385,7 @@ async function main() {
   })()`, 'ok', 10000).then(() => true).catch((e) => String(e).slice(-120));
   check('T9x6 面板隐藏期间收到回复,重开自动贴底', t9x6 === true, String(t9x6));
   // 还原 base,后续用例仍走正常端点
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`
     document.querySelector('#ai-baseurl').value = '${ai.base}';
     document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
@@ -1397,7 +1401,7 @@ async function main() {
   // 必须经 ai:error 透出 —— 曾被吞掉,前端永远停在"生成中…"。
   // 用 /err 前缀 base:mock 对该路径的 chat 请求返回 401,若仍走已保存配置则会成功。
   // 模型栏:点 chip 切换生效模型(也可在框内输入 ID 回车添加),先把已勾选的 mock-model-2 选为生效模型。
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`);
+  await openAiSettings();
   await evalJs(`document.querySelectorAll('#ai-model-chips .model-chip')[0].click(); return 1`);
   await evalJs(`
     document.querySelector('#ai-provider').value = 'custom';
@@ -2559,14 +2563,14 @@ async function main() {
       selected: [...panel.querySelectorAll('.rp-tab')].filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.dataset.tab),
       inPanel: panel.contains(document.querySelector('#snippet-list')) && panel.contains(document.querySelector('#hist-list')),
       noOverlap: pr.left >= lr.right - 1, floating: !!document.querySelector('#snippet-menu, #history-panel'),
-      gear: vis('#ai-settings-open'), toolsPressed: document.querySelector('#btn-ai-toggle').getAttribute('aria-pressed'),
+      toolsPressed: document.querySelector('#btn-ai-toggle').getAttribute('aria-pressed'),
       checked: { tools: window.__nbTest.commandState('panel.tools').checked, snippets: window.__nbTest.commandState('panel.snippets').checked,
         ai: window.__nbTest.commandState('panel.ai').checked } };
   })())`));
-  check('T43 常用命令是右侧工具栏页签:在面板内显示、不遮挡终端、无浮动面板,⚙ 只在 AI 页',
+  check('T43 常用命令是右侧工具栏页签:在面板内显示、不遮挡终端、无浮动面板',
     snipTab.open && snipTab.tab === 'snippets' && snipTab.snippets === 'visible' && snipTab.ai === 'hidden' && snipTab.history === 'hidden'
       && JSON.stringify(snipTab.selected) === '["snippets"]' && snipTab.inPanel && snipTab.noOverlap && !snipTab.floating
-      && snipTab.gear === 'hidden' && snipTab.toolsPressed === 'true'
+      && snipTab.toolsPressed === 'true'
       && snipTab.checked.tools === true && snipTab.checked.snippets === true && snipTab.checked.ai === false,
     JSON.stringify(snipTab));
 
@@ -2625,6 +2629,56 @@ async function main() {
     Math.abs(rpFix.addTop - rpFix.barTop) <= 1 && rpFix.lastChild && rpFix.hints === 0 && rpFix.tabText === '常用命令' && rpFix.cmdLabel === '常用命令',
     JSON.stringify(rpFix));
 
+  // 常用命令行内交互:▶ 执行(常显,唯一执行入口) / ✏ 行内编辑 / 历史 ★ 一键收藏
+  const tag43 = 'nb43' + Date.now().toString(36);
+  await runCmd('panel.snippets');
+  // 底部添加表单回归 + 新行结构(名称+命令+▶+✏+🗑)
+  await evalJs(`const n = document.querySelector('#snippet-name'), c = document.querySelector('#snippet-cmd');
+    n.value = 'T43执行'; c.value = 'echo ${tag43}-exec'; document.querySelector('#btn-snippet-add').click(); return 1`);
+  await waitEval(`return [...document.querySelectorAll('#snippet-list .snippet-row .s-name')].some((el) => el.textContent === 'T43执行')`, 'true', 8000);
+  const row43 = `(() => [...document.querySelectorAll('#snippet-list .snippet-row')].find((r) => r.querySelector('.s-cmd').textContent === 'echo ${tag43}-exec'))()`;
+  // 整行点击不再执行(避免远程误触),▶ 执行进历史(可信来源免校验)
+  await evalJs(`${row43}.click(); return 1`);
+  await sleep(400);
+  const notExecuted = String(await evalJs(`return !window.__NB_TERM_TEXT__().includes('${tag43}-exec')`)) === 'true';
+  await evalJs(`${row43}.querySelector('.s-exec').click(); return 1`);
+  await waitEval(`return window.__NB_TERM_TEXT__()`, `${tag43}-exec`, 15000);
+  check('T43b 常用命令:整行点击不执行,▶ 在当前终端执行', notExecuted, `notExecuted=${notExecuted}`);
+  // 行内编辑:✏ 原位展开,保存后行内更新(数据持久化由单测覆盖)
+  await evalJs(`${row43}.querySelector('.s-edit').click(); return 1`);
+  await waitEval(`return !!document.querySelector('#snippet-list .snippet-row.editing .s-edit-name')`, 'true', 8000);
+  await evalJs(`const row = document.querySelector('#snippet-list .snippet-row.editing');
+    row.querySelector('.s-edit-name').value = 'T43改名';
+    row.querySelector('.s-edit-cmd').value = 'echo ${tag43}-renamed';
+    row.querySelector('.s-save').click(); return 1`);
+  await waitEval(`return [...document.querySelectorAll('#snippet-list .snippet-row')].some((r) =>
+    r.querySelector('.s-name').textContent === 'T43改名' && r.querySelector('.s-cmd').textContent === 'echo ${tag43}-renamed')`, 'true', 8000);
+  check('T43c 行内编辑:✏ 原位展开,保存后行内容更新', true, 'waited via waitEval');
+  // 历史 ★:先执行一条唯一命令保证历史里有它,再一键收藏
+  const typeKeys43 = async (data) => { await evalJs(`window.__nbTest.write(${JSON.stringify(data)}); return 1`); await sleep(150); };
+  await typeKeys43(`echo ${tag43}-favorite-cmd-xyz\r`);
+  await waitEval(`return window.__NB_TERM_TEXT__()`, `${tag43}-favorite-cmd-xyz`, 15000);
+  await runCmd('panel.history');
+  await evalJs(`const q = document.querySelector('#hist-search'); q.value = '${tag43}-favorite'; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
+  await waitEval(`return document.querySelector('#hist-list').textContent`, `${tag43}-favorite`, 8000);
+  await evalJs(`document.querySelector('#hist-list .hist-row .h-fav').click(); return 1`);
+  await waitEval(`return [...document.querySelectorAll('#toasts .toast .toast-body')].some((el) => el.textContent.includes('已加入常用命令'))`, 'true', 8000);
+  await runCmd('panel.snippets');
+  const favCmd = `echo ${tag43}-favorite-cmd-xyz`;
+  const expectedFavName = favCmd.slice(0, 16) + '…';
+  await waitEval(`return [...document.querySelectorAll('#snippet-list .snippet-row .s-cmd')].some((el) => el.textContent === '${favCmd}')`, 'true', 8000);
+  const favName = await evalJs(`return [...document.querySelectorAll('#snippet-list .snippet-row')].find((r) => r.querySelector('.s-cmd').textContent === '${favCmd}')?.querySelector('.s-name').textContent`);
+  check('T43d 历史 ★ 一键收藏:新条目默认名为命令前 16 字符', favName === expectedFavName, `name=${favName} expected=${expectedFavName}`);
+  // 重复收藏:历史行 ★ 点亮,再点提示已收藏、不重复添加
+  await runCmd('panel.history');
+  await evalJs(`const q = document.querySelector('#hist-search'); q.value = '${tag43}-favorite'; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
+  await waitEval(`return document.querySelector('#hist-list .hist-row .h-fav')?.classList.contains('active')`, 'true', 8000);
+  await evalJs(`document.querySelector('#hist-list .hist-row .h-fav').click(); return 1`);
+  await waitEval(`return [...document.querySelectorAll('#toasts .toast .toast-body')].some((el) => el.textContent.includes('该命令已在常用命令中'))`, 'true', 8000);
+  await runCmd('panel.snippets');
+  const dupCount = await evalJs(`return [...document.querySelectorAll('#snippet-list .snippet-row .s-cmd')].filter((el) => el.textContent === '${favCmd}').length`);
+  check('T43e 重复收藏:★ 点亮、提示已收藏、不重复添加', dupCount === 1, `count=${dupCount}`);
+
   // 设置窗口:⌘, / Ctrl+, 在终端里打开(终端分区);三个分区;⚙ 直接到 AI 分区
   const isMac = (await evalJs(`return window.nebula.platform`)) === 'darwin';
   await evalJs(`document.querySelector('.term-pane[data-session="' + window.__nbTest.workspaceState().activeId + '"] .xterm-helper-textarea')?.focus(); return 1`);
@@ -2651,12 +2705,12 @@ async function main() {
       && upToAi.ai && upToAi.aiForm, JSON.stringify({ keys, upToAi }));
   await focusedKey('Escape'); await sleep(200);
   const afterEsc = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.settingsOpen(), terminal: document.activeElement?.classList.contains('xterm-helper-textarea') })`));
-  await evalJs(`document.querySelector('#ai-settings-open').click(); return 1`); await sleep(200);
-  const gear = asObj(await evalJs(`return JSON.stringify({ section: window.__nbTest.settingsSection(), focus: document.activeElement?.id })`));
+  await openAiSettings(); await sleep(200);
+  const manageOpen = asObj(await evalJs(`return JSON.stringify({ section: window.__nbTest.settingsSection(), focus: document.activeElement?.id })`));
   await evalJs(`document.querySelector('#btn-ai-cancel').click(); return 1`); await sleep(150);
-  check('T46d Esc 关闭设置并把焦点还给终端;AI 面板 ⚙ 直接打开 AI 分区',
-    !afterEsc.open && afterEsc.terminal && gear.section === 'ai' && gear.focus === 'settings-tab-ai' && !(await evalJs(`return window.__nbTest.settingsOpen()`)),
-    JSON.stringify({ afterEsc, gear }));
+  check('T46d Esc 关闭设置并把焦点还给终端;模型菜单「管理模型」直接打开 AI 分区',
+    !afterEsc.open && afterEsc.terminal && manageOpen.section === 'ai' && manageOpen.focus === 'settings-tab-ai' && !(await evalJs(`return window.__nbTest.settingsOpen()`)),
+    JSON.stringify({ afterEsc, manageOpen }));
   await evalJs(`document.querySelector('#btn-ai-close').click(); return 1`);
 
   // 交互动效:下拉菜单有入场动画,且带 prefers-reduced-motion 兜底(无障碍)
@@ -2961,6 +3015,8 @@ async function main() {
     check('T63a 侧边栏初始展开', sb0.open === true && sb0.resizerOpen === true && sb0.btnActive === true, JSON.stringify(sb0));
     const w0 = sb0.mainW;
     await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); return 1`);
+    // 侧栏展开/收起有 0.18s 宽度过渡:几何断言前等它收敛
+    await sleep(300);
     const sb1 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
     check(
       'T63b 标题栏开关收起(面板+把手隐藏,主区变宽)',
@@ -2974,6 +3030,7 @@ async function main() {
     const sb3 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
     check('T63b2 把手双击收起', sb3.open === false && sb3.btnActive === false, JSON.stringify(sb3));
     await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); return 1`);
+    await sleep(300);
     const sb4 = asObj(await evalJs(`return JSON.stringify(window.__nbTest.sidebar())`));
     check('T63d 再点恢复,状态完整回位', sb4.open === true && sb4.resizerOpen === true && sb4.btnActive === true && sb4.mainW === w0, JSON.stringify(sb4));
 
@@ -2997,12 +3054,14 @@ async function main() {
     check('T63e 拖动侧栏留下真实 inline width 并释放拖动态', !!drag.inlineWidth
       && drag.after > drag.before + 40 && !drag.dragging, JSON.stringify(drag));
     await evalJs(`document.querySelector('#btn-sidebar-toggle').click(); return 1`);
+    await sleep(300);
     const collapsed = asObj(await evalJs(`return JSON.stringify({ ...window.__nbTest.sidebar(), width: document.querySelector('#sidebar').getBoundingClientRect().width,
       inlineWidth: document.querySelector('#sidebar').style.width, expanded: document.querySelector('#btn-sidebar-toggle').getAttribute('aria-expanded') })`));
     check('T63f 拖宽后收起不被 inline width 撑开,主区收回空间', collapsed.open === false
       && !collapsed.resizerOpen && !collapsed.btnActive && collapsed.width <= 44 && collapsed.inlineWidth === ''
       && collapsed.expanded === 'false' && collapsed.mainW > drag.mainW + drag.after - collapsed.width - 8, JSON.stringify(collapsed));
     await evalJs(`window.__nbTest.runCommand('panel.sidebar'); return 1`);
+    await sleep(300);
     const expanded = asObj(await evalJs(`return JSON.stringify({ ...window.__nbTest.sidebar(), width: document.querySelector('#sidebar').getBoundingClientRect().width,
       expanded: document.querySelector('#btn-sidebar-toggle').getAttribute('aria-expanded') })`));
     check('T63g 菜单恢复拖宽尺寸且状态同步', expanded.open && expanded.resizerOpen && expanded.btnActive
@@ -3865,11 +3924,11 @@ async function main() {
 
     // 可达性:原更多菜单 21 个命令都有就近入口(附录 A「阶段 3 后」列)。0.3.0 起 ⋯ 移除:
     // 面板开关在顶层标题栏,其余全局项在一级菜单(macOS 系统菜单栏 / Windows·Linux 标题栏菜单栏)。
-    // 右侧工具栏页签按 panel.<页签> 计;AI 面板 ⚙ 打开设置(AI 分区)
+    // 右侧工具栏页签按 panel.<页签> 计;AI 面板 ⚙ 已移除(2026-10-11),
+    // settings.open 与命令面板、关于一样只驻一级菜单(另有 ⌘, 与模型菜单「管理模型」)
     const surfaces = asObj(await evalJs(`return JSON.stringify({
       static: [...document.querySelectorAll('#titlebar [data-command], #tabbar [data-command], #statusbar [data-command], #sidebar [data-command], .pane-toolbar [data-command]')].map((b) => b.dataset.command)
-        .concat([...document.querySelectorAll('#ai-panel .rp-tab')].map((t) => 'panel.' + t.dataset.tab))
-        .concat(document.querySelector('#ai-panel #ai-settings-open') ? ['settings.open'] : []),
+        .concat([...document.querySelectorAll('#ai-panel .rp-tab')].map((t) => 'panel.' + t.dataset.tab)),
       macMenu: window.__nbTest.nativeMenu().commandIds,
       pcMenu: window.__nbTest.menubar().menus.flatMap((m) => m.items.filter((i) => i && i !== '-').map((i) => i.command)),
       more: !!document.querySelector('#more-menu, #btn-more') })`));
@@ -3886,9 +3945,9 @@ async function main() {
     const formerMore = ['palette.open', 'panel.sidebar', 'panel.tools', 'workspace.tile', 'settings.open', 'app.about'];
     const missing = movedOut.filter((id) => !near.has(id));
     const notInMenus = formerMore.filter((id) => !surfaces.macMenu.includes(id) || !surfaces.pcMenu.includes(id));
-    // 命令面板(本身就是键盘总入口)与关于只在一级菜单,其余也都有就近入口
-    const noNear = formerMore.filter((id) => !['palette.open', 'app.about'].includes(id) && !near.has(id));
-    check('T92f 可达性:16 个命令都有就近入口;原 ⋯ 的 6 项都在两种一级菜单里,面板开关在标题栏,除命令面板与「关于」外都另有就近入口',
+    // 命令面板(本身就是键盘总入口)、设置与关于只在一级菜单,其余也都有就近入口
+    const noNear = formerMore.filter((id) => !['palette.open', 'app.about', 'settings.open'].includes(id) && !near.has(id));
+    check('T92f 可达性:16 个命令都有就近入口;原 ⋯ 的 6 项都在两种一级菜单里,面板开关在标题栏,除命令面板、设置与「关于」外都另有就近入口',
       !surfaces.more && !missing.length && !notInMenus.length && !noNear.length,
       JSON.stringify({ missing, notInMenus, noNear, near: [...near] }));
 

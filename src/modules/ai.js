@@ -489,6 +489,50 @@ export function markBubbleStreaming(bubble) {
   bubble.classList.add('streaming');
 }
 
+/// 思考内容展示:首帧时在 .ai-body 之前插入折叠块,之后只追加文本。
+/// 默认收起只留"思考中…/已深度思考"一行;点头部展开可读。结构独立于
+/// .ai-body,正文 delta 的 setAiBody 全量重写 .ai-body 不会碰它。
+/// 收尾时由 aiFinishHolder 统一撤块:历史气泡不留中间态。
+export function aiShowThinking(bubble, text) {
+  let box = bubble.querySelector('.ai-thinking');
+  if (!box) {
+    const body = aiBodyOf(bubble);
+    if (!body) return;
+    box = document.createElement('div');
+    box.className = 'ai-thinking streaming';
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'ai-thinking-head';
+    head.setAttribute('aria-expanded', 'false');
+    head.textContent = '思考中';
+    head.addEventListener('click', () => {
+      const open = box.classList.toggle('open');
+      head.setAttribute('aria-expanded', String(open));
+    });
+    const pre = document.createElement('div');
+    pre.className = 'ai-thinking-text';
+    box.append(head, pre);
+    body.parentElement.insertBefore(box, body);
+  }
+  box.querySelector('.ai-thinking-text').textContent = text;
+}
+
+function removeThinking(bubble) {
+  if (!bubble) return;
+  const box = bubble.querySelector('.ai-thinking');
+  if (box) box.remove();
+}
+
+/// 正文首 delta 到达:思考阶段结束,头部文案从"思考中"换成完成态,
+/// 并撤掉流式动效。保持收起,展开阅读由用户点击决定。
+export function aiSealThinking(bubble) {
+  const box = bubble && bubble.querySelector('.ai-thinking');
+  if (!box) return;
+  box.classList.remove('streaming');
+  const head = box.querySelector('.ai-thinking-head');
+  if (head) head.textContent = '已深度思考';
+}
+
 export function clearBubbleState(bubble) {
   if (!bubble) return;
   bubble.classList.remove('pending', 'streaming');
@@ -592,6 +636,9 @@ export function aiFinishHolder(done) {
       : h.cancelled || done?.finishReason === 'aborted' ? 'aborted'
         : done?.finishReason === 'stop' ? 'completed' : 'incomplete';
     if (h.raf) { cancelAnimationFrame(h.raf); h.raf = 0; }
+    // 思考块只在流式期间存在;收尾撤掉 —— 历史气泡与重渲染都不留中间态,
+    // 思考内容也不进历史(前端只保存正文 h.acc)。
+    removeThinking(h.bubble);
     if (!h.failed && h.acc) setAiBody(h.bubble, h.acc);
     refreshAiCodeActions(h.bubble);
     if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {

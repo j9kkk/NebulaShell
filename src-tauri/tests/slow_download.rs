@@ -163,10 +163,15 @@ async fn slow_download_serial_reads_measure() {
         elapsed,
         r.is_ok()
     );
-    match r {
-        Ok(_) => assert_eq!(std::fs::read(&dl).unwrap().len(), payload.len()),
-        Err(e) => println!("下载失败: {e}"),
-    }
+    // 基线测量也要有真断言:此前 Err 分支只 println,测试永不失败,
+    // 并发化若回退成串行(约 90s)或中途 Timeout 都发现不了。
+    // 并发路径 4 段并行 ≈ 90s/4 ≈ 23s,给到 60s 上限防 CI 抖动误报。
+    r.expect("串行基线下载应成功(现走 4 路并发路径,8MB ≥ PARALLEL_MIN)");
+    assert_eq!(std::fs::read(&dl).unwrap().len(), payload.len());
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "8MB @700ms/READ 应走并发分段(预期 ~23s),耗时 {elapsed:?} 异常 —— 可能回退到串行"
+    );
 
     let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/big.bin", false).await;
     let _ = std::fs::remove_dir_all(&dl_dir);

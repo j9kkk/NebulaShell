@@ -49,35 +49,118 @@ export function fmtLat(ms) {
   return Math.round(ms / 1000) + 's';
 }
 
-/// 常用命令是右侧工具栏的一个页签(见 right-panel.js),执行后页签保持打开,
-/// 焦点回到终端,方便接着看输出或继续输入。
+/// 常用命令是右侧工具栏的一个页签(见 right-panel.js)。行内三按钮:
+/// ▶ 执行(常显,主操作) / ✏ 编辑 / 🗑 删除(悬停显现)。整行点击不执行 ——
+/// 避免在远程主机上误触;执行只认 ▶。编辑在行内原位展开,同一时间只允许
+/// 一行处于编辑态:inputs 只存在于 DOM,开始另一行的编辑即丢弃未保存的修改。
+let editingSnippet = null;
+
+/// 收藏自命令历史时的默认名称:全文截 16 字符(超出加 …),用户可用 ✏ 改名。
+export function snippetNameFor(cmd) {
+  const t = String(cmd).trim();
+  return t.length > 16 ? t.slice(0, 16) + '…' : t;
+}
+
+/// 命令是否已在常用命令中(历史页签 ★ 的点亮态依据)。
+export function isSnippetCmd(cmd) {
+  const t = String(cmd).trim();
+  return (state.settings?.snippets || []).some((s) => s.cmd === t);
+}
+
+/// 从命令历史一键收藏(见 tools.js renderHistory 的 ★):命令相同视为已收藏,
+/// 不重复添加;名称与现有条目重名时追加 (N) 后缀。返回是否真的新增。
+export async function addSnippetFromCmd(cmd) {
+  const t = String(cmd).trim();
+  if (!t) return false;
+  const items = state.settings.snippets || [];
+  if (items.some((s) => s.cmd === t)) { toast('该命令已在常用命令中', 'info'); return false; }
+  const base = snippetNameFor(t);
+  let name = base;
+  for (let n = 2; items.some((s) => s.name === name); n++) name = `${base}(${n})`;
+  items.push({ name, cmd: t.slice(0, 2000) });
+  state.settings.snippets = items;
+  await saveSnippets();
+  toast(`已加入常用命令：${name}`, 'success');
+  return true;
+}
+
 export function renderSnippets() {
   const list = $('#snippet-list');
   list.innerHTML = '';
   const items = (state.settings && state.settings.snippets) || [];
   if (!items.length) {
-    list.innerHTML = '<div class="file-empty">还没有常用命令，在下方添加</div>';
+    list.innerHTML = '<div class="file-empty">还没有常用命令，在下方添加或从命令历史页签收藏</div>';
     return;
   }
   for (const s of items) {
     const row = document.createElement('div');
-    row.className = 'snippet-row';
-    row.innerHTML = `<span class="s-name"></span><span class="s-cmd"></span><button class="s-del" type="button" title="删除" aria-label="删除">${icon('trash', { size: 13 })}</button>`;
-    row.querySelector('.s-name').textContent = s.name;
-    row.querySelector('.s-cmd').textContent = s.cmd;
-    row.title = `${s.cmd}\n点击在当前终端执行`;
-    row.addEventListener('click', async (e) => {
-      if (e.target.closest('.s-del')) return;
-      const r = await feedTrusted(s.cmd, { execute: true });
-      if (!r.ok) toast(r.reason, 'error');
-    });
-    row.querySelector('.s-del').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      state.settings.snippets = items.filter((x) => x !== s);
-      await saveSnippets();
-    });
+    if (editingSnippet === s) {
+      row.className = 'snippet-row editing';
+      renderSnippetEditor(row, s);
+    } else {
+      row.className = 'snippet-row';
+      row.innerHTML = `<span class="s-name"></span><span class="s-cmd"></span>`
+        + `<button class="s-exec" type="button" title="在当前终端执行" aria-label="在当前终端执行">${icon('play', { size: 14 })}</button>`
+        + `<button class="s-edit" type="button" title="编辑" aria-label="编辑">${icon('pencil', { size: 14 })}</button>`
+        + `<button class="s-del" type="button" title="删除" aria-label="删除">${icon('trash', { size: 14 })}</button>`;
+      row.querySelector('.s-name').textContent = s.name;
+      row.querySelector('.s-cmd').textContent = s.cmd;
+      row.title = s.cmd;
+      row.querySelector('.s-exec').addEventListener('click', async () => {
+        const r = await feedTrusted(s.cmd, { execute: true });
+        if (!r.ok) toast(r.reason, 'error');
+      });
+      row.querySelector('.s-edit').addEventListener('click', () => {
+        editingSnippet = s;
+        renderSnippets();
+      });
+      row.querySelector('.s-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (editingSnippet === s) editingSnippet = null;
+        state.settings.snippets = items.filter((x) => x !== s);
+        await saveSnippets();
+      });
+    }
     list.appendChild(row);
   }
+}
+
+/// 行内编辑态:两行输入(名称/命令)+ 保存/取消。Enter 保存、Esc 取消
+/// (preventDefault 挡住右侧栏根节点的 Esc 处理器)。
+function renderSnippetEditor(row, s) {
+  row.innerHTML = `<div class="s-edit-form">
+      <div class="s-edit-line"><input class="s-edit-name" type="text" maxlength="50" aria-label="命令名称" /></div>
+      <div class="s-edit-line"><input class="s-edit-cmd" type="text" maxlength="2000" aria-label="命令内容" /></div>
+    </div>
+    <div class="s-edit-actions">
+      <button class="s-save" type="button" title="保存" aria-label="保存">${icon('check', { size: 14 })}</button>
+      <button class="s-cancel" type="button" title="取消" aria-label="取消">${icon('x', { size: 14 })}</button>
+    </div>`;
+  const nameInput = row.querySelector('.s-edit-name');
+  const cmdInput = row.querySelector('.s-edit-cmd');
+  nameInput.value = s.name;
+  cmdInput.value = s.cmd;
+  const close = () => { editingSnippet = null; renderSnippets(); };
+  const save = async () => {
+    const name = nameInput.value.trim();
+    const cmd = cmdInput.value.trim();
+    if (!name || !cmd) return toast('请填写名称和命令', 'error');
+    s.name = name;
+    s.cmd = cmd;
+    close();
+    await saveSnippets();
+  };
+  row.querySelector('.s-save').addEventListener('click', save);
+  row.querySelector('.s-cancel').addEventListener('click', close);
+  for (const input of [nameInput, cmdInput]) {
+    input.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.defaultPrevented) return;
+      if (event.key === 'Enter') { event.preventDefault(); save(); }
+      else if (event.key === 'Escape') { event.preventDefault(); close(); }
+    });
+  }
+  nameInput.focus();
+  nameInput.select();
 }
 
 export async function saveSnippets() {

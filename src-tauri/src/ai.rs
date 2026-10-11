@@ -307,6 +307,9 @@ pub async fn chat_stream<
         return Ok(());
     };
     let res = response.map_err(|e| format!("AI 请求失败: {}", e))?;
+    // 响应头到达即发心跳:前端 60 秒空闲计时只看"收没收到事件",不区分内容,
+    // 慢网关下首帧 SSE 之前的这段时间也必须计入活跃。
+    emit_evt(&app, "ai:progress", json!({ "requestId": request_id }));
     if !res.status().is_success() {
         let status = res.status();
         let Some(text) = wait_cancellable(res.text(), &abort_flag, AI_IDLE_TIMEOUT).await? else {
@@ -359,6 +362,11 @@ pub async fn chat_stream<
             let line = String::from_utf8_lossy(line_bytes).to_string();
             let trimmed = line.trim();
             if !trimmed.starts_with("data:") {
+                // 非 data 行(event:/冒号注释)也是活跃信号:网关 keep-alive
+                // 注释常在长静默期到达,漏掉会被前端误判空闲超时。
+                if !trimmed.is_empty() {
+                    emit_evt(&app, "ai:progress", json!({ "requestId": request_id }));
+                }
                 continue;
             }
             let data = trimmed[5..].trim();
@@ -496,6 +504,9 @@ enum FrameOutcome {
 
 /// 解析一帧 SSE 事件并广播增量文本。OpenAI 与 Anthropic 的字段名不同,在这里
 /// 归一;两种协议的流式错误都转成 Err(与旧的逐帧返回语义一致)。
+/// 思考内容(reasoning/thinking)与 usage/finish 等非内容帧一律以 ai:progress
+/// 心跳转发:前端 60 秒空闲计时以"收到过事件"为准 —— 模型纯思考不产出正文时
+/// 连接其实活跃,若不心跳会被前端误判超时并 abort(服务端侧表现为 HTTP 499)。
 fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
     app: &E,
     request_id: &str,
@@ -511,6 +522,14 @@ fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + '
                         "ai:delta",
                         json!({ "requestId": request_id, "text": text }),
                     );
+                } else if let Some(text) = evt["delta"]["thinking"].as_str() {
+                    if !text.is_empty() {
+                        emit_evt(
+                            app,
+                            "ai:thinking",
+                            json!({ "requestId": request_id, "text": text }),
+                        );
+                    }
                 }
             }
             "message_stop" => return Ok(FrameOutcome::Done),
@@ -520,7 +539,7 @@ fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + '
                     error_excerpt(&evt.to_string(), 300)
                 ));
             }
-            _ => {}
+            _ => emit_evt(app, "ai:progress", json!({ "requestId": request_id })),
         }
         return Ok(FrameOutcome::Continue);
     }
@@ -542,6 +561,22 @@ fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + '
             "ai:delta",
             json!({ "requestId": request_id, "text": text }),
         );
+    } else if let Some(think) = delta["reasoning_content"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .or_else(|| delta["reasoning"].as_str().filter(|t| !t.is_empty()))
+    {
+        emit_evt(
+            app,
+            "ai:thinking",
+            json!({ "requestId": request_id, "text": think }),
+        );
+    } else if !delta["role"].is_null()
+        || !evt["choices"][0]["finish_reason"].is_null()
+        || !evt["usage"].is_null()
+    {
+        // role 帧、收尾帧证明流仍活着,但不能作为正文转发。
+        emit_evt(app, "ai:progress", json!({ "requestId": request_id }));
     }
     Ok(FrameOutcome::Continue)
 }

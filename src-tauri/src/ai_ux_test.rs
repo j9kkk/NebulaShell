@@ -199,6 +199,117 @@ async fn local_sse_preserves_split_utf8_usage_and_finish_events() {
 }
 
 #[tokio::test]
+async fn reasoning_only_stream_emits_progress_and_thinking_not_idle_timeout() {
+    // 回归:思考型模型纯推理期不产出正文,曾经一个事件都不转发,
+    // 前端 60 秒空闲计时误判超时并 abort(服务端侧表现为 HTTP 499)。
+    // 现在思考增量走 ai:thinking、role/usage/finish 帧走 ai:progress。
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let body = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"我想想\"}}]}\n\n\
+                : keepalive\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":9}}\n\n\
+                data: [DONE]\n\n";
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        socket.read(&mut request).await.unwrap();
+        let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        socket.write_all(headers.as_bytes()).await.unwrap();
+        socket.write_all(body.as_bytes()).await.unwrap();
+    });
+    let app = mock_app();
+    let events = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    for name in ["ai__progress", "ai__thinking", "ai__delta", "ai__done"] {
+        let captured = events.clone();
+        let name = name.to_string();
+        let event_name = name.clone();
+        app.listen(&event_name, move |evt| {
+            captured
+                .lock()
+                .unwrap()
+                .push((name.clone(), serde_json::from_str(evt.payload()).unwrap()))
+        });
+    }
+    chat_stream(
+        app,
+        "think".into(),
+        "openai".into(),
+        endpoint,
+        "".into(),
+        "reasoner".into(),
+        json!([{"role":"user","content":"test"}]),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+    let events = events.lock().unwrap();
+    let kinds: Vec<&str> = events.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "ai__progress", // 响应头到达
+            "ai__thinking", // role + reasoning 帧(思考增量)
+            "ai__progress", // keep-alive 注释行
+            "ai__delta",    // 正文
+            "ai__progress", // finish_reason + usage 帧
+            "ai__done",     // [DONE]
+        ]
+    );
+}
+
+#[tokio::test]
+async fn anthropic_thinking_blocks_forward_as_thinking_events() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let body = "data: {\"type\":\"content_block_delta\",\"delta\":{\"thinking\":\"推演中\"}}\n\n\
+                data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"结论\"}}\n\n\
+                data: {\"type\":\"message_stop\"}\n\n";
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        socket.read(&mut request).await.unwrap();
+        let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        socket.write_all(headers.as_bytes()).await.unwrap();
+        socket.write_all(body.as_bytes()).await.unwrap();
+    });
+    let app = mock_app();
+    let events = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    for name in ["ai__thinking", "ai__delta", "ai__done"] {
+        let captured = events.clone();
+        let name = name.to_string();
+        let event_name = name.clone();
+        app.listen(&event_name, move |evt| {
+            captured
+                .lock()
+                .unwrap()
+                .push((name.clone(), serde_json::from_str(evt.payload()).unwrap()))
+        });
+    }
+    chat_stream(
+        app,
+        "think".into(),
+        "anthropic".into(),
+        endpoint,
+        "".into(),
+        "claude".into(),
+        json!([{"role":"user","content":"test"}]),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+    let events = events.lock().unwrap();
+    let kinds: Vec<&str> = events.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(kinds, vec!["ai__thinking", "ai__delta", "ai__done"]);
+    assert_eq!(events[0].1["text"], "推演中");
+    assert_eq!(events[1].1["text"], "结论");
+}
+
+#[tokio::test]
 async fn abort_before_headers_emits_done_without_waiting_for_server() {
     use tokio::io::AsyncReadExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

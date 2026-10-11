@@ -46,7 +46,10 @@ export async function auditNarrowPanels() {
     for (const panel of panels) {
       for (const other of panels) other.classList.toggle('hidden', other !== panel && other.id !== 'sidebar');
       panel.classList.remove('collapsed', 'hidden');
+      // 审计用内联宽度逐档强改尺寸:面板的展开/收起宽度过渡(animation 与
+      // transition)必须当场关掉,否则量到的是过渡中间帧的盒子。
       panel.style.animation = 'none';
+      panel.style.transition = 'none';
       const widths = panel.id === 'sidebar' ? [180, 196, 220, 264, 320, 480] : [260, 280, 320, 340, 360, 480];
       for (const width of widths) {
         panel.style.width = width + 'px';

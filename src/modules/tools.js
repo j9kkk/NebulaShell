@@ -2,6 +2,8 @@
 import { $, api, askConfirm, closeModal, copyText, openModal, state, stripFpMark, toast } from './core.js';
 import { escapeHtml } from './hosts.js';
 import { feedTrusted } from './terminal.js';
+import { addSnippetFromCmd, isSnippetCmd } from './monitor.js';
+import { icon } from '../shared/icons.js';
 
 export let batchChecked = new Set();
 export let batchResults = new Map();
@@ -466,6 +468,8 @@ export function bindHistoryPage() {
 }
 
 /// 重新拉取并渲染。keepScroll:切回页签时刷新数据但保持阅读位置。
+/// 行尾 ★ 一键收藏为常用命令(逻辑见 monitor.js addSnippetFromCmd);
+/// 已收藏的命令 ★ 点亮,点击只提示、不重复添加 —— 删除入口只在常用命令页签。
 export async function renderHistory(kw, { keepScroll = false } = {}) {
   const list = await api('history:list', { kw });
   const box = $('#hist-list');
@@ -476,12 +480,28 @@ export async function renderHistory(kw, { keepScroll = false } = {}) {
   for (const h of list) {
     const row = document.createElement('div');
     row.className = 'hist-row';
-    row.innerHTML = `<span class="h-cmd"></span><span class="h-meta">${escapeHtml(h.host || '')}</span>`;
+    const favorited = isSnippetCmd(h.cmd);
+    row.innerHTML = `<span class="h-cmd"></span><span class="h-meta">${escapeHtml(h.host || '')}</span>`
+      + `<button class="h-fav" type="button">${icon('star', { size: 14 })}</button>`;
     row.querySelector('.h-cmd').textContent = h.cmd;
+    // 点亮态与提示命令式设置:已收藏的命令 ★ 着色,点击只提示不重复添加
+    const favBtn = row.querySelector('.h-fav');
+    if (favorited) favBtn.classList.add('active');
+    favBtn.title = favorited ? '已在常用命令中' : '收藏为常用命令';
+    favBtn.setAttribute('aria-label', favBtn.title);
     row.title = `${h.cmd}\n点击填入当前终端,不回车`;
     row.addEventListener('click', async () => {
       const r = await feedTrusted(h.cmd);
       if (!r.ok) toast(r.reason, 'error');
+    });
+    favBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (await addSnippetFromCmd(h.cmd)) {
+        // 原地点亮,不整列表重渲染(保持滚动位置);切回页签时 onShown 会重拉校准
+        favBtn.classList.add('active');
+        favBtn.title = '已在常用命令中';
+        favBtn.setAttribute('aria-label', '已在常用命令中');
+      }
     });
     box.appendChild(row);
   }

@@ -69,5 +69,6 @@ test('快速连接目标必须带 user@,端口合法', () => {
   assert.deepEqual(quickTargetOf(' deploy@example.com '), { username: 'deploy', host: 'example.com', port: 22 });
   assert.equal(quickTargetOf('example.com'), null, '不带 user@ 不出现快速连接(否则每个检索词都会冒出来)');
   assert.equal(quickTargetOf('root@host:70000'), null);
+  assert.equal(quickTargetOf('root@host:0'), null, '显式端口 0 非法,不能被 || 22 兜底成静默连 22');
   assert.equal(quickTargetOf('分屏'), null);
 });

@@ -218,7 +218,7 @@ export async function openFingerprints() {
       for (const f of list) {
         const tr = document.createElement('tr');
         const fingerprint = String(f.fp);
-        tr.innerHTML = `<td class="mono">${escapeHtml(f.id)}</td><td class="mono"><span tabindex="0" aria-label="完整主机指纹" style="display:block;white-space:normal;overflow-wrap:anywhere;user-select:text">${escapeHtml(fingerprint)}</span></td><td><button class="btn small fp-copy" aria-label="${escapeHtml(f.id)} 复制完整指纹">复制</button> <button class="btn small fp-del">删除</button></td>`;
+        tr.innerHTML = `<td class="mono">${escapeHtml(f.id)}</td><td class="mono"><span tabindex="0" aria-label="完整主机指纹" style="display:block;white-space:normal;overflow-wrap:anywhere;user-select:text">${escapeHtml(fingerprint)}</span></td><td class="fp-actions"><span class="fp-row-actions"><button class="btn small fp-copy" aria-label="${escapeHtml(f.id)} 复制完整指纹">复制</button><button class="btn small danger fp-del" aria-label="${escapeHtml(f.id)} 删除指纹">删除</button></span></td>`;
         tr.querySelector('.fp-copy').addEventListener('click', async () => {
           const ok = await copyText(fingerprint);
           toast(ok ? '完整指纹已复制' : '复制失败', ok ? 'success' : 'error');
