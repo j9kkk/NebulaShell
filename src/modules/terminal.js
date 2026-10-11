@@ -363,6 +363,10 @@ export function syncTabChrome() {
     const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
     const title = tab.el.querySelector('.tab-title');
     const dot = tab.el.querySelector('.tab-dot');
+    // 录制标记:标签里任一会话在录时标题后显示红点(已暂停时不闪)
+    const rec = [...state.sessions.values()].filter((x) => x.tabId === tabId && x.logActive);
+    tab.el.classList.toggle('tab-rec', rec.some((x) => x.status === 'connected'));
+    tab.el.classList.toggle('tab-rec-paused', rec.length > 0 && rec.every((x) => x.status !== 'connected'));
     const before = title.textContent;
     if (s) {
       title.textContent = tab.customTitle || s.host.name;
@@ -390,6 +394,7 @@ const PANE_TOOLS = [
   { cls: 'pane-tb-file', command: 'tab.file.add', icon: 'folderPlus' },
   { cls: 'pane-tb-forward', command: 'tools.forwards', icon: 'shuffle' },
   { cls: 'pane-tb-broadcast', command: 'tools.broadcast', icon: 'megaphone' },
+  { cls: 'pane-tb-log', command: 'session.log', icon: 'circleDot' },
   { cls: 'pane-tb-reconnect', command: 'session.reconnect', icon: 'rotate', text: '重连' },
 ];
 
@@ -449,6 +454,8 @@ export function syncPaneButtons(tab = activeTab()) {
     const session = pane.sessionId ? state.sessions.get(pane.sessionId) : null;
     bar.dataset.kind = pane.kind === 'file' ? 'file' : session ? 'term' : 'empty';
     bar.dataset.conn = session ? (['connected', 'connecting'].includes(session.status) ? session.status : 'down') : '';
+    // 日志按钮显隐:录制中/已暂停时常显(含未连接 —— 那是唯一停止入口),其余随工具条悬停
+    bar.dataset.log = session && session.logActive ? (session.status === 'connected' ? 'on' : 'paused') : 'off';
     const enlarged = tab.zoomPaneId === pane.id;
     const zoom = bar.querySelector('.pane-zoom-btn');
     if (zoom) {
@@ -1518,13 +1525,14 @@ export function updateStatusbar(session, error = session?.lastError) {
   const logOn = !!session.logActive && connected;
   const logPaused = !!session.logActive && !connected;
   const logName = String(session.logFile || '').replace(/\\/g, '/').split('/').pop();
+  const logSize = session.logBytes ? `（${fmtSize(session.logBytes)}）` : '';
   roBadge.classList.toggle('hidden', !session.readOnly);
   setBtn(btnRo, connected, connected ? (session.readOnly ? '关闭只读模式' : '只读模式,防止误触') : '连接后才可切换只读');
   setBtn(btnClear, connected, connected ? '清屏并清空回滚' : '连接后才可清屏');
   // 日志按钮:已连接可开始;录制中断开=已暂停(红点常亮),仍可点击停止
   setBtn(btnLog, (connected || session.logActive) && !session.logBusy,
     session.logBusy ? '正在处理日志操作…'
-    : logOn ? `停止记录会话日志${logName ? ' · ' + logName : ''}`
+    : logOn ? `停止记录会话日志${logName ? ' · ' + logName : ''}${logSize}`
     : logPaused ? '会话日志已暂停（未连接），重连后自动继续 · 点击停止'
     : connected ? '开始记录会话日志' : '连接后才能记录会话日志');
   // 录制中用红色呼吸点表达(此前靠文字"⏺ 记录中"切换,图标化后移到颜色与 title 上);
@@ -2007,6 +2015,8 @@ async function runSessionConnection(s, automatic = false) {
     }
     if (s.status === 'connecting') handleSessionStatus({ sessionId: s.sessionId, state: 'connected' });
     if (s.status !== 'connected') return false;
+    // 连接即录的日志文件建不了(权限/磁盘):连接本身不受影响,但要让用户看见
+    if (result?.logError) toast('自动记录会话日志失败：' + result.logError, 'error');
     if (s.readOnly) await api('ssh:setReadonly', { sessionId: s.sessionId, readOnly: true });
     // initcmd is lifecycle input, not modal-scoped user input. Epoch/status still gate it.
     if (s.host.initcmd && !s.initcmdExecuted && !s.readOnly && state.sessions.get(s.sessionId) === s && s.connectionEpoch === epoch && !s.manualDisconnect && s.status === 'connected') {
@@ -2338,6 +2348,24 @@ export async function openLogFolder() {
   }
 }
 
+/// 普通屏幕缓冲区的内容(逻辑行,isWrapped 拼回):手动开始记录时写入日志,
+/// 只取普通屏幕 —— 全屏程序的内容本来就按"不记录"处理,已有内容也不例外。
+function collectScreenLines(s) {
+  const lines = [];
+  try {
+    const buf = s.term.buffer.normal;
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+  } catch { /* 缓冲不可用时从空内容开始,不影响开始记录 */ }
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.slice(-5000);
+}
+
 export async function toggleSessionLog(sessionId = state.activeId) {
   const s = state.sessions.get(sessionId);
   if (!s || s.logBusy) return;
@@ -2353,7 +2381,15 @@ export async function toggleSessionLog(sessionId = state.activeId) {
       if (r && r.file) pendingLogSaves.push(r);
       if (!logSaveFlushTimer) logSaveFlushTimer = setTimeout(flushLogSaves, 200);
     } else {
-      const r = await api('log:start', { sessionId: s.sessionId, hostLabel: `${s.host.name || s.host.host}`, timestamps: true });
+      // 已有内容只对普通屏幕有效;全屏程序里开始记录 = 从退出全屏后开始
+      const inAlt = !!s.inAltScreen;
+      const includeScreen = !(state.settings && state.settings.sessionLog) || state.settings.sessionLog.includeScreen !== false;
+      const r = await api('log:start', {
+        sessionId: s.sessionId,
+        hostLabel: `${s.host.name || s.host.host}`,
+        altScreen: inAlt,
+        preamble: !inAlt && includeScreen ? collectScreenLines(s) : [],
+      });
       s.logActive = true;
       s.logFile = r.file;
       toast(`开始记录会话日志：${r.name || r.file || ''}`, 'success', {

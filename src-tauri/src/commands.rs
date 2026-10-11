@@ -153,15 +153,38 @@ pub fn record_session_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &st
     };
     let entry = state.logs.lock().unwrap().get(sid).cloned();
     if let Some(entry) = entry {
-        if let Err(message) = entry.record(data) {
-            let current = state
-                .logs
-                .lock()
-                .unwrap()
-                .get(sid)
-                .is_some_and(|current| Arc::ptr_eq(current, &entry));
-            if current {
-                emit_log_state(app, sid, &entry.file, false, "error", &message);
+        let result = entry.record(chrono::Local::now(), data);
+        match result {
+            Ok(()) => {}
+            // 积压超限被丢弃:提示一次(日志仍在录,追上后文件里也会标注)
+            Err(crate::session_log::RecordError::Dropped) => {
+                let current = state
+                    .logs
+                    .lock()
+                    .unwrap()
+                    .get(sid)
+                    .is_some_and(|current| Arc::ptr_eq(current, &entry));
+                if current {
+                    emit_log_state(
+                        app,
+                        sid,
+                        &entry.file,
+                        true,
+                        "dropped",
+                        "磁盘写入跟不上，部分输出被丢弃",
+                    );
+                }
+            }
+            Err(crate::session_log::RecordError::Fatal(message)) => {
+                let current = state
+                    .logs
+                    .lock()
+                    .unwrap()
+                    .get(sid)
+                    .is_some_and(|current| Arc::ptr_eq(current, &entry));
+                if current {
+                    emit_log_state(app, sid, &entry.file, false, "error", &message);
+                }
             }
         }
     }
@@ -175,7 +198,7 @@ pub fn record_session_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &
     };
     let entry = state.logs.lock().unwrap().get(sid).cloned();
     let Some(entry) = entry else { return };
-    if let Err(message) = entry.event(text) {
+    if let Err(crate::session_log::RecordError::Fatal(message)) = entry.event_marker(text) {
         let current = state
             .logs
             .lock()
@@ -205,6 +228,142 @@ pub fn record_session_connected<R: tauri::Runtime>(
     }
 }
 
+/// 日志文件头/文件名用的主机元信息(连接时从 host JSON 提取)。
+#[derive(Clone)]
+pub struct HostMeta {
+    pub name: String,
+    pub userhost: String,
+}
+
+/// 从 host JSON 提取元信息;缺失字段给可读的占位。
+pub fn host_meta_of(host: &serde_json::Value) -> HostMeta {
+    let host_field = host["host"].as_str().unwrap_or("");
+    let port = host["port"].as_i64().unwrap_or(22);
+    let name = host["name"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(host_field)
+        .to_string();
+    let username = host["username"].as_str().unwrap_or("root");
+    HostMeta {
+        name,
+        userhost: format!("{}@{}:{}", username, host_field, port),
+    }
+}
+
+/// 是否自动记录:批量执行等内部连接不参与;主机单独设置优先于全局开关。
+fn should_auto_log(store: &Store, host: &serde_json::Value, sid: &str) -> bool {
+    if sid.starts_with("batch-") {
+        return false;
+    }
+    match host["sessionLog"].as_str() {
+        Some("always") => true,
+        Some("never") => false,
+        _ => {
+            let data = store.data.lock().unwrap();
+            data["settings"]["sessionLog"]["auto"]
+                .as_bool()
+                .unwrap_or(false)
+        }
+    }
+}
+
+/// 连接即录(J1"自动记录"):在连接之前建好日志文件,欢迎信息也能录到。
+/// 目录/文件建不了只记错误,不影响连接本身。返回日志文件路径。
+async fn start_auto_log<R: tauri::Runtime>(
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+    sid: &str,
+    host: &serde_json::Value,
+) -> Result<String, String> {
+    let meta = host_meta_of(host);
+    let (format, timestamps) = {
+        let data = state.store.data.lock().unwrap();
+        let sl = &data["settings"]["sessionLog"];
+        (
+            crate::session_log::LogFormat::parse(sl["format"].as_str().unwrap_or("text")),
+            sl["timestamps"].as_bool().unwrap_or(true),
+        )
+    };
+    let dir = default_log_dir(state.test_mode);
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        format!(
+            "无法创建日志目录 {}：{}",
+            dir.display(),
+            crate::session_log::friendly_io_error(&e)
+        )
+    })?;
+    let label = crate::session_log::sanitize_label(&meta.name);
+    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let (file, handle) = open_log_file_checked(&dir, &label, &stamp)?;
+    let file_str = file.to_string_lossy().to_string();
+    let app_log = app.clone();
+    let sid_log = sid.to_string();
+    let log_file = file.clone();
+    let entry = LogEntry::new(
+        file,
+        handle,
+        format,
+        timestamps,
+        false,
+        false, // 开在连接之前:首次连接成功不算重连
+        move |message| {
+            let current = app_log.try_state::<AppState>().is_some_and(|state| {
+                state
+                    .logs
+                    .lock()
+                    .unwrap()
+                    .get(&sid_log)
+                    .is_some_and(|entry| entry.file == log_file)
+            });
+            if current {
+                emit_log_state(&app_log, &sid_log, &log_file, false, "error", &message);
+            }
+        },
+    )?;
+    entry.push_header(&meta.name, &meta.userhost);
+    let previous = state.logs.lock().unwrap().insert(sid.to_string(), entry);
+    if let Some(previous) = previous {
+        let previous_file = previous.file.clone();
+        let failure: Option<String> =
+            match tokio::task::spawn_blocking(move || previous.stop("手动停止")).await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(error) => Some(error.to_string()),
+            };
+        if let Some(message) = failure {
+            emit_log_state(app, sid, &previous_file, false, "error", &message);
+        }
+    }
+    state
+        .log_hosts
+        .lock()
+        .unwrap()
+        .insert(sid.to_string(), meta);
+    emit_log_state(app, sid, std::path::Path::new(&file_str), true, "auto", "");
+    Ok(file_str)
+}
+
+/// 连接失败/取消时收尾自动日志:无内容则删掉空文件,有内容(重连场景)则保留。
+async fn stop_auto_log_on_failure<R: tauri::Runtime>(
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+    sid: &str,
+) {
+    let entry = state.logs.lock().unwrap().remove(sid);
+    let Some(entry) = entry else { return };
+    let file = entry.file.clone();
+    let had_content = entry.has_content();
+    let closer: Arc<LogEntry> = entry;
+    let result = tokio::task::spawn_blocking(move || closer.stop("连接未完成")).await;
+    if !had_content {
+        std::fs::remove_file(&file).ok();
+    }
+    if let Ok(Err(message)) = result {
+        emit_log_state(app, sid, &file, false, "error", &message);
+    }
+}
+
 pub struct AppState {
     pub store: Arc<Store>,
     pub ssh: Arc<SshService>,
@@ -216,6 +375,8 @@ pub struct AppState {
     pub force_exit: AtomicBool,
     pub monitors: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
     pub logs: Mutex<HashMap<String, Arc<LogEntry>>>,
+    /// 会话的主机元信息(文件头/文件名/手动开始时使用),连接时写入
+    pub log_hosts: Mutex<HashMap<String, HostMeta>>,
     pub ai_aborts: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub batch_aborts: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub test_results: Arc<Mutex<HashMap<String, String>>>,
@@ -442,6 +603,20 @@ pub async fn nebula_invoke(
                 .as_str()
                 .map(String::from)
                 .unwrap_or_else(uid);
+            // 会话日志"连接即录"(J1 自动记录):建在连接之前,登录欢迎信息也能录到。
+            // 目录/文件建不了只把错误带给前端(logError),不影响连接本身。
+            // 主机元信息在连接成功后缓存(手动开始日志时文件头/文件名要用)
+            let host_meta = host_meta_of(&host);
+            let auto_log_error = if should_auto_log(&state.store, &host, &session_id)
+                && !state.logs.lock().unwrap().contains_key(&session_id)
+            {
+                match start_auto_log(&state, &app, &session_id, &host).await {
+                    Ok(_) => None,
+                    Err(e) => Some(e),
+                }
+            } else {
+                None
+            };
             let lifecycle = state.connection_lifecycle(&session_id);
             let token = {
                 let _activation = lifecycle.activation.lock().await;
@@ -456,6 +631,7 @@ pub async fn nebula_invoke(
             // Cancellation is not a connection failure. A stale invoke error must not
             // make the frontend overwrite the status of a newer connection generation.
             if token.load(Ordering::Acquire) {
+                stop_auto_log_on_failure(&state, &app, &session_id).await;
                 return ok(json!({ "sessionId": session_id, "cancelled": true }));
             }
             match result {
@@ -513,15 +689,25 @@ pub async fn nebula_invoke(
                             state
                                 .forwards
                                 .stop_by_session(&app, state.ssh.clone(), &session_id);
+                            stop_auto_log_on_failure(&state, &app, &session_id).await;
                             return ok(json!({ "sessionId": session_id, "cancelled": true }));
                         }
                     }
-                    ok(json!({ "sessionId": session_id }))
+                    state
+                        .log_hosts
+                        .lock()
+                        .unwrap()
+                        .insert(session_id.clone(), host_meta);
+                    ok(json!({ "sessionId": session_id, "logError": auto_log_error }))
                 }
                 Err(e) if e == "连接已取消" => {
+                    stop_auto_log_on_failure(&state, &app, &session_id).await;
                     ok(json!({ "sessionId": session_id, "cancelled": true }))
                 }
-                Err(e) => err_msg(e),
+                Err(e) => {
+                    stop_auto_log_on_failure(&state, &app, &session_id).await;
+                    err_msg(e)
+                }
             }
         }
         "ssh:write" => match state
@@ -574,6 +760,8 @@ pub async fn nebula_invoke(
             if was_alive {
                 record_session_event(&app, &sid, "已手动断开");
             }
+            // 主机元信息缓存随会话一并清理(重连会重新写入)
+            state.log_hosts.lock().unwrap().remove(&sid);
             let lifecycle = state.connection_lifecycle(&sid);
             lifecycle.cancel();
             let _activation = lifecycle.activation.lock().await;
@@ -1073,19 +1261,41 @@ pub async fn nebula_invoke(
                     crate::session_log::friendly_io_error(&e)
                 )
             })?;
-            let label = crate::session_log::sanitize_label(
-                payload["hostLabel"].as_str().unwrap_or("session"),
-            );
+            // 主机元信息来自连接时缓存的 log_hosts;快速连接等场景缺缓存时退回 hostLabel
+            let meta = state.log_hosts.lock().unwrap().get(&sid).cloned();
+            let meta = meta.unwrap_or_else(|| HostMeta {
+                name: payload["hostLabel"]
+                    .as_str()
+                    .unwrap_or("session")
+                    .to_string(),
+                userhost: String::new(),
+            });
+            let (format, timestamps, include_screen) = {
+                let data = state.store.data.lock().unwrap();
+                let sl = &data["settings"]["sessionLog"];
+                (
+                    crate::session_log::LogFormat::parse(sl["format"].as_str().unwrap_or("text")),
+                    sl["timestamps"].as_bool().unwrap_or(true),
+                    sl["includeScreen"].as_bool().unwrap_or(true),
+                )
+            };
             let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-            let (file, handle) = open_log_file_checked(&dir, &label, &stamp)?;
+            let (file, handle) = open_log_file_checked(
+                &dir,
+                &crate::session_log::sanitize_label(&meta.name),
+                &stamp,
+            )?;
             let file_str = file.to_string_lossy().to_string();
+            let alt_screen = payload["altScreen"].as_bool().unwrap_or(false);
             let app_log = app.clone();
             let sid_log = sid.clone();
             let log_file = file.clone();
             let entry = match LogEntry::new(
                 file,
                 handle,
-                payload["timestamps"].as_bool().unwrap_or(true),
+                format,
+                timestamps,
+                alt_screen,
                 true, // 手动开始时会话已连接:下一次连接成功必是重连
                 move |message| {
                     let current = app_log.try_state::<AppState>().is_some_and(|state| {
@@ -1104,7 +1314,27 @@ pub async fn nebula_invoke(
                 Ok(entry) => entry,
                 Err(error) => return err_msg(error),
             };
+            // 文件头必须先于一切数据入队:先发 Header/Preamble,再插入会话表
+            entry.push_header(&meta.name, &meta.userhost);
+            if include_screen && !alt_screen {
+                let lines: Vec<String> = payload["preamble"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|l| l.as_str().map(str::to_string))
+                            .take(5000)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                entry.set_preamble(lines);
+            }
             let previous = state.logs.lock().unwrap().insert(sid.clone(), entry);
+            state
+                .log_hosts
+                .lock()
+                .unwrap()
+                .entry(sid.clone())
+                .or_insert(meta);
             if let Some(previous) = previous {
                 let previous_file = previous.file.clone();
                 let failure =
@@ -1359,9 +1589,13 @@ pub async fn nebula_invoke(
             };
             match res {
                 Ok(list) => {
-                    state
+                    // 凭据保存失败不吞结果:列表已拉到,凭据错误随下一次拉取暴露
+                    if let Err(e) = state
                         .store
-                        .save_cloud_creds(&provider, &key, &secret, &endpoint);
+                        .save_cloud_creds(&provider, &key, &secret, &endpoint)
+                    {
+                        return err_msg(e);
+                    }
                     ok(json!(list))
                 }
                 Err(e) => err_msg(e),
@@ -1369,7 +1603,10 @@ pub async fn nebula_invoke(
         }
 
         "settings:get" => ok(state.store.get_settings()),
-        "settings:save" => ok(state.store.save_settings(&payload)),
+        "settings:save" => match state.store.save_settings(&payload) {
+            Ok(s) => ok(s),
+            Err(e) => err_msg(e),
+        },
 
         "ai:models" => {
             let (saved, saved_key) = {

@@ -72,10 +72,12 @@ fn cloud_import_idempotent() {
 #[test]
 fn settings_roundtrip_and_clamp() {
     let store = tmp_store("settings");
-    let s = store.save_settings(&json!({
-        "terminal": { "fontSize": 99, "theme": "forest", "scrollback": 1 },
-        "ai": { "baseUrl": "http://x/v1", "model": "m1" }
-    }));
+    let s = store
+        .save_settings(&json!({
+            "terminal": { "fontSize": 99, "theme": "forest", "scrollback": 1 },
+            "ai": { "baseUrl": "http://x/v1", "model": "m1" }
+        }))
+        .unwrap();
     assert_eq!(s["terminal"]["fontSize"], json!(20.0), "字号上限 20");
     assert_eq!(s["terminal"]["scrollback"], json!(1000.0), "回滚下限 1000");
     assert_eq!(s["terminal"]["theme"], json!("forest"));
@@ -85,9 +87,11 @@ fn settings_roundtrip_and_clamp() {
 #[test]
 fn snippets_persist() {
     let store = tmp_store("snips");
-    store.save_settings(
-        &json!({ "snippets": [ { "name": "df", "cmd": "df -h" }, { "name": "", "cmd": "bad" } ] }),
-    );
+    store
+        .save_settings(&json!({
+            "snippets": [ { "name": "df", "cmd": "df -h" }, { "name": "", "cmd": "bad" } ]
+        }))
+        .unwrap();
     let s = store.get_settings();
     assert_eq!(s["snippets"].as_array().unwrap().len(), 1, "空名片段被过滤");
 }
@@ -614,4 +618,65 @@ fn bookmarks_add_alias_reorder_are_host_scoped() {
     );
     assert_eq!(paths(&reloaded).len(), 1);
     let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+// ---------- 会话日志设置(0.5.0):默认值、校验、持久化、主机覆盖归一 ----------
+
+#[test]
+fn session_log_settings_validate_and_persist() {
+    let store = tmp_store("sessionlog");
+    // 默认值:不自动记录、默认目录、纯文本、带时间戳、写入已有内容
+    let s = store.get_settings();
+    assert_eq!(s["sessionLog"]["auto"], json!(false));
+    assert_eq!(s["sessionLog"]["dir"], json!(""));
+    assert_eq!(s["sessionLog"]["format"], json!("text"));
+    assert_eq!(s["sessionLog"]["timestamps"], json!(true));
+    assert_eq!(s["sessionLog"]["includeScreen"], json!(true));
+    // 相对路径被拒绝
+    assert!(store
+        .save_settings(&json!({ "sessionLog": { "dir": "relative/path" } }))
+        .is_err());
+    // ~/ 展开为主目录
+    let s = store
+        .save_settings(&json!({ "sessionLog": { "dir": "~/logs" } }))
+        .unwrap();
+    assert!(
+        s["sessionLog"]["dir"].as_str().unwrap().starts_with('/'),
+        "unix 上展开为主目录: {}",
+        s["sessionLog"]["dir"]
+    );
+    // 非法格式被拒绝
+    assert!(store
+        .save_settings(&json!({ "sessionLog": { "format": "xml" } }))
+        .is_err());
+    // 合法修改持久化,未传的键保持原值
+    let s = store
+        .save_settings(&json!({ "sessionLog": { "auto": true, "format": "raw", "timestamps": false, "includeScreen": false } }))
+        .unwrap();
+    assert_eq!(s["sessionLog"]["auto"], json!(true));
+    assert_eq!(s["sessionLog"]["format"], json!("raw"));
+    assert_eq!(s["sessionLog"]["timestamps"], json!(false));
+    assert_eq!(s["sessionLog"]["includeScreen"], json!(false));
+    assert!(s["sessionLog"]["dir"].as_str().unwrap().ends_with("/logs"));
+}
+
+#[test]
+fn host_session_log_override_is_normalized() {
+    let store = tmp_store("host-sessionlog");
+    let h = store
+        .save_host(&json!({ "name": "h", "host": "1.2.3.4", "sessionLog": "always" }))
+        .unwrap();
+    assert_eq!(h["sessionLog"], json!("always"));
+    let h2 = store
+        .save_host(&json!({ "id": h["id"], "host": "1.2.3.4", "sessionLog": "bogus" }))
+        .unwrap();
+    assert_eq!(h2["sessionLog"], json!("default"), "非法值归一为 default");
+    // 老配置缺该字段:按 default 处理
+    let h3 = store
+        .save_host(&json!({ "name": "legacy", "host": "2.3.4.5" }))
+        .unwrap();
+    assert_eq!(h3["sessionLog"], json!("default"));
+    // 导出包含该字段
+    let exported = store.export_hosts(None).unwrap();
+    assert_eq!(exported["hosts"][0]["sessionLog"], json!("default"));
 }

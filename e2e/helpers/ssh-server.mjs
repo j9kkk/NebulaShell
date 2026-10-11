@@ -312,6 +312,19 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
                 stream.write('root\r\nPROBE-OK nebula-e2e\r\n');
               } else if (cmd === 'whoami') stream.write('root\r\n');
               else if (cmd === 'nebula-probe') stream.write('PROBE-OK nebula-e2e\r\n');
+              // 会话日志 0.5.0 用例:各类终端行为的最小样本
+              else if (cmd === 'nb-color') stream.write('\x1b[31mRED-9137\x1b[0m plain\r\n');
+              else if (cmd === 'nb-progress') stream.write('10%\r50%\r100%\r\n');
+              else if (cmd === 'nb-alt') stream.write('\x1b[?1049hhidden-9137\x1b[1;1Hinside\x1b[?1049lback-9137\r\n');
+              else if (cmd === 'nb-title') stream.write('\x1b]0;mock-title-9137\x07title-ok\r\n');
+              else if (cmd === 'nb-chunked') {
+                // 同一行分三次、间隔发出:验证按行结束时刻打时间戳。
+                // 提示符由最后一个分块一起写,否则公共提示符会插进这一行中间。
+                stream.write('chunked-');
+                setTimeout(() => { try { stream.write('chunked-'); } catch { /* closed */ } }, 250);
+                setTimeout(() => { try { stream.write('done-9137\r\n'); stream.write('root@mock:~# '); } catch { /* closed */ } }, 500);
+                return true;
+              }
               else if (cmd === 'exit') { stream.end(); return false; }
               else stream.write(`bash: ${cmd}: command not found\r\n`);
             }

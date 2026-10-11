@@ -151,6 +151,7 @@ export function openHostModal(host) {
     }
   }
   $('#host-initcmd').value = host && host.initcmd ? host.initcmd : '';
+  $('#host-sessionlog').value = (host && host.sessionLog) || 'default';
   toggleAuthRows();
   openModal('#modal-host');
   $('#host-name').focus();
@@ -175,6 +176,7 @@ export async function saveHostModal() {
     group: $('#host-group').value.trim(),
     jumpIds,
     initcmd: $('#host-initcmd').value.trim(),
+    sessionLog: $('#host-sessionlog') ? $('#host-sessionlog').value : 'default',
     password: $('#host-password').value || undefined,
     passphrase: $('#host-passphrase').value || undefined,
   };

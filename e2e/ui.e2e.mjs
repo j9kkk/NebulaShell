@@ -1134,8 +1134,8 @@ async function main() {
     await waitEval(`return ${logActiveExpr}`, 'false', 10000);
     const stopToast = await waitEval(`return [...document.querySelectorAll('#toasts .toast-action')].some((b) => b.textContent === '在文件夹中显示')`, 'true', 10000);
     const content2 = fs.readFileSync(logPath, 'utf8');
-    check('T86d 停止:写入记录停止标记,保存提示带「在文件夹中显示」',
-      stopToast === 'true' && content2.includes('记录停止（手动停止）'), JSON.stringify({ stopToast, tail: content2.slice(-120) }));
+    check('T86d 停止:写入记录结束标记(含原因与大小),保存提示带「在文件夹中显示」',
+      stopToast === 'true' && content2.includes('===== 记录结束') && content2.includes('（手动停止）'), JSON.stringify({ stopToast, tail: content2.slice(-140) }));
     // 网络中断:重新开始 → dropClients → 数据泵写断开标记(与前端无关)→
     // 同一文件续录。自动重连依赖前端定时器(遮挡环境会冻结),就地回车重连兜底,
     // 自动重连本身由前端单测覆盖。
@@ -1170,6 +1170,108 @@ async function main() {
     // 收尾:停掉录制,不留状态给后续用例
     await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
     await waitEval(`return ${logActiveExpr}`, 'false', 10000);
+
+    // ============ 会话日志 0.5.0:纯文本格式、设置、自动记录(T87) ============
+    // file1 含 T86 的手动流程(断开/重连/whoami),这里断言内容格式:
+    // 文件头、每行一个行首时间戳、无控制字节、命令回显还原成一行。
+    {
+      const c1 = fs.readFileSync(logPath, 'utf8');
+      // 「已有内容」段(开始记录前的屏幕快照)本来就不打时间戳,只检查实时段
+      const preStart = c1.indexOf('----- 以下为开始记录前屏幕上已有的内容');
+      const liveStart = c1.indexOf('----- 以下为实时记录 -----');
+      const LIVE_MARK = '----- 以下为实时记录 -----\n';
+      const realtime = liveStart >= 0 ? c1.slice(liveStart + LIVE_MARK.length) : c1;
+      const tsLines = realtime.split('\n').filter((l) => l.trim());
+      const unstamped = tsLines.filter((l) => !/^\[\d\d:\d\d:\d\d\] /.test(l)
+        && !l.startsWith('-----') && !l.startsWith('=====')
+        && !/^(主机：|开始：|格式：)/.test(l));
+      check('T87a 纯文本:文件头带主机信息,已有内容段与实时段齐备,实时时间戳都在行首,无控制字节',
+        c1.startsWith('===== NebulaShell 会话日志 =====') && c1.includes('主机：')
+          && preStart >= 0 && liveStart > preStart
+          && unstamped.length === 0 && !/[\x1b\x07\r]/.test(c1),
+        JSON.stringify({ preStart: preStart >= 0, liveStart: liveStart >= 0, unstamped: unstamped.slice(0, 3), hasEsc: /\x1b/.test(c1) }));
+      check('T87b 纯文本:手敲命令逐字回显还原成一行(可 grep 到自己敲的命令)',
+        /^\[\d\d:\d\d:\d\d\] root@mock:~# whoami$/m.test(c1) && /^\[\d\d:\d\d:\d\d\] root$/m.test(c1),
+        JSON.stringify({ whoami: /^\[\d\d:\d\d:\d\d\] root@mock:~# whoami$/m.test(c1) }));
+      // 各类终端行为样本:file1 已在 T86 收尾时停止,先开一份新日志
+      await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
+      await waitEval(`return ${logActiveExpr}`, 'true', 10000);
+      const started3 = asObj(await evalJs(`return (async () => { const r = await ${logStatus}; return JSON.stringify(r.data); })()`));
+      const fmtPath = started3.file;
+      await evalJs(`window.__nbTest.sendText('${target.paneId}', 'nb-color'); return 1`);
+      await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+      await evalJs(`window.__nbTest.sendText('${target.paneId}', 'nb-progress'); return 1`);
+      await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+      await evalJs(`window.__nbTest.sendText('${target.paneId}', 'nb-alt'); return 1`);
+      await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+      await evalJs(`window.__nbTest.sendText('${target.paneId}', 'nb-title'); return 1`);
+      await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+      await evalJs(`window.__nbTest.sendText('${target.paneId}', 'nb-chunked'); return 1`);
+      await evalJs(`window.__nbTest.sendEnter('${target.paneId}'); return 1`);
+      let fmt = '';
+      for (let i = 0; i < 30 && !(fmt = fs.readFileSync(fmtPath, 'utf8')).includes('chunked-chunked-done-9137'); i++) await sleep(300);
+      check('T87c 进度条只留最后一帧', /^\[\d\d:\d\d:\d\d\] 100%$/m.test(fmt), JSON.stringify({ p: /^\[\d\d:\d\d:\d\d\] 100%$/m.test(fmt) }));
+      check('T87d 颜色序列丢弃', /^\[\d\d:\d\d:\d\d\] RED-9137 plain$/m.test(fmt), JSON.stringify({ m: /RED-9137 plain/.test(fmt) }));
+      check('T87e 全屏程序折叠为进出标记,内容不落盘',
+        fmt.includes('----- 进入全屏程序，界面内容不记录 -----') && fmt.includes('----- 全屏程序已退出 -----')
+          && fmt.includes('back-9137') && !fmt.includes('hidden-9137') && !fmt.includes('inside'),
+        JSON.stringify({ enter: fmt.includes('进入全屏程序'), exit: fmt.includes('全屏程序已退出'), leaked: fmt.includes('hidden-9137') }));
+      check('T87f 窗口标题序列丢弃', /^\[\d\d:\d\d:\d\d\] title-ok$/m.test(fmt) && !fmt.includes('mock-title-9137'), JSON.stringify({ t: /title-ok/.test(fmt) }));
+      check('T87g 同一行分块到达:仍是一行一个时间戳',
+        (fmt.match(/^\[\d\d:\d\d:\d\d\] chunked-chunked-done-9137$/gm) || []).length === 1, JSON.stringify({ ok: /chunked-chunked-done-9137/.test(fmt) }));
+      // 收尾样本日志
+      await evalJs(`document.querySelector('#btn-log-toggle').click(); return 1`);
+      await waitEval(`return ${logActiveExpr}`, 'false', 10000);
+      // 设置分区:保存 auto / 时间戳关闭,重开仍在;随后恢复
+      await openAiSettings();
+      await evalJs(`document.querySelector('#settings-tab-log').click(); return 1`);
+      const snap = asObj(await evalJs(`return JSON.stringify({
+        auto: document.querySelector('#setlog-auto').checked,
+        timestamps: document.querySelector('#setlog-timestamps').checked,
+        screen: document.querySelector('#setlog-screen').checked,
+        format: document.querySelector('input[name="setlog-format"]:checked')?.value,
+        dirHint: document.querySelector('#setlog-dir-hint').textContent })`));
+      check('T87h 设置分区:默认值与默认目录提示正确',
+        snap.auto === false && snap.timestamps === true && snap.screen === true && snap.format === 'text' && snap.dirHint.includes('NebulaShell-logs'),
+        JSON.stringify(snap));
+      await evalJs(`document.querySelector('#setlog-auto').checked = true;
+        document.querySelector('#setlog-timestamps').checked = false;
+        document.querySelector('#btn-log-save').click(); return 1`);
+      await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden') ? 'closed' : 'open'`, 'closed', 10000);
+      const saved = asObj(await evalJs(`return (async () => { const r = await window.nebula.invoke('settings:get'); return JSON.stringify(r.data.sessionLog); })()`));
+      check('T87i 设置保存:auto 开、时间戳关(仅纯文本生效)',
+        saved.auto === true && saved.timestamps === false && saved.format === 'text', JSON.stringify(saved));
+      // 自动记录:新建到 ui-a 的连接,不手动点按钮即开始录制
+      await evalJs(`const host = [...document.querySelectorAll('.host-item')].find(el => el.textContent.includes('ui-a'));
+        host.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true, ctrlKey: true })); return 1`);
+      await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.status === 'connected' && s.logActive).length >= 1 ? '1' : '0'`, '1', 30000);
+      const auto = asObj(await evalJs(`return JSON.stringify((() => {
+        const s = window.__nbTest.workspaceState().sessions.filter(x => x.status === 'connected' && x.logActive).pop();
+        return { id: s.id, file: s.logFile }; })())`));
+      const autoFile = auto.file;
+      let autoHead = '';
+      for (let i = 0; i < 30 && !(autoHead = fs.readFileSync(autoFile, 'utf8')).includes('Welcome to NebulaShell mock sshd'); i++) await sleep(300);
+      check('T87j 连接即录:未手动开始即录制,文件头后紧跟登录欢迎信息',
+        !!autoFile && autoHead.includes('===== NebulaShell 会话日志 =====') && /=====\n\n?Welcome to NebulaShell mock sshd/.test(autoHead.replace(/^主机：.*\n/m, '')),
+        JSON.stringify({ file: autoFile, head: autoHead.slice(0, 200) }));
+      // 自动重连同一会话:断开 → 重连,同一文件续录,文件头不重复
+      await evalJs(`document.querySelector('#btn-disconnect').click(); return 1`);
+      await sleep(800);
+      await evalJs(`window.__nbTest.sendEnter(window.__nbTest.workspaceState().sessions.find(s => s.id === '${auto.id}').paneId); return 1`);
+      await waitEval(`return window.__nbTest.workspaceState().sessions.find(s => s.id === '${auto.id}').status`, 'connected', 30000);
+      const autoAfter = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState().sessions.find(s => s.id === '${auto.id}').logActive)`));
+      const headCount = (fs.readFileSync(autoFile, 'utf8').match(/===== NebulaShell 会话日志 =====/g) || []).length;
+      check('T87k 连接即录的会话断线重连:同一文件续录,文件头只有一份',
+        autoAfter === true && headCount === 1, JSON.stringify({ autoAfter, headCount }));
+      // 收尾:关闭该标签(会话关闭会自动停日志并弹保存提示),恢复 auto=false
+      const autoTab = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState().tabs.find(x => x.panes.some(p => p.sessionId === '${auto.id}'))?.id)`));
+      await evalJs(`document.querySelector('#tabs .tab[data-tab="${autoTab}"] .tab-close')?.click(); return 1`)
+        .catch(() => {});
+      await sleep(600);
+      await evalJs(`return (async () => { await window.nebula.invoke('settings:save', { sessionLog: { auto: false, timestamps: true } }); return 1; })()`);
+      const restored = asObj(await evalJs(`return (async () => { const r = await window.nebula.invoke('settings:get'); return JSON.stringify(r.data.sessionLog.auto); })()`));
+      check('T87l 设置恢复:auto 关', restored === false, JSON.stringify({ restored }));
+    }
   }
 
   // 删除确认对话框(回归:confirm 在 WKWebView 失效 → 已换应用内实现)
@@ -2780,7 +2882,7 @@ async function main() {
     focus: document.activeElement?.id, oldModals: !!document.querySelector('#modal-term, #modal-ai') })`));
   check('T46b ⌘, / Ctrl+, 在终端内打开设置窗口(终端分区,焦点在分区页签),不发给 shell;旧的两个设置弹窗已合并',
     comma.prevented && comma.emitted === '' && JSON.stringify(comma.commands) === '["settings.open"]'
-      && settingsSnap.open && settingsSnap.section === 'terminal' && JSON.stringify(settingsSnap.tabs) === '["terminal","ai","keys"]'
+      && settingsSnap.open && settingsSnap.section === 'terminal' && JSON.stringify(settingsSnap.tabs) === '["terminal","ai","log","keys"]'
       && settingsSnap.termForm && !settingsSnap.aiForm && settingsSnap.focus === 'settings-tab-terminal' && !settingsSnap.oldModals,
     JSON.stringify({ comma, settingsSnap }));
   await focusedKey('End'); await sleep(100);
@@ -2788,11 +2890,13 @@ async function main() {
     rows: [...document.querySelectorAll('#settings-keys-tbody tr')].map((r) => [r.dataset.action, r.querySelector('.keys-accel').textContent]) })`));
   const keyOf = (id) => keys.rows.find((r) => r[0] === id)?.[1] || '';
   await focusedKey('ArrowUp'); await sleep(100);
+  const upToLog = asObj(await evalJs(`return JSON.stringify({ log: window.__nbTest.settingsSection() === 'log', dirInput: !!document.querySelector('#setlog-dir').getClientRects().length })`));
+  await focusedKey('ArrowUp'); await sleep(100);
   const upToAi = asObj(await evalJs(`return JSON.stringify({ ai: window.__nbTest.aiSettingsOpen(), aiForm: !!document.querySelector('#ai-provider').getClientRects().length })`));
-  check('T46c 设置窗口三个分区:快捷键分区按平台只读列出键位,方向键切换分区',
+  check('T46c 设置窗口四个分区:快捷键分区按平台只读列出键位,方向键切换分区(会话日志分区含目录输入)',
     keys.section === 'keys' && keys.focus === 'settings-tab-keys' && keys.rows.length >= 10
       && keyOf('settings.open') === (isMac ? '⌘,' : 'Ctrl+,') && keyOf('palette.open') === (isMac ? '⌘⇧P' : 'Ctrl+Shift+P')
-      && upToAi.ai && upToAi.aiForm, JSON.stringify({ keys, upToAi }));
+      && upToLog.log && upToLog.dirInput && upToAi.ai && upToAi.aiForm, JSON.stringify({ keys, upToLog, upToAi }));
   await focusedKey('Escape'); await sleep(200);
   const afterEsc = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.settingsOpen(), terminal: document.activeElement?.classList.contains('xterm-helper-textarea') })`));
   await openAiSettings(); await sleep(200);

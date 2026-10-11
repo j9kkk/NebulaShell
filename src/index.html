@@ -224,6 +224,12 @@
         <label>跳板机</label>
         <select id="host-jump" multiple size="1" data-title="按住 %1 点选,自上而下形成跳板链" data-accel="mod"><option value="">(无)</option></select>
         <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
+        <label for="host-sessionlog">会话日志</label>
+        <select id="host-sessionlog">
+          <option value="default">跟随全局设置</option>
+          <option value="always">总是自动记录</option>
+          <option value="never">从不自动记录</option>
+        </select>
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />
         <label for="host-tags">标签</label><input id="host-tags" type="text" placeholder="多个标签以逗号分隔" />
       </div>
@@ -301,6 +307,7 @@
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分区">
           <button id="settings-tab-terminal" class="settings-tab" type="button" role="tab" data-section="terminal" aria-controls="settings-sec-terminal"><span class="mi" data-icon="terminal"></span><span>终端</span></button>
           <button id="settings-tab-ai" class="settings-tab" type="button" role="tab" data-section="ai" aria-controls="settings-sec-ai"><span class="mi" data-icon="sparkles"></span><span>AI</span></button>
+          <button id="settings-tab-log" class="settings-tab" type="button" role="tab" data-section="log" aria-controls="settings-sec-log"><span class="mi" data-icon="circleDot"></span><span>会话日志</span></button>
           <button id="settings-tab-keys" class="settings-tab" type="button" role="tab" data-section="keys" aria-controls="settings-sec-keys"><span class="mi" data-icon="keyboard"></span><span>快捷键</span></button>
         </nav>
         <section id="settings-sec-terminal" class="settings-sec" role="tabpanel" data-section="terminal" aria-labelledby="settings-tab-terminal">
@@ -356,6 +363,33 @@
         <button id="btn-ai-test" class="btn">测试连接</button>
         <button id="btn-ai-save" class="btn primary">保存</button>
       </div>
+        </section>
+        <section id="settings-sec-log" class="settings-sec hidden" role="tabpanel" data-section="log" aria-labelledby="settings-tab-log">
+          <div class="form-grid">
+            <label for="setlog-auto">自动记录</label>
+            <label class="secret-control" for="setlog-auto"><input id="setlog-auto" type="checkbox" /> 连接主机时自动开始记录</label>
+            <label for="setlog-dir">日志目录</label>
+            <div class="secret-field">
+              <input id="setlog-dir" type="text" placeholder="" style="width:100%;" spellcheck="false" autocomplete="off" />
+              <button id="setlog-pick" class="btn small" type="button">选择…</button>
+              <button id="setlog-open" class="btn small" type="button">打开</button>
+            </div>
+            <label></label><span class="muted small-note" id="setlog-dir-hint">留空 = 默认目录</span>
+            <label>内容格式</label>
+            <span class="setlog-radios">
+              <label class="secret-control" for="setlog-format-text"><input id="setlog-format-text" type="radio" name="setlog-format" value="text" checked /> 纯文本（推荐，可直接阅读和搜索）</label>
+              <label class="secret-control" for="setlog-format-raw"><input id="setlog-format-raw" type="radio" name="setlog-format" value="raw" /> 原始终端流（保留颜色，可用 cat / less -R 回放）</label>
+            </span>
+            <label for="setlog-timestamps">时间戳</label>
+            <label class="secret-control" for="setlog-timestamps"><input id="setlog-timestamps" type="checkbox" checked /> 每行前加时间（仅纯文本）</label>
+            <label for="setlog-screen">已有内容</label>
+            <label class="secret-control" for="setlog-screen"><input id="setlog-screen" type="checkbox" checked /> 手动开始记录时，先写入屏幕上已有的内容</label>
+          </div>
+          <p class="muted small-note">日志记录屏幕上显示的内容，包括输入后回显出来的命令；密码等不回显的输入不会被记录。单台主机可在「编辑主机」里单独设置自动记录。修改对之后开始的日志生效。</p>
+          <div class="modal-actions">
+            <button id="btn-log-cancel" class="btn">取消</button>
+            <button id="btn-log-save" class="btn primary">保存</button>
+          </div>
         </section>
         <section id="settings-sec-keys" class="settings-sec hidden" role="tabpanel" data-section="keys" aria-labelledby="settings-tab-keys">
           <div class="keys-wrap">

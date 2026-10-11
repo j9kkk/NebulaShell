@@ -186,6 +186,9 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .tab-dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
 .tab-dot.connected { background: var(--accent2); }
 .tab-dot.exited, .tab-dot.error { background: var(--danger); }
+/* 会话日志录制标记:标签里任一会话在录时标题后小红点,已暂停时不闪 */
+.tab.tab-rec .tab-title::after { content: ' ●'; color: var(--danger, #ff6b6b); font-size: 9px; animation: pulse 1s infinite; }
+.tab.tab-rec-paused .tab-title::after { content: ' ●'; color: var(--danger, #ff6b6b); font-size: 9px; }
 @keyframes pulse { 50% { opacity: 0.3; } }
 .tab-close {
   display: inline-flex; align-items: center; justify-content: center;
@@ -737,6 +740,8 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .secret-control > input:not([type="checkbox"]):not([type="radio"]) { flex: 1 1 120px; min-width: 0; }
 .secret-control > input:is([type="checkbox"], [type="radio"]) { flex: none; }
 .secret-control > .btn { flex: none; }
+/* 设置页会话日志分区:两个单选行纵向排列 */
+.setlog-radios { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .key-status { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .key-status:empty { display: none; }
 .key-path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1589,6 +1594,12 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .pane-tb-reconnect { padding: 0 8px !important; color: var(--accent) !important; }
 /* 广播期间每个已连接窗格都显示广播按钮,参与者高亮 */
 body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opacity: 1; pointer-events: auto; }
+/* 会话日志:录制中(data-log="on")红点呼吸;已暂停(data-log="paused")红色常亮。
+   未连接时工具条隐藏了 file/forward/broadcast,但日志按钮仍要可见可点(停止入口)。 */
+.pane-toolbar[data-log="on"] .pane-tb-log,
+.pane-toolbar[data-log="paused"] .pane-tb-log { opacity: 1; pointer-events: auto; }
+.pane-toolbar[data-log="on"] .pane-tb-log { color: var(--danger, #ff6b6b); animation: pulse 1s infinite; }
+.pane-toolbar[data-log="paused"] .pane-tb-log { color: var(--danger, #ff6b6b); }
 .pane-toolbar .pane-tb-broadcast.active { color: var(--warn, #f5a524); border-color: var(--warn, #f5a524); }
 .pane-toolbar .pane-tb-btn:not(:disabled):hover, .pane-zoom-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
 .pane-close-btn:not(:disabled):hover { color: var(--danger); border-color: var(--danger); }

@@ -9,6 +9,7 @@ mod session_log;
 pub mod sftp;
 pub mod signing;
 pub mod ssh;
+mod term_text;
 #[cfg(target_os = "macos")]
 mod traffic_lights;
 pub mod transfer;
@@ -99,6 +100,7 @@ pub fn run() {
         force_exit: AtomicBool::new(false),
         monitors: Mutex::new(HashMap::new()),
         logs: Mutex::new(HashMap::new()),
+        log_hosts: Mutex::new(HashMap::new()),
         ai_aborts: Arc::new(Mutex::new(HashMap::new())),
         batch_aborts: Arc::new(Mutex::new(HashMap::new())),
         test_results: test_results.clone(),

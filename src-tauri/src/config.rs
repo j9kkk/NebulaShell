@@ -1,5 +1,6 @@
 // 配置存储:与 Electron 版 nebulashell-config.json 同构;敏感字段经 keyring(macOS Keychain)加密,
 // keyring 不可用时回退 base64 'plain:' 前缀(与 Electron 版 fallback 行为一致)。
+use crate::term_text::skip_escape;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -23,6 +24,10 @@ fn defaults() -> Value {
         "settings": {
             "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "models": [], "apiKey": "" },
             "terminal": { "fontSize": 13, "theme": "nebula", "scrollback": 2000 },
+            // 会话日志:自动记录默认关;dir 空 = 主目录下 NebulaShell-logs;
+            // format: text(纯文本,可读) | raw(原始终端流,可回放);时间戳仅对 text 生效;
+            // includeScreen:手动开始记录时先写入屏幕上已有的内容
+            "sessionLog": { "auto": false, "dir": "", "format": "text", "timestamps": true, "includeScreen": true },
             // 文件「双击打开」临时副本的缓存根目录;空 = 默认(系统临时目录/NebulaShell-open)
             "openTempDir": "",
             "clouds": {
@@ -35,68 +40,6 @@ fn defaults() -> Value {
 }
 
 // ===== 命令历史清洗 =====
-
-/// 跳过 chars[i] 起的 ESC 序列,返回其后的位置。与前端 shared/term-text.js 的
-/// stripTerminalNoise 覆盖同样的序列:CSI、OSC(BEL 或 ST 结尾)、DCS/SOS/PM/APC
-/// (ST 结尾)、SS2/SS3 连同其后一个字符、字符集指定、其余两字节 ESC 序列。
-fn skip_escape(chars: &[char], i: usize) -> usize {
-    let n = chars.len();
-    let st_end = |from: usize, bel: bool| {
-        let mut j = from;
-        while j < n {
-            if bel && chars[j] == '\x07' {
-                return j + 1;
-            }
-            if chars[j] == '\x1b' {
-                return if chars.get(j + 1) == Some(&'\\') {
-                    j + 2
-                } else {
-                    j
-                };
-            }
-            j += 1;
-        }
-        n
-    };
-    let Some(&next) = chars.get(i + 1) else {
-        return i + 1;
-    };
-    match next {
-        '[' => {
-            let mut j = i + 2;
-            while j < n && ('\x30'..='\x3f').contains(&chars[j]) {
-                j += 1;
-            }
-            while j < n && ('\x20'..='\x2f').contains(&chars[j]) {
-                j += 1;
-            }
-            if j < n && ('\x40'..='\x7e').contains(&chars[j]) {
-                j + 1
-            } else {
-                j
-            }
-        }
-        ']' => st_end(i + 2, true),
-        'P' | 'X' | '^' | '_' => st_end(i + 2, false),
-        'N' | 'O' => match chars.get(i + 2) {
-            Some(c) if *c != '\x1b' => i + 3,
-            _ => i + 2,
-        },
-        '\x20'..='\x2f' => {
-            let mut j = i + 2;
-            while j < n && ('\x20'..='\x2f').contains(&chars[j]) {
-                j += 1;
-            }
-            if j < n && ('\x30'..='\x7e').contains(&chars[j]) {
-                j + 1
-            } else {
-                j
-            }
-        }
-        '\x30'..='\x7e' => i + 2,
-        _ => i + 1,
-    }
-}
 
 /// 清洗一条命令历史:去控制序列;旧版采集把整串按键原样存下,这里按行编辑语义
 /// 重放 Ctrl+C / Ctrl+G / Ctrl+U(丢弃此前内容)、Ctrl+W(删前一个词)与退格,
@@ -479,6 +422,11 @@ impl Store {
         if data["settings"]["openTempDir"].is_null() {
             data["settings"]["openTempDir"] = json!("");
         }
+        // 会话日志(2026-10-11):老配置补默认值 —— 不自动记录、默认目录、纯文本、
+        // 带时间戳、手动开始时写入屏幕已有内容
+        if data["settings"]["sessionLog"].is_null() || !data["settings"]["sessionLog"].is_object() {
+            data["settings"]["sessionLog"] = defaults()["settings"]["sessionLog"].clone();
+        }
         for p in ["tencent", "aliyun"] {
             if data["settings"]["clouds"][p].is_null() {
                 data["settings"]["clouds"][p] = defaults()["settings"]["clouds"][p].clone();
@@ -806,7 +754,7 @@ impl Store {
                         "username": input["username"].as_str().unwrap_or("root"),
                         "authType": input["authType"].as_str().unwrap_or("password"),
                         "keyPath": "", "group": "", "tags": [],
-                        "jumpIds": [], "initcmd": "",
+                        "jumpIds": [], "initcmd": "", "sessionLog": "default",
                         "cloud": null, "createdAt": chrono::Utc::now().timestamp_millis(),
                         "password": "", "privateKey": "", "passphrase": ""
                     }),
@@ -842,6 +790,14 @@ impl Store {
                 if !input[field].is_null() {
                     host[field] = input[field].clone();
                 }
+            }
+            // 会话日志覆盖:default(跟随全局)/ always(总是自动记录)/ never(从不);
+            // 非法值归一为 default,不报错 —— 编辑器之外的手改配置不该把保存卡死
+            match input["sessionLog"].as_str() {
+                Some("always") | Some("never") => {
+                    host["sessionLog"] = input["sessionLog"].clone();
+                }
+                Some(_) | None => host["sessionLog"] = json!("default"),
             }
         }
         if !input["cloud"].is_null() {
@@ -984,6 +940,7 @@ impl Store {
                         "id": h["id"], "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
                         "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
                         "jumpIds": h["jumpIds"], "initcmd": h["initcmd"], "cloud": h["cloud"],
+                        "sessionLog": h["sessionLog"].as_str().unwrap_or("default"),
                     })
                 })
                 .collect();
@@ -1252,6 +1209,12 @@ impl Store {
             },
             "terminal": data["settings"]["terminal"].clone(),
             "openTempDir": data["settings"]["openTempDir"].clone(),
+            "sessionLog": data["settings"]["sessionLog"].clone(),
+            // 设置页默认目录提示用(实际取目录走 commands 的 default_log_dir,
+            // 那里还要考虑测试模式隔离)
+            "sessionLogDefaultDir": dirs::home_dir()
+                .map(|h| h.join("NebulaShell-logs").to_string_lossy().to_string())
+                .unwrap_or_default(),
             "snippets": data["snippets"].clone(),
             // 多账号云凭据:公开形态不回传 Secret,只给 keyId 与"是否已存"
             "cloudAccounts": data["settings"]["cloudAccounts"]
@@ -1362,7 +1325,55 @@ impl Store {
         ))
     }
 
-    pub fn save_settings(&self, patch: &Value) -> Value {
+    /// 校验并规范化 sessionLog 设置里需要先验证的字段:
+    /// 目录展开 `~` 并要求绝对路径,format 只接受 text/raw。
+    /// 返回可安全合并的键值(其余布尔键原样放行)。
+    fn sanitize_session_log_patch(patch: &Value) -> Result<Value, String> {
+        let Some(sl) = patch["sessionLog"].as_object() else {
+            return Ok(json!(null));
+        };
+        let mut out = serde_json::Map::new();
+        for key in ["auto", "timestamps", "includeScreen"] {
+            if let Some(v) = sl.get(key) {
+                if !v.is_null() {
+                    out.insert(key.to_string(), json!(v.as_bool().unwrap_or(false)));
+                }
+            }
+        }
+        if let Some(v) = sl.get("dir") {
+            if !v.is_null() {
+                let raw = v.as_str().unwrap_or("").trim().to_string();
+                let dir = if raw == "~" {
+                    dirs::home_dir()
+                        .map(|h| h.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else if let Some(rest) = raw.strip_prefix("~/") {
+                    match dirs::home_dir() {
+                        Some(h) => h.join(rest).to_string_lossy().to_string(),
+                        None => raw,
+                    }
+                } else {
+                    raw
+                };
+                if !dir.is_empty() && !std::path::Path::new(&dir).is_absolute() {
+                    return Err("日志目录必须是绝对路径".into());
+                }
+                out.insert("dir".to_string(), json!(dir));
+            }
+        }
+        if let Some(v) = sl.get("format") {
+            if !v.is_null() {
+                match v.as_str() {
+                    Some("text") | Some("raw") => out.insert("format".to_string(), v.clone()),
+                    _ => return Err("内容格式只支持 text（纯文本）或 raw（原始终端流）".into()),
+                };
+            }
+        }
+        Ok(json!(out))
+    }
+
+    pub fn save_settings(&self, patch: &Value) -> Result<Value, String> {
+        let session_log = Self::sanitize_session_log_patch(patch)?;
         let mut data = self.data.lock().unwrap();
         if let Some(snips) = patch["snippets"].as_array() {
             let cleaned: Vec<Value> = snips
@@ -1398,6 +1409,12 @@ impl Store {
         // 双击打开临时目录:trim 后存;留空表示恢复默认(系统临时目录)
         if let Some(v) = patch["openTempDir"].as_str() {
             data["settings"]["openTempDir"] = json!(v.trim());
+        }
+        // 会话日志:先经 sanitize(见上),null 表示未传该分区
+        if !session_log.is_null() {
+            for (key, value) in session_log.as_object().unwrap() {
+                data["settings"]["sessionLog"][key] = value.clone();
+            }
         }
         if let Some(ai) = patch["ai"].as_object() {
             let out = &mut data["settings"]["ai"];
@@ -1483,7 +1500,7 @@ impl Store {
         }
         drop(data);
         self.save().ok();
-        self.get_settings()
+        Ok(self.get_settings())
     }
 
     pub fn list_fingerprints_for_test(&self) -> Vec<Value> {
@@ -1500,7 +1517,7 @@ impl Store {
         key: &str,
         secret: &str,
         endpoint: &str,
-    ) -> Value {
+    ) -> Result<Value, String> {
         let p = if provider == "aliyun" {
             "aliyun"
         } else {

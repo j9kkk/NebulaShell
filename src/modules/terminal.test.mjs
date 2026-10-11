@@ -1166,3 +1166,40 @@ test('session log: statusbar button covers startable, busy and no-session states
   h.updateStatusbar(null);
   assert.equal(btn.disabled, true);
 });
+
+// —— 会话日志 0.5.0:开始记录时写入已有内容 ——
+function logBufferHarness(lines, { inAlt = false, includeScreen = true } = {}) {
+  const h = harness({ stubLog: false });
+  const s = h.addSession();
+  s.status = 'connected';
+  s.inAltScreen = inAlt;
+  s.term.buffer = {
+    normal: { length: lines.length, getLine: (i) => ({ translateToString: () => lines[i] || '', isWrapped: false }) },
+  };
+  h.state.settings = { sessionLog: { includeScreen } };
+  h.setAPI(async (name, payload) => (name === 'log:start' ? { file: '/l/x.log', name: 'x.log', payload } : {}));
+  return { h, s };
+}
+
+test('session log: manual start includes existing screen content from the normal buffer', async () => {
+  const { h, s } = logBufferHarness(['before-1', 'before-2', '   ']);
+  await h.toggleSessionLog(s.sessionId);
+  const start = h.calls.find((c) => c.name === 'log:start');
+  assert.equal(JSON.stringify(start.payload.preamble), JSON.stringify(['before-1', 'before-2']));
+  assert.equal(start.payload.altScreen, false);
+});
+
+test('session log: alt-screen sessions start without preamble and mark altScreen', async () => {
+  const { h, s } = logBufferHarness(['vim content'], { inAlt: true });
+  await h.toggleSessionLog(s.sessionId);
+  const start = h.calls.find((c) => c.name === 'log:start');
+  assert.equal(JSON.stringify(start.payload.preamble), '[]');
+  assert.equal(start.payload.altScreen, true);
+});
+
+test('session log: includeScreen=false skips preamble', async () => {
+  const { h, s } = logBufferHarness(['before-1'], { includeScreen: false });
+  await h.toggleSessionLog(s.sessionId);
+  const start = h.calls.find((c) => c.name === 'log:start');
+  assert.equal(JSON.stringify(start.payload.preamble), '[]');
+});

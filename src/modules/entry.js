@@ -52,6 +52,7 @@ export function openTermCtxMenu(e, session) {
     item('session.diagnose', { title: '只取最后一次输入的命令及其控制台输出,让 AI 诊断' }),
     item('session.clear'),
     item('session.readonly'),
+    item('session.log'),
     '-',
     item('pane.split'),
     item('tab.file.add'),
@@ -742,6 +743,7 @@ export function bindEvents() {
     if (session && (!st.file || !session.logFile || session.logFile === st.file)) {
       session.logActive = !!st.active;
       if (st.file) session.logFile = st.file;
+      if (st.bytes != null) session.logBytes = st.bytes;
       updateTab(session);
       if (state.activeId === st.sessionId) updateStatusbar(session);
     }
@@ -750,6 +752,17 @@ export function bindEvents() {
     } else if (st.reason === 'dropped') {
       toast(`磁盘写入跟不上，会话日志丢失部分输出，已在日志里标注${st.name ? `（${st.name}）` : ''}`, 'warn');
     }
+  });
+  // 会话日志按钮悬停:录制中时查一次后端,刷新已记录的大小(悬停提示)
+  $('#btn-log-toggle').addEventListener('mouseenter', () => {
+    const s = state.sessions.get(state.activeId);
+    if (!s || !s.logActive || s.logBusy) return;
+    api('log:status', { sessionId: s.sessionId }).then((r) => {
+      if (s.logActive && r && r.bytes != null) {
+        s.logBytes = r.bytes;
+        if (state.activeId === s.sessionId) updateStatusbar(s);
+      }
+    }).catch(() => {});
   });
   // 进度按归属路由:任务中心(taskId)+ 会话/目录匹配的视图状态栏,
   // 不再把 A 主机的进度覆盖到 B 的面板上。
@@ -1092,6 +1105,13 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       const s = [...state.sessions.values()].find((x) => x.paneId === paneId);
       if (!s) return false;
       s.term.input('\r');
+      return true;
+    },
+    /// 向指定窗格的会话输入任意文本(会话日志 e2e 用:产生回显进入日志)
+    sendText: (paneId, text) => {
+      const s = [...state.sessions.values()].find((x) => x.paneId === paneId);
+      if (!s) return false;
+      s.term.input(String(text));
       return true;
     },
     /// 终端按键路由探针:在活动会话的 xterm textarea 上派发 keydown(完整走

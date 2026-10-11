@@ -1,12 +1,13 @@
-// 设置窗口(#modal-settings):终端 / AI / 快捷键 三个分区。
-// 终端与 AI 两个分区各自保存、各自取消,保存后关闭窗口;快捷键分区只读。
-// 终端分区含文件双击打开的临时缓存目录。
+// 设置窗口(#modal-settings):终端 / AI / 会话日志 / 快捷键 四个分区。
+// 终端、AI、会话日志三个分区各自保存、各自取消,保存后关闭窗口;快捷键分区只读。
+// 终端分区含文件双击打开的临时缓存目录;会话日志分区含目录/格式/时间戳/自动记录。
 import { $, accel, api, closeModal, state, toast } from './core.js';
 import { closeAiSettings, openAiSettings } from './ai.js';
+import { openLogFolder } from './terminal.js';
 import { DEFAULT_KEYMAP, invalidateKeymapCache, specsOf } from './keymap.js';
 import { fitAllVisible, scheduleResizeSync, termTheme, visibleSessions } from './terminal.js';
 
-export const SETTINGS_SECTIONS = ['terminal', 'ai', 'keys'];
+export const SETTINGS_SECTIONS = ['terminal', 'ai', 'log', 'keys'];
 
 export const settingsOpen = () => !$('#modal-settings').classList.contains('hidden');
 export const settingsSection = () => document.querySelector('#modal-settings .settings-tab[aria-selected="true"]')?.dataset.section || '';
@@ -17,6 +18,20 @@ function fillTermSettings() {
   $('#term-theme').value = t.theme || 'nebula';
   $('#term-scrollback').value = t.scrollback || 2000;
   $('#term-open-tempdir').value = (state.settings && state.settings.openTempDir) || '';
+}
+
+function fillLogSettings() {
+  const sl = (state.settings && state.settings.sessionLog) || {};
+  $('#setlog-auto').checked = !!sl.auto;
+  $('#setlog-dir').value = sl.dir || '';
+  const format = sl.format === 'raw' ? 'raw' : 'text';
+  document.querySelector(`input[name="setlog-format"][value="${format}"]`).checked = true;
+  $('#setlog-timestamps').checked = sl.timestamps !== false;
+  $('#setlog-screen').checked = sl.includeScreen !== false;
+  // 默认目录提示由后端解析(Windows 上不是 ~ 形态),拿不到时退回通用文案
+  const hint = $('#setlog-dir-hint');
+  const def = state.settings && state.settings.sessionLogDefaultDir;
+  hint.textContent = def ? `留空 = ${def}（默认）` : '留空 = 默认目录';
 }
 
 /// 快捷键一览:当前平台生效的键位(自定义优先),没有键位的动作不列。
@@ -54,6 +69,7 @@ function showSection(section, { focus = false } = {}) {
 export function openSettings(section = 'terminal') {
   if (!settingsOpen()) {
     fillTermSettings();
+    fillLogSettings();
     openAiSettings(); // 填 AI 表单并打开窗口
   }
   showSection(section, { focus: true });
@@ -73,6 +89,15 @@ export function bindSettings() {
   }
   $('#btn-term-cancel').addEventListener('click', closeAiSettings);
   $('#btn-term-save').addEventListener('click', saveTermSettings);
+  $('#btn-log-cancel').addEventListener('click', closeAiSettings);
+  $('#btn-log-save').addEventListener('click', saveLogSettings);
+  $('#setlog-pick').addEventListener('click', async () => {
+    try {
+      const picked = await api('dialog:pickDirectory', {});
+      if (picked) $('#setlog-dir').value = picked;
+    } catch { /* 取消选择不提示 */ }
+  });
+  $('#setlog-open').addEventListener('click', openLogFolder);
   $('#btn-keys-close').addEventListener('click', () => closeModal('#modal-settings'));
 }
 
@@ -109,4 +134,23 @@ export async function saveTermSettings() {
   scheduleResizeSync();
   fitAllVisible();
   toast('终端设置已应用', 'success');
+}
+
+async function saveLogSettings() {
+  const patch = {
+    sessionLog: {
+      auto: $('#setlog-auto').checked,
+      dir: $('#setlog-dir').value.trim(),
+      format: document.querySelector('input[name="setlog-format"]:checked')?.value || 'text',
+      timestamps: $('#setlog-timestamps').checked,
+      includeScreen: $('#setlog-screen').checked,
+    },
+  };
+  try {
+    state.settings = await api('settings:save', patch);
+    closeAiSettings(); // 关窗口,同时丢弃其它分区未保存的草稿
+    toast('会话日志设置已保存（对之后开始的日志生效）', 'success');
+  } catch (e) {
+    toast(e?.message || '保存失败', 'error');
+  }
 }
