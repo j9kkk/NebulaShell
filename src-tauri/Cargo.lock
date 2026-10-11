@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "nebulashell"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2700,6 +2700,8 @@ dependencies = [
  "hmac",
  "keyring",
  "notify-rust",
+ "objc2-app-kit",
+ "objc2-foundation",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "rfd",

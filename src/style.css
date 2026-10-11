@@ -204,9 +204,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   border-bottom: 1px solid var(--border);
   user-select: none; -webkit-user-select: none;
 }
-/* 红绿灯由系统绘制(tauri.macos.conf.json trafficLightPosition),这里只占位;
-   全屏时系统收起红绿灯,占位一并收起 */
-.tb-traffic { flex: none; width: 70px; align-self: stretch; }
+/* 红绿灯由系统绘制、src-tauri/src/traffic_lights.rs 垂直居中,横向沿用系统布局
+   (macOS 26/27:左缘 9pt、间距 23pt,右缘 69pt),这里只占位,宽度让侧栏开关离
+   绿灯 11pt;全屏时系统收起红绿灯,占位一并收起 */
+.tb-traffic { flex: none; width: 78px; align-self: stretch; }
 .tb-brand { flex: none; display: flex; align-items: center; align-self: stretch; padding: 0 10px 0 2px; white-space: nowrap; cursor: default; }
 .tb-brand .logo { font-size: 14px; font-weight: 700; }
 .logo-text {

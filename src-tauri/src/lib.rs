@@ -9,6 +9,8 @@ mod session_log;
 pub mod sftp;
 pub mod signing;
 pub mod ssh;
+#[cfg(target_os = "macos")]
+mod traffic_lights;
 pub mod transfer;
 
 #[cfg(test)]
@@ -114,6 +116,20 @@ pub fn run() {
         // emit 询问事件,由前端确认底座决定(app:exit 置 force_exit 后放行)。
         // ⌘Q、⇧⌘W(自定义菜单项走窗口 close)、红灯、窗口 ✕、Alt+F4 都汇到这里。
         .on_window_event(|window, event| {
+            // AppKit 在缩放、进出全屏、切换前后台、换屏时会重排标题栏,红绿灯回到系统默认位置
+            #[cfg(target_os = "macos")]
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::Focused(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::ThemeChanged(_)
+            ) {
+                if let Some(webview_window) = window.app_handle().get_webview_window(window.label())
+                {
+                    traffic_lights::place(&webview_window);
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let Some(state) = window.app_handle().try_state::<AppState>() else {
                     return;
@@ -158,6 +174,10 @@ pub fn run() {
                     flush_store.flush_if_dirty();
                 }
             });
+            #[cfg(target_os = "macos")]
+            if let Some(main) = handle.get_webview_window("main") {
+                traffic_lights::place(&main);
+            }
             void(&handle);
             Ok(())
         })
