@@ -1225,14 +1225,31 @@ async function main() {
       // 设置分区:保存 auto / 时间戳关闭,重开仍在;随后恢复
       await openAiSettings();
       await evalJs(`document.querySelector('#settings-tab-log').click(); return 1`);
-      const snap = asObj(await evalJs(`return JSON.stringify({
-        auto: document.querySelector('#setlog-auto').checked,
-        timestamps: document.querySelector('#setlog-timestamps').checked,
-        screen: document.querySelector('#setlog-screen').checked,
-        format: document.querySelector('input[name="setlog-format"]:checked')?.value,
-        dirHint: document.querySelector('#setlog-dir-hint').textContent })`));
-      check('T87h 设置分区:默认值与默认目录提示正确',
-        snap.auto === false && snap.timestamps === true && snap.screen === true && snap.format === 'text' && snap.dirHint.includes('NebulaShell-logs'),
+      const snap = asObj(await evalJs(`return JSON.stringify((() => {
+        const rect = (el) => { const b = el.getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
+        return {
+          auto: document.querySelector('#setlog-auto').checked,
+          timestamps: document.querySelector('#setlog-timestamps').checked,
+          screen: document.querySelector('#setlog-screen').checked,
+          format: document.querySelector('input[name="setlog-format"]:checked')?.value,
+          dirHint: document.querySelector('#setlog-dir-hint').textContent,
+          dirPlaceholder: document.querySelector('#setlog-dir').placeholder,
+          dirInput: rect(document.querySelector('#setlog-dir')),
+          dirPick: rect(document.querySelector('#setlog-pick')),
+          dirOpen: rect(document.querySelector('#setlog-open')),
+        };
+      })())`));
+      // 布局规范:目录输入框与「选择…」「打开」同一行(垂直中心对齐,与密钥行同款:
+      // 高输入框 + 矮按钮居中),按钮在输入框右侧且不拉伸成整行
+      const center = (a) => a[1] + a[3] / 2;
+      const sameRow = (a, b) => Math.abs(center(a) - center(b)) <= 2;
+      const inline = sameRow(snap.dirInput, snap.dirPick) && sameRow(snap.dirPick, snap.dirOpen)
+        && snap.dirPick[0] >= snap.dirInput[0] + snap.dirInput[2] - 2
+        && snap.dirOpen[0] >= snap.dirPick[0] + snap.dirPick[2] - 2
+        && snap.dirPick[2] < 140 && snap.dirOpen[2] < 140;
+      check('T87h 设置分区:默认值、默认目录提示正确,目录输入框与按钮同行等高',
+        snap.auto === false && snap.timestamps === true && snap.screen === true && snap.format === 'text'
+          && snap.dirHint.includes('NebulaShell-logs') && snap.dirPlaceholder.includes('留空') && inline,
         JSON.stringify(snap));
       await evalJs(`document.querySelector('#setlog-auto').checked = true;
         document.querySelector('#setlog-timestamps').checked = false;
