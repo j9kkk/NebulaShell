@@ -213,6 +213,7 @@ test('防回归:UI 文案禁止写死 ⌘(core 符号表与 keymap 注释除外)
     'src/modules/file-transfer.js', 'src/modules/interaction.js',
     'src/modules/palette.js', 'src/modules/native-menu.js', 'src/shared/palette-match.js',
     'src/modules/right-panel.js', 'src/modules/window-controls.js', 'src/shared/menu-spec.js',
+    'src/modules/theme.js',
   ];
   for (const f of files) {
     const src = (await readFile(new URL(`../${f}`, import.meta.url), 'utf8'))

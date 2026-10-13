@@ -18,49 +18,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { THEMES, TERM_THEMES, termTheme, applyTheme, v } from './theme.js';
 
-export const v = (n, f) => (getComputedStyle(document.documentElement).getPropertyValue(n) || '').trim() || f;
-
-export const TERM_THEMES = {
-  nebula: () => ({
-    background: v('--bg', '#0d1117'),
-    foreground: v('--text', '#e6edf3'),
-    cursor: '#5b8cff',
-    cursorAccent: '#0d1117',
-    selectionBackground: 'rgba(91,140,255,0.35)',
-    black: '#0d1117', brightBlack: '#57606f',
-    green: '#3ddc97', brightGreen: '#69f0ae',
-    blue: '#5b8cff', brightBlue: '#79a2ff',
-    red: '#ff6b6b', brightRed: '#ff8a8a',
-    yellow: '#ffc24b', brightYellow: '#ffd37a',
-    cyan: '#4dd0e1', magenta: '#c792ea', white: '#e6edf3',
-  }),
-  light: () => ({
-    background: '#f6f8fa', foreground: '#1f2328', cursor: '#0969da', cursorAccent: '#f6f8fa',
-    selectionBackground: 'rgba(9,105,218,0.25)',
-    black: '#1f2328', brightBlack: '#6e7781',
-    green: '#116329', brightGreen: '#1a7f37',
-    blue: '#0969da', brightBlue: '#218bff',
-    red: '#cf222e', brightRed: '#a40e26',
-    yellow: '#9a6700', brightYellow: '#bf8700',
-    cyan: '#1b7c83', magenta: '#8250df', white: '#f6f8fa',
-  }),
-  forest: () => ({
-    background: '#0b1f16', foreground: '#d7e8dc', cursor: '#34d399', cursorAccent: '#0b1f16',
-    selectionBackground: 'rgba(52,211,153,0.3)',
-    black: '#0b1f16', brightBlack: '#5a7a68',
-    green: '#34d399', brightGreen: '#6ee7b7',
-    blue: '#60a5fa', brightBlue: '#93c5fd',
-    red: '#f87171', brightRed: '#fca5a5',
-    yellow: '#fbbf24', brightYellow: '#fcd34d',
-    cyan: '#22d3ee', magenta: '#c084fc', white: '#d7e8dc',
-  }),
-};
-
-export function termTheme() {
-  const key = (state.settings && state.settings.terminal && state.settings.terminal.theme) || 'nebula';
-  return (TERM_THEMES[key] || TERM_THEMES.nebula)();
-}
+export { THEMES, TERM_THEMES, termTheme, applyTheme, v };
 
 // —— 标签页(E1):每个标签持有独立的布局树与窗格集合 ——
 export function newTabId() { return 'tab-' + (++state.tabSeq); }

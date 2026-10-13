@@ -5,12 +5,19 @@ import { $, accel, api, closeModal, state, toast } from './core.js';
 import { closeAiSettings, openAiSettings } from './ai.js';
 import { openLogFolder } from './terminal.js';
 import { DEFAULT_KEYMAP, invalidateKeymapCache, specsOf } from './keymap.js';
-import { fitAllVisible, scheduleResizeSync, termTheme, visibleSessions } from './terminal.js';
+import { applyTheme, fitAllVisible, scheduleResizeSync, visibleSessions } from './terminal.js';
 
 export const SETTINGS_SECTIONS = ['terminal', 'ai', 'log', 'keys'];
 
 export const settingsOpen = () => !$('#modal-settings').classList.contains('hidden');
 export const settingsSection = () => document.querySelector('#modal-settings .settings-tab[aria-selected="true"]')?.dataset.section || '';
+
+export function revertUnsavedTheme() {
+  const saved = (state.settings && state.settings.terminal && state.settings.terminal.theme) || 'nebula';
+  applyTheme(saved);
+  const el = $('#term-theme');
+  if (el) el.value = saved;
+}
 
 function fillTermSettings() {
   const t = (state.settings && state.settings.terminal) || { fontSize: 13, theme: 'nebula', scrollback: 2000 };
@@ -87,9 +94,18 @@ export function bindSettings() {
       showSection(tabs[(next + tabs.length) % tabs.length].dataset.section, { focus: true });
     });
   }
-  $('#btn-term-cancel').addEventListener('click', closeAiSettings);
+  $('#term-theme').addEventListener('change', () => {
+    applyTheme($('#term-theme').value);
+  });
+  $('#btn-term-cancel').addEventListener('click', () => {
+    revertUnsavedTheme();
+    closeAiSettings();
+  });
   $('#btn-term-save').addEventListener('click', saveTermSettings);
-  $('#btn-log-cancel').addEventListener('click', closeAiSettings);
+  $('#btn-log-cancel').addEventListener('click', () => {
+    revertUnsavedTheme();
+    closeAiSettings();
+  });
   $('#btn-log-save').addEventListener('click', saveLogSettings);
   $('#setlog-pick').addEventListener('click', async () => {
     try {
@@ -98,7 +114,10 @@ export function bindSettings() {
     } catch { /* 取消选择不提示 */ }
   });
   $('#setlog-open').addEventListener('click', openLogFolder);
-  $('#btn-keys-close').addEventListener('click', () => closeModal('#modal-settings'));
+  $('#btn-keys-close').addEventListener('click', () => {
+    revertUnsavedTheme();
+    closeModal('#modal-settings');
+  });
 }
 
 export async function saveTermSettings() {
@@ -114,15 +133,14 @@ export async function saveTermSettings() {
   // 自定义键位可能随 settings 更新:清缓存让下一次匹配/提示重新解析。
   invalidateKeymapCache();
   closeAiSettings(); // 关窗口,同时丢弃 AI 分区未保存的草稿
-  // 全部即时应用:主题/字号直接改 options;回滚行数改 options 后 xterm 内部会
-  // 触发一次 resize 并按新上限裁剪缓冲区(旧行随之释放),无需重建终端。
-  const theme = termTheme();
+  // 全部即时应用:applyTheme 同步顶层 HTML data-theme 与所有终端实例配色;
+  // 回滚行数改 options 后 xterm 内部会触发一次 resize 并按新上限裁剪缓冲区(旧行随之释放),无需重建终端。
   const ts = (state.settings && state.settings.terminal) || {};
+  applyTheme(ts.theme || 'nebula');
   const fontSize = Number(ts.fontSize) || 13;
   const scrollback = Number(ts.scrollback) || 2000;
   for (const s of state.sessions.values()) {
     try {
-      s.term.options.theme = theme;
       s.term.options.fontSize = fontSize;
       s.term.options.scrollback = scrollback;
     } catch { /* ignore */ }

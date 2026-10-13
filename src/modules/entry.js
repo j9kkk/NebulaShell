@@ -2,7 +2,7 @@
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
@@ -12,7 +12,7 @@ import {
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
 } from './sftp.js';
 import { bindTransferUi, confirmTransferInterrupt, lastDownloadLocation, revealLastDownload } from './file-transfer.js';
-import { bindSettings, openSettings, settingsOpen, settingsSection } from './settings.js';
+import { bindSettings, openSettings, revertUnsavedTheme, settingsOpen, settingsSection } from './settings.js';
 import { bindRightPanel, rightPanelOpen, rightPanelTab, rightTabShown, setRightPanel, toggleRightPanel, toggleRightTab } from './right-panel.js';
 import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, saveForwardRule } from './tools.js';
 import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
@@ -566,9 +566,15 @@ export function bindEvents() {
   bindRightPanel();
   bindHistoryPage();
   bindSettings();
-  $('#btn-ai-cancel').addEventListener('click', closeAiSettings);
-  // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都丢弃 AI 分区的草稿
-  setModalDismissHandler('#modal-settings', closeAiSettings);
+  $('#btn-ai-cancel').addEventListener('click', () => {
+    revertUnsavedTheme();
+    closeAiSettings();
+  });
+  // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都丢弃 AI 分区的草稿并同步已保存主题
+  setModalDismissHandler('#modal-settings', () => {
+    revertUnsavedTheme();
+    closeAiSettings();
+  });
   setModalDismissHandler('#modal-model-picker', closeModelPicker);
   $('#ai-baseurl').addEventListener('input', onAiEndpointChange);
   $('#ai-protocol').addEventListener('change', onAiEndpointChange);
@@ -935,6 +941,7 @@ export async function boot() {
   // 全局 keydown 的 preventDefault 挡住)
   buildNativeMenu();
   state.settings = await api('settings:get');
+  applyTheme(state.settings?.terminal?.theme || 'nebula');
   await refreshHosts();
   await refreshAiModels();
   renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨');

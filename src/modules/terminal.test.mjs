@@ -10,10 +10,12 @@ import { parseFpError, stripFpMark } from './core.js';
 import * as cmdline from '../shared/cmdline.js';
 import * as termText from '../shared/term-text.js';
 import * as fmt from '../shared/format.js';
+import * as theme from './theme.js';
 import xtermPkg from '@xterm/xterm';
 
 const moduleSource = (await readFile(new URL('./terminal.js', import.meta.url), 'utf8'))
-  .replace(/^import .*;\n/gm, '');
+  .replace(/^import .*;\n/gm, '')
+  .replace(/^export \{[^}]+\};\n/gm, '');
 const source = moduleSource.replace(/\bexport /g, '');
 
 function harness({ renderStatusbar = false, terminal = null, clock = null, stubLog = true } = {}) {
@@ -63,7 +65,10 @@ function harness({ renderStatusbar = false, terminal = null, clock = null, stubL
   }
   class Addon { fit() {} onContextLoss() {} }
   const context = vm.createContext({
-    ...layout, ...cmdline, feedLine: cmdline.feed, ...termText, ...fmt, state, crypto: webcrypto, console, Terminal: terminal || Terminal,
+    ...layout, ...cmdline, feedLine: cmdline.feed, ...termText, ...fmt, ...theme,
+    termTheme: (k) => theme.termTheme(k, state),
+    applyTheme: (k) => theme.applyTheme(k, state),
+    state, crypto: webcrypto, console, Terminal: terminal || Terminal,
     ...(clock ? { Date: class extends Date { static now() { return clock.now; } } } : {}),
     FitAddon: Addon, SearchAddon: Addon, WebLinksAddon: Addon, WebglAddon: Addon,
     window: {}, getComputedStyle: () => ({ getPropertyValue: () => '' }),
