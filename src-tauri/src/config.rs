@@ -114,8 +114,21 @@ fn machine_key_material() -> Vec<u8> {
     if let Ok(h) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
         material.extend_from_slice(h.as_bytes());
     }
-    if let Ok(out) = std::process::Command::new("hostname").output() {
-        material.extend_from_slice(&out.stdout);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut cmd = std::process::Command::new("hostname");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(out) = cmd.output() {
+            material.extend_from_slice(&out.stdout);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(out) = std::process::Command::new("hostname").output() {
+            material.extend_from_slice(&out.stdout);
+        }
     }
     // 用户名
     if let Ok(u) = std::env::var("USER").or_else(|_| std::env::var("USERNAME")) {
@@ -129,14 +142,17 @@ fn machine_key_material() -> Vec<u8> {
 }
 
 fn derive_key() -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(machine_key_material());
-    hasher.update(b"credential-store-key");
-    let d = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&d[..32]);
-    key
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    *KEY.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(machine_key_material());
+        hasher.update(b"credential-store-key");
+        let d = hasher.finalize();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&d[..32]);
+        key
+    })
 }
 
 fn aes_encrypt(plain: &str) -> Result<String, String> {

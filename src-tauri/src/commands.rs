@@ -453,8 +453,11 @@ pub async fn nebula_invoke(
             }
             #[cfg(target_os = "windows")]
             {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
                 let _ = std::process::Command::new("cmd")
                     .args(["/C", "start", "", url])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .spawn();
             }
             #[cfg(target_os = "linux")]
