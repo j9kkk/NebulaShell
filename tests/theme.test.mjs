@@ -84,6 +84,8 @@ test('style.css 包含完整的三套主题定义与核心语义变量', async (
     '--active-bg:', '--btn-primary-bg:', '--btn-primary-text:',
     '--ai-user-bubble:', '--ai-user-text:', '--modal-backdrop:',
     '--card-shadow:', '--menu-shadow:', '--scrollbar-thumb-hover:',
+    '--tab-active-bg:', '--tab-active-border:', '--tab-active-indicator:',
+    '--tab-active-shadow:', '--tab-inactive-bg:',
   ];
 
   for (const token of requiredTokens) {

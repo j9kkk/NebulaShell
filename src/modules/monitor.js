@@ -1,5 +1,6 @@
 // 资源监控:指标采集与监控条
 import { $, api, askPrompt, state, toast } from './core.js';
+import { popupPosition } from './interaction.js';
 import { feedTrusted } from './terminal.js';
 import { icon } from '../shared/icons.js';
 
@@ -210,11 +211,138 @@ export function spark(values) {
   return values.slice(-16).map((v) => blocks[Math.min(7, Math.max(0, Math.round((v / 100) * 7)))]).join('');
 }
 
+const RING_CIRC = 47.12; // 2 * Math.PI * 7.5
+
+function setRing(id, pct) {
+  const ring = $(id);
+  if (!ring) return;
+  const fg = ring.querySelector?.('.mon-ring-fg');
+  if (pct == null) {
+    if (fg) fg.style.strokeDashoffset = String(RING_CIRC);
+    ring.classList?.remove('ring-warn', 'ring-danger');
+    return;
+  }
+  const clamped = Math.min(100, Math.max(0, pct));
+  if (fg) fg.style.strokeDashoffset = (RING_CIRC * (1 - clamped / 100)).toFixed(2);
+  ring.classList?.toggle('ring-warn', clamped >= 70 && clamped < 85);
+  ring.classList?.toggle('ring-danger', clamped >= 85);
+}
+
+function renderCpuPopoverChart(hist, curPct) {
+  const pop = $('#mon-cpu-popover');
+  if (!pop) return;
+  const curEl = $('#mon-pop-cur');
+  const statCur = $('#mon-pop-stat-cur');
+  const statMax = $('#mon-pop-stat-max');
+  const statAvg = $('#mon-pop-stat-avg');
+  const areaEl = $('#mon-pop-area');
+  const lineEl = $('#mon-pop-line');
+  const ptEl = $('#mon-pop-point');
+
+  const vals = (hist || []).slice(-16);
+  const curTxt = curPct == null ? '–' : fmtPct(curPct);
+  if (curEl) curEl.textContent = curTxt;
+  if (statCur) statCur.textContent = curTxt;
+
+  if (!vals.length || curPct == null) {
+    if (statMax) statMax.textContent = '–';
+    if (statAvg) statAvg.textContent = '–';
+    if (areaEl) areaEl.setAttribute('d', '');
+    if (lineEl) lineEl.setAttribute('d', '');
+    return;
+  }
+
+  const maxV = Math.max(...vals);
+  const avgV = vals.reduce((a, b) => a + b, 0) / vals.length;
+  if (statMax) statMax.textContent = fmtPct(maxV);
+  if (statAvg) statAvg.textContent = fmtPct(avgV);
+
+  const pts = vals.length === 1 ? [vals[0], vals[0]] : vals;
+  const W = 236;
+  const H = 60;
+  const padY = 6;
+  const plotH = H - padY * 2;
+  const coords = pts.map((v, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const clamped = Math.min(100, Math.max(0, v));
+    const y = H - padY - (clamped / 100) * plotH;
+    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+  });
+
+  let dLine = `M ${coords[0][0]} ${coords[0][1]}`;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [x0, y0] = coords[i];
+    const [x1, y1] = coords[i + 1];
+    const cx = Number(((x0 + x1) / 2).toFixed(1));
+    dLine += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
+  }
+  const dArea = `${dLine} L ${W} ${H} L 0 ${H} Z`;
+  if (lineEl) lineEl.setAttribute('d', dLine);
+  if (areaEl) areaEl.setAttribute('d', dArea);
+  if (ptEl) {
+    const last = coords[coords.length - 1];
+    ptEl.setAttribute('cx', String(last[0]));
+    ptEl.setAttribute('cy', String(last[1]));
+  }
+}
+
+let cpuPopoverBound = false;
+let cpuPopoverHideTimer = null;
+
+function positionCpuPopover() {
+  const pop = $('#mon-cpu-popover');
+  const trigger = $('#mon-cpu-trigger');
+  if (!pop || !trigger || pop.classList.contains('hidden')) return;
+  const anchor = trigger.getBoundingClientRect?.();
+  if (!anchor) return;
+  const size = { width: pop.offsetWidth || 270, height: pop.offsetHeight || 156 };
+  const pos = popupPosition(anchor, size, { width: window.innerWidth || 1280, height: window.innerHeight || 800 }, 8);
+  pop.style.left = `${pos.left}px`;
+  pop.style.top = `${pos.top}px`;
+}
+
+function bindCpuPopoverOnce() {
+  if (cpuPopoverBound) return;
+  const trigger = $('#mon-cpu-trigger');
+  const pop = $('#mon-cpu-popover');
+  if (!trigger || !pop || !trigger.addEventListener) return;
+  cpuPopoverBound = true;
+  if (typeof document !== 'undefined' && document.body && pop.parentElement && pop.parentElement !== document.body) {
+    document.body.appendChild(pop);
+  }
+  const show = () => {
+    if (cpuPopoverHideTimer) { clearTimeout(cpuPopoverHideTimer); cpuPopoverHideTimer = null; }
+    const bar = $('#monitor-bar');
+    if (!bar || bar.classList.contains('hidden') || bar.classList.contains('mon-unsupported')) return;
+    pop.classList.remove('hidden');
+    positionCpuPopover();
+  };
+  const scheduleHide = () => {
+    if (cpuPopoverHideTimer) clearTimeout(cpuPopoverHideTimer);
+    cpuPopoverHideTimer = setTimeout(() => {
+      pop.classList.add('hidden');
+    }, 120);
+  };
+  trigger.addEventListener('mouseenter', show);
+  trigger.addEventListener('mouseleave', scheduleHide);
+  pop.addEventListener('mouseenter', () => {
+    if (cpuPopoverHideTimer) { clearTimeout(cpuPopoverHideTimer); cpuPopoverHideTimer = null; }
+  });
+  pop.addEventListener('mouseleave', scheduleHide);
+  window.addEventListener?.('resize', positionCpuPopover);
+}
+
 export function renderMonitorBar() {
+  bindCpuPopoverOnce();
   const bar = $('#monitor-bar');
+  const pop = $('#mon-cpu-popover');
   // 监控固定显示在状态栏,不再有开关(旧 #btn-monitor 已移除)。
   // 无活动会话时隐藏:此时状态栏显示"就绪 — 尚未建立连接",监控块没有意义。
-  if (!state.activeId) { bar.classList.add('hidden'); return; }
+  if (!state.activeId) {
+    bar.classList.add('hidden');
+    if (pop) pop.classList.add('hidden');
+    return;
+  }
   bar.classList.remove('hidden');
   const m = state.metrics.get(state.activeId);
   const set = (id, txt) => { $(id).textContent = txt; };
@@ -230,7 +358,6 @@ export function renderMonitorBar() {
     el.classList.toggle('lat-mid', ms != null && ms >= 150 && ms < 400);
     el.classList.toggle('lat-bad', ms != null && ms >= 400);
   };
-  const w = (id, pct) => { $(id).style.width = (pct == null ? 0 : Math.min(100, pct)) + '%'; };
   let hist = state.metricHistory.get(state.activeId) || [];
   if (!m) {
     bar.classList.remove('mon-unsupported');
@@ -238,19 +365,22 @@ export function renderMonitorBar() {
     setV('#mon-mem-det', ''); setV('#mon-disk-det', '');
     setLat(null);
     set('#mon-note', ''); set('#mon-spark-cpu', '');
-    w('#mon-cpu-bar', 0); w('#mon-mem-bar', 0);
+    setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
+    renderCpuPopoverChart([], null);
     return;
   }
   if (m.supported === false) {
     // 整条切到"不支持"布局:数值槽位隐藏,避免终态文案把长条撑成两行。
     // 延迟例外:echo 往返不依赖 /proc,非 Linux 主机照样有实时延迟可看。
     bar.classList.add('mon-unsupported');
+    if (pop) pop.classList.add('hidden');
     set('#mon-cpu', '–'); set('#mon-mem', '–'); set('#mon-disk', '–'); set('#mon-rx', '–'); set('#mon-tx', '–');
     setV('#mon-mem-det', ''); setV('#mon-disk-det', '');
     setLat(m.latencyMs);
     set('#mon-note', '该主机暂不支持资源监控(仅支持 Linux)');
     set('#mon-spark-cpu', '');
-    w('#mon-cpu-bar', 0); w('#mon-mem-bar', 0);
+    setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
+    renderCpuPopoverChart([], null);
     return;
   }
   bar.classList.remove('mon-unsupported');
@@ -268,8 +398,10 @@ export function renderMonitorBar() {
   setLat(m.latencyMs);
   set('#mon-note', '');
   set('#mon-spark-cpu', spark(hist));
-  w('#mon-cpu-bar', m.cpuPct);
-  w('#mon-mem-bar', m.memPct);
+  setRing('#mon-cpu-bar', m.cpuPct);
+  setRing('#mon-mem-bar', m.memPct);
+  setRing('#mon-disk-bar', m.diskPct);
+  renderCpuPopoverChart(hist, m.cpuPct);
 }
 
 /* ---------------- AI 设置弹窗 ---------------- */

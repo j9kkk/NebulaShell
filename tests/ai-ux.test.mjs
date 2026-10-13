@@ -723,3 +723,125 @@ test('setAiMeta renders converted token units', async () => {
   ai.setAiMeta(bubble, { model: 'gpt-6-luna', usage: { promptTokens: 12500, completionTokens: 865 }, elapsedMs: 14600 });
   assert.equal(bubble.parts['.ai-meta-text'].textContent, '12:00 · gpt-6-luna · tokens 13K入/865出 · 14.6s');
 });
+
+test('multi-thread lifecycle: create, derive title, switch, clear and delete', async () => {
+  const { ai, state, $ } = await setup();
+  const t1 = ai.ensureDefaultAiThread();
+  assert.ok(t1.id);
+  assert.equal(state.activeThreadId, t1.id);
+  assert.equal(ai.deriveThreadTitle('   # 排查 Nginx 502 Bad Gateway 报错原因以及解决方案\n详情'), '排查 Nginx 502 Bad G…');
+
+  t1.history.push({ role: 'user', content: 'first question' });
+  t1.title = '排查 Nginx';
+  ai.renderAiThreadBar();
+  assert.equal($('#ai-thread-title').textContent, '排查 Nginx');
+
+  const t2 = ai.createAiThread({ title: 'MySQL 慢查询', hostId: 'h2', hostName: 'db-prod' });
+  assert.equal(state.activeThreadId, t2.id);
+  assert.equal($('#ai-thread-title').textContent, '[db-prod] MySQL 慢查询');
+  assert.equal(t2.history.length, 0);
+
+  ai.switchAiThread(t1.id);
+  assert.equal(state.activeThreadId, t1.id);
+  assert.equal(t1.containerEl.classList.contains('active'), true);
+  assert.equal(t2.containerEl.classList.contains('active'), false);
+
+  ai.clearCurrentAiThread();
+  assert.equal(t1.history.length, 0);
+  assert.equal(t1.title, '新对话');
+
+  ai.deleteAiThread(t1.id);
+  assert.equal(state.aiThreads.has(t1.id), false);
+  assert.equal(state.activeThreadId, t2.id);
+});
+
+test('smart host auto-routing via ensureThreadForSession isolates hosts without cross-talk', async () => {
+  const { ai, state } = await setup();
+  const sessA = { sessionId: 's-a', host: { id: 'host-a', name: 'web-01' } };
+  const sessB = { sessionId: 's-b', host: { id: 'host-b', name: 'db-01' } };
+
+  // 初始空会话直接绑定到主机 A
+  const thA = ai.ensureThreadForSession(sessA);
+  assert.equal(thA.hostId, 'host-a');
+  assert.equal(thA.hostName, 'web-01');
+  thA.history.push({ role: 'user', content: 'check nginx' });
+
+  // 主机 A 再次触发继续复用同一会话
+  assert.equal(ai.ensureThreadForSession(sessA).id, thA.id);
+
+  // 主机 B 触发时自动新建独立会话,不污染主机 A 的上下文
+  const thB = ai.ensureThreadForSession(sessB);
+  assert.notEqual(thB.id, thA.id);
+  assert.equal(thB.hostId, 'host-b');
+  assert.equal(thB.history.length, 0);
+  assert.equal(thA.history.length, 1);
+
+  // 切回主机 A 触发时自动找回主机 A 的会话
+  const thA2 = ai.ensureThreadForSession(sessA);
+  assert.equal(thA2.id, thA.id);
+  assert.equal(state.activeThreadId, thA.id);
+});
+
+test('background streaming multiplexing updates background thread without polluting active thread', async () => {
+  const { ai, state } = await setup();
+  const th1 = ai.ensureDefaultAiThread();
+  const b1 = makeBubble();
+  const p1 = ai.aiRequest([{ role: 'user', content: 'q1' }], b1);
+  const req1 = th1.req;
+  assert.ok(req1);
+
+  // 流式进行中切换到新会话 th2
+  const th2 = ai.createAiThread({ title: '新话题' });
+  assert.equal(state.activeThreadId, th2.id);
+  assert.equal(th2.req, null);
+
+  // 后台收到 req1 的流式内容与完成事件
+  const resolved = ai.findRequestHolder(req1.id);
+  assert.equal(resolved.holder, req1);
+  assert.equal(resolved.thread, th1);
+  req1.acc = '后台生成的完整回复';
+  ai.setAiBody(b1, req1.acc);
+  ai.aiFinishHolder({ requestId: req1.id, finishReason: 'stop' });
+  await p1;
+
+  assert.equal(th1.req, null);
+  assert.equal(th1.history.length, 1);
+  assert.equal(th1.history[0].content, '后台生成的完整回复');
+  assert.equal(th2.history.length, 0);
+});
+
+test('cross-host command execution guard warns when active terminal switched to another host', async () => {
+  let allowConfirm = false;
+  const { ai, state, submissions, confirmations } = await setup(null, { confirm: async () => allowConfirm });
+  const s1 = connectedTarget(state, 's1');
+  s1.host = { id: 'host-alpha', name: 'Prod-Alpha' };
+  ai.ensureThreadForSession(s1);
+
+  const rendered = ai.renderAiMessage('assistant', '```bash\nuptime\n```');
+  assert.equal(rendered.__originHostId, 'host-alpha');
+  assert.equal(rendered.__originHostName, 'Prod-Alpha');
+
+  const bubble = makeBubble();
+  bubble.__originHostId = rendered.__originHostId;
+  bubble.__originHostName = rendered.__originHostName;
+  ai.setAiBody(bubble, '```bash\nuptime\n```');
+
+  // 终端切到了另一台主机 Beta
+  const s2 = connectedTarget(state, 's2');
+  s2.host = { id: 'host-beta', name: 'Staging-Beta' };
+
+  // 取消跨主机确认 -> 不执行
+  await ai.handleAiCodeAction(bubble, 0, 'execute');
+  assert.equal(confirmations.length, 1);
+  assert.match(confirmations[0].message, /Prod-Alpha/);
+  assert.match(confirmations[0].message, /Staging-Beta/);
+  assert.equal(submissions.length, 0);
+
+  // 确认跨主机执行 -> 正常发送
+  allowConfirm = true;
+  await ai.handleAiCodeAction(bubble, 0, 'execute');
+  assert.equal(confirmations.length, 2);
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].text, 'uptime');
+});
+

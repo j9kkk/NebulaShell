@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, clearCurrentAiThread, closeAiSettings, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, createAiThread, deleteAiThread, ensureDefaultAiThread, ensureThreadForSession, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, togglePickerFocus, toggleThreadMenu } from './ai.js';
 import { addSnippet, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -647,6 +647,40 @@ export function bindEvents() {
 
   // 「解释选中内容」按钮已移除:入口迁移为终端选区末尾的悬浮 🔍 按钮
   // (terminal.js bindSelectionExplain)。
+  // AI 会话管理工具栏与下拉菜单
+  $('#ai-thread-trigger').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleThreadMenu();
+  });
+  $('#ai-thread-new').addEventListener('click', () => {
+    closeThreadMenu();
+    createAiThread({ title: '新对话' });
+    $('#ai-input').focus();
+  });
+  $('#ai-thread-clear').addEventListener('click', () => {
+    closeThreadMenu();
+    clearCurrentAiThread();
+    $('#ai-input').focus();
+  });
+  $('#ai-thread-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const delBtn = e.target.closest('.ai-thread-del');
+    if (delBtn) {
+      deleteAiThread(delBtn.dataset.delThread);
+      return;
+    }
+    const row = e.target.closest('.ai-thread-menu-row');
+    if (row && row.dataset.threadId) {
+      switchAiThread(row.dataset.threadId);
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#ai-thread-menu, #ai-thread-trigger')) closeThreadMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeThreadMenu();
+  });
+
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
   $('#ai-send').addEventListener('click', () => (state.aiReq ? stopAiGeneration() : aiSend()));
   $('#ai-input').addEventListener('keydown', (e) => {
@@ -691,6 +725,14 @@ export function bindEvents() {
     // 命令面板是键盘总入口:焦点在终端、输入框里,或下拉 / 右键菜单打开时都能打开
     if (action === 'palette.open') { executeCommand(action); return; }
     if (!$('#ctx-menu').classList.contains('hidden')) return;
+    // 在 AI 面板内(含输入框/消息区)按 Mod+N 快捷新建会话
+    if ((PLATFORM === 'darwin' ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N') && $('#ai-panel').contains(document.activeElement)) {
+      e.preventDefault();
+      closeThreadMenu();
+      createAiThread();
+      $('#ai-input').focus();
+      return;
+    }
     const terminalInput = !!e.target.closest?.('.term-pane');
     if (isEditableTarget(e.target) && !terminalInput) return;
     if (action === 'tab.switch') {
@@ -793,8 +835,9 @@ export function bindEvents() {
     aiTouchRequest(requestId);
   });
   window.nebula.on('ai:thinking', ({ requestId, text }) => {
-    const h = state.aiReq;
-    if (!h || h.id !== requestId) return;
+    const match = findRequestHolder(requestId);
+    if (!match) return;
+    const h = match.holder;
     aiTouchRequest(requestId);
     h.thinking = (h.thinking || '') + text;
     if (!h.bubble) return;
@@ -802,8 +845,9 @@ export function bindEvents() {
     aiShowThinking(h.bubble, h.thinking);
   });
   window.nebula.on('ai:delta', ({ requestId, text }) => {
-    const h = state.aiReq;
-    if (!h || h.id !== requestId) return;
+    const match = findRequestHolder(requestId);
+    if (!match) return;
+    const { holder: h, thread } = match;
     aiTouchRequest(requestId);
     h.acc += text;
     if (!h.bubble) return;
@@ -818,22 +862,24 @@ export function bindEvents() {
     if (!h.raf) {
       h.raf = requestAnimationFrame(() => {
         h.raf = 0;
-        const cur = state.aiReq;
-        if (!cur || cur !== h || !h.bubble) return;
+        if (h.cancelled || !h.bubble) return;
         // 必须经 setAiBody 写进 .ai-body:直接改 textContent 会把
         // 复制按钮和内容容器一起抹掉,气泡从此渲染成空壳。
         setAiBody(h.bubble, h.bubble.dataset.text || h.acc);
-        aiStickScroll(); // 贴底才跟随;用户上滚阅读时不打扰
+        if (state.activeThreadId === thread?.id || (!thread && !state.activeThreadId)) {
+          aiStickScroll(); // 贴底才跟随;用户上滚阅读时不打扰
+        }
       });
     }
   });
   window.nebula.on('ai:done', (done) => {
-    const h = state.aiReq;
-    if (h && h.id === done.requestId) aiFinishHolder(done);
+    const match = findRequestHolder(done.requestId);
+    if (match) aiFinishHolder(done);
   });
   window.nebula.on('ai:error', ({ requestId, message }) => {
-    const h = state.aiReq;
-    if (h && h.id === requestId) {
+    const match = findRequestHolder(requestId);
+    if (match) {
+      const h = match.holder;
       // 先撤等待态再写错误文案:clearBubbleState 会清掉"正在思考…"占位,
       // 反过来的话首 token 前报错会把刚写好的错误提示一起抹掉。
       if (h.bubble) {
@@ -841,7 +887,7 @@ export function bindEvents() {
         setAiBody(h.bubble, (h.acc ? h.acc + '\n' : '') + '⚠️ ' + message);
       }
       h.failed = message;
-      aiFinishHolder();
+      aiFinishHolder({ requestId });
     }
   });
 }
@@ -916,7 +962,13 @@ export async function boot() {
   applyAccelTitles._accelSpec = accelSpec;
   // 解 terminal→ai 循环依赖:选中「解释」按钮点击时经此回调 aiSend;
   // 回复在 AI 页签里,先把它切出来
-  bindSelectionExplain._aiSend = (...args) => { setRightPanel(true, 'ai'); return aiSend(...args); };
+  bindSelectionExplain._aiSend = (text, mode, opts) => {
+    setRightPanel(true, 'ai');
+    if (opts?.session) {
+      ensureThreadForSession(opts.session);
+    }
+    return aiSend(text, mode, opts);
+  };
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
   applyAccelTitles();
   // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
@@ -944,6 +996,7 @@ export async function boot() {
   applyTheme(state.settings?.terminal?.theme || 'nebula');
   await refreshHosts();
   await refreshAiModels();
+  ensureDefaultAiThread();
   renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨');
 }
 
@@ -1055,7 +1108,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-menu-list .ai-model-menu-item')].map((b) => b.dataset.model),
     modelSwitchValue: () => savedAiModelId(),
     // 对话气泡的状态类与文本:等待态/流式态渲染的观测点
-    aiBubbles: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
+    aiBubbles: () => [...((document.querySelector('#ai-messages .ai-thread-view.active') || document.querySelector('#ai-messages') || document).querySelectorAll('.ai-msg'))].map((b) => ({
       role: b.className.replace(/ai-msg\s*/, '').trim(),
       text: b.textContent,
       pending: b.classList.contains('pending'),
@@ -1083,7 +1136,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     // 生成命令是否已移除(按钮 + 快捷按钮行内都不该再有)
     genButtonGone: () => !$('#btn-ai-gen') && !String(document.querySelector('#ai-messages')?.textContent || '').includes('生成命令'),
     // 助手消息的渲染形态:Markdown 结构 / 复制按钮 / 诊断素材
-    aiMsgDetail: () => [...document.querySelectorAll('#ai-messages .ai-msg')].map((b) => ({
+    aiMsgDetail: () => [...((document.querySelector('#ai-messages .ai-thread-view.active') || document.querySelector('#ai-messages') || document).querySelectorAll('.ai-msg'))].map((b) => ({
       role: b.dataset.role,
       text: b.querySelector('.ai-body')?.textContent || '',
       hasCopy: !!b.querySelector('.ai-copy'),
@@ -1091,11 +1144,20 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       mdBlocks: b.querySelectorAll('.ai-body > p, .ai-body > pre, .ai-body > ul, .ai-body > ol, .ai-body > h3').length,
     })),
     aiCopyClick: (idx) => {
-      const b = document.querySelectorAll('#ai-messages .ai-msg')[idx];
+      const c = document.querySelector('#ai-messages .ai-thread-view.active') || document.querySelector('#ai-messages') || document;
+      const b = c.querySelectorAll('.ai-msg')[idx];
       if (!b) return false;
       b.querySelector('.ai-copy')?.click();
       return true;
     },
+    aiThreads: () => [...(state.aiThreads?.values() || [])].map((t) => ({
+      id: t.id,
+      title: t.title,
+      hostId: t.hostId,
+      hostName: t.hostName,
+      historyLength: t.history?.length || 0,
+      active: t.id === state.activeThreadId,
+    })),
     // 诊断素材:最后一次命令 + 输出采集(直接断言采集层,不经过 AI 请求)
     diagSource: () => {
       const s = state.sessions.get(state.activeId);

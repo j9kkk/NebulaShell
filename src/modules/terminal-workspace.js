@@ -28,11 +28,15 @@ export function workspaceMinSize(node, tabs) {
   return layoutMinSize(node, (leaf) => tabMinimum(tabs.get(leaf.tabId)));
 }
 
-export function ensureWorkspaceTile(tab, { document, activate, close }) {
-  if (tab.workspaceTile) return tab.workspaceTile;
+export function ensureWorkspaceTile(tab, { document, activate, close, reorder, tabs }) {
+  if (tab.workspaceTile) {
+    tab.workspaceTile._workspaceCtx = { tabs, reorder };
+    return tab.workspaceTile;
+  }
   const tile = document.createElement('section');
   tile.className = 'workspace-tile';
   tile.dataset.tab = tab.id;
+  tile._workspaceCtx = { tabs, reorder };
   const header = document.createElement('div');
   header.className = 'workspace-tile-header';
   header.tabIndex = 0;
@@ -51,7 +55,64 @@ export function ensureWorkspaceTile(tab, { document, activate, close }) {
   closeButton.addEventListener('mousedown', (event) => event.stopPropagation());
   closeButton.addEventListener('focusin', (event) => event.stopPropagation());
   closeButton.addEventListener('click', (event) => { event.stopPropagation(); close(tab.id); });
-  header.addEventListener('mousedown', (event) => { if (!event.target.closest?.('.workspace-tile-close')) activate(tab.id, false); });
+  header.addEventListener('mousedown', (event) => {
+    if (event.target.closest?.('.workspace-tile-close')) return;
+    activate(tab.id, false);
+    if ((event.button !== undefined && event.button !== 0) || typeof document.addEventListener !== 'function') return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    if (startX === undefined || startY === undefined) return;
+    let dragging = false;
+    let dropTargetId = null;
+    const clearDropHighlight = () => {
+      for (const el of document.querySelectorAll?.('.workspace-tile.drop-target') || []) {
+        el.classList.remove('drop-target');
+      }
+    };
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragging) {
+        if (Math.hypot(dx, dy) < 5) return;
+        dragging = true;
+        tile.classList.add('dragging');
+        document.body?.classList?.add('tab-dragging');
+      }
+      ev.preventDefault?.();
+      clearDropHighlight();
+      dropTargetId = null;
+      const allTiles = [...(document.querySelectorAll?.('.workspace-tile') || [])].filter((el) => el !== tile);
+      for (const other of allTiles) {
+        const r = other.getBoundingClientRect?.();
+        if (r && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) {
+          other.classList.add('drop-target');
+          dropTargetId = other.dataset?.tab || null;
+          break;
+        }
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener?.('mousemove', onMove);
+      document.removeEventListener?.('mouseup', onUp);
+      if (!dragging) return;
+      tile.classList.remove('dragging');
+      document.body?.classList?.remove('tab-dragging');
+      clearDropHighlight();
+      const ctx = tile._workspaceCtx;
+      if (dropTargetId && dropTargetId !== tab.id && ctx?.reorder && ctx?.tabs) {
+        const ids = [...ctx.tabs.keys()];
+        const fromIdx = ids.indexOf(tab.id);
+        const toIdx = ids.indexOf(dropTargetId);
+        if (fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) {
+          ids.splice(fromIdx, 1);
+          ids.splice(toIdx, 0, tab.id);
+          ctx.reorder(ids);
+        }
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
   header.addEventListener('click', (event) => { if (!event.target.closest?.('.workspace-tile-close')) activate(tab.id); });
   header.addEventListener('focusin', (event) => { if (!event.target.closest?.('.workspace-tile-close')) activate(tab.id, false); });
   header.addEventListener('keydown', (event) => {
@@ -70,7 +131,7 @@ export function ensureWorkspaceTile(tab, { document, activate, close }) {
 export function renderWorkspaceTree(node, tabs, options) {
   return renderSplitTree(node, {
     document: options.document,
-    leaf: (leaf) => ensureWorkspaceTile(tabs.get(leaf.tabId), options),
+    leaf: (leaf) => ensureWorkspaceTile(tabs.get(leaf.tabId), { ...options, tabs }),
     minimum: (leaf) => tabMinimum(tabs.get(leaf.tabId)),
     divider: (divider) => { divider.className = 'workspace-divider'; },
     nodeClass: 'workspace-split-node',

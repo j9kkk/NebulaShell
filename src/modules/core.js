@@ -42,8 +42,10 @@ export const state = {
   cloudAccounts: [],     // 云账号(多 API Key,见 cloud:accounts)
   cloudEditing: null,    // 正在编辑的云账号(null = 新增);见 #cloud-account-form
   cloudResults: [],
-  aiHistory: [],
-  aiReq: null,
+  aiThreads: new Map(),  // threadId -> { id, title, hostId, sessionId, history: [], containerEl, req, createdAt }
+  activeThreadId: null,
+  _aiHistoryFallback: [],
+  _aiReqFallback: null,
   metrics: new Map(), // sessionId -> 最近一次 ssh:metrics
   metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
   // 标签页(E1)与窗格(E3):每个标签页持有独立的布局树与窗格集合,
@@ -68,7 +70,20 @@ export const state = {
 export function activeTab() {
   return state.activeTabId ? state.tabs.get(state.activeTabId) : null;
 }
+
+export function activeAiThread() {
+  return state.activeThreadId ? state.aiThreads.get(state.activeThreadId) : null;
+}
+
 Object.defineProperties(state, {
+  aiHistory: {
+    get: () => { const th = activeAiThread(); return th ? th.history : state._aiHistoryFallback; },
+    set: (v) => { const th = activeAiThread(); if (th) th.history = v; else state._aiHistoryFallback = v; },
+  },
+  aiReq: {
+    get: () => { const th = activeAiThread(); return th ? th.req : state._aiReqFallback; },
+    set: (v) => { const th = activeAiThread(); if (th) th.req = v; else state._aiReqFallback = v; },
+  },
   layout: {
     get: () => { const t = activeTab(); return t ? t.layout : null; },
     set: (v) => { const t = activeTab(); if (t) t.layout = v; },

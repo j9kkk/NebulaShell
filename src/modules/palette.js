@@ -184,7 +184,7 @@ async function activate(row, { newTab = false } = {}) {
   try {
     if (row.type === 'command') { remember(row.id); return await executeCommand(row.id); }
     if (row.type === 'tab') { activateTab(row.id); return true; }
-    if (row.type === 'host') { await connectHost(row.id, null, newTab ? { newTab: true } : {}); return true; }
+    if (row.type === 'host') { await connectHost(row.id, null, newTab ? { newTab: true } : { reuseExisting: true }); return true; }
     if (row.type === 'quick') { await quickConnect(row.target); return true; }
   } catch (error) {
     toast(error.message || '操作失败', 'error');

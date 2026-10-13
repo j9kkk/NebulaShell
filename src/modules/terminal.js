@@ -185,10 +185,39 @@ export function openTabList() {
   showCtxMenu(r.left, r.bottom + 4, tabListItems(), { label: '全部标签', trigger: visible ? button : undefined, returnFocus: back });
 }
 
+export function reorderTabs(orderedIds) {
+  if (!Array.isArray(orderedIds) || state.tabs.size <= 1) return false;
+  const oldOrder = [...state.tabs.keys()];
+  const newTabs = new Map();
+  for (const id of orderedIds) {
+    const tab = state.tabs.get(id);
+    if (tab && !newTabs.has(id)) newTabs.set(id, tab);
+  }
+  for (const [id, tab] of state.tabs) {
+    if (!newTabs.has(id)) newTabs.set(id, tab);
+  }
+  const newOrder = [...newTabs.keys()];
+  const orderChanged = newOrder.length !== oldOrder.length || !newOrder.every((id, i) => id === oldOrder[i]);
+  state.tabs = newTabs;
+  const strip = $('#tabs');
+  if (strip && typeof strip.appendChild === 'function') {
+    const domOrder = [...strip.querySelectorAll('.tab')].map((el) => el.dataset.tab);
+    if (domOrder.length !== newOrder.length || !domOrder.every((id, i) => id === newOrder[i])) {
+      for (const tab of state.tabs.values()) {
+        if (tab.el) strip.appendChild(tab.el);
+      }
+    }
+  }
+  if (!orderChanged) return false;
+  syncTabChrome();
+  if (state.workspace?.mode === 'tiled') renderLayout();
+  return true;
+}
+
 export function bindTabStrip() {
   const strip = $('#tabs');
   const button = $('#btn-tab-list');
-  if (!strip || !button) return;
+  if (!strip) return;
   // 纵向滚轮映射为横向滚动;Shift+滚轮与触控板横扫本来就是横向,交给原生
   strip.addEventListener('wheel', (e) => {
     if (e.shiftKey || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
@@ -197,10 +226,78 @@ export function bindTabStrip() {
     strip.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
   }, { passive: false });
   strip.addEventListener('scroll', syncTabOverflow, { passive: true });
+  // 拖拽标签卡片头改变排序(左键按住水平拖动超过 5px 进入排序态)
+  strip.addEventListener('mousedown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    if (e.target?.closest?.('.tab-close')) return;
+    const tabEl = e.target?.closest?.('.tab');
+    if (!tabEl || state.tabs.size <= 1) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragging) {
+        if (Math.hypot(dx, dy) < 5) return;
+        dragging = true;
+        tabEl.classList.add('dragging');
+        document.body?.classList?.add('tab-dragging');
+      }
+      ev.preventDefault?.();
+      if (strip.scrollWidth > strip.clientWidth && typeof strip.getBoundingClientRect === 'function') {
+        const sr = strip.getBoundingClientRect();
+        const edge = 28;
+        if (ev.clientX < sr.left + edge) strip.scrollLeft -= 10;
+        else if (ev.clientX > sr.right - edge) strip.scrollLeft += 10;
+      }
+      const others = [...strip.querySelectorAll('.tab')].filter((t) => t !== tabEl);
+      let beforeEl = null;
+      for (const other of others) {
+        const r = other.getBoundingClientRect();
+        if (ev.clientX < r.left + r.width / 2) {
+          beforeEl = other;
+          break;
+        }
+      }
+      if (beforeEl) {
+        if (typeof strip.insertBefore === 'function') {
+          if (tabEl.nextElementSibling !== beforeEl) strip.insertBefore(tabEl, beforeEl);
+        } else if (Array.isArray(strip.children)) {
+          const fromIdx = strip.children.indexOf(tabEl);
+          if (fromIdx >= 0) strip.children.splice(fromIdx, 1);
+          const toIdx = strip.children.indexOf(beforeEl);
+          strip.children.splice(toIdx >= 0 ? toIdx : strip.children.length, 0, tabEl);
+        }
+      } else if (strip.children?.[strip.children.length - 1] !== tabEl) {
+        strip.appendChild(tabEl);
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      tabEl.classList.remove('dragging');
+      document.body?.classList?.remove('tab-dragging');
+      const orderedIds = [...strip.querySelectorAll('.tab')].map((el) => el.dataset.tab).filter(Boolean);
+      reorderTabs(orderedIds);
+      if (tabEl.dataset.tab && state.activeTabId !== tabEl.dataset.tab) {
+        activateTab(tabEl.dataset.tab);
+      }
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('click', (ce) => {
+          ce.stopPropagation?.();
+          ce.preventDefault?.();
+        }, { capture: true, once: true });
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
   // 尺寸变化(窗口/侧栏/右侧栏)与标签增删、标题变化都会改变是否溢出
-  new ResizeObserver(syncTabOverflow).observe(strip);
-  new MutationObserver(syncTabOverflow).observe(strip, { childList: true, subtree: true, characterData: true });
-  bindMenuButton(button, tabListItems, { label: '全部标签' });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncTabOverflow).observe(strip);
+  if (typeof MutationObserver !== 'undefined') new MutationObserver(syncTabOverflow).observe(strip, { childList: true, subtree: true, characterData: true });
+  if (button) bindMenuButton(button, tabListItems, { label: '全部标签' });
   syncTabOverflow();
 }
 
@@ -319,6 +416,15 @@ export function notifyTerminalStateChange() {
 export function syncTabChrome() {
   notifyTerminalStateChange();
   let activeRetitled = false;
+  // 统计各未自定义标题主机的会话数,超过 1 个时自动给后续标签追加 #2、#3 序号区分
+  const hostCounts = new Map();
+  for (const [tabId, tab] of state.tabs) {
+    if (!tab.customTitle) {
+      const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
+      if (s?.host?.name) hostCounts.set(s.host.name, (hostCounts.get(s.host.name) || 0) + 1);
+    }
+  }
+  const hostIndices = new Map();
   for (const [tabId, tab] of state.tabs) {
     const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
     const title = tab.el.querySelector('.tab-title');
@@ -329,7 +435,13 @@ export function syncTabChrome() {
     tab.el.classList.toggle('tab-rec-paused', rec.length > 0 && rec.every((x) => x.status !== 'connected'));
     const before = title.textContent;
     if (s) {
-      title.textContent = tab.customTitle || s.host.name;
+      let defaultTitle = s.host.name;
+      if (!tab.customTitle && (hostCounts.get(s.host.name) || 0) > 1) {
+        const idx = (hostIndices.get(s.host.name) || 0) + 1;
+        hostIndices.set(s.host.name, idx);
+        if (idx > 1) defaultTitle = `${s.host.name} #${idx}`;
+      }
+      title.textContent = tab.customTitle || defaultTitle;
       dot.className = 'tab-dot ' + s.status;
     } else {
       title.textContent = tab.customTitle || '新标签';
@@ -626,7 +738,7 @@ export function renderLayout() {
       state.workspace.fits = !overflow && plan.fits;
       lastWorkspaceSignature = workspaceSignature(state.tabs, width, height);
       const tree = renderWorkspaceTree(plan.layout, state.tabs, {
-        document, activate: activateTab, close: closeTab,
+        document, activate: activateTab, close: closeTab, reorder: reorderTabs,
       });
       if (tree) root.appendChild(tree);
       for (const tab of state.tabs.values()) {
@@ -1044,7 +1156,7 @@ function explainBubbleEl() {
     hideExplainBubble();
     const sel = s ? s.term.getSelection() : '';
     if (!sel) return toast('请先在终端中选中要解释的内容', 'error');
-    (bindSelectionExplain._aiSend || ((sel) => console.warn('aiSend 未注入')))(sel, 'explain');
+    (bindSelectionExplain._aiSend || ((sel) => console.warn('aiSend 未注入')))(sel, 'explain', { session: s });
   });
   document.body.appendChild(explainBubble);
   return explainBubble;
@@ -2093,13 +2205,26 @@ export function handleSessionStatus({ sessionId, state: status, error, reason, c
 export async function connectHost(hostId, paneId, opts = {}) {
   const host = state.hosts.find((h) => h.id === hostId);
   if (!host) return;
-  if (!opts.force && !opts.newTab) {
+  // 仅当显式传入 reuseExisting 时才切到已有会话;默认行为直接新建标签(或就地复用当前空白标签)
+  if (opts.reuseExisting && !opts.force) {
     const existing = [...state.sessions.values()].find((s) => s.host.id === hostId && ['connected', 'connecting'].includes(s.status));
     if (existing) { activateSession(existing.sessionId); return existing; }
   }
-  const owner = paneId ? paneOwner(paneId, opts.tabId) : null;
-  if (paneId && (!owner || owner.panes.get(paneId).sessionId)) return null;
-  const session = createSession(host, paneId, paneId ? owner.id : createTab().id);
+  let targetTabId = opts.tabId;
+  let targetPaneId = paneId;
+  if (!targetPaneId && !targetTabId) {
+    const curTab = activeTab();
+    if (curTab && curTab.panes.size === 1 && !curTab.sessionId) {
+      const onlyPane = [...curTab.panes.values()][0];
+      if (onlyPane && !onlyPane.sessionId && onlyPane.kind !== 'file' && !onlyPane.fileView) {
+        targetTabId = curTab.id;
+        targetPaneId = onlyPane.id;
+      }
+    }
+  }
+  const owner = targetPaneId ? paneOwner(targetPaneId, targetTabId) : null;
+  if (targetPaneId && (!owner || owner.panes.get(targetPaneId).sessionId)) return null;
+  const session = createSession(host, targetPaneId, targetPaneId ? owner.id : createTab().id);
   if (!session) return null;
   await runSessionConnection(session);
   return session;

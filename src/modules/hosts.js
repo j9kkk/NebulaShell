@@ -47,11 +47,9 @@ export function renderHosts() {
           <button class="hi-edit" title="编辑">${icon('settings')}</button>
           <button class="hi-del" title="删除">${icon('trash')}</button>
         </div>`;
-      // 普通点击:已有会话则切过去,否则连接。
-      // ⌘/Ctrl+点击 或 中键:强制新开一个标签(支持同主机多会话)。
-      item.addEventListener('click', (e) => {
-        if (e.metaKey || e.ctrlKey) connectHost(h.id, null, { newTab: true });
-        else connectHost(h.id);
+      // 点击或中键:直接在新标签连接(若当前停留于空白单窗格标签则就地复用)。
+      item.addEventListener('click', () => {
+        connectHost(h.id, null, { newTab: true });
       });
       item.addEventListener('auxclick', (e) => {
         if (e.button === 1) { e.preventDefault(); connectHost(h.id, null, { newTab: true }); }
@@ -80,9 +78,11 @@ export function renderHosts() {
       item.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
+        const hasSession = [...state.sessions.values()].some((s) => s.host.id === h.id && ['connected', 'connecting'].includes(s.status));
         showCtxMenu(e.clientX, e.clientY, [
-          { label: '连接', run: () => connectHost(h.id) },
+          { label: '连接', run: () => connectHost(h.id, null, { newTab: true }) },
           { label: '在新标签连接', run: () => connectHost(h.id, null, { newTab: true }) },
+          ...(hasSession ? [{ label: '切换到已有标签', run: () => connectHost(h.id, null, { reuseExisting: true }) }] : []),
           '-',
           { label: '编辑…', run: () => openHostModal(h) },
           { label: '克隆', run: () => cloneThis() },

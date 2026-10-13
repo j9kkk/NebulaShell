@@ -94,22 +94,32 @@
              自身可收缩(min-width:0),行尾按钮不可压缩,窄窗口下先裁监控而非挤掉按钮。 -->
         <span id="monitor-bar" class="hidden">
           <span class="mon-group mon-lat-item"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
-          <span class="mon-group mon-cpu-item">
-            <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
-            <span class="mon-track"><span id="mon-cpu-bar"></span></span>
+          <span class="mon-deck">
+            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger">
+              <span id="mon-cpu-bar" class="mon-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
+              <span class="mon-cpu-hint" aria-hidden="true">▾</span>
+            </span>
+            <span class="mon-group mon-mem-item">
+              <span id="mon-mem-bar" class="mon-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
+            </span>
+            <span class="mon-group mon-disk-item">
+              <span id="mon-disk-bar" class="mon-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
+            </span>
+            <span class="mon-group mon-net-item">
+              <span class="mon-item">网络 <i class="mon-dir mon-up">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir mon-down">↓</i><b id="mon-tx" class="mon-val">–</b></span>
+            </span>
+            <span id="mon-note" class="muted"></span>
           </span>
-          <span class="mon-group">
-            <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
-            <span class="mon-track"><span id="mon-mem-bar"></span></span>
-          </span>
-          <span class="mon-group mon-disk-item">
-            <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
-          </span>
-          <span class="mon-group">
-            <span class="mon-item">网络 <i class="mon-dir">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir">↓</i><b id="mon-tx" class="mon-val">–</b></span>
-          </span>
-          <span class="mon-spark" id="mon-spark-cpu"></span>
-          <span id="mon-note" class="muted"></span>
+          <span class="mon-spark" id="mon-spark-cpu" aria-hidden="true"></span>
         </span>
         <span class="spacer"></span>
         <!-- 传输任务中心(状态栏入口):文件分屏方案下任务与布局解耦,常驻在此 -->
@@ -141,9 +151,17 @@
       </div>
       <div class="rp-pages">
       <section id="rp-ai" class="rp-page active" role="tabpanel" data-page="ai" aria-labelledby="rp-tab-ai">
-      <!-- 快捷操作已迁移(2026-10-08):「解释选中内容」→ 终端选区末尾的悬浮 🔍
-           按钮(terminal.js bindSelectionExplain);「诊断报错」→ 终端右键菜单。
-           .ai-quick 行随之移除,消息区上移。 -->
+      <!-- 会话控制栏:切换当前会话、新建会话、清空当前会话 -->
+      <div class="ai-thread-bar">
+        <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话">
+          <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
+          <span id="ai-thread-title" class="ai-thread-title">新对话</span>
+          <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+        </button>
+        <span class="spacer"></span>
+        <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建对话"><span class="mi" data-icon="plus"></span></button>
+        <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
+      </div>
       <div class="ai-messages-wrap">
         <div id="ai-messages"></div>
         <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
@@ -628,6 +646,10 @@
     <div class="ai-model-menu-sep"></div>
     <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型</button>
   </div>
+  <!-- 会话菜单浮层 -->
+  <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" role="menu" aria-label="切换对话">
+    <div id="ai-thread-menu-list" role="menu"></div>
+  </div>
   <div id="ctx-menu" class="hidden"></div>
   <!-- 任务中心浮层:点击状态栏 ⇅ 向上弹出(见 file-transfer.js renderTaskCenter)。
        必须挂在 body:留在 #statusbar 里会被其 overflow-y:hidden 整体裁掉(开了也看不见) -->
@@ -635,6 +657,39 @@
     <div id="file-task-list" class="file-task-list hidden"></div>
     <div class="task-popover-foot">
       <button id="btn-file-tasks-clear-all" class="task-clear-all hidden" type="button">清除所有任务</button>
+    </div>
+  </div>
+  <!-- CPU 历史趋势悬停详情卡片(方案 C):挂在 body + fixed 定位,悬停 #mon-cpu-trigger 时向上弹出 -->
+  <div id="mon-cpu-popover" class="mon-cpu-popover hidden" role="tooltip" aria-hidden="true">
+    <div class="mon-pop-head">
+      <span class="mon-pop-title"><span class="mon-pop-dot"></span>CPU 负载历史趋势 (最近 ~48s)</span>
+      <b id="mon-pop-cur" class="mon-pop-cur">–</b>
+    </div>
+    <div class="mon-pop-chart">
+      <svg id="mon-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="mon-cpu-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.38"/>
+            <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0"/>
+          </linearGradient>
+        </defs>
+        <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
+        <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
+        <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
+        <path id="mon-pop-area" d="" fill="url(#mon-cpu-grad)"/>
+        <path id="mon-pop-line" d="" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle id="mon-pop-point" cx="236" cy="60" r="3" fill="#38bdf8" stroke="#0d131f" stroke-width="1.5"/>
+      </svg>
+    </div>
+    <div class="mon-pop-axis">
+      <span>-48s</span>
+      <span>-24s</span>
+      <span>现在 (每 3s 采样)</span>
+    </div>
+    <div class="mon-pop-stats">
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前负载</span><b id="mon-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间峰值</span><b id="mon-pop-stat-max" class="mon-pop-stat-v warn">–</b></div>
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间均值</span><b id="mon-pop-stat-avg" class="mon-pop-stat-v">–</b></div>
     </div>
   </div>
   <script src="./nebula-shim.js"></script>

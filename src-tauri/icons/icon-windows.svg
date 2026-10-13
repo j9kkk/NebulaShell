@@ -1,4 +1,33 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 深空底色 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#121b30"/>
+      <stop offset="0.55" stop-color="#0d1424"/>
+      <stop offset="1" stop-color="#090d16"/>
+    </linearGradient>
+    <!-- 星云三色晕 -->
+    <radialGradient id="nebulaBlue" cx="0.36" cy="0.36" r="0.55">
+      <stop offset="0" stop-color="#5b8cff" stop-opacity="0.78"/>
+      <stop offset="0.55" stop-color="#5b8cff" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#5b8cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebulaViolet" cx="0.64" cy="0.68" r="0.6">
+      <stop offset="0" stop-color="#b47cf0" stop-opacity="0.7"/>
+      <stop offset="0.5" stop-color="#b47cf0" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#b47cf0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebulaCyan" cx="0.56" cy="0.4" r="0.38">
+      <stop offset="0" stop-color="#4dd0e1" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#4dd0e1" stop-opacity="0"/>
+    </radialGradient>
+    <!-- 提示符渐变 -->
+    <linearGradient id="prompt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#b9d0ff"/>
+    </linearGradient>
+  </defs>
+
   <!-- Windows/Linux 满绘版:与 icon.svg 唯一区别是没有 macOS 的 80% 内缩层。
        Windows 任务栏习惯图标铺满格子(微信/钉钉均满绘),按 macOS 网格内缩会显小一圈。
        生成方式:先 npx tauri icon 本文件保留 Windows 产物,再用 icon.svg 重生成并只取 icon.icns。 -->
@@ -29,5 +58,4 @@
   <path d="M300 402 L512 584 L300 766" stroke="url(#prompt)" stroke-width="84" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
   <!-- 光标 -->
   <rect x="596" y="712" width="196" height="72" rx="34" fill="url(#prompt)"/>
-
 </svg>

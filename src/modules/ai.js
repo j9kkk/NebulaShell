@@ -94,10 +94,294 @@ export function closeAiSettings() {
   syncSelectedModelsFromSettings();
 }
 
-export function trimAiHistory() {
-  if (state.aiHistory.length > AI_HISTORY_LIMIT) {
+let threadSeq = 0;
+
+export function activeAiThread() {
+  if (!state.aiThreads) return null;
+  return state.activeThreadId ? state.aiThreads.get(state.activeThreadId) : null;
+}
+
+export function trimAiHistory(targetThread) {
+  const th = targetThread || activeAiThread();
+  if (th) {
+    if (th.history.length > AI_HISTORY_LIMIT) {
+      th.history = th.history.slice(-AI_HISTORY_LIMIT);
+    }
+  } else if (state.aiHistory && state.aiHistory.length > AI_HISTORY_LIMIT) {
     state.aiHistory = state.aiHistory.slice(-AI_HISTORY_LIMIT);
   }
+}
+
+function ensureThreadContainer(thread) {
+  const box = $('#ai-messages');
+  if (!box || !thread) return box;
+  if (!thread.containerEl) {
+    const c = document.createElement('div');
+    c.className = 'ai-thread-view';
+    c.classList?.add?.('ai-thread-view');
+    c.dataset.threadId = thread.id;
+    thread.containerEl = c;
+  }
+  if (thread.containerEl.parentNode !== box && !box.children?.includes?.(thread.containerEl)) {
+    box.appendChild(thread.containerEl);
+  }
+  if (state.activeThreadId === thread.id && !thread.containerEl.classList?.contains('active')) {
+    thread.containerEl.classList?.add('active');
+  }
+  return thread.containerEl;
+}
+
+export function deriveThreadTitle(text) {
+  const clean = String(text || '').replace(/[\r\n\t]+/g, ' ').replace(/^[#\s*`>-]+/, '').trim();
+  if (!clean) return '新对话';
+  return clean.length > 18 ? clean.slice(0, 18) + '…' : clean;
+}
+
+export function ensureDefaultAiThread() {
+  if (!state.aiThreads) state.aiThreads = new Map();
+  if (state.aiThreads.size === 0) {
+    const isMock = !Object.getOwnPropertyDescriptor(state, 'aiHistory')?.get;
+    const initialHistory = Array.isArray(state.aiHistory) && state.aiHistory.length
+      ? state.aiHistory
+      : (Array.isArray(state._aiHistoryFallback) ? state._aiHistoryFallback : []);
+    const initialReq = state.aiReq || state._aiReqFallback || null;
+    state._aiHistoryFallback = [];
+    state._aiReqFallback = null;
+    const th = createAiThread({ title: '新对话' });
+    if (isMock && Array.isArray(state.aiHistory)) {
+      th.history = state.aiHistory;
+    } else if (initialHistory.length) {
+      th.history = initialHistory;
+    }
+    if (initialReq) th.req = initialReq;
+  } else if (!state.activeThreadId || !state.aiThreads.has(state.activeThreadId)) {
+    const firstId = state.aiThreads.keys().next().value;
+    switchAiThread(firstId);
+  }
+  const active = activeAiThread();
+  if (active) ensureThreadContainer(active);
+  return active;
+}
+
+export function createAiThread({ hostId = null, hostName = null, sessionId = null, title = '新对话' } = {}) {
+  if (!state.aiThreads) state.aiThreads = new Map();
+  const id = 'th-' + Date.now().toString(36) + '-' + (++threadSeq);
+  const container = document.createElement('div');
+  container.className = 'ai-thread-view';
+  container.classList?.add?.('ai-thread-view');
+  container.dataset.threadId = id;
+
+  const box = $('#ai-messages');
+  if (box) {
+    // 若首次创建前 #ai-messages 已有裸 .ai-msg 节点,收拢进第一个会话容器
+    if (state.aiThreads.size === 0 && box.children) {
+      const stray = [...box.children].filter((ch) => !ch.classList?.contains('ai-thread-view'));
+      for (const node of stray) container.appendChild(node);
+    }
+    box.appendChild(container);
+  }
+
+  const now = Date.now();
+  const isMock = !Object.getOwnPropertyDescriptor(state, 'aiHistory')?.get;
+  const thread = {
+    id,
+    title: title || '新对话',
+    hostId,
+    hostName,
+    sessionId,
+    history: isMock && state.aiThreads.size === 0 && Array.isArray(state.aiHistory) ? state.aiHistory : [],
+    containerEl: container,
+    req: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  state.aiThreads.set(id, thread);
+  switchAiThread(id);
+  return thread;
+}
+
+export function switchAiThread(threadId) {
+  if (!state.aiThreads) return;
+  const target = state.aiThreads.get(threadId);
+  if (!target) return;
+  state.activeThreadId = threadId;
+  ensureThreadContainer(target);
+
+  const box = $('#ai-messages');
+  if (box && box.children) {
+    for (const child of box.children) {
+      if (child.classList?.contains('ai-thread-view')) {
+        child.classList.toggle('active', child.dataset.threadId === threadId);
+      }
+    }
+  }
+
+  setAiBusy(!!target.req);
+  renderAiThreadBar();
+  closeThreadMenu();
+  aiStickScroll();
+  refreshAiCodeActions();
+}
+
+export function clearCurrentAiThread() {
+  const thread = ensureDefaultAiThread();
+  if (!thread) return;
+  if (thread.req) {
+    stopAiGeneration();
+  }
+  thread.history = [];
+  if (thread.containerEl) {
+    thread.containerEl.innerHTML = '';
+  }
+  thread.title = thread.hostName ? `${thread.hostName} 对话` : '新对话';
+  thread.updatedAt = Date.now();
+  renderAiThreadBar();
+}
+
+export function deleteAiThread(threadId) {
+  const thread = state.aiThreads.get(threadId);
+  if (!thread) return;
+  if (state.aiThreads.size <= 1) {
+    clearCurrentAiThread();
+    closeThreadMenu();
+    return;
+  }
+  if (thread.req) {
+    if (state.activeThreadId === threadId) {
+      stopAiGeneration();
+    } else {
+      thread.req.cancelled = true;
+      clearTimeout(thread.req.idleTimer);
+      api('ai:abort', { requestId: thread.req.id }).catch(() => {});
+      thread.req = null;
+    }
+  }
+  if (thread.containerEl) {
+    thread.containerEl.remove();
+  }
+  state.aiThreads.delete(threadId);
+  if (state.activeThreadId === threadId) {
+    const latest = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+    if (latest) switchAiThread(latest.id);
+  } else {
+    renderAiThreadBar();
+    renderThreadMenu();
+  }
+}
+
+export function renderAiThreadBar() {
+  const thread = activeAiThread();
+  const titleEl = $('#ai-thread-title');
+  const trigger = $('#ai-thread-trigger');
+  if (!titleEl || !trigger) return;
+  if (!thread) {
+    titleEl.textContent = '新对话';
+    trigger.title = '切换对话';
+    return;
+  }
+  const baseTitle = thread.title || '新对话';
+  const disp = thread.hostName && !baseTitle.startsWith(thread.hostName)
+    ? `[${thread.hostName}] ${baseTitle}`
+    : baseTitle;
+  titleEl.textContent = disp;
+  trigger.title = `当前对话：${disp}（点击切换或管理历史会话）`;
+}
+
+export function renderThreadMenu() {
+  const menu = $('#ai-thread-menu');
+  if (!menu) return;
+  ensureDefaultAiThread();
+  const threads = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const activeId = state.activeThreadId;
+
+  menu.innerHTML = threads.map((th) => {
+    const isActive = th.id === activeId;
+    const hostBadge = th.hostName ? `<span class="ai-thread-menu-host">${escapeHtml(th.hostName)}</span>` : '';
+    const busyBadge = th.req ? `<span class="ai-thread-menu-host">生成中…</span>` : '';
+    const safeTitle = escapeHtml(th.title || '新对话');
+    return `
+      <div class="ai-thread-menu-row${isActive ? ' active' : ''}" role="menuitem" tabindex="0" data-thread-id="${escapeHtml(th.id)}">
+        <span class="ai-thread-menu-check" aria-hidden="true">${isActive ? '✓' : ''}</span>
+        <span class="ai-thread-menu-name" title="${safeTitle}">${safeTitle}</span>
+        ${busyBadge || hostBadge}
+        <button type="button" class="ai-thread-del" data-del-thread="${escapeHtml(th.id)}" title="删除此对话" aria-label="删除此对话">
+          ${icon('x', { size: 12 })}
+        </button>
+      </div>`;
+  }).join('');
+}
+
+export function openThreadMenu() {
+  const menu = $('#ai-thread-menu');
+  const trigger = $('#ai-thread-trigger');
+  if (!menu || !trigger) return;
+  renderThreadMenu();
+  menu.classList.remove('hidden');
+  const tr = trigger.getBoundingClientRect();
+  const size = { width: menu.offsetWidth || 240, height: menu.offsetHeight || 200 };
+  const pos = popupPosition(
+    { top: tr.bottom, bottom: tr.bottom, left: tr.left, right: tr.right },
+    size, { width: window.innerWidth, height: window.innerHeight },
+  );
+  menu.style.left = pos.left + 'px';
+  menu.style.top = Math.min(window.innerHeight - size.height - 8, Math.max(8, tr.bottom + 4)) + 'px';
+}
+
+export function closeThreadMenu() {
+  const menu = $('#ai-thread-menu');
+  if (menu) menu.classList.add('hidden');
+}
+
+export function toggleThreadMenu() {
+  const menu = $('#ai-thread-menu');
+  if (!menu) return;
+  if (menu.classList.contains('hidden')) openThreadMenu();
+  else closeThreadMenu();
+}
+
+/// 终端触发 AI 操作(如选区解释、右键报错诊断)时,智能匹配或分流到对应主机的会话,
+/// 避免把主机 B 的报错塞进主机 A 的正在进行的排障上下文中。
+export function ensureThreadForSession(session) {
+  ensureDefaultAiThread();
+  if (!session) return activeAiThread();
+  const hostId = session.host?.id || null;
+  const hostName = session.host?.name || session.host?.host || session.host?.ip || null;
+  const sessionId = session.sessionId || null;
+  const cur = activeAiThread();
+
+  // 1. 当前会话为空且未绑定其他主机:直接复用并绑定当前主机
+  if (cur && cur.history.length === 0 && !cur.req && (!cur.hostId || cur.hostId === hostId)) {
+    cur.hostId = hostId;
+    cur.hostName = hostName;
+    cur.sessionId = sessionId;
+    renderAiThreadBar();
+    return cur;
+  }
+
+  // 2. 当前会话本身就属于该主机且空闲:继续在该会话中追问
+  if (cur && cur.hostId === hostId && !cur.req) {
+    cur.sessionId = sessionId;
+    return cur;
+  }
+
+  // 3. 查找该主机最近使用过的空闲会话
+  const existing = [...state.aiThreads.values()]
+    .filter((th) => th.hostId === hostId && !th.req)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+  if (existing) {
+    existing.sessionId = sessionId;
+    switchAiThread(existing.id);
+    return existing;
+  }
+
+  // 4. 自动为该主机创建专属新会话
+  return createAiThread({
+    hostId,
+    hostName,
+    sessionId,
+    title: '新对话',
+  });
 }
 
 /// 气泡内部结构固定为:<div.ai-msg><div.ai-meta><span.ai-avatar/><span.ai-meta-text>时间</span></div>
@@ -178,10 +462,10 @@ function renderAiCodeBlock(bubble, block) {
 }
 
 export function refreshAiCodeActions(bubble) {
-  const bubbles = bubble ? [bubble] : document.querySelectorAll('#ai-messages .ai-msg');
+  const bubbles = bubble ? [bubble] : (typeof document?.querySelectorAll === 'function' ? document.querySelectorAll('#ai-messages .ai-msg') : []);
   const captured = getCommandBlockTarget();
   for (const message of bubbles) {
-    for (const button of message.querySelectorAll('[data-ai-code-action="execute"], [data-ai-code-action="insert"]')) {
+    for (const button of (typeof message?.querySelectorAll === 'function' ? message.querySelectorAll('[data-ai-code-action="execute"], [data-ai-code-action="insert"]') : [])) {
       const index = Number(button.closest('.ai-code-block').dataset.codeIndex);
       const block = message.__codeBlocks?.[index];
       const status = aiCodeAvailability(message, block, captured);
@@ -204,9 +488,20 @@ export async function handleAiCodeAction(bubble, index, action) {
   if (!status.ok) return toast(status.reason, 'error');
   const target = status.target;
   const classification = classifyCommandBlock(block);
+
   bubble.__codeActionPending = true;
   refreshAiCodeActions(bubble);
   try {
+    // 跨主机安全守卫:若此代码块在主机 A 上下文中生成,而用户当前焦点终端在主机 B,执行前强提示
+    if (bubble.__originHostId && target.session?.host?.id && bubble.__originHostId !== target.session.host.id) {
+      const originHost = bubble.__originHostName || '其他主机';
+      const currentHost = target.session.host.name || target.session.host.host || target.session.host.ip || '当前主机';
+      const allow = await askConfirm(
+        `此代码块是在【${originHost}】上下文中生成的，而当前目标终端属于【${currentHost}】。\n\n是否确认在该终端上${action === 'execute' ? '发送并执行' : '填入'}？`,
+        { title: '跨主机操作提醒', okText: action === 'execute' ? '确认执行' : '确认填入', danger: true, defaultFocus: 'cancel' },
+      );
+      if (!allow) return;
+    }
     if (action === 'execute' && (classification.multiline || classification.risk || classification.warnings.length)) {
       const contentWarning = aiCodeWarningText(classification);
       const warning = [
@@ -341,10 +636,19 @@ export function bindAiScroll() {
 // 头像与发送时间:头像标来源(用户"我" / 助手应用图标),时间用 HH:MM。
 // meta 行用 .ai-meta,低对比度、不随气泡 padding 走,见 style.css。
 export function renderAiMessage(role, text, opts) {
+  ensureDefaultAiThread();
+  const thread = activeAiThread();
   const el = document.createElement('div');
   el.className = 'ai-msg ' + role;
   el.dataset.role = role;
   el.dataset.responseState = 'completed';
+  const activeSess = state.sessions?.get?.(state.activeId);
+  const originHostId = thread?.hostId || activeSess?.host?.id || null;
+  const originHostName = thread?.hostName || activeSess?.host?.name || activeSess?.host?.host || activeSess?.host?.ip || null;
+  if (originHostId) {
+    el.__originHostId = originHostId;
+    el.__originHostName = originHostName;
+  }
   el.addEventListener('click', (event) => {
     const button = event.target.closest?.('[data-ai-code-action]');
     if (!button || !el.contains(button) || button.disabled) return;
@@ -402,24 +706,25 @@ export function renderAiMessage(role, text, opts) {
   // 复制按钮锚定气泡本体(.ai-col):悬停时贴气泡右上角,不随气泡外的元信息走
   col.appendChild(copy);
   setAiBody(el, text, opts);
+  const container = ensureThreadContainer(thread) || $('#ai-messages');
+  container.appendChild(el);
   const box = $('#ai-messages');
-  box.appendChild(el);
   // DOM 上限:裁掉最旧的气泡。用户在上方阅读(未贴底)时,裁剪会让内容整体
   // 上移,按被裁高度补偿 scrollTop 保住阅读位置;贴底时反正要回底,无需补偿。
   let trimmedHeight = 0;
-  if (box.children.length > AI_DOM_LIMIT) {
-    const gap = parseFloat(getComputedStyle(box).rowGap) || 0;
-    while (box.children.length > AI_DOM_LIMIT) {
-      const first = box.firstChild;
-      trimmedHeight += first.getBoundingClientRect().height + gap;
-      box.removeChild(first);
+  if (container.children && container.children.length > AI_DOM_LIMIT) {
+    const gap = (typeof getComputedStyle !== 'undefined' ? parseFloat(getComputedStyle(container).rowGap) : 0) || 0;
+    while (container.children.length > AI_DOM_LIMIT) {
+      const first = container.firstChild;
+      trimmedHeight += (first.getBoundingClientRect ? first.getBoundingClientRect().height : 0) + gap;
+      container.removeChild(first);
     }
   }
   if (role === 'user') {
     // 发送/提问本身就是"看最新"的明确意图:无条件回底
     aiForceStickScroll();
   } else {
-    if (trimmedHeight > 0 && !aiPinned) box.scrollTop += trimmedHeight;
+    if (trimmedHeight > 0 && !aiPinned && box) box.scrollTop += trimmedHeight;
     aiStickScroll();
   }
   return el;
@@ -554,8 +859,21 @@ export function setAiBusy(busy) {
   renderModelSwitch();
 }
 
+export function findRequestHolder(requestId) {
+  if (!requestId) return null;
+  const cur = activeAiThread();
+  if (cur?.req && cur.req.id === requestId) return { holder: cur.req, thread: cur };
+  for (const th of state.aiThreads.values()) {
+    if (th.req && th.req.id === requestId) return { holder: th.req, thread: th };
+  }
+  if (state._aiReqFallback && state._aiReqFallback.id === requestId) {
+    return { holder: state._aiReqFallback, thread: null };
+  }
+  return null;
+}
+
 function failAiRequest(holder, message) {
-  if (state.aiReq !== holder) return;
+  if (!holder) return;
   holder.failed = message;
   if (holder.bubble) {
     clearBubbleState(holder.bubble);
@@ -566,11 +884,12 @@ function failAiRequest(holder, message) {
 
 // 入口收到匹配 requestId 的 delta 时调用。过期事件不得重启计时器。
 export function aiTouchRequest(requestId) {
-  const h = state.aiReq;
-  if (!h || h.id !== requestId) return false;
+  const match = findRequestHolder(requestId);
+  if (!match) return false;
+  const h = match.holder;
   clearTimeout(h.idleTimer);
   h.idleTimer = setTimeout(() => {
-    if (state.aiReq !== h) return;
+    if (h.cancelled) return;
     h.cancelled = true;
     failAiRequest(h, 'AI 响应超时（60 秒未收到内容），请重试');
     api('ai:abort', { requestId: h.id }).catch(() => {});
@@ -579,7 +898,8 @@ export function aiTouchRequest(requestId) {
 }
 
 export function stopAiGeneration() {
-  const h = state.aiReq;
+  const cur = activeAiThread();
+  const h = cur?.req || state.aiReq;
   if (!h) return false;
   h.cancelled = true;
   // 先结束本地 holder 并保留已返回文本;晚到的 delta/done/error 不再匹配。
@@ -590,7 +910,9 @@ export function stopAiGeneration() {
 
 export function aiRequest(messages, bubble, override) {
   return new Promise((resolve) => {
-    if (state.aiReq) {
+    ensureDefaultAiThread();
+    const cur = activeAiThread();
+    if (cur?.req || state.aiReq) {
       resolve({ error: '已有请求进行中，请稍候' });
       return;
     }
@@ -605,8 +927,11 @@ export function aiRequest(messages, bubble, override) {
     const holder = {
       id: requestId, acc: '', bubble, resolve, messages: snapshot,
       model: config.model || '', started: Date.now(), recordHistory: !!bubble,
+      threadId: cur?.id || null,
     };
+    if (cur) cur.req = holder;
     state.aiReq = holder;
+
     if (bubble) {
       bubble.dataset.responseState = 'pending';
       refreshAiCodeActions(bubble);
@@ -621,11 +946,16 @@ export function aiRequest(messages, bubble, override) {
 }
 
 export function aiFinishHolder(done) {
-  const h = state.aiReq;
-  if (!h || (done && done.requestId && done.requestId !== h.id)) return;
+  const match = done?.requestId ? findRequestHolder(done.requestId) : (state.aiReq ? { holder: state.aiReq, thread: activeAiThread() } : null);
+  if (!match) return;
+  const { holder: h, thread } = match;
   clearTimeout(h.idleTimer);
+  if (thread) thread.req = null;
   state.aiReq = null;
-  setAiBusy(false);
+
+  if (state.activeThreadId === thread?.id || (!thread && !state.activeThreadId)) {
+    setAiBusy(false);
+  }
   if (h.bubble) {
     // 顺序要紧:先撤等待态(会把"正在思考…"占位清空),再把最终累积文本落盘。
     // 取消未落地的合帧写入时**必须补写一次 h.acc** —— 最后一个 delta 可能已经
@@ -650,11 +980,19 @@ export function aiFinishHolder(done) {
     }
     // 收尾做了全量 DOM 重写(清等待态 + 最终正文),WebKit 滚动锚定可能把
     // 视图拽离底部:补一次贴底判定,这是"回复完成瞬间上跳"的修复点。
-    aiStickScroll();
+    if (state.activeThreadId === thread?.id) {
+      aiStickScroll();
+    }
   }
   if (h.acc && h.recordHistory) {
-    state.aiHistory.push({ role: 'assistant', content: h.acc });
-    trimAiHistory();
+    if (thread) {
+      thread.history.push({ role: 'assistant', content: h.acc });
+      trimAiHistory(thread);
+      thread.updatedAt = Date.now();
+    } else {
+      state.aiHistory.push({ role: 'assistant', content: h.acc });
+      trimAiHistory();
+    }
   }
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
   h.resolve(h.failed
@@ -663,7 +1001,9 @@ export function aiFinishHolder(done) {
 }
 
 export async function aiSend(rawText, mode, opts) {
-  if (state.aiReq) return toast('AI 正在回复中，请稍候', 'error');
+  ensureDefaultAiThread();
+  const thread = activeAiThread();
+  if (thread?.req) return toast('AI 正在回复中，请稍候', 'error');
   // 未配置模型时不必发注定失败的请求:提示后直达 AI 设置
   if (!savedModels().length) {
     toast('请先配置 AI 模型', 'error');
@@ -682,10 +1022,18 @@ export async function aiSend(rawText, mode, opts) {
     userMd = true;
   }
 
+  // 首条消息自动提炼为会话标题
+  if (thread && (thread.title === '新对话' || !thread.title)) {
+    thread.title = deriveThreadTitle(text);
+    renderAiThreadBar();
+  }
+  if (thread) thread.updatedAt = Date.now();
+
   const userMsg = { role: 'user', content };
-  const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...state.aiHistory, userMsg];
-  state.aiHistory.push(userMsg);
-  trimAiHistory();
+  const historyList = thread ? thread.history : state.aiHistory;
+  const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...historyList, userMsg];
+  historyList.push(userMsg);
+  trimAiHistory(thread);
   renderAiMessage('user', text, { md: userMd });
   // 占位在创建气泡的同一帧挂上(spinner + "正在思考…"):
   // 若先 append 空气泡再补等待态,失败路径会把一颗空壳气泡留在对话里。
@@ -1107,6 +1455,7 @@ export async function aiDiagnose() {
   const cmd = stripTerminalNoise(String(s.lastCmd || '')).trim();
   const output = stripTerminalNoise(String(s.lastOutput || '')).trim();
   if (!cmd && !output) { toast('还没有执行过命令,无诊断依据', 'error'); return false; }
+  ensureThreadForSession(s);
   const recent = `最后一次输入的命令：\n${cmd || '(未捕获)'}\n\n该命令的控制台输出：\n${output || '(无输出)'}`.slice(-3000);
   aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```', undefined, { md: true });
   return true;

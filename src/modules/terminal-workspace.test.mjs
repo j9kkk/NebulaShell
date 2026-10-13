@@ -35,7 +35,7 @@ async function fixture() {
   const document = { activeElement: null, events: [], listeners: new Map(),
     dispatchEvent(event) { this.events.push(event.type); for (const fn of this.listeners.get(event.type) || []) fn(event); },
     addEventListener(type, fn) { this.listeners.set(type, [...(this.listeners.get(type) || []), fn]); },
-    removeEventListener() {},
+    removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter((f) => f !== fn)); },
   };
   class Element {
     constructor(tag) {
@@ -54,6 +54,14 @@ async function fixture() {
     setAttribute(name, value) { this.attributes[name] = String(value); if (name === 'id') this.id = value; }
     getAttribute(name) { return this.attributes[name]; }
     appendChild(child) { child.remove(); this.children.push(child); child.parentElement = this; return child; }
+    insertBefore(child, ref) {
+      child.remove();
+      const idx = ref ? this.children.indexOf(ref) : -1;
+      if (idx >= 0) this.children.splice(idx, 0, child);
+      else this.children.push(child);
+      child.parentElement = this;
+      return child;
+    }
     remove() {
       if (this.isConnected && document.activeElement && this.contains(document.activeElement)) document.activeElement = document.body;
       if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
@@ -386,3 +394,95 @@ test('visible fit/resize includes every nonzero mounted tile but excludes zoomed
   assert.deepEqual({ ...h.subject.layoutDimensions() }, { width: 640, height: 180 });
   assert.equal(h.subject.maxPaneCapacity(), 1);
 });
+
+test('connectHost reuses empty single-pane tab, opens new tab on repeated click, and disambiguates same-host tab titles', async () => {
+  const h = await fixture();
+  const host = h.host('prod-db');
+  h.state.hosts.push(host);
+  // First create an empty tab with picker
+  const emptyTab = h.subject.newTabWithPicker();
+  assert.equal(h.state.tabs.size, 1);
+  // Connecting when active tab is an empty single-pane tab reuses that tab in place
+  const s1 = await h.subject.connectHost(host.id, null, { newTab: true });
+  assert.equal(s1.tabId, emptyTab.id);
+  assert.equal(h.state.tabs.size, 1);
+  s1.status = 'connected';
+  // Clicking the same host again opens a second tab directly
+  const s2 = await h.subject.connectHost(host.id, null, { newTab: true });
+  assert.notEqual(s2.tabId, emptyTab.id);
+  assert.equal(h.state.tabs.size, 2);
+  s2.status = 'connected';
+  h.subject.syncTabChrome();
+  const t1 = h.state.tabs.get(s1.tabId).el.querySelector('.tab-title').textContent;
+  const t2 = h.state.tabs.get(s2.tabId).el.querySelector('.tab-title').textContent;
+  assert.equal(t1, 'prod-db');
+  assert.equal(t2, 'prod-db #2');
+  // Calling with reuseExisting: true switches to existing session without opening a third tab
+  h.subject.activateTab(s2.tabId);
+  const reused = await h.subject.connectHost(host.id, null, { reuseExisting: true });
+  assert.equal(reused.sessionId, s1.sessionId);
+  assert.equal(h.state.tabs.size, 2);
+});
+
+test('reorderTabs updates state.tabs order, DOM tab strip order, and tiled workspace layout order', async () => {
+  const h = await fixture(), a = h.session(), b = h.session(), c = h.session();
+  assert.deepEqual([...h.state.tabs.keys()], [a.tabId, b.tabId, c.tabId]);
+  h.subject.toggleTabTiling();
+  h.frame();
+  assert.deepEqual(leaves(h.state.workspace.layout), [a.tabId, b.tabId, c.tabId]);
+  // Reorder to [c, a, b]
+  const changed = h.subject.reorderTabs([c.tabId, a.tabId, b.tabId]);
+  assert.equal(changed, true);
+  assert.deepEqual([...h.state.tabs.keys()], [c.tabId, a.tabId, b.tabId]);
+  const stripIds = h.document.querySelector('#tabs').children.map((el) => el.dataset.tab);
+  assert.deepEqual(stripIds, [c.tabId, a.tabId, b.tabId]);
+  h.frame();
+  assert.deepEqual(leaves(h.state.workspace.layout), [c.tabId, a.tabId, b.tabId]);
+  // Calling reorderTabs with identical order is a no-op
+  assert.equal(h.subject.reorderTabs([c.tabId, a.tabId, b.tabId]), false);
+});
+
+test('pointer drag on tab header and workspace tile header reorders tabs only after 5px threshold', async () => {
+  const h = await fixture(), a = h.session(), b = h.session();
+  h.subject.bindTabStrip();
+  const strip = h.document.querySelector('#tabs');
+  const tabA = h.state.tabs.get(a.tabId).el;
+  const tabB = h.state.tabs.get(b.tabId).el;
+  tabA.getBoundingClientRect = () => ({ left: 0, right: 100, top: 0, bottom: 30, width: 100, height: 30 });
+  tabB.getBoundingClientRect = () => ({ left: 104, right: 204, top: 0, bottom: 30, width: 100, height: 30 });
+  strip.getBoundingClientRect = () => ({ left: 0, right: 400, top: 0, bottom: 36, width: 400, height: 36 });
+
+  // Sub-threshold movement (<5px) does not trigger drag or reorder
+  tabA.dispatchEvent({ type: 'mousedown', button: 0, clientX: 20, clientY: 15, target: tabA });
+  h.document.dispatchEvent({ type: 'mousemove', clientX: 22, clientY: 15 });
+  assert.equal(tabA.classList.contains('dragging'), false);
+  h.document.dispatchEvent({ type: 'mouseup', clientX: 22, clientY: 15 });
+  assert.deepEqual([...h.state.tabs.keys()], [a.tabId, b.tabId]);
+
+  // Dragging tabA past the midpoint of tabB (clientX=180 > 154) reorders to [b, a]
+  tabA.dispatchEvent({ type: 'mousedown', button: 0, clientX: 20, clientY: 15, target: tabA });
+  h.document.dispatchEvent({ type: 'mousemove', clientX: 180, clientY: 15 });
+  assert.equal(tabA.classList.contains('dragging'), true);
+  h.document.dispatchEvent({ type: 'mouseup', clientX: 180, clientY: 15 });
+  assert.equal(tabA.classList.contains('dragging'), false);
+  assert.deepEqual([...h.state.tabs.keys()], [b.tabId, a.tabId]);
+
+  // In tiled workspace mode, dragging tileB header onto tileA reorders back to [a, b]
+  h.subject.toggleTabTiling();
+  h.frame();
+  const tileA = h.state.tabs.get(a.tabId).workspaceTile;
+  const tileB = h.state.tabs.get(b.tabId).workspaceTile;
+  tileB.getBoundingClientRect = () => ({ left: 0, right: 700, top: 0, bottom: 800, width: 700, height: 800 });
+  tileA.getBoundingClientRect = () => ({ left: 705, right: 1400, top: 0, bottom: 800, width: 695, height: 800 });
+  const headerB = tileB.querySelector('.workspace-tile-header');
+  headerB.dispatchEvent({ type: 'mousedown', button: 0, clientX: 100, clientY: 14, target: headerB });
+  h.document.dispatchEvent({ type: 'mousemove', clientX: 900, clientY: 100 });
+  assert.equal(tileB.classList.contains('dragging'), true);
+  assert.equal(tileA.classList.contains('drop-target'), true);
+  h.document.dispatchEvent({ type: 'mouseup', clientX: 900, clientY: 100 });
+  assert.equal(tileB.classList.contains('dragging'), false);
+  assert.equal(tileA.classList.contains('drop-target'), false);
+  assert.deepEqual([...h.state.tabs.keys()], [a.tabId, b.tabId]);
+});
+
+
