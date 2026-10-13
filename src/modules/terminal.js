@@ -229,13 +229,18 @@ export function bindTabStrip() {
   // 拖拽标签卡片头改变排序(左键按住水平拖动超过 5px 进入排序态)
   strip.addEventListener('mousedown', (e) => {
     if (e.button !== undefined && e.button !== 0) return;
-    if (e.target?.closest?.('.tab-close')) return;
     const tabEl = e.target?.closest?.('.tab');
-    if (!tabEl || state.tabs.size <= 1) return;
+    if (!tabEl) return;
+    // 按下不走默认动作:WebKit 会从标题起选区,拖动中把沿途标签标题一并选中且松手后
+    // 残留(只在 mousemove 里 preventDefault 拦不住,选区在按下时就开始了)
+    e.preventDefault?.();
+    if (e.target?.closest?.('.tab-close') || state.tabs.size <= 1) return;
     const startX = e.clientX;
     const startY = e.clientY;
     let dragging = false;
     const onMove = (ev) => {
+      // 按键已抬起却没收到 mouseup:就此结束,标签不能跟着空移的鼠标走
+      if (ev.buttons === 0) { onUp(); return; }
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
       if (!dragging) {

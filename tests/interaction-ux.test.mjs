@@ -317,6 +317,22 @@ test('editable target detection includes nested contenteditable but not ordinary
   assert.equal(interaction.isEditableTarget(null), false);
 });
 
+test('document-level select-all is only the selectstart that lands on body/html, never an input, page text or button', async () => {
+  const { interaction, document, add, app, trigger, input } = await setup();
+  const text = add(app, 'p');
+  assert.equal(interaction.isDocumentSelectAll({ target: document.body }), true);
+  const html = { tagName: 'HTML' };
+  assert.equal(interaction.isDocumentSelectAll({ target: html }, { body: document.body, documentElement: html }), true);
+  assert.equal(interaction.isDocumentSelectAll({ target: input }), false);
+  assert.equal(interaction.isDocumentSelectAll({ target: text }), false);
+  assert.equal(interaction.isDocumentSelectAll({ target: trigger }), false);
+  assert.equal(interaction.isDocumentSelectAll({ target: null }), false);
+  assert.equal(interaction.isDocumentSelectAll(null), false);
+  // entry.js 把它接到 document 的 selectstart 上并取消
+  const entry = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
+  assert.match(entry, /document\.addEventListener\('selectstart', \(e\) => \{ if \(isDocumentSelectAll\(e\)\) e\.preventDefault\(\); \}\)/);
+});
+
 test('popup positioning aligns below, flips above, and clamps oversized popups and offscreen anchors', async () => {
   const { interaction } = await setup();
   const viewport = { width: 800, height: 600 };

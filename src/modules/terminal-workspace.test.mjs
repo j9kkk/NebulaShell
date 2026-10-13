@@ -496,4 +496,55 @@ test('pointer drag on tab header and workspace tile header reorders tabs only af
   assert.deepEqual([...h.state.tabs.keys()], [a.tabId, b.tabId]);
 });
 
+test('tab and tile header presses cancel the default action; a drag whose mouseup never arrives ends on the next button-less move', async () => {
+  const h = await fixture(), a = h.session(), b = h.session();
+  h.subject.bindTabStrip();
+  const tabA = h.state.tabs.get(a.tabId).el;
+  const tabB = h.state.tabs.get(b.tabId).el;
+  tabA.getBoundingClientRect = () => ({ left: 0, right: 100, top: 0, bottom: 30, width: 100, height: 30 });
+  tabB.getBoundingClientRect = () => ({ left: 104, right: 204, top: 0, bottom: 30, width: 100, height: 30 });
+  h.document.querySelector('#tabs').getBoundingClientRect = () => ({ left: 0, right: 400, top: 0, bottom: 36, width: 400, height: 36 });
+  const press = (el, extra = {}) => {
+    const event = { type: 'mousedown', button: 0, clientX: 20, clientY: 15, target: el, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; }, ...extra };
+    el.dispatchEvent(event);
+    return event;
+  };
+
+  // A press on a tab never starts a text selection, including on its close button; right-click keeps its default
+  assert.equal(press(tabA.querySelector('.tab-title')).defaultPrevented, true);
+  h.document.dispatchEvent({ type: 'mouseup', clientX: 20, clientY: 15 });
+  assert.equal(press(tabA.querySelector('.tab-close')).defaultPrevented, true);
+  assert.equal(press(tabA, { button: 2 }).defaultPrevented, false);
+
+  press(tabA);
+  h.document.dispatchEvent({ type: 'mousemove', clientX: 180, clientY: 15, buttons: 1 });
+  assert.equal(tabA.classList.contains('dragging'), true);
+  assert.equal(h.document.body.classList.contains('tab-dragging'), true);
+  // Button already up without a mouseup reaching the page: the drag finishes where it is
+  h.document.dispatchEvent({ type: 'mousemove', clientX: 60, clientY: 15, buttons: 0 });
+  assert.equal(tabA.classList.contains('dragging'), false);
+  assert.equal(h.document.body.classList.contains('tab-dragging'), false);
+  assert.deepEqual([...h.state.tabs.keys()], [b.tabId, a.tabId]);
+  // Later moves no longer drag the tab around
+  h.document.dispatchEvent({ type: 'mousemove', clientX: 400, clientY: 15 });
+  assert.equal(tabA.classList.contains('dragging'), false);
+  assert.deepEqual([...h.state.tabs.keys()], [b.tabId, a.tabId]);
+
+  h.subject.toggleTabTiling();
+  h.frame();
+  const header = h.state.tabs.get(a.tabId).workspaceTile.querySelector('.workspace-tile-header');
+  assert.equal(press(header, { clientX: 100, clientY: 14 }).defaultPrevented, true);
+  h.document.dispatchEvent({ type: 'mouseup', clientX: 100, clientY: 14 });
+});
+
+test('style.css keeps drag handles out of text selection and tabs out of hit-testing while a tab is dragged', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+  const rule = (selector) => css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.#]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1] || '';
+  assert.match(rule('#tabbar'), /user-select:\s*none/);
+  assert.match(rule('.workspace-tile-header'), /user-select:\s*none/);
+  assert.match(css, /body\.tab-dragging #tabs \.tab\s*\{\s*pointer-events:\s*none;?\s*\}/);
+});
+
 

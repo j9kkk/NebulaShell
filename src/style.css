@@ -234,6 +234,8 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   gap: 8px;
   position: relative;
   z-index: 64;
+  /* 标签是拖拽把手,标题文字不参与选区 */
+  user-select: none; -webkit-user-select: none;
 }
 #tabbar::-webkit-scrollbar { height: 0; }
 #tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
@@ -1887,11 +1889,14 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .workspace-split-node.v > .workspace-divider { width: 100%; }
 .workspace-tile { display: flex; flex: 1 1 0; flex-direction: column; position: relative; min-width: 0; min-height: 0; border: 1px solid var(--border); box-sizing: border-box; overflow: hidden; background: var(--bg); }
 .workspace-tile.active { outline: 1px solid var(--accent); outline-offset: -1px; }
-.workspace-tile-header { display: flex; align-items: center; gap: 6px; height: 28px; min-height: 28px; flex: none; padding: 0 6px; box-sizing: border-box; background: var(--bg2); color: var(--muted); overflow: hidden; cursor: pointer; }
+.workspace-tile-header { display: flex; align-items: center; gap: 6px; height: 28px; min-height: 28px; flex: none; padding: 0 6px; box-sizing: border-box; background: var(--bg2); color: var(--muted); overflow: hidden; cursor: pointer; user-select: none; -webkit-user-select: none; }
 .workspace-tile.active > .workspace-tile-header { color: var(--text); background: var(--tab-active-bg); font-weight: 500; }
 .workspace-tile.dragging { opacity: 0.5; }
 .workspace-tile.drop-target { outline: 2px dashed var(--accent) !important; outline-offset: -2px; }
 body.tab-dragging { user-select: none !important; cursor: grabbing !important; }
+/* 拖拽中标签不接收指针:换位会把别的标签和它的关闭钮滑到指针下,WebKit 在按住
+   鼠标期间挂上的悬停态松手后清不掉(关闭钮残留红底);拖拽逻辑只按坐标计算 */
+body.tab-dragging #tabs .tab { pointer-events: none; }
 .workspace-tile-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .workspace-tile-header button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
 .workspace-tile-header button:is(:hover, :focus-visible) { color: var(--text); background: var(--hover-bg); }

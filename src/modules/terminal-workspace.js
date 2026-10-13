@@ -59,6 +59,8 @@ export function ensureWorkspaceTile(tab, { document, activate, close, reorder, t
     if (event.target.closest?.('.workspace-tile-close')) return;
     activate(tab.id, false);
     if ((event.button !== undefined && event.button !== 0) || typeof document.addEventListener !== 'function') return;
+    // 标题栏是拖拽把手,按下不起文字选区(同标签条)
+    event.preventDefault?.();
     const startX = event.clientX;
     const startY = event.clientY;
     if (startX === undefined || startY === undefined) return;
@@ -70,6 +72,7 @@ export function ensureWorkspaceTile(tab, { document, activate, close, reorder, t
       }
     };
     const onMove = (ev) => {
+      if (ev.buttons === 0) { onUp(); return; }
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
       if (!dragging) {

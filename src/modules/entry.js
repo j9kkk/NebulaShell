@@ -1,6 +1,6 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
-import { isEditableTarget } from './interaction.js';
+import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
@@ -755,6 +755,9 @@ export function bindEvents() {
     if (e.key !== 'Escape') return;
     if (!$('#term-search').classList.contains('hidden')) closeTermSearch();
   });
+  // 界面本身不做全选:输入框、终端、文件分屏的全选各自处理,落到 body 上的
+  // 文档级全选只会把整个界面的文字和图标刷成选区
+  document.addEventListener('selectstart', (e) => { if (isDocumentSelectAll(e)) e.preventDefault(); });
 
   // Workspace scheduling coalesces frames and ignores unchanged geometry; observing
   // the fixed outer stack (not its rendered children) avoids layout feedback loops.
