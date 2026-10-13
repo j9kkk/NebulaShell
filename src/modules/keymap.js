@@ -44,6 +44,7 @@ export const DEFAULT_KEYMAP = {
   // 面板开关(标题栏左右两个按钮)。Win/Linux 不用 Ctrl+B:readline 的后退一个字符
   'panel.sidebar':   { mac: 'cmd+B',           ...pc('ctrl+shift+B'),     label: '主机侧栏' },
   'panel.tools':     { mac: 'alt+cmd+B',       ...pc('ctrl+shift+alt+B'), label: '右侧工具栏' },
+  'ai.newThread':    { mac: 'cmd+N',           ...pc('ctrl+shift+N'),     label: '新建 AI 对话' },
   // F11 全屏(Windows Terminal 惯例);macOS 用系统的「进入全屏」(⌃⌘F)
   'window.fullscreen': { ...pc('F11'),                                    label: '全屏' },
   // 以下两项只由 macOS 菜单栏的加速键触发(页面不拦截,模态打开时也可用)

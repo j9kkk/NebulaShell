@@ -1417,7 +1417,7 @@ impl Store {
                 term["scrollback"] = json!(n);
             }
             if let Some(v) = t.get("theme") {
-                if ["nebula", "light", "forest"].contains(&v.as_str().unwrap_or("")) {
+                if ["nebula", "light"].contains(&v.as_str().unwrap_or("")) {
                     term["theme"] = v.clone();
                 }
             }

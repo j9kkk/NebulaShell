@@ -430,8 +430,9 @@ async function aiCommandBlockRegressions() {
   };
   const send = async (text) => {
     const count = Number(await evalJs(`document.querySelector('#ai-input').value = ${JSON.stringify(text)};
-      document.querySelector('#ai-send').click(); return document.querySelectorAll('#ai-messages .ai-msg').length`));
-    return `#ai-messages .ai-msg:nth-child(${count})`;
+      document.querySelector('#ai-send').click();
+      return (document.querySelector('#ai-messages .ai-thread-view.active') || document.querySelector('#ai-messages')).querySelectorAll('.ai-msg').length`));
+    return `#ai-messages .ai-thread-view.active .ai-msg:nth-child(${count})`;
   };
   let bubble = '';
   const blockSelector = (index) => `${bubble} .ai-code-block[data-code-index="${index}"]`;
@@ -1468,6 +1469,84 @@ async function main() {
     && lastBubble.text.includes('SLOW-REPLY: 首段 次段'),
     JSON.stringify({ streamingSeen, lastBubble }));
 
+  // T9q2: 多会话并发流式
+  const thA_before = asObj(await evalJs(`
+    const cur = (window.__nbTest.aiThreads() || []).find(t => t.active);
+    return JSON.stringify({ id: cur.id, historyLength: cur.historyLength });
+  `));
+  await evalJs(`document.querySelector('#ai-input').value = '并发A'; document.querySelector('#ai-send').click(); return 1`);
+  await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+  const thB_id = await evalJs(`
+    const cur = (window.__nbTest.aiThreads() || []).find(t => t.active);
+    return cur ? cur.id : '';
+  `);
+  await evalJs(`document.querySelector('#ai-input').value = '并发B'; document.querySelector('#ai-send').click(); return 1`);
+  await waitEval(`return (window.__nbTest.aiThreads() || []).every(t => !t.busy)`, 'true', 20000);
+
+  const threadsAfterParallel = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiThreads() || [])`));
+  const thA_after = threadsAfterParallel.find((t) => t.id === thA_before.id);
+  const thB_after = threadsAfterParallel.find((t) => t.id === thB_id);
+  const bubblesB = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiBubbles() || [])`));
+  const lastBubbleB = bubblesB[bubblesB.length - 1] || {};
+  check('T9q2 多会话并发流式完成,各自历史独立累加且末条回复完整收敛',
+    thB_after?.historyLength === 2 &&
+    lastBubbleB.text?.includes('SLOW-REPLY: 首段 次段') &&
+    lastBubbleB.streaming === false &&
+    thA_after?.historyLength === thA_before.historyLength + 2,
+    JSON.stringify({ thA_before, thA_after, thB_after, lastBubbleB }));
+
+  // T9q3: 未读提示与切回清除
+  const unreadBefore = asObj(await evalJs(`
+    const tr = document.querySelector('#ai-thread-trigger');
+    const thA = (window.__nbTest.aiThreads() || []).find(t => t.id === ${JSON.stringify(thA_before.id)});
+    return JSON.stringify({
+      hasUnread: tr ? tr.classList.contains('has-unread') : false,
+      aUnread: !!thA?.unread
+    });
+  `));
+  await evalJs(`document.querySelector('#ai-thread-trigger').click(); return 1`);
+  await evalJs(`
+    const item = document.querySelector('#ai-thread-menu .ai-thread-menu-item[data-thread-id="${thA_before.id}"]');
+    if (item) item.click();
+    return 1;
+  `);
+  const unreadAfter = asObj(await evalJs(`
+    const tr = document.querySelector('#ai-thread-trigger');
+    const thA = (window.__nbTest.aiThreads() || []).find(t => t.id === ${JSON.stringify(thA_before.id)});
+    return JSON.stringify({
+      hasUnread: tr ? tr.classList.contains('has-unread') : false,
+      aUnread: !!thA?.unread
+    });
+  `));
+  check('T9q3 触发钮标未读且后台会话标未读,切回后清除未读',
+    unreadBefore.hasUnread === true && unreadBefore.aUnread === true &&
+    unreadAfter.hasUnread === false && unreadAfter.aUnread === false,
+    JSON.stringify({ unreadBefore, unreadAfter }));
+
+  // T9q4: 删除非空会话二次确认
+  await evalJs(`document.querySelector('#ai-thread-trigger').click(); return 1`);
+  await evalJs(`
+    const del = document.querySelector('#ai-thread-menu [data-del-thread="${thB_id}"]');
+    if (del) del.click();
+    return 1;
+  `);
+  await waitEval(`return window.__nbTest.confirmOpen() ? 1 : 0`, '1', 5000);
+  await evalJs(`window.__nbTest.confirmClickOk(); return 1`);
+  await waitEval(`return !(window.__nbTest.aiThreads() || []).some(t => t.id === ${JSON.stringify(thB_id)})`, 'true', 5000);
+  const delState = asObj(await evalJs(`
+    const ths = window.__nbTest.aiThreads() || [];
+    const cur = ths.find(t => t.active);
+    const views = document.querySelectorAll('#ai-messages .ai-thread-view');
+    return JSON.stringify({
+      hasB: ths.some(t => t.id === ${JSON.stringify(thB_id)}),
+      activeId: cur?.id,
+      viewsCount: views.length
+    });
+  `));
+  check('T9q4 删除有内容的会话二次确认,确认后移除会话并保留活动会话',
+    delState.hasB === false && delState.activeId === thA_before.id && delState.viewsCount === 1,
+    JSON.stringify(delState));
+
   // 还原 base,后续用例仍走正常端点
   await openAiSettings();
   await evalJs(`
@@ -2350,14 +2429,14 @@ async function main() {
   await evalJs(`
     const btn = [...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.textContent.includes('诊断报错'));
     btn.click(); return 1`);
-  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'NB_DIAG_MARK_42', 20000);
+  await waitEval(`return window.__nbTest.aiActiveText()`, 'NB_DIAG_MARK_42', 20000);
   const diagMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
   const diagUser = [...diagMsgs].reverse().find((m) => m.role === 'user');
   check('T9y 诊断提问只含最后一次命令与输出',
     diagUser && diagUser.text.includes('NB_DIAG_MARK_42')
     && !diagUser.text.includes('Welcome to NebulaShell mock sshd'),
     JSON.stringify(diagUser));
-  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+  await waitEval(`return window.__nbTest.aiActiveText()`, 'MOCK-REPLY', 20000);
 
   // 「解释选中内容」悬浮按钮:选中终端内容 → 🔍 浮现在选区末尾;点击发出解释提问。
   // (入口已从 AI 面板快捷按钮迁移,见 terminal.js bindSelectionExplain)
@@ -2366,14 +2445,14 @@ async function main() {
     bubble.hasBubble && bubble.shown && bubble.top > 0 && bubble.left > 0,
     JSON.stringify(bubble));
   await evalJs(`document.querySelector('#ai-explain-bubble').click(); return 1`);
-  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+  await waitEval(`return window.__nbTest.aiActiveText()`, 'MOCK-REPLY', 20000);
   const explainMsgs = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiMsgDetail())`));
   const explainUser = [...explainMsgs].reverse().find((m) => m.role === 'user');
   // 气泡渲染的是选区原文(包装后的解释 prompt 只进请求体),断言以选区文本为准
   check('T9z2 点击悬浮按钮发出解释提问(气泡为选区内容且得到回复)',
     explainUser && /Welcome to NebulaShell|PROBE-OK/.test(explainUser.text),
     JSON.stringify(explainUser || {}).slice(0, 200));
-  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+  await waitEval(`return window.__nbTest.aiActiveText()`, 'MOCK-REPLY', 20000);
 
   // 选区整体滚出视口(选中后向下/向上滚过它)后,首行不得残留盖住文字的选区色带
   // (xterm 5.5 DOM 渲染器缺陷,修复见 terminal.js guardOffscreenSelection),

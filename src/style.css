@@ -36,7 +36,7 @@
   --tab-active-bg: #162032;
   --tab-active-border: #3b5278;
   --tab-active-indicator: #5b8cff;
-  --tab-active-shadow: 0 -1px 0 rgba(91, 140, 255, 0.4), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --tab-active-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   --tab-inactive-bg: rgba(19, 26, 38, 0.6);
   --radius: 10px;
   /* 控件高度刻度:按钮默认 30px,小号/图标 26px(在各自类里覆盖)。
@@ -92,46 +92,6 @@
   --tab-inactive-bg: rgba(235, 238, 242, 0.7);
 }
 
-[data-theme="forest"] {
-  --bg: #0b1f16;
-  --bg2: #12281e;
-  --panel: #0e231a;
-  --border: #1e3d2f;
-  --border-hover: #2d5a45;
-  --text: #d7e8dc;
-  --muted: #7d9b89;
-  --accent: #34d399;
-  --accent2: #6ee7b7;
-  --danger: #f87171;
-  --warn: #fbbf24;
-  --titlebar-bg: #071710;
-  --color-scheme: dark;
-  --select-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%237d9b89' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --surface-hover: rgba(215, 232, 220, 0.08);
-  --hover-bg: rgba(52, 211, 153, 0.12);
-  --active-bg: rgba(52, 211, 153, 0.18);
-  --btn-primary-bg: linear-gradient(135deg, #10b981, #059669);
-  --btn-primary-text: #ffffff;
-  --ai-user-bubble: #134e3a;
-  --ai-user-text: #d7e8dc;
-  --modal-backdrop: rgba(4, 16, 10, 0.65);
-  --modal-backdrop-stack: rgba(4, 16, 10, 0.5);
-  --modal-backdrop-palette: rgba(4, 16, 10, 0.45);
-  --card-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
-  --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  --floating-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  --scrollbar-thumb-hover: #234838;
-  --table-divider: rgba(30, 61, 47, 0.7);
-  --progress-track: rgba(90, 122, 104, 0.25);
-  --drag-accent: rgba(52, 211, 153, 0.15);
-  --danger-hover-bg: rgba(248, 113, 113, 0.15);
-  --muted-hover-bg: rgba(125, 155, 137, 0.18);
-  --tab-active-bg: #143324;
-  --tab-active-border: #28573f;
-  --tab-active-indicator: #34d399;
-  --tab-active-shadow: 0 -1px 0 rgba(52, 211, 153, 0.4), 0 2px 8px rgba(0, 0, 0, 0.4);
-  --tab-inactive-bg: rgba(18, 40, 30, 0.6);
-}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
@@ -302,17 +262,6 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   border-color: var(--tab-active-border);
   font-weight: 500;
   box-shadow: var(--tab-active-shadow);
-}
-.tab.active::before {
-  content: '';
-  position: absolute;
-  top: -1px;
-  left: -1px;
-  right: -1px;
-  height: 2px;
-  background: var(--tab-active-indicator);
-  border-radius: 8px 8px 0 0;
-  pointer-events: none;
 }
 .tab.dragging {
   opacity: 0.5;
@@ -539,24 +488,67 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   cursor: pointer; white-space: nowrap; min-width: 0; max-width: 100%;
 }
 .ai-thread-trigger:hover { border-color: var(--accent); }
+.ai-thread-dot {
+  display: none; width: 7px; height: 7px; border-radius: 50%; flex: none;
+}
+.ai-thread-trigger.has-busy .ai-thread-dot {
+  display: inline-block; background: var(--accent); animation: pulse 1s infinite;
+}
+.ai-thread-trigger.has-unread .ai-thread-dot {
+  display: inline-block; background: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-thread-trigger.has-busy .ai-thread-dot { animation: none; }
+}
 .ai-thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-thread-caret { flex: none; display: inline-flex; color: var(--muted); }
 .ai-thread-caret svg { width: 12px; height: 12px; }
 .ai-thread-view { display: none; flex-direction: column; gap: 10px; }
 .ai-thread-view.active { display: flex; }
-.ai-thread-menu-row { display: flex; align-items: center; gap: 4px; }
-.ai-thread-menu-row .ai-model-menu-item { flex: 1 1 0; min-width: 0; }
-.ai-thread-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-thread-menu-host {
-  flex: none; font-size: 11px; color: var(--muted);
-  padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px;
+.ai-thread-view.active:empty::before {
+  content: '新对话 · 输入问题开始，或在终端选中内容点 🔍 解释';
+  display: block; padding: 32px 16px 16px; text-align: center;
+  font-size: 12px; color: var(--muted); user-select: none;
+}
+.ai-thread-menu {
+  min-width: 240px; max-width: min(360px, calc(100vw - 16px));
+}
+.ai-thread-menu-row {
+  display: flex; align-items: center; gap: 4px; border-radius: 6px;
+}
+.ai-thread-menu-row:is(:hover, :focus-within) { background: var(--surface-hover); }
+.ai-thread-menu-item {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  padding: 7px 8px; cursor: pointer; background: none; border: none;
+  font: inherit; font-size: 12px; text-align: left; color: var(--text);
+  border-radius: 6px;
+}
+.ai-thread-menu-row.active .ai-thread-menu-item,
+.ai-thread-menu-item[aria-checked="true"] { color: var(--accent); }
+.ai-thread-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ai-thread-menu-check {
+  flex: none; width: 14px; text-align: center; visibility: hidden;
+}
+.ai-thread-menu-row.active .ai-thread-menu-check,
+.ai-thread-menu-item[aria-checked="true"] .ai-thread-menu-check { visibility: visible; }
+.ai-thread-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-thread-menu-badge {
+  flex: none; font-size: 11px; line-height: 1.2; color: var(--muted);
+  padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; white-space: nowrap;
+}
+.ai-thread-menu-row.busy .ai-thread-menu-badge,
+.ai-thread-menu-row.unread .ai-thread-menu-badge {
+  color: var(--accent); border-color: var(--accent);
 }
 .ai-thread-del {
   flex: none; width: 24px; height: 24px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   background: none; border: none; border-radius: 4px;
   color: var(--muted); cursor: pointer;
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
+.ai-thread-menu-row:is(:hover, :focus-within) .ai-thread-del,
+.ai-thread-del:focus-visible { opacity: 1; }
 .ai-thread-del:hover { background: var(--danger-hover-bg); color: var(--danger); }
 /* 消息区外壳:承载"回到底部"浮动按钮的定位上下文;flex:1/min-height:0 的
    尺寸职责从 #ai-messages 上移到这一层,滚动容器本身规则不变。 */
@@ -1202,15 +1194,15 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .mon-ring.ring-warn .mon-ring-fg { stroke: var(--warn, #f59e0b); }
 .mon-ring.ring-danger .mon-ring-fg { stroke: var(--danger, #ef4444); }
 
-/* CPU 悬停走势触发项交互 */
-.mon-cpu-item {
+/* CPU/内存/网络 悬停走势触发项交互 */
+.mon-cpu-item, .mon-mem-item, .mon-net-item {
   cursor: pointer;
   border-radius: 4px;
   padding: 1px 4px;
   margin: -1px -4px;
   transition: background 0.15s ease;
 }
-.mon-cpu-item:hover {
+.mon-cpu-item:hover, .mon-mem-item:hover, .mon-net-item:hover {
   background: var(--hover-bg, rgba(255, 255, 255, 0.08));
 }
 .mon-cpu-hint {
@@ -1338,6 +1330,123 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   color: var(--text);
 }
 .mon-pop-stat-v.warn { color: var(--warn, #f59e0b); }
+
+#mon-pop-line { stroke: var(--accent, #38bdf8); }
+#mon-pop-point { fill: var(--accent, #38bdf8); stroke: var(--bg2, #0d131f); }
+#mon-cpu-grad stop:first-child { stop-color: var(--accent, #38bdf8); }
+#mon-cpu-grad stop:last-child { stop-color: var(--accent, #38bdf8); }
+
+/* 内存走势卡片样式 */
+.mon-mem-dot {
+  background: var(--accent2, #34d399) !important;
+  box-shadow: 0 0 6px var(--accent2, #34d399) !important;
+}
+.mon-mem-cur {
+  color: var(--accent2, #34d399) !important;
+}
+#mon-mem-pop-line { stroke: var(--accent2, #34d399); }
+#mon-mem-pop-point { fill: var(--accent2, #34d399); stroke: var(--bg2, #0d131f); }
+#mon-mem-grad stop:first-child { stop-color: var(--accent2, #34d399); }
+#mon-mem-grad stop:last-child { stop-color: var(--accent2, #34d399); }
+
+/* 网络吞吐双向走势卡片样式 */
+:root {
+  --net-rx-color: #38bdf8;
+  --net-tx-color: #a78bfa;
+}
+.mon-net-dot {
+  background: var(--net-tx-color, #a78bfa) !important;
+  box-shadow: 0 0 6px var(--net-tx-color, #a78bfa) !important;
+}
+.net-legends {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10.5px;
+}
+.net-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.net-leg-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.net-leg-rx { background: var(--net-rx-color, #38bdf8); }
+.net-leg-tx { background: var(--net-tx-color, #a78bfa); }
+
+#mon-net-pop-rx-line { stroke: var(--net-rx-color, #38bdf8); }
+#mon-net-pop-rx-point { fill: var(--net-rx-color, #38bdf8); stroke: var(--bg2, #0d131f); }
+#mon-rx-grad stop:first-child { stop-color: var(--net-rx-color, #38bdf8); }
+#mon-rx-grad stop:last-child { stop-color: var(--net-rx-color, #38bdf8); }
+
+#mon-net-pop-tx-line { stroke: var(--net-tx-color, #a78bfa); }
+#mon-net-pop-tx-point { fill: var(--net-tx-color, #a78bfa); stroke: var(--bg2, #0d131f); }
+
+.rx-val { color: var(--net-rx-color, #38bdf8) !important; }
+.tx-val { color: var(--net-tx-color, #a78bfa) !important; }
+
+/* 日蚀亮 (light) 模式：监控底板、连接胶囊、方向符与 CPU/内存/网络 走势卡片浅色适配 */
+[data-theme="light"] {
+  --net-rx-color: #0284c7;
+  --net-tx-color: #7c3aed;
+}
+[data-theme="light"] .mon-deck {
+  background: var(--bg2);
+  border-color: var(--border);
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+[data-theme="light"] .mon-lat-item .mon-item {
+  background: var(--bg2);
+  border-color: var(--border);
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+[data-theme="light"] .mon-dir.mon-up {
+  color: #0284c7;
+}
+[data-theme="light"] .mon-dir.mon-down {
+  color: #7c3aed;
+}
+[data-theme="light"] .mon-cpu-popover {
+  background: var(--bg2);
+  border-color: var(--border);
+  box-shadow: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
+}
+[data-theme="light"] .mon-pop-dot {
+  box-shadow: 0 0 4px rgba(9, 105, 218, 0.35);
+}
+[data-theme="light"] .mon-mem-dot {
+  background: #059669 !important;
+  box-shadow: 0 0 4px rgba(5, 150, 105, 0.35) !important;
+}
+[data-theme="light"] .mon-mem-cur {
+  color: #059669 !important;
+}
+[data-theme="light"] #mon-mem-pop-line { stroke: #059669; }
+[data-theme="light"] #mon-mem-pop-point { fill: #059669; stroke: var(--bg2); }
+[data-theme="light"] #mon-mem-grad stop:first-child { stop-color: #059669; }
+[data-theme="light"] #mon-mem-grad stop:last-child { stop-color: #059669; }
+
+[data-theme="light"] .mon-net-dot {
+  background: #7c3aed !important;
+  box-shadow: 0 0 4px rgba(124, 58, 237, 0.35) !important;
+}
+[data-theme="light"] #mon-net-pop-rx-point,
+[data-theme="light"] #mon-net-pop-tx-point {
+  stroke: var(--bg2);
+}
+[data-theme="light"] .mon-pop-chart {
+  background: var(--panel);
+}
+[data-theme="light"] .mon-pop-grid {
+  stroke: rgba(31, 35, 40, 0.08);
+}
+[data-theme="light"] #mon-pop-point {
+  stroke: var(--bg2);
+}
 
 /* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page)。
    行内按钮几何统一 26×26 圆角方块:▶/✏/🗑 全部常显(0.4.x 起,悬停显隐
@@ -1777,9 +1886,9 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .workspace-split-node > .workspace-divider { flex: 0 0 5px; background: var(--border); cursor: default; }
 .workspace-split-node.v > .workspace-divider { width: 100%; }
 .workspace-tile { display: flex; flex: 1 1 0; flex-direction: column; position: relative; min-width: 0; min-height: 0; border: 1px solid var(--border); box-sizing: border-box; overflow: hidden; background: var(--bg); }
-.workspace-tile.active { outline: 1.5px solid var(--tab-active-indicator); outline-offset: -1px; }
+.workspace-tile.active { outline: 1px solid var(--accent); outline-offset: -1px; }
 .workspace-tile-header { display: flex; align-items: center; gap: 6px; height: 28px; min-height: 28px; flex: none; padding: 0 6px; box-sizing: border-box; background: var(--bg2); color: var(--muted); overflow: hidden; cursor: pointer; }
-.workspace-tile.active > .workspace-tile-header { color: var(--text); background: var(--tab-active-bg); font-weight: 500; box-shadow: inset 0 2px 0 var(--tab-active-indicator); }
+.workspace-tile.active > .workspace-tile-header { color: var(--text); background: var(--tab-active-bg); font-weight: 500; }
 .workspace-tile.dragging { opacity: 0.5; }
 .workspace-tile.drop-target { outline: 2px dashed var(--accent) !important; outline-offset: -2px; }
 body.tab-dragging { user-select: none !important; cursor: grabbing !important; }

@@ -4,7 +4,6 @@ import { state } from './core.js';
 export const THEMES = [
   { id: 'nebula', label: '星云暗（默认）' },
   { id: 'light', label: '日蚀亮' },
-  { id: 'forest', label: '森林绿' },
 ];
 
 export const v = (n, f) => (typeof document !== 'undefined' && document.documentElement ? (getComputedStyle(document.documentElement).getPropertyValue(n) || '').trim() || f : f);
@@ -49,26 +48,6 @@ export const TERM_THEMES = {
     cyan: '#1b7c83',
     magenta: '#8250df',
     white: '#f6f8fa',
-  }),
-  forest: () => ({
-    background: '#0b1f16',
-    foreground: '#d7e8dc',
-    cursor: '#34d399',
-    cursorAccent: '#0b1f16',
-    selectionBackground: 'rgba(52,211,153,0.3)',
-    black: '#0b1f16',
-    brightBlack: '#5a7a68',
-    green: '#34d399',
-    brightGreen: '#6ee7b7',
-    blue: '#60a5fa',
-    brightBlue: '#93c5fd',
-    red: '#f87171',
-    brightRed: '#fca5a5',
-    yellow: '#fbbf24',
-    brightYellow: '#fcd34d',
-    cyan: '#22d3ee',
-    magenta: '#c084fc',
-    white: '#d7e8dc',
   }),
 };
 

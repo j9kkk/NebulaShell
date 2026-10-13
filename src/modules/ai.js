@@ -10,6 +10,7 @@ import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
 
 export const AI_HISTORY_LIMIT = 20;
+export const AI_THREAD_LIMIT = 20;
 // 消息区 DOM 上限:超出的旧气泡直接移除,避免长会话下无界增长。
 export const AI_DOM_LIMIT = 200;
 export const AI_IDLE_TIMEOUT_MS = 60_000;
@@ -103,12 +104,8 @@ export function activeAiThread() {
 
 export function trimAiHistory(targetThread) {
   const th = targetThread || activeAiThread();
-  if (th) {
-    if (th.history.length > AI_HISTORY_LIMIT) {
-      th.history = th.history.slice(-AI_HISTORY_LIMIT);
-    }
-  } else if (state.aiHistory && state.aiHistory.length > AI_HISTORY_LIMIT) {
-    state.aiHistory = state.aiHistory.slice(-AI_HISTORY_LIMIT);
+  if (th && th.history && th.history.length > AI_HISTORY_LIMIT) {
+    th.history = th.history.slice(-AI_HISTORY_LIMIT);
   }
 }
 
@@ -118,15 +115,14 @@ function ensureThreadContainer(thread) {
   if (!thread.containerEl) {
     const c = document.createElement('div');
     c.className = 'ai-thread-view';
-    c.classList?.add?.('ai-thread-view');
     c.dataset.threadId = thread.id;
     thread.containerEl = c;
   }
-  if (thread.containerEl.parentNode !== box && !box.children?.includes?.(thread.containerEl)) {
+  if (thread.containerEl.parentNode !== box) {
     box.appendChild(thread.containerEl);
   }
-  if (state.activeThreadId === thread.id && !thread.containerEl.classList?.contains('active')) {
-    thread.containerEl.classList?.add('active');
+  if (state.activeThreadId === thread.id && !thread.containerEl.classList.contains('active')) {
+    thread.containerEl.classList.add('active');
   }
   return thread.containerEl;
 }
@@ -134,26 +130,26 @@ function ensureThreadContainer(thread) {
 export function deriveThreadTitle(text) {
   const clean = String(text || '').replace(/[\r\n\t]+/g, ' ').replace(/^[#\s*`>-]+/, '').trim();
   if (!clean) return '新对话';
-  return clean.length > 18 ? clean.slice(0, 18) + '…' : clean;
+  const chars = Array.from(clean);
+  return chars.length > 18 ? chars.slice(0, 18).join('') + '…' : clean;
+}
+
+const detachedRequests = new Map();
+
+function discardHolder(h) {
+  if (!h) return;
+  h.cancelled = true;
+  h.discarded = true;
+  clearTimeout(h.idleTimer);
+  if (h.raf) { cancelAnimationFrame(h.raf); h.raf = 0; }
+  api('ai:abort', { requestId: h.id }).catch(() => {});
+  h.resolve({ ok: true, aborted: true, text: h.acc });
 }
 
 export function ensureDefaultAiThread() {
   if (!state.aiThreads) state.aiThreads = new Map();
   if (state.aiThreads.size === 0) {
-    const isMock = !Object.getOwnPropertyDescriptor(state, 'aiHistory')?.get;
-    const initialHistory = Array.isArray(state.aiHistory) && state.aiHistory.length
-      ? state.aiHistory
-      : (Array.isArray(state._aiHistoryFallback) ? state._aiHistoryFallback : []);
-    const initialReq = state.aiReq || state._aiReqFallback || null;
-    state._aiHistoryFallback = [];
-    state._aiReqFallback = null;
-    const th = createAiThread({ title: '新对话' });
-    if (isMock && Array.isArray(state.aiHistory)) {
-      th.history = state.aiHistory;
-    } else if (initialHistory.length) {
-      th.history = initialHistory;
-    }
-    if (initialReq) th.req = initialReq;
+    createAiThread({ title: '新对话' });
   } else if (!state.activeThreadId || !state.aiThreads.has(state.activeThreadId)) {
     const firstId = state.aiThreads.keys().next().value;
     switchAiThread(firstId);
@@ -165,33 +161,55 @@ export function ensureDefaultAiThread() {
 
 export function createAiThread({ hostId = null, hostName = null, sessionId = null, title = '新对话' } = {}) {
   if (!state.aiThreads) state.aiThreads = new Map();
+
+  // AI_THREAD_LIMIT = 20: 淘汰非活动、非忙碌会话,空会话优先、最旧其次
+  if (state.aiThreads.size >= AI_THREAD_LIMIT) {
+    const candidates = [...state.aiThreads.values()]
+      .filter((th) => th.id !== state.activeThreadId && !th.req);
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => {
+        const aEmpty = a.history.length === 0 ? 0 : 1;
+        const bEmpty = b.history.length === 0 ? 0 : 1;
+        if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+        return (a.updatedAt || 0) - (b.updatedAt || 0);
+      });
+      const victim = candidates[0];
+      if (victim.history.length > 0) {
+        toast(`对话已达上限，已移除较早的「${victim.title || '对话'}」`, 'info');
+      }
+      if (victim.containerEl) victim.containerEl.remove();
+      state.aiThreads.delete(victim.id);
+    }
+  }
+
   const id = 'th-' + Date.now().toString(36) + '-' + (++threadSeq);
   const container = document.createElement('div');
   container.className = 'ai-thread-view';
-  container.classList?.add?.('ai-thread-view');
   container.dataset.threadId = id;
 
   const box = $('#ai-messages');
   if (box) {
-    // 若首次创建前 #ai-messages 已有裸 .ai-msg 节点,收拢进第一个会话容器
     if (state.aiThreads.size === 0 && box.children) {
-      const stray = [...box.children].filter((ch) => !ch.classList?.contains('ai-thread-view'));
+      const stray = [...box.children].filter((ch) => !ch.classList.contains('ai-thread-view'));
       for (const node of stray) container.appendChild(node);
     }
     box.appendChild(container);
   }
 
   const now = Date.now();
-  const isMock = !Object.getOwnPropertyDescriptor(state, 'aiHistory')?.get;
   const thread = {
     id,
     title: title || '新对话',
+    autoTitle: !title || title === '新对话',
     hostId,
     hostName,
     sessionId,
-    history: isMock && state.aiThreads.size === 0 && Array.isArray(state.aiHistory) ? state.aiHistory : [],
+    history: [],
     containerEl: container,
     req: null,
+    scroll: { top: 0, pinned: true },
+    draft: '',
+    unread: false,
     createdAt: now,
     updatedAt: now,
   };
@@ -201,14 +219,72 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
   return thread;
 }
 
+export function newAiThread({ focus = false } = {}) {
+  ensureDefaultAiThread();
+  const cur = activeAiThread();
+
+  if (cur && cur.history.length === 0 && !cur.req) {
+    if (focus) $('#ai-input')?.focus();
+    return cur;
+  }
+
+  const otherEmpty = [...state.aiThreads.values()]
+    .filter((th) => th.id !== cur?.id && th.history.length === 0 && !th.req && !th.hostId)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+
+  if (otherEmpty) {
+    switchAiThread(otherEmpty.id);
+    if (focus) $('#ai-input')?.focus();
+    return otherEmpty;
+  }
+
+  const created = createAiThread({ title: '新对话' });
+  if (focus) $('#ai-input')?.focus();
+  return created;
+}
+
+let pendingScrollRestore = null;
+
+export function restoreThreadScroll(target) {
+  const box = $('#ai-messages');
+  if (!box || !target) return;
+  const s = target.scroll || { top: 0, pinned: true };
+  aiPinned = !!s.pinned;
+  if (box.clientHeight > 0) {
+    pendingScrollRestore = null;
+    if (aiPinned) {
+      box.scrollTop = box.scrollHeight;
+    } else {
+      box.scrollTop = s.top || 0;
+    }
+    aiSyncScrollButton(box);
+  } else {
+    pendingScrollRestore = target.id;
+  }
+}
+
 export function switchAiThread(threadId) {
   if (!state.aiThreads) return;
   const target = state.aiThreads.get(threadId);
   if (!target) return;
+
+  const prev = activeAiThread();
+  const box = $('#ai-messages');
+  const input = $('#ai-input');
+
+  if (prev) {
+    if (box && box.clientHeight > 0) {
+      prev.scroll = { top: box.scrollTop, pinned: aiPinned };
+    }
+    if (input) {
+      prev.draft = input.value;
+    }
+  }
+
   state.activeThreadId = threadId;
+  target.unread = false;
   ensureThreadContainer(target);
 
-  const box = $('#ai-messages');
   if (box && box.children) {
     for (const child of box.children) {
       if (child.classList?.contains('ai-thread-view')) {
@@ -217,10 +293,16 @@ export function switchAiThread(threadId) {
     }
   }
 
+  restoreThreadScroll(target);
+
+  if (input) {
+    input.value = target.draft || '';
+  }
+
   setAiBusy(!!target.req);
   renderAiThreadBar();
   closeThreadMenu();
-  aiStickScroll();
+  refreshThreadUi();
   refreshAiCodeActions();
 }
 
@@ -228,15 +310,22 @@ export function clearCurrentAiThread() {
   const thread = ensureDefaultAiThread();
   if (!thread) return;
   if (thread.req) {
-    stopAiGeneration();
+    discardHolder(thread.req);
+    thread.req = null;
+    setAiBusy(false);
   }
   thread.history = [];
   if (thread.containerEl) {
     thread.containerEl.innerHTML = '';
   }
-  thread.title = thread.hostName ? `${thread.hostName} 对话` : '新对话';
+  thread.title = '新对话';
+  thread.autoTitle = true;
+  thread.unread = false;
+  thread.scroll = { top: 0, pinned: true };
+  restoreThreadScroll(thread);
   thread.updatedAt = Date.now();
   renderAiThreadBar();
+  refreshThreadUi();
 }
 
 export function deleteAiThread(threadId) {
@@ -248,14 +337,8 @@ export function deleteAiThread(threadId) {
     return;
   }
   if (thread.req) {
-    if (state.activeThreadId === threadId) {
-      stopAiGeneration();
-    } else {
-      thread.req.cancelled = true;
-      clearTimeout(thread.req.idleTimer);
-      api('ai:abort', { requestId: thread.req.id }).catch(() => {});
-      thread.req = null;
-    }
+    discardHolder(thread.req);
+    thread.req = null;
   }
   if (thread.containerEl) {
     thread.containerEl.remove();
@@ -265,9 +348,72 @@ export function deleteAiThread(threadId) {
     const latest = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
     if (latest) switchAiThread(latest.id);
   } else {
-    renderAiThreadBar();
-    renderThreadMenu();
+    refreshThreadUi();
   }
+}
+
+export async function requestDeleteAiThread(threadId) {
+  const id = threadId || state.activeThreadId;
+  const thread = state.aiThreads?.get(id);
+  if (!thread) return;
+
+  if (state.aiThreads.size <= 1) {
+    return requestClearAiThread();
+  }
+
+  const hasContent = thread.history?.length > 0;
+  const isBusy = !!thread.req;
+
+  if (hasContent || isBusy) {
+    const menu = $('#ai-thread-menu');
+    if (menu && !menu.classList.contains('hidden')) {
+      closeThreadMenu({ focusTrigger: true });
+    } else {
+      closeThreadMenu();
+    }
+    const title = thread.title || '此对话';
+    let msg = `确定要删除对话「${title}」吗？此操作不可撤销。`;
+    if (isBusy) {
+      msg += '\n\n当前对话正在生成回复，删除将中止生成。';
+    }
+    const ok = await askConfirm(msg, {
+      title: '删除对话',
+      okText: '删除',
+      danger: true,
+      defaultFocus: 'cancel',
+    });
+    if (!ok) return;
+  }
+  deleteAiThread(id);
+}
+
+export async function requestClearAiThread() {
+  const thread = activeAiThread();
+  if (!thread) return;
+
+  const hasContent = thread.history?.length > 0;
+  const isBusy = !!thread.req;
+
+  if (hasContent || isBusy) {
+    const menu = $('#ai-thread-menu');
+    if (menu && !menu.classList.contains('hidden')) {
+      closeThreadMenu({ focusTrigger: true });
+    } else {
+      closeThreadMenu();
+    }
+    let msg = '确定要清空当前对话的消息记录吗？此操作不可撤销。';
+    if (isBusy) {
+      msg += '\n\n当前对话正在生成回复，清空将中止生成。';
+    }
+    const ok = await askConfirm(msg, {
+      title: '清空对话',
+      okText: '清空',
+      danger: true,
+      defaultFocus: 'cancel',
+    });
+    if (!ok) return;
+  }
+  clearCurrentAiThread();
 }
 
 export function renderAiThreadBar() {
@@ -278,6 +424,8 @@ export function renderAiThreadBar() {
   if (!thread) {
     titleEl.textContent = '新对话';
     trigger.title = '切换对话';
+    trigger.classList.remove('has-busy', 'has-unread');
+    trigger.setAttribute('aria-expanded', 'false');
     return;
   }
   const baseTitle = thread.title || '新对话';
@@ -285,31 +433,152 @@ export function renderAiThreadBar() {
     ? `[${thread.hostName}] ${baseTitle}`
     : baseTitle;
   titleEl.textContent = disp;
-  trigger.title = `当前对话：${disp}（点击切换或管理历史会话）`;
+
+  const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.req);
+  const nonActiveUnread = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.unread);
+  trigger.classList.toggle('has-busy', nonActiveBusy);
+  trigger.classList.toggle('has-unread', nonActiveUnread);
+
+  const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.req).length;
+  const unreadCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.unread).length;
+  let tip = `当前对话：${disp}（点击切换或管理历史会话）`;
+  const extras = [];
+  if (busyCount > 0) extras.push(`另有 ${busyCount} 个对话正在生成`);
+  if (unreadCount > 0) extras.push(`另有 ${unreadCount} 个对话有新回复`);
+  if (extras.length) tip += `\n（${extras.join('，')}）`;
+  trigger.title = tip;
+
+  const menu = $('#ai-thread-menu');
+  const isOpen = menu && !menu.classList.contains('hidden');
+  trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+export function refreshThreadUi() {
+  renderAiThreadBar();
+  const menu = $('#ai-thread-menu');
+  if (menu && !menu.classList.contains('hidden')) {
+    renderThreadMenu();
+  }
 }
 
 export function renderThreadMenu() {
   const menu = $('#ai-thread-menu');
   if (!menu) return;
+  const list = $('#ai-thread-menu-list') || menu;
   ensureDefaultAiThread();
   const threads = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   const activeId = state.activeThreadId;
 
-  menu.innerHTML = threads.map((th) => {
+  let focusedIndex = -1;
+  let hadFocusInMenu = false;
+  if (document.activeElement && menu.contains(document.activeElement)) {
+    hadFocusInMenu = true;
+    const oldRows = Array.from(list.querySelectorAll('.ai-thread-menu-row'));
+    const oldRow = document.activeElement.closest?.('.ai-thread-menu-row');
+    focusedIndex = oldRow ? oldRows.indexOf(oldRow) : -1;
+  }
+  const focusedId = hadFocusInMenu
+    ? (document.activeElement.dataset?.threadId || document.activeElement.closest?.('[data-thread-id]')?.dataset?.threadId)
+    : null;
+
+  list.innerHTML = threads.map((th) => {
     const isActive = th.id === activeId;
-    const hostBadge = th.hostName ? `<span class="ai-thread-menu-host">${escapeHtml(th.hostName)}</span>` : '';
-    const busyBadge = th.req ? `<span class="ai-thread-menu-host">生成中…</span>` : '';
+    const isBusy = !!th.req;
+    const isUnread = !!th.unread;
     const safeTitle = escapeHtml(th.title || '新对话');
-    return `
-      <div class="ai-thread-menu-row${isActive ? ' active' : ''}" role="menuitem" tabindex="0" data-thread-id="${escapeHtml(th.id)}">
-        <span class="ai-thread-menu-check" aria-hidden="true">${isActive ? '✓' : ''}</span>
-        <span class="ai-thread-menu-name" title="${safeTitle}">${safeTitle}</span>
-        ${busyBadge || hostBadge}
-        <button type="button" class="ai-thread-del" data-del-thread="${escapeHtml(th.id)}" title="删除此对话" aria-label="删除此对话">
-          ${icon('x', { size: 12 })}
-        </button>
-      </div>`;
+    const fullTitle = th.hostName ? `${th.title || '新对话'} · ${th.hostName}` : (th.title || '新对话');
+
+    let badgeHtml = '';
+    if (isBusy) {
+      badgeHtml = '<span class="ai-thread-menu-badge">生成中…</span>';
+    } else if (isUnread) {
+      badgeHtml = '<span class="ai-thread-menu-badge">新回复</span>';
+    } else if (th.hostName) {
+      badgeHtml = `<span class="ai-thread-menu-badge">${escapeHtml(th.hostName)}</span>`;
+    }
+
+    const rowClasses = ['ai-thread-menu-row'];
+    if (isActive) rowClasses.push('active');
+    if (isBusy) rowClasses.push('busy');
+    if (isUnread) rowClasses.push('unread');
+
+    return `<div class="${rowClasses.join(' ')}" role="none" data-thread-id="${escapeHtml(th.id)}">` +
+      `<button type="button" class="ai-thread-menu-item" role="menuitemradio" aria-checked="${isActive ? 'true' : 'false'}" data-thread-id="${escapeHtml(th.id)}" title="${escapeHtml(fullTitle)}">` +
+        `<span class="ai-thread-menu-check" aria-hidden="true">✓</span>` +
+        `<span class="ai-thread-menu-name">${safeTitle}</span>` +
+        badgeHtml +
+      `</button>` +
+      `<button type="button" class="ai-thread-del" data-del-thread="${escapeHtml(th.id)}" tabindex="-1" aria-label="删除对话「${safeTitle}」" title="删除此对话">${icon('x', { size: 12 })}</button>` +
+    `</div>`;
   }).join('');
+
+  if (hadFocusInMenu) {
+    const newItems = Array.from(list.querySelectorAll('.ai-thread-menu-item'));
+    if (newItems.length > 0) {
+      let toFocus = focusedId ? list.querySelector(`.ai-thread-menu-item[data-thread-id="${focusedId}"]`) : null;
+      if (!toFocus) {
+        const idx = Math.min(Math.max(0, focusedIndex), newItems.length - 1);
+        toFocus = newItems[idx];
+      }
+      if (toFocus && typeof toFocus.focus === 'function') toFocus.focus();
+    }
+  }
+}
+
+export function onThreadMenuKeydown(e) {
+  if (!e) return;
+  const menu = $('#ai-thread-menu');
+  if (!menu || menu.classList.contains('hidden')) return;
+
+  const key = e.key;
+  if (key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeThreadMenu({ focusTrigger: true });
+    return;
+  }
+  if (key === 'Tab') {
+    closeThreadMenu();
+    return;
+  }
+
+  const items = Array.from(menu.querySelectorAll('.ai-thread-menu-item'));
+  if (!items.length) return;
+
+  const activeEl = document.activeElement;
+  const currentIndex = items.indexOf(activeEl);
+
+  if (key === 'ArrowDown' || key === 'Down') {
+    e.preventDefault();
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    items[nextIndex]?.focus();
+    return;
+  }
+  if (key === 'ArrowUp' || key === 'Up') {
+    e.preventDefault();
+    const prevIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+    items[prevIndex]?.focus();
+    return;
+  }
+  if (key === 'Home') {
+    e.preventDefault();
+    items[0]?.focus();
+    return;
+  }
+  if (key === 'End') {
+    e.preventDefault();
+    items[items.length - 1]?.focus();
+    return;
+  }
+  if (key === 'Delete' || key === 'Backspace') {
+    e.preventDefault();
+    const targetItem = activeEl?.closest?.('.ai-thread-menu-row');
+    const threadId = targetItem?.dataset?.threadId;
+    if (threadId) {
+      requestDeleteAiThread(threadId);
+    }
+    return;
+  }
 }
 
 export function openThreadMenu() {
@@ -318,19 +587,28 @@ export function openThreadMenu() {
   if (!menu || !trigger) return;
   renderThreadMenu();
   menu.classList.remove('hidden');
+  trigger.setAttribute('aria-expanded', 'true');
   const tr = trigger.getBoundingClientRect();
   const size = { width: menu.offsetWidth || 240, height: menu.offsetHeight || 200 };
-  const pos = popupPosition(
-    { top: tr.bottom, bottom: tr.bottom, left: tr.left, right: tr.right },
-    size, { width: window.innerWidth, height: window.innerHeight },
-  );
-  menu.style.left = pos.left + 'px';
+  const left = Math.max(8, Math.min(tr.left, window.innerWidth - size.width - 8));
+  menu.style.left = left + 'px';
   menu.style.top = Math.min(window.innerHeight - size.height - 8, Math.max(8, tr.bottom + 4)) + 'px';
+
+  const activeId = state.activeThreadId;
+  const targetBtn = menu.querySelector(`.ai-thread-menu-item[data-thread-id="${activeId}"]`) || menu.querySelector('.ai-thread-menu-item');
+  if (targetBtn && typeof targetBtn.focus === 'function') {
+    targetBtn.focus();
+  }
 }
 
-export function closeThreadMenu() {
+export function closeThreadMenu({ focusTrigger = false } = {}) {
   const menu = $('#ai-thread-menu');
+  const trigger = $('#ai-thread-trigger');
   if (menu) menu.classList.add('hidden');
+  if (trigger) {
+    trigger.setAttribute('aria-expanded', 'false');
+    if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+  }
 }
 
 export function toggleThreadMenu() {
@@ -340,18 +618,32 @@ export function toggleThreadMenu() {
   else closeThreadMenu();
 }
 
+export function hostKeyOf(host) {
+  if (!host) return null;
+  if (host.id && !host.quick) return host.id;
+  const username = host.username || host.user || '';
+  const hostname = host.host || host.ip || '';
+  const port = host.port || 22;
+  return `${username}@${hostname}:${port}`;
+}
+
+export function hostLabelOf(host) {
+  if (!host) return null;
+  return host.name || host.host || host.ip || null;
+}
+
 /// 终端触发 AI 操作(如选区解释、右键报错诊断)时,智能匹配或分流到对应主机的会话,
 /// 避免把主机 B 的报错塞进主机 A 的正在进行的排障上下文中。
 export function ensureThreadForSession(session) {
   ensureDefaultAiThread();
   if (!session) return activeAiThread();
-  const hostId = session.host?.id || null;
-  const hostName = session.host?.name || session.host?.host || session.host?.ip || null;
+  const hostId = hostKeyOf(session.host);
+  const hostName = hostLabelOf(session.host);
   const sessionId = session.sessionId || null;
   const cur = activeAiThread();
 
-  // 1. 当前会话为空且未绑定其他主机:直接复用并绑定当前主机
-  if (cur && cur.history.length === 0 && !cur.req && (!cur.hostId || cur.hostId === hostId)) {
+  // 1. 当前会话为空且空闲 → (重新)绑定到该主机并复用
+  if (cur && cur.history.length === 0 && !cur.req) {
     cur.hostId = hostId;
     cur.hostName = hostName;
     cur.sessionId = sessionId;
@@ -359,23 +651,35 @@ export function ensureThreadForSession(session) {
     return cur;
   }
 
-  // 2. 当前会话本身就属于该主机且空闲:继续在该会话中追问
+  // 2. 当前会话属于该主机且空闲 → 复用(更新 sessionId)
   if (cur && cur.hostId === hostId && !cur.req) {
     cur.sessionId = sessionId;
     return cur;
   }
 
-  // 3. 查找该主机最近使用过的空闲会话
-  const existing = [...state.aiThreads.values()]
+  // 3. 该主机最近更新的空闲会话 → 切过去
+  const sameHost = [...state.aiThreads.values()]
     .filter((th) => th.hostId === hostId && !th.req)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-  if (existing) {
-    existing.sessionId = sessionId;
-    switchAiThread(existing.id);
-    return existing;
+  if (sameHost) {
+    sameHost.sessionId = sessionId;
+    switchAiThread(sameHost.id);
+    return sameHost;
   }
 
-  // 4. 自动为该主机创建专属新会话
+  // 4. 任一空且空闲的未绑定会话 → 绑定并切过去
+  const unbindEmpty = [...state.aiThreads.values()]
+    .filter((th) => th.history.length === 0 && !th.req && !th.hostId)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+  if (unbindEmpty) {
+    unbindEmpty.hostId = hostId;
+    unbindEmpty.hostName = hostName;
+    unbindEmpty.sessionId = sessionId;
+    switchAiThread(unbindEmpty.id);
+    return unbindEmpty;
+  }
+
+  // 5. 新建绑定该主机的会话
   return createAiThread({
     hostId,
     hostName,
@@ -462,7 +766,19 @@ function renderAiCodeBlock(bubble, block) {
 }
 
 export function refreshAiCodeActions(bubble) {
-  const bubbles = bubble ? [bubble] : (typeof document?.querySelectorAll === 'function' ? document.querySelectorAll('#ai-messages .ai-msg') : []);
+  let bubbles = [];
+  if (bubble) {
+    bubbles = [bubble];
+  } else {
+    const curTh = activeAiThread();
+    if (curTh?.containerEl) {
+      bubbles = typeof curTh.containerEl.querySelectorAll === 'function'
+        ? curTh.containerEl.querySelectorAll('.ai-msg')
+        : [];
+    } else if (typeof document?.querySelectorAll === 'function') {
+      bubbles = document.querySelectorAll('#ai-messages .ai-msg');
+    }
+  }
   const captured = getCommandBlockTarget();
   for (const message of bubbles) {
     for (const button of (typeof message?.querySelectorAll === 'function' ? message.querySelectorAll('[data-ai-code-action="execute"], [data-ai-code-action="insert"]') : [])) {
@@ -493,9 +809,10 @@ export async function handleAiCodeAction(bubble, index, action) {
   refreshAiCodeActions(bubble);
   try {
     // 跨主机安全守卫:若此代码块在主机 A 上下文中生成,而用户当前焦点终端在主机 B,执行前强提示
-    if (bubble.__originHostId && target.session?.host?.id && bubble.__originHostId !== target.session.host.id) {
+    const targetHostKey = hostKeyOf(target.session?.host);
+    if (bubble.__originHostId && targetHostKey && bubble.__originHostId !== targetHostKey) {
       const originHost = bubble.__originHostName || '其他主机';
-      const currentHost = target.session.host.name || target.session.host.host || target.session.host.ip || '当前主机';
+      const currentHost = hostLabelOf(target.session?.host) || '当前主机';
       const allow = await askConfirm(
         `此代码块是在【${originHost}】上下文中生成的，而当前目标终端属于【${currentHost}】。\n\n是否确认在该终端上${action === 'execute' ? '发送并执行' : '填入'}？`,
         { title: '跨主机操作提醒', okText: action === 'execute' ? '确认执行' : '确认填入', danger: true, defaultFocus: 'cancel' },
@@ -585,6 +902,14 @@ function aiSyncScrollButton(box = $('#ai-messages')) {
 export function aiStickScroll() {
   const box = $('#ai-messages');
   if (!box || box.clientHeight === 0) return;
+  if (pendingScrollRestore) {
+    const target = state.aiThreads?.get(pendingScrollRestore);
+    if (target) {
+      restoreThreadScroll(target);
+      return;
+    }
+    pendingScrollRestore = null;
+  }
   if (aiPinned && box.scrollHeight > box.scrollTop + box.clientHeight) {
     // 即时跳转:平滑动画会被下一帧流式写入反复打断,反而卡顿
     box.scrollTop = box.scrollHeight;
@@ -621,12 +946,16 @@ export function bindAiScroll() {
   box.addEventListener('scroll', () => {
     if (performance.now() < aiSmoothUntil) return;
     aiPinned = aiAtBottom(box);
+    const th = activeAiThread();
+    if (th) {
+      th.scroll = { top: box.scrollTop, pinned: aiPinned };
+    }
     aiSyncScrollButton(box);
   }, { passive: true });
   for (const type of ['wheel', 'pointerdown', 'keydown']) {
     box.addEventListener(type, () => { aiSmoothUntil = 0; }, { passive: true, capture: true });
   }
-  btn.addEventListener('click', () => aiForceStickScroll({ smooth: !state.aiReq }));
+  btn.addEventListener('click', () => aiForceStickScroll({ smooth: !activeAiThread()?.req }));
   // 面板拖宽、窗口缩放、侧栏收起都改变可视高度:贴底时重新贴住
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => aiStickScroll()).observe(box);
@@ -643,8 +972,8 @@ export function renderAiMessage(role, text, opts) {
   el.dataset.role = role;
   el.dataset.responseState = 'completed';
   const activeSess = state.sessions?.get?.(state.activeId);
-  const originHostId = thread?.hostId || activeSess?.host?.id || null;
-  const originHostName = thread?.hostName || activeSess?.host?.name || activeSess?.host?.host || activeSess?.host?.ip || null;
+  const originHostId = thread?.hostId || hostKeyOf(activeSess?.host) || null;
+  const originHostName = thread?.hostName || hostLabelOf(activeSess?.host) || null;
   if (originHostId) {
     el.__originHostId = originHostId;
     el.__originHostName = originHostName;
@@ -863,11 +1192,13 @@ export function findRequestHolder(requestId) {
   if (!requestId) return null;
   const cur = activeAiThread();
   if (cur?.req && cur.req.id === requestId) return { holder: cur.req, thread: cur };
-  for (const th of state.aiThreads.values()) {
-    if (th.req && th.req.id === requestId) return { holder: th.req, thread: th };
+  if (state.aiThreads) {
+    for (const th of state.aiThreads.values()) {
+      if (th.req && th.req.id === requestId) return { holder: th.req, thread: th };
+    }
   }
-  if (state._aiReqFallback && state._aiReqFallback.id === requestId) {
-    return { holder: state._aiReqFallback, thread: null };
+  if (detachedRequests.has(requestId)) {
+    return { holder: detachedRequests.get(requestId), thread: null };
   }
   return null;
 }
@@ -899,7 +1230,7 @@ export function aiTouchRequest(requestId) {
 
 export function stopAiGeneration() {
   const cur = activeAiThread();
-  const h = cur?.req || state.aiReq;
+  const h = cur?.req;
   if (!h) return false;
   h.cancelled = true;
   // 先结束本地 holder 并保留已返回文本;晚到的 delta/done/error 不再匹配。
@@ -908,14 +1239,8 @@ export function stopAiGeneration() {
   return true;
 }
 
-export function aiRequest(messages, bubble, override) {
+export function aiRequest(messages, bubble, override, { thread = null, detached = false } = {}) {
   return new Promise((resolve) => {
-    ensureDefaultAiThread();
-    const cur = activeAiThread();
-    if (cur?.req || state.aiReq) {
-      resolve({ error: '已有请求进行中，请稍候' });
-      return;
-    }
     const requestId = crypto.randomUUID();
     const s = savedAi();
     // 显式快照,保存/切模型/编辑草稿都不能改变已经提交的请求。
@@ -924,19 +1249,42 @@ export function aiRequest(messages, bubble, override) {
       apiKey: '', useSavedApiKey: true,
     };
     const snapshot = messages.map((m) => ({ ...m }));
+
+    if (detached) {
+      const holder = {
+        id: requestId, acc: '', bubble: null, resolve, messages: snapshot,
+        model: config.model || '', started: Date.now(), recordHistory: false,
+        threadId: null, detached: true,
+      };
+      detachedRequests.set(requestId, holder);
+      aiTouchRequest(requestId);
+      api('ai:chat', { requestId, messages: snapshot, ai: config }).then(() => {
+        if (holder.cancelled) api('ai:abort', { requestId }).catch(() => {});
+      }).catch((e) => failAiRequest(holder, e.message));
+      return;
+    }
+
+    ensureDefaultAiThread();
+    const targetThread = thread || activeAiThread();
+    if (targetThread?.req) {
+      resolve({ error: '已有请求进行中，请稍候' });
+      return;
+    }
     const holder = {
       id: requestId, acc: '', bubble, resolve, messages: snapshot,
       model: config.model || '', started: Date.now(), recordHistory: !!bubble,
-      threadId: cur?.id || null,
+      threadId: targetThread?.id || null, detached: false,
     };
-    if (cur) cur.req = holder;
-    state.aiReq = holder;
+    if (targetThread) targetThread.req = holder;
 
     if (bubble) {
       bubble.dataset.responseState = 'pending';
       refreshAiCodeActions(bubble);
     }
-    setAiBusy(true);
+    if (targetThread?.id === state.activeThreadId) {
+      setAiBusy(true);
+    }
+    refreshThreadUi();
     aiTouchRequest(requestId);
     api('ai:chat', { requestId, messages: snapshot, ai: config }).then(() => {
       // 若停止早于后端登记 abort flag,登记完成后再补一次取消。
@@ -946,16 +1294,30 @@ export function aiRequest(messages, bubble, override) {
 }
 
 export function aiFinishHolder(done) {
-  const match = done?.requestId ? findRequestHolder(done.requestId) : (state.aiReq ? { holder: state.aiReq, thread: activeAiThread() } : null);
+  const match = done?.requestId ? findRequestHolder(done.requestId) : null;
   if (!match) return;
   const { holder: h, thread } = match;
   clearTimeout(h.idleTimer);
-  if (thread) thread.req = null;
-  state.aiReq = null;
+
+  if (h.detached) {
+    detachedRequests.delete(h.id);
+    h.resolve(h.failed
+      ? { error: h.failed, text: h.acc }
+      : { ok: true, text: h.acc, aborted: done?.finishReason === 'aborted', usage: done && done.usage, elapsedMs: done && done.elapsedMs });
+    return;
+  }
+
+  if (thread && thread.req === h) {
+    thread.req = null;
+  }
 
   if (state.activeThreadId === thread?.id || (!thread && !state.activeThreadId)) {
     setAiBusy(false);
+  } else if (thread) {
+    thread.unread = true;
   }
+  refreshThreadUi();
+
   if (h.bubble) {
     // 顺序要紧:先撤等待态(会把"正在思考…"占位清空),再把最终累积文本落盘。
     // 取消未落地的合帧写入时**必须补写一次 h.acc** —— 最后一个 delta 可能已经
@@ -989,9 +1351,6 @@ export function aiFinishHolder(done) {
       thread.history.push({ role: 'assistant', content: h.acc });
       trimAiHistory(thread);
       thread.updatedAt = Date.now();
-    } else {
-      state.aiHistory.push({ role: 'assistant', content: h.acc });
-      trimAiHistory();
     }
   }
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
@@ -1001,19 +1360,30 @@ export function aiFinishHolder(done) {
 }
 
 export async function aiSend(rawText, mode, opts) {
-  ensureDefaultAiThread();
-  const thread = activeAiThread();
-  if (thread?.req) return toast('AI 正在回复中，请稍候', 'error');
   // 未配置模型时不必发注定失败的请求:提示后直达 AI 设置
   if (!savedModels().length) {
     toast('请先配置 AI 模型', 'error');
     openAiSettings();
     return;
   }
+
+  if (opts?.session) {
+    ensureThreadForSession(opts.session);
+  }
+  ensureDefaultAiThread();
+  const thread = activeAiThread();
+  if (thread?.req) return toast('AI 正在回复中，请稍候', 'error');
+
+  const isFromInput = !String(rawText ?? '').trim();
   let text = (rawText || '').trim();
-  if (!text) text = $('#ai-input').value.trim();
+  if (!text) text = ($('#ai-input')?.value || '').trim();
   if (!text) return;
-  $('#ai-input').value = '';
+
+  if (isFromInput) {
+    const input = $('#ai-input');
+    if (input) input.value = '';
+    if (thread) thread.draft = '';
+  }
 
   let content = text;
   let userMd = !!(opts && opts.md); // 程序构造的 prompt 含围栏代码块,气泡按 Markdown 渲染
@@ -1023,14 +1393,27 @@ export async function aiSend(rawText, mode, opts) {
   }
 
   // 首条消息自动提炼为会话标题
-  if (thread && (thread.title === '新对话' || !thread.title)) {
-    thread.title = deriveThreadTitle(text);
+  if (thread && (thread.autoTitle || thread.title === '新对话' || !thread.title)) {
+    if (opts?.title) {
+      thread.title = deriveThreadTitle(opts.title);
+      thread.autoTitle = false;
+    } else if (mode === 'explain') {
+      thread.title = deriveThreadTitle('解释：' + text);
+      thread.autoTitle = false;
+    } else if (mode === 'diagnose') {
+      thread.title = deriveThreadTitle('诊断：' + text);
+      thread.autoTitle = false;
+    } else {
+      thread.title = deriveThreadTitle(text);
+      thread.autoTitle = false;
+    }
     renderAiThreadBar();
+    refreshThreadUi();
   }
   if (thread) thread.updatedAt = Date.now();
 
   const userMsg = { role: 'user', content };
-  const historyList = thread ? thread.history : state.aiHistory;
+  const historyList = thread ? thread.history : [];
   const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...historyList, userMsg];
   historyList.push(userMsg);
   trimAiHistory(thread);
@@ -1040,7 +1423,7 @@ export async function aiSend(rawText, mode, opts) {
   const bubble = renderAiMessage('assistant', '');
   markBubblePending(bubble);
 
-  const r = await aiRequest(messages, bubble);
+  const r = await aiRequest(messages, bubble, undefined, { thread });
   // ai:error 已把(部分回复+错误)写进气泡,这里只在气泡还空着(同步失败)时补写
   clearBubbleState(bubble);
   const body = aiBodyOf(bubble);
@@ -1062,7 +1445,7 @@ export async function aiTestConnection() {
   btn.disabled = true;
   btn.textContent = '测试中…';
   try {
-    const r = await aiRequest([{ role: 'user', content: '请只回复两个字母：OK' }], null, override);
+    const r = await aiRequest([{ role: 'user', content: '请只回复两个字母：OK' }], null, override, { detached: true });
     const sec = ((performance.now() - t0) / 1000).toFixed(1);
     if (r && r.error) {
       toast(`测试失败（${sec}s）：${r.error}`, 'error');
@@ -1361,11 +1744,11 @@ export function renderModelSwitch() {
     trigger.classList.remove('ai-model-unset');
   }
   // 0 模型不禁用:点击语义是"去配置"(见 openModelMenu);流式中/切换中仍禁用
-  trigger.disabled = !!state.aiReq || modelSwitchPending;
+  trigger.disabled = !!activeAiThread()?.req || modelSwitchPending;
   // 菜单若开着,同步刷新条目(切换完成/禁用态变化时)
   renderModelMenu();
   if ($('#ai-model-menu').classList.contains('hidden')) return;
-  if (models.length === 0 || !!state.aiReq || modelSwitchPending) closeModelMenu();
+  if (models.length === 0 || !!activeAiThread()?.req || modelSwitchPending) closeModelMenu();
 }
 
 function renderModelMenu() {
@@ -1404,7 +1787,7 @@ export function closeModelMenu() {
 let modelSwitchPending = false;
 export async function switchModel(model) {
   if (!model || modelSwitchPending) return;
-  if (state.aiReq) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
+  if (activeAiThread()?.req) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
   if (!savedModels().some((m) => m.id === model)) { renderModelSwitch(); return; }
   modelSwitchPending = true;
   renderModelSwitch();
@@ -1455,9 +1838,14 @@ export async function aiDiagnose() {
   const cmd = stripTerminalNoise(String(s.lastCmd || '')).trim();
   const output = stripTerminalNoise(String(s.lastOutput || '')).trim();
   if (!cmd && !output) { toast('还没有执行过命令,无诊断依据', 'error'); return false; }
-  ensureThreadForSession(s);
   const recent = `最后一次输入的命令：\n${cmd || '(未捕获)'}\n\n该命令的控制台输出：\n${output || '(无输出)'}`.slice(-3000);
-  aiSend('请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```', undefined, { md: true });
+  const firstCmdLine = cmd ? cmd.split('\n').map((l) => l.trim()).find(Boolean) : '';
+  const title = firstCmdLine ? `诊断：${firstCmdLine}` : '诊断报错';
+  aiSend(
+    '请诊断以下最后一次命令及其控制台输出,指出关键报错与修复建议:\n```\n' + recent + '\n```',
+    'diagnose',
+    { md: true, session: s, title },
+  );
   return true;
 }
 

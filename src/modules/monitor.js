@@ -228,6 +228,19 @@ function setRing(id, pct) {
   ring.classList?.toggle('ring-danger', clamped >= 85);
 }
 
+function buildSplinePath(coords, W, H) {
+  if (!coords || !coords.length) return { dLine: '', dArea: '' };
+  let dLine = `M ${coords[0][0]} ${coords[0][1]}`;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [x0, y0] = coords[i];
+    const [x1, y1] = coords[i + 1];
+    const cx = Number(((x0 + x1) / 2).toFixed(1));
+    dLine += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
+  }
+  const dArea = `${dLine} L ${W} ${H} L 0 ${H} Z`;
+  return { dLine, dArea };
+}
+
 function renderCpuPopoverChart(hist, curPct) {
   const pop = $('#mon-cpu-popover');
   if (!pop) return;
@@ -269,14 +282,7 @@ function renderCpuPopoverChart(hist, curPct) {
     return [Number(x.toFixed(1)), Number(y.toFixed(1))];
   });
 
-  let dLine = `M ${coords[0][0]} ${coords[0][1]}`;
-  for (let i = 0; i < coords.length - 1; i++) {
-    const [x0, y0] = coords[i];
-    const [x1, y1] = coords[i + 1];
-    const cx = Number(((x0 + x1) / 2).toFixed(1));
-    dLine += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
-  }
-  const dArea = `${dLine} L ${W} ${H} L 0 ${H} Z`;
+  const { dLine, dArea } = buildSplinePath(coords, W, H);
   if (lineEl) lineEl.setAttribute('d', dLine);
   if (areaEl) areaEl.setAttribute('d', dArea);
   if (ptEl) {
@@ -286,12 +292,177 @@ function renderCpuPopoverChart(hist, curPct) {
   }
 }
 
-let cpuPopoverBound = false;
-let cpuPopoverHideTimer = null;
+function renderMemPopoverChart(hist, curPct, curUsedMB, curTotalMB) {
+  const pop = $('#mon-mem-popover');
+  if (!pop) return;
+  const curEl = $('#mon-mem-pop-cur');
+  const statCur = $('#mon-mem-pop-stat-cur');
+  const statMax = $('#mon-mem-pop-stat-max');
+  const statAvail = $('#mon-mem-pop-stat-avail');
+  const areaEl = $('#mon-mem-pop-area');
+  const lineEl = $('#mon-mem-pop-line');
+  const ptEl = $('#mon-mem-pop-point');
 
-function positionCpuPopover() {
-  const pop = $('#mon-cpu-popover');
-  const trigger = $('#mon-cpu-trigger');
+  const vals = (hist || []).slice(-16);
+  const curTxt = curPct == null ? '–' : (fmtPct(curPct) + (curUsedMB != null && curTotalMB != null ? ' ' + fmtMemPair(curUsedMB, curTotalMB) : ''));
+  if (curEl) curEl.textContent = curTxt;
+  if (statCur) statCur.textContent = curPct == null ? '–' : fmtPct(curPct);
+
+  if (!vals.length || curPct == null) {
+    if (statMax) statMax.textContent = '–';
+    if (statAvail) statAvail.textContent = '–';
+    if (areaEl) areaEl.setAttribute('d', '');
+    if (lineEl) lineEl.setAttribute('d', '');
+    return;
+  }
+
+  const maxV = Math.max(...vals);
+  if (statMax) statMax.textContent = fmtPct(maxV);
+  if (statAvail) {
+    if (curUsedMB != null && curTotalMB != null) {
+      const availMB = Math.max(0, curTotalMB - curUsedMB);
+      statAvail.textContent = curTotalMB >= 1024 ? `${trim1(availMB / 1024)} GB` : `${Math.round(availMB)} MB`;
+    } else {
+      statAvail.textContent = fmtPct(100 - curPct);
+    }
+  }
+
+  const pts = vals.length === 1 ? [vals[0], vals[0]] : vals;
+  const W = 236;
+  const H = 60;
+  const padY = 6;
+  const plotH = H - padY * 2;
+  const coords = pts.map((v, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const clamped = Math.min(100, Math.max(0, v));
+    const y = H - padY - (clamped / 100) * plotH;
+    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+  });
+
+  const { dLine, dArea } = buildSplinePath(coords, W, H);
+  if (lineEl) lineEl.setAttribute('d', dLine);
+  if (areaEl) areaEl.setAttribute('d', dArea);
+  if (ptEl) {
+    const last = coords[coords.length - 1];
+    ptEl.setAttribute('cx', String(last[0]));
+    ptEl.setAttribute('cy', String(last[1]));
+  }
+}
+
+export function calcNetCeiling(maxBps) {
+  if (!maxBps || maxBps <= 10240) return 10240; // 10 KB/s
+  let unit = 1024;
+  while (maxBps >= unit * 1024 && unit < 1024 * 1024 * 1024) {
+    unit *= 1024;
+  }
+  const val = maxBps / unit;
+  const mag = Math.pow(10, Math.floor(Math.log10(val)));
+  const norm = val / mag;
+  let factor = 10;
+  if (norm <= 1) factor = 1;
+  else if (norm <= 2) factor = 2;
+  else if (norm <= 5) factor = 5;
+  else factor = 10;
+  return Math.max(10240, factor * mag * unit);
+}
+
+function renderNetPopoverChart(rxHist, txHist, curRxBps, curTxBps) {
+  const pop = $('#mon-net-popover');
+  if (!pop) return;
+  const statRx = $('#mon-net-pop-stat-rx');
+  const statTx = $('#mon-net-pop-stat-tx');
+  const statCur = $('#mon-net-pop-stat-cur');
+  const scaleEl = $('#mon-net-pop-scale');
+  const rxAreaEl = $('#mon-net-pop-rx-area');
+  const rxLineEl = $('#mon-net-pop-rx-line');
+  const rxPtEl = $('#mon-net-pop-rx-point');
+  const txLineEl = $('#mon-net-pop-tx-line');
+  const txPtEl = $('#mon-net-pop-tx-point');
+
+  const rxVals = (rxHist || []).slice(-16);
+  const txVals = (txHist || []).slice(-16);
+  const curTxt = curRxBps == null ? '–' : fmtBytes(curRxBps);
+  if (statCur) statCur.textContent = curTxt;
+
+  if ((!rxVals.length && !txVals.length) || (curRxBps == null && curTxBps == null)) {
+    if (statRx) statRx.textContent = '–';
+    if (statTx) statTx.textContent = '–';
+    if (scaleEl) scaleEl.textContent = '标尺: –';
+    if (rxAreaEl) rxAreaEl.setAttribute('d', '');
+    if (rxLineEl) rxLineEl.setAttribute('d', '');
+    if (txLineEl) txLineEl.setAttribute('d', '');
+    return;
+  }
+
+  const maxRx = rxVals.length ? Math.max(...rxVals) : (curRxBps || 0);
+  const maxTx = txVals.length ? Math.max(...txVals) : (curTxBps || 0);
+  if (statRx) statRx.textContent = fmtBytes(maxRx);
+  if (statTx) statTx.textContent = fmtBytes(maxTx);
+
+  const ceiling = calcNetCeiling(Math.max(maxRx, maxTx, curRxBps || 0, curTxBps || 0));
+  if (scaleEl) scaleEl.textContent = `标尺顶格: ${fmtBytes(ceiling)}`;
+
+  const W = 236;
+  const H = 60;
+  const padY = 6;
+  const plotH = H - padY * 2;
+
+  // RX 曲线 (下行，实线 + 面积)
+  const ptsRx = rxVals.length <= 1 ? [(rxVals[0] || 0), (rxVals[0] || 0)] : rxVals;
+  const coordsRx = ptsRx.map((v, i) => {
+    const x = (i / (ptsRx.length - 1)) * W;
+    const clamped = Math.min(ceiling, Math.max(0, v));
+    const y = H - padY - (clamped / ceiling) * plotH;
+    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+  });
+  const { dLine: dRxLine, dArea: dRxArea } = buildSplinePath(coordsRx, W, H);
+  if (rxLineEl) rxLineEl.setAttribute('d', dRxLine);
+  if (rxAreaEl) rxAreaEl.setAttribute('d', dRxArea);
+  if (rxPtEl) {
+    const last = coordsRx[coordsRx.length - 1];
+    rxPtEl.setAttribute('cx', String(last[0]));
+    rxPtEl.setAttribute('cy', String(last[1]));
+  }
+
+  // TX 曲线 (上行，虚线)
+  const ptsTx = txVals.length <= 1 ? [(txVals[0] || 0), (txVals[0] || 0)] : txVals;
+  const coordsTx = ptsTx.map((v, i) => {
+    const x = (i / (ptsTx.length - 1)) * W;
+    const clamped = Math.min(ceiling, Math.max(0, v));
+    const y = H - padY - (clamped / ceiling) * plotH;
+    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+  });
+  const { dLine: dTxLine } = buildSplinePath(coordsTx, W, H);
+  if (txLineEl) txLineEl.setAttribute('d', dTxLine);
+  if (txPtEl) {
+    const last = coordsTx[coordsTx.length - 1];
+    txPtEl.setAttribute('cx', String(last[0]));
+    txPtEl.setAttribute('cy', String(last[1]));
+  }
+}
+
+const POPOVER_ENTRIES = [
+  { id: 'cpu', triggerId: '#mon-cpu-trigger', popoverId: '#mon-cpu-popover' },
+  { id: 'mem', triggerId: '#mon-mem-trigger', popoverId: '#mon-mem-popover' },
+  { id: 'net', triggerId: '#mon-net-trigger', popoverId: '#mon-net-popover' },
+];
+
+let activePopoverId = null;
+let popoversBound = false;
+let popoverHideTimer = null;
+
+function hideAllPopovers() {
+  if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
+  activePopoverId = null;
+  for (const entry of POPOVER_ENTRIES) {
+    const pop = $(entry.popoverId);
+    if (pop) pop.classList.add('hidden');
+  }
+}
+
+function positionPopover(entry) {
+  const pop = $(entry.popoverId);
+  const trigger = $(entry.triggerId);
   if (!pop || !trigger || pop.classList.contains('hidden')) return;
   const anchor = trigger.getBoundingClientRect?.();
   if (!anchor) return;
@@ -301,46 +472,72 @@ function positionCpuPopover() {
   pop.style.top = `${pos.top}px`;
 }
 
-function bindCpuPopoverOnce() {
-  if (cpuPopoverBound) return;
-  const trigger = $('#mon-cpu-trigger');
-  const pop = $('#mon-cpu-popover');
-  if (!trigger || !pop || !trigger.addEventListener) return;
-  cpuPopoverBound = true;
-  if (typeof document !== 'undefined' && document.body && pop.parentElement && pop.parentElement !== document.body) {
-    document.body.appendChild(pop);
+function positionActivePopover() {
+  if (!activePopoverId) return;
+  const entry = POPOVER_ENTRIES.find((e) => e.id === activePopoverId);
+  if (entry) positionPopover(entry);
+}
+
+export function positionCpuPopover() {
+  positionActivePopover();
+}
+
+function bindMonitorPopoversOnce() {
+  if (popoversBound) return;
+  const triggersExist = POPOVER_ENTRIES.some((e) => $(e.triggerId));
+  if (!triggersExist) return;
+  popoversBound = true;
+
+  for (const entry of POPOVER_ENTRIES) {
+    const trigger = $(entry.triggerId);
+    const pop = $(entry.popoverId);
+    if (!trigger || !pop || !trigger.addEventListener) continue;
+
+    if (typeof document !== 'undefined' && document.body && pop.parentElement && pop.parentElement !== document.body) {
+      document.body.appendChild(pop);
+    }
+
+    const showThis = () => {
+      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
+      const bar = $('#monitor-bar');
+      if (!bar || bar.classList.contains('hidden') || bar.classList.contains('mon-unsupported')) return;
+      for (const other of POPOVER_ENTRIES) {
+        if (other.id !== entry.id) {
+          const otherPop = $(other.popoverId);
+          if (otherPop) otherPop.classList.add('hidden');
+        }
+      }
+      activePopoverId = entry.id;
+      pop.classList.remove('hidden');
+      positionPopover(entry);
+    };
+
+    const scheduleHide = () => {
+      if (popoverHideTimer) clearTimeout(popoverHideTimer);
+      popoverHideTimer = setTimeout(() => {
+        hideAllPopovers();
+      }, 120);
+    };
+
+    trigger.addEventListener('mouseenter', showThis);
+    trigger.addEventListener('mouseleave', scheduleHide);
+    pop.addEventListener('mouseenter', () => {
+      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
+    });
+    pop.addEventListener('mouseleave', scheduleHide);
   }
-  const show = () => {
-    if (cpuPopoverHideTimer) { clearTimeout(cpuPopoverHideTimer); cpuPopoverHideTimer = null; }
-    const bar = $('#monitor-bar');
-    if (!bar || bar.classList.contains('hidden') || bar.classList.contains('mon-unsupported')) return;
-    pop.classList.remove('hidden');
-    positionCpuPopover();
-  };
-  const scheduleHide = () => {
-    if (cpuPopoverHideTimer) clearTimeout(cpuPopoverHideTimer);
-    cpuPopoverHideTimer = setTimeout(() => {
-      pop.classList.add('hidden');
-    }, 120);
-  };
-  trigger.addEventListener('mouseenter', show);
-  trigger.addEventListener('mouseleave', scheduleHide);
-  pop.addEventListener('mouseenter', () => {
-    if (cpuPopoverHideTimer) { clearTimeout(cpuPopoverHideTimer); cpuPopoverHideTimer = null; }
-  });
-  pop.addEventListener('mouseleave', scheduleHide);
-  window.addEventListener?.('resize', positionCpuPopover);
+
+  window.addEventListener?.('resize', positionActivePopover);
 }
 
 export function renderMonitorBar() {
-  bindCpuPopoverOnce();
+  bindMonitorPopoversOnce();
   const bar = $('#monitor-bar');
-  const pop = $('#mon-cpu-popover');
   // 监控固定显示在状态栏,不再有开关(旧 #btn-monitor 已移除)。
   // 无活动会话时隐藏:此时状态栏显示"就绪 — 尚未建立连接",监控块没有意义。
   if (!state.activeId) {
     bar.classList.add('hidden');
-    if (pop) pop.classList.add('hidden');
+    hideAllPopovers();
     return;
   }
   bar.classList.remove('hidden');
@@ -358,7 +555,6 @@ export function renderMonitorBar() {
     el.classList.toggle('lat-mid', ms != null && ms >= 150 && ms < 400);
     el.classList.toggle('lat-bad', ms != null && ms >= 400);
   };
-  let hist = state.metricHistory.get(state.activeId) || [];
   if (!m) {
     bar.classList.remove('mon-unsupported');
     set('#mon-cpu', '–'); set('#mon-mem', '–'); set('#mon-disk', '–'); set('#mon-rx', '–'); set('#mon-tx', '–');
@@ -367,13 +563,15 @@ export function renderMonitorBar() {
     set('#mon-note', ''); set('#mon-spark-cpu', '');
     setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
     renderCpuPopoverChart([], null);
+    renderMemPopoverChart([], null, null, null);
+    renderNetPopoverChart([], [], null, null);
     return;
   }
   if (m.supported === false) {
     // 整条切到"不支持"布局:数值槽位隐藏,避免终态文案把长条撑成两行。
     // 延迟例外:echo 往返不依赖 /proc,非 Linux 主机照样有实时延迟可看。
     bar.classList.add('mon-unsupported');
-    if (pop) pop.classList.add('hidden');
+    hideAllPopovers();
     set('#mon-cpu', '–'); set('#mon-mem', '–'); set('#mon-disk', '–'); set('#mon-rx', '–'); set('#mon-tx', '–');
     setV('#mon-mem-det', ''); setV('#mon-disk-det', '');
     setLat(m.latencyMs);
@@ -381,11 +579,20 @@ export function renderMonitorBar() {
     set('#mon-spark-cpu', '');
     setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
     renderCpuPopoverChart([], null);
+    renderMemPopoverChart([], null, null, null);
+    renderNetPopoverChart([], [], null, null);
     return;
   }
   bar.classList.remove('mon-unsupported');
-  hist = [...hist, m.cpuPct == null ? 0 : m.cpuPct].slice(-32);
-  state.metricHistory.set(state.activeId, hist);
+
+  const rawHist = state.metricHistory.get(state.activeId);
+  const cpuHist = [...(Array.isArray(rawHist) ? rawHist : (rawHist?.cpu || [])), m.cpuPct == null ? 0 : m.cpuPct].slice(-32);
+  const memHist = [...(Array.isArray(rawHist) ? [] : (rawHist?.mem || [])), m.memPct == null ? 0 : m.memPct].slice(-32);
+  const rxHist = [...(Array.isArray(rawHist) ? [] : (rawHist?.rx || [])), m.rxBps == null ? 0 : m.rxBps].slice(-32);
+  const txHist = [...(Array.isArray(rawHist) ? [] : (rawHist?.tx || [])), m.txBps == null ? 0 : m.txBps].slice(-32);
+  const histObj = { cpu: cpuHist, mem: memHist, rx: rxHist, tx: txHist };
+  state.metricHistory.set(state.activeId, histObj);
+
   // 标签与数值分开槽位:数值统一走定宽格式化(≤1 位小数、去尾 .0),
   // 任何取值都只在自己槽内变化,不推动邻居。
   setV('#mon-cpu', fmtPct(m.cpuPct));
@@ -397,11 +604,13 @@ export function renderMonitorBar() {
   setV('#mon-tx', fmtBytes(m.txBps));
   setLat(m.latencyMs);
   set('#mon-note', '');
-  set('#mon-spark-cpu', spark(hist));
+  set('#mon-spark-cpu', spark(cpuHist));
   setRing('#mon-cpu-bar', m.cpuPct);
   setRing('#mon-mem-bar', m.memPct);
   setRing('#mon-disk-bar', m.diskPct);
-  renderCpuPopoverChart(hist, m.cpuPct);
+  renderCpuPopoverChart(cpuHist, m.cpuPct);
+  renderMemPopoverChart(memHist, m.memPct, m.memUsedMB, m.memTotalMB);
+  renderNetPopoverChart(rxHist, txHist, m.rxBps, m.txBps);
 }
 
 /* ---------------- AI 设置弹窗 ---------------- */

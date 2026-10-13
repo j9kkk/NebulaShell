@@ -284,12 +284,6 @@ export function bindTabStrip() {
       if (tabEl.dataset.tab && state.activeTabId !== tabEl.dataset.tab) {
         activateTab(tabEl.dataset.tab);
       }
-      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-        window.addEventListener('click', (ce) => {
-          ce.stopPropagation?.();
-          ce.preventDefault?.();
-        }, { capture: true, once: true });
-      }
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -416,15 +410,6 @@ export function notifyTerminalStateChange() {
 export function syncTabChrome() {
   notifyTerminalStateChange();
   let activeRetitled = false;
-  // 统计各未自定义标题主机的会话数,超过 1 个时自动给后续标签追加 #2、#3 序号区分
-  const hostCounts = new Map();
-  for (const [tabId, tab] of state.tabs) {
-    if (!tab.customTitle) {
-      const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
-      if (s?.host?.name) hostCounts.set(s.host.name, (hostCounts.get(s.host.name) || 0) + 1);
-    }
-  }
-  const hostIndices = new Map();
   for (const [tabId, tab] of state.tabs) {
     const s = [...state.sessions.values()].find((x) => (x.tabId || null) === tabId);
     const title = tab.el.querySelector('.tab-title');
@@ -435,13 +420,7 @@ export function syncTabChrome() {
     tab.el.classList.toggle('tab-rec-paused', rec.length > 0 && rec.every((x) => x.status !== 'connected'));
     const before = title.textContent;
     if (s) {
-      let defaultTitle = s.host.name;
-      if (!tab.customTitle && (hostCounts.get(s.host.name) || 0) > 1) {
-        const idx = (hostIndices.get(s.host.name) || 0) + 1;
-        hostIndices.set(s.host.name, idx);
-        if (idx > 1) defaultTitle = `${s.host.name} #${idx}`;
-      }
-      title.textContent = tab.customTitle || defaultTitle;
+      title.textContent = tab.customTitle || s.host.name;
       dot.className = 'tab-dot ' + s.status;
     } else {
       title.textContent = tab.customTitle || '新标签';

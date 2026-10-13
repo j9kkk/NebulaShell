@@ -288,3 +288,22 @@ test('keymap spec 转 Tauri 菜单加速键', async () => {
   assert.equal(keymap.toAccelerator(keymap.specOf('app.quit')), 'CmdOrCtrl+Q');
   assert.equal(keymap.toAccelerator(keymap.specOf('window.close')), 'CmdOrCtrl+Shift+W');
 });
+
+test('0.5.5 AI 助手新建对话:⌘N / Ctrl+Shift+N 命中,Ctrl+N 不命中,不进 APP_ACTIONS', async () => {
+  const { keymap: mac } = await setup('darwin');
+  assert.equal(mac.APP_ACTIONS.includes('ai.newThread'), false, 'ai.newThread 不在 APP_ACTIONS');
+  assert.equal(mac.matchAction('ai.newThread', evt('n', { metaKey: true, code: 'KeyN' })), true, 'mac ⌘N 命中');
+  assert.equal(mac.matchAction('ai.newThread', evt('n', { ctrlKey: true, code: 'KeyN' })), false, 'mac Ctrl+N 不命中');
+  assert.equal(mac.appShortcutOf(evt('n', { metaKey: true, code: 'KeyN' })), '', '组件内动作不进全局 appShortcutOf');
+  assert.equal(mac.accelOf('ai.newThread'), '⌘N');
+
+  for (const platform of ['windows', 'linux']) {
+    const { keymap: km } = await setup(platform);
+    assert.equal(km.APP_ACTIONS.includes('ai.newThread'), false, `${platform} 不在 APP_ACTIONS`);
+    assert.equal(km.matchAction('ai.newThread', evt('N', { ctrlKey: true, shiftKey: true, code: 'KeyN' })), true, `${platform} Ctrl+Shift+N 命中`);
+    assert.equal(km.matchAction('ai.newThread', evt('n', { ctrlKey: true, code: 'KeyN' })), false, `${platform} Ctrl+N 不命中(留给 shell)`);
+    assert.equal(km.matchAction('ai.newThread', evt('n', { metaKey: true, code: 'KeyN' })), false, `${platform} ⌘N 不命中`);
+    assert.equal(km.appShortcutOf(evt('N', { ctrlKey: true, shiftKey: true, code: 'KeyN' })), '', `${platform} 不进全局 appShortcutOf`);
+    assert.equal(km.accelOf('ai.newThread'), 'Ctrl+Shift+N');
+  }
+});

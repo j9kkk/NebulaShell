@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { THEMES, TERM_THEMES, termTheme, applyTheme, v } from '../src/modules/theme.js';
 
-test('THEMES 提供标准的三套主题定义', () => {
-  assert.equal(THEMES.length, 3);
+test('THEMES 提供标准的两套主题定义', () => {
+  assert.equal(THEMES.length, 2);
   const ids = THEMES.map((t) => t.id);
-  assert.deepEqual(ids, ['nebula', 'light', 'forest']);
+  assert.deepEqual(ids, ['nebula', 'light']);
 });
 
 test('termTheme 按键名正确解析各主题调色板', () => {
@@ -15,10 +15,6 @@ test('termTheme 按键名正确解析各主题调色板', () => {
   const light = termTheme('light');
   assert.equal(light.cursor, '#0969da');
   assert.equal(light.background, '#f6f8fa');
-
-  const forest = termTheme('forest');
-  assert.equal(forest.cursor, '#34d399');
-  assert.equal(forest.background, '#0b1f16');
 
   // 未知主题回退到 nebula
   const fallback = termTheme('non-existent');
@@ -58,25 +54,25 @@ test('applyTheme 同步更新 document.dataset.theme 与所有活跃会话', () 
     settings: { terminal: { theme: 'nebula' } },
   };
 
-  const applied = applyTheme('forest', mockState);
-  assert.equal(applied, 'forest');
-  assert.equal(dummyDoc.documentElement.dataset.theme, 'forest');
-  assert.equal(mockSession1.term.options.theme.cursor, '#34d399');
-  assert.equal(mockSession2.term.options.theme.cursor, '#34d399');
+  const applied = applyTheme('light', mockState);
+  assert.equal(applied, 'light');
+  assert.equal(dummyDoc.documentElement.dataset.theme, 'light');
+  assert.equal(mockSession1.term.options.theme.cursor, '#0969da');
+  assert.equal(mockSession2.term.options.theme.cursor, '#0969da');
 
   delete globalThis.document;
 });
 
-test('style.css 包含完整的三套主题定义与核心语义变量', async () => {
+test('style.css 包含完整的两套主题定义与核心语义变量', async () => {
   const { readFile } = await import('node:fs/promises');
   const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
 
-  // 必须声明的三套主题选择器
+  // 必须声明的两套主题选择器，且已彻底移除 forest
   assert.match(css, /\[data-theme="nebula"\]/);
   assert.match(css, /\[data-theme="light"\]/);
-  assert.match(css, /\[data-theme="forest"\]/);
+  assert.doesNotMatch(css, /\[data-theme="forest"\]/);
 
-  // 核心语义变量在三套主题中均有定义
+  // 核心语义变量在两套主题中均有定义
   const requiredTokens = [
     '--bg:', '--bg2:', '--panel:', '--border:', '--border-hover:',
     '--text:', '--muted:', '--accent:', '--accent2:', '--danger:', '--warn:',
@@ -90,6 +86,6 @@ test('style.css 包含完整的三套主题定义与核心语义变量', async (
 
   for (const token of requiredTokens) {
     const matches = css.match(new RegExp(token.replace(':', '\\:'), 'g')) || [];
-    assert.ok(matches.length >= 3, `变量 ${token} 必须在全部三套主题中定义 (当前出现 ${matches.length} 次)`);
+    assert.ok(matches.length >= 2, `变量 ${token} 必须在全部两套主题中定义 (当前出现 ${matches.length} 次)`);
   }
 });

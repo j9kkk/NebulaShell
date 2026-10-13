@@ -83,10 +83,11 @@ export function bindRightPanel() {
     });
   }
   // Esc:焦点在右侧栏里时把焦点还给终端,面板保持打开(收起由开关负责)。
-  // 模型菜单、代码块菜单打开时 Esc 先关它们(各自的 document 监听处理)。
+  // 会话菜单、模型菜单、代码块菜单打开时 Esc 先关它们(各自的 document 监听处理)。
   root.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
-    if (!$('#ai-model-menu').classList.contains('hidden')) return;
+    if (!$('#ai-thread-menu')?.classList.contains('hidden')) return;
+    if (!$('#ai-model-menu')?.classList.contains('hidden')) return;
     if (event.target.closest?.('.ai-code-menu[open]')) return;
     event.preventDefault();
     focusTerminal();

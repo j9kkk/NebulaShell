@@ -74,13 +74,13 @@ fn settings_roundtrip_and_clamp() {
     let store = tmp_store("settings");
     let s = store
         .save_settings(&json!({
-            "terminal": { "fontSize": 99, "theme": "forest", "scrollback": 1 },
+            "terminal": { "fontSize": 99, "theme": "light", "scrollback": 1 },
             "ai": { "baseUrl": "http://x/v1", "model": "m1" }
         }))
         .unwrap();
     assert_eq!(s["terminal"]["fontSize"], json!(20.0), "字号上限 20");
     assert_eq!(s["terminal"]["scrollback"], json!(1000.0), "回滚下限 1000");
-    assert_eq!(s["terminal"]["theme"], json!("forest"));
+    assert_eq!(s["terminal"]["theme"], json!("light"));
     assert_eq!(s["ai"]["baseUrl"], json!("http://x/v1"));
 }
 

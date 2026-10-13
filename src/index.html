@@ -95,14 +95,14 @@
         <span id="monitor-bar" class="hidden">
           <span class="mon-group mon-lat-item"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
           <span class="mon-deck">
-            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger">
+            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger" title="悬停查看 CPU 负载历史趋势">
               <span id="mon-cpu-bar" class="mon-ring" aria-hidden="true">
                 <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
               </span>
               <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
               <span class="mon-cpu-hint" aria-hidden="true">▾</span>
             </span>
-            <span class="mon-group mon-mem-item">
+            <span class="mon-group mon-mem-item" id="mon-mem-trigger" title="悬停查看内存使用历史趋势">
               <span id="mon-mem-bar" class="mon-ring" aria-hidden="true">
                 <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
               </span>
@@ -114,7 +114,7 @@
               </span>
               <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
             </span>
-            <span class="mon-group mon-net-item">
+            <span class="mon-group mon-net-item" id="mon-net-trigger" title="悬停查看网络吞吐历史趋势">
               <span class="mon-item">网络 <i class="mon-dir mon-up">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir mon-down">↓</i><b id="mon-tx" class="mon-val">–</b></span>
             </span>
             <span id="mon-note" class="muted"></span>
@@ -153,13 +153,14 @@
       <section id="rp-ai" class="rp-page active" role="tabpanel" data-page="ai" aria-labelledby="rp-tab-ai">
       <!-- 会话控制栏:切换当前会话、新建会话、清空当前会话 -->
       <div class="ai-thread-bar">
-        <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话">
+        <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
           <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
           <span id="ai-thread-title" class="ai-thread-title">新对话</span>
+          <span class="ai-thread-dot" aria-hidden="true"></span>
           <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
         </button>
         <span class="spacer"></span>
-        <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建对话"><span class="mi" data-icon="plus"></span></button>
+        <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建对话" data-title="新建对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
         <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
       </div>
       <div class="ai-messages-wrap">
@@ -338,7 +339,6 @@
             <select id="term-theme">
               <option value="nebula">星云暗（默认）</option>
               <option value="light">日蚀亮</option>
-              <option value="forest">森林绿</option>
             </select>
             <label for="term-scrollback">回滚行数</label><input id="term-scrollback" type="number" min="1000" max="20000" step="1000" value="2000" />
             <label for="term-open-tempdir">双击打开缓存目录</label><input id="term-open-tempdir" type="text" placeholder="留空 = 系统临时目录（默认）" style="width:100%;" spellcheck="false" autocomplete="off" />
@@ -647,7 +647,7 @@
     <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型</button>
   </div>
   <!-- 会话菜单浮层 -->
-  <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" role="menu" aria-label="切换对话">
+  <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" aria-label="切换对话">
     <div id="ai-thread-menu-list" role="menu"></div>
   </div>
   <div id="ctx-menu" class="hidden"></div>
@@ -669,16 +669,16 @@
       <svg id="mon-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
         <defs>
           <linearGradient id="mon-cpu-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.38"/>
-            <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0"/>
+            <stop offset="0%" stop-color="var(--accent, #38bdf8)" stop-opacity="0.38"/>
+            <stop offset="100%" stop-color="var(--accent, #38bdf8)" stop-opacity="0.0"/>
           </linearGradient>
         </defs>
         <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
         <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
         <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
         <path id="mon-pop-area" d="" fill="url(#mon-cpu-grad)"/>
-        <path id="mon-pop-line" d="" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle id="mon-pop-point" cx="236" cy="60" r="3" fill="#38bdf8" stroke="#0d131f" stroke-width="1.5"/>
+        <path id="mon-pop-line" d="" fill="none" stroke="var(--accent, #38bdf8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle id="mon-pop-point" cx="236" cy="60" r="3" fill="var(--accent, #38bdf8)" stroke="var(--bg2, #0d131f)" stroke-width="1.5"/>
       </svg>
     </div>
     <div class="mon-pop-axis">
@@ -690,6 +690,77 @@
       <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前负载</span><b id="mon-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
       <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间峰值</span><b id="mon-pop-stat-max" class="mon-pop-stat-v warn">–</b></div>
       <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间均值</span><b id="mon-pop-stat-avg" class="mon-pop-stat-v">–</b></div>
+    </div>
+  </div>
+  <!-- 内存使用历史趋势悬停详情卡片:挂在 body + fixed 定位,悬停 #mon-mem-trigger 时向上弹出 -->
+  <div id="mon-mem-popover" class="mon-cpu-popover mon-mem-popover hidden" role="tooltip" aria-hidden="true">
+    <div class="mon-pop-head">
+      <span class="mon-pop-title"><span class="mon-pop-dot mon-mem-dot"></span>内存使用历史趋势 (最近 ~48s)</span>
+      <b id="mon-mem-pop-cur" class="mon-pop-cur mon-mem-cur">–</b>
+    </div>
+    <div class="mon-pop-chart">
+      <svg id="mon-mem-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="mon-mem-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--accent2, #34d399)" stop-opacity="0.32"/>
+            <stop offset="100%" stop-color="var(--accent2, #34d399)" stop-opacity="0.0"/>
+          </linearGradient>
+        </defs>
+        <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
+        <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
+        <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
+        <path id="mon-mem-pop-area" d="" fill="url(#mon-mem-grad)"/>
+        <path id="mon-mem-pop-line" d="" fill="none" stroke="var(--accent2, #34d399)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle id="mon-mem-pop-point" cx="236" cy="60" r="3" fill="var(--accent2, #34d399)" stroke="var(--bg2, #0d131f)" stroke-width="1.5"/>
+      </svg>
+    </div>
+    <div class="mon-pop-axis">
+      <span>-48s</span>
+      <span>平稳占用</span>
+      <span>现在 (0~100%)</span>
+    </div>
+    <div class="mon-pop-stats">
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前占用</span><b id="mon-mem-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间峰值</span><b id="mon-mem-pop-stat-max" class="mon-pop-stat-v warn">–</b></div>
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">可用预估</span><b id="mon-mem-pop-stat-avail" class="mon-pop-stat-v">–</b></div>
+    </div>
+  </div>
+  <!-- 网络吞吐历史趋势悬停详情卡片:挂在 body + fixed 定位,悬停 #mon-net-trigger 时向上弹出 -->
+  <div id="mon-net-popover" class="mon-cpu-popover mon-net-popover hidden" role="tooltip" aria-hidden="true">
+    <div class="mon-pop-head">
+      <span class="mon-pop-title"><span class="mon-pop-dot mon-net-dot"></span>网络吞吐历史趋势 (最近 ~48s)</span>
+      <div class="net-legends">
+        <span class="net-legend-item"><span class="net-leg-dot net-leg-tx"></span>↑ 上行</span>
+        <span class="net-legend-item"><span class="net-leg-dot net-leg-rx"></span>↓ 下行</span>
+      </div>
+    </div>
+    <div class="mon-pop-chart">
+      <svg id="mon-net-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="mon-rx-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--net-rx-color, #38bdf8)" stop-opacity="0.28"/>
+            <stop offset="100%" stop-color="var(--net-rx-color, #38bdf8)" stop-opacity="0.0"/>
+          </linearGradient>
+        </defs>
+        <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
+        <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
+        <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
+        <path id="mon-net-pop-rx-area" d="" fill="url(#mon-rx-grad)"/>
+        <path id="mon-net-pop-rx-line" d="" fill="none" stroke="var(--net-rx-color, #38bdf8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle id="mon-net-pop-rx-point" cx="236" cy="60" r="3" fill="var(--net-rx-color, #38bdf8)" stroke="var(--bg2, #0d131f)" stroke-width="1.5"/>
+        <path id="mon-net-pop-tx-line" d="" fill="none" stroke="var(--net-tx-color, #a78bfa)" stroke-width="1.8" stroke-dasharray="3 2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle id="mon-net-pop-tx-point" cx="236" cy="60" r="2.5" fill="var(--net-tx-color, #a78bfa)" stroke="var(--bg2, #0d131f)" stroke-width="1"/>
+      </svg>
+    </div>
+    <div class="mon-pop-axis">
+      <span>-48s</span>
+      <span id="mon-net-pop-scale">标尺: 1.0 MB/s</span>
+      <span>现在</span>
+    </div>
+    <div class="mon-pop-stats">
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">峰值下载 (↓)</span><b id="mon-net-pop-stat-rx" class="mon-pop-stat-v rx-val">–</b></div>
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">峰值上传 (↑)</span><b id="mon-net-pop-stat-tx" class="mon-pop-stat-v tx-val">–</b></div>
+      <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前下载</span><b id="mon-net-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
     </div>
   </div>
   <script src="./nebula-shim.js"></script>

@@ -416,7 +416,12 @@ test('connectHost reuses empty single-pane tab, opens new tab on repeated click,
   const t1 = h.state.tabs.get(s1.tabId).el.querySelector('.tab-title').textContent;
   const t2 = h.state.tabs.get(s2.tabId).el.querySelector('.tab-title').textContent;
   assert.equal(t1, 'prod-db');
-  assert.equal(t2, 'prod-db #2');
+  assert.equal(t2, 'prod-db');
+  // Reordering tabs maintains stable default host titles (does not dynamically rename or renumber)
+  h.subject.reorderTabs([s2.tabId, s1.tabId]);
+  h.subject.syncTabChrome();
+  assert.equal(h.state.tabs.get(s1.tabId).el.querySelector('.tab-title').textContent, 'prod-db');
+  assert.equal(h.state.tabs.get(s2.tabId).el.querySelector('.tab-title').textContent, 'prod-db');
   // Calling with reuseExisting: true switches to existing session without opening a third tab
   h.subject.activateTab(s2.tabId);
   const reused = await h.subject.connectHost(host.id, null, { reuseExisting: true });
@@ -466,6 +471,12 @@ test('pointer drag on tab header and workspace tile header reorders tabs only af
   h.document.dispatchEvent({ type: 'mouseup', clientX: 180, clientY: 15 });
   assert.equal(tabA.classList.contains('dragging'), false);
   assert.deepEqual([...h.state.tabs.keys()], [b.tabId, a.tabId]);
+
+  // After drag, clicking another tab switches immediately on the very first click
+  h.subject.activateTab(a.tabId);
+  assert.equal(h.state.activeTabId, a.tabId);
+  tabB.dispatchEvent({ type: 'click', target: tabB });
+  assert.equal(h.state.activeTabId, b.tabId);
 
   // In tiled workspace mode, dragging tileB header onto tileA reorders back to [a, b]
   h.subject.toggleTabTiling();

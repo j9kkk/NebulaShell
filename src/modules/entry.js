@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, clearCurrentAiThread, closeAiSettings, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, createAiThread, deleteAiThread, ensureDefaultAiThread, ensureThreadForSession, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, togglePickerFocus, toggleThreadMenu } from './ai.js';
 import { addSnippet, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -444,6 +444,7 @@ function setupWorkspaceCommands() {
   registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'zs', 'zhushou'], checked: () => rightTabShown('ai'), run: () => toggleRightTab('ai') });
   registerCommand('panel.history', { label: '命令历史', category: 'panel', keywords: ['history', 'mlls', 'lishi'], checked: () => rightTabShown('history'), run: () => toggleRightTab('history') });
   registerCommand('panel.snippets', { label: '常用命令', category: 'panel', keywords: ['snippets', '片段', 'cyml', 'changyong', 'cypd', 'pianduan'], checked: () => rightTabShown('snippets'), run: () => toggleRightTab('snippets') });
+  registerCommand('ai.newThread', { label: '新建 AI 对话', category: 'panel', keywords: ['new chat', 'ai', 'xjdh', 'xinjianduihua'], run: () => { setRightPanel(true, 'ai'); newAiThread({ focus: true }); } });
 
   // 会话
   registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return openTermSearch(); } });
@@ -620,7 +621,7 @@ export function bindEvents() {
   });
   $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openSettings('ai'); });
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('#ai-model-menu, #ai-model-trigger')) closeModelMenu();
+    if (!e.target.closest?.('#ai-model-menu, #ai-model-trigger')) closeModelMenu();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeModelMenu();
@@ -654,28 +655,32 @@ export function bindEvents() {
   });
   $('#ai-thread-new').addEventListener('click', () => {
     closeThreadMenu();
-    createAiThread({ title: '新对话' });
-    $('#ai-input').focus();
+    newAiThread({ focus: true });
   });
-  $('#ai-thread-clear').addEventListener('click', () => {
+  $('#ai-thread-clear').addEventListener('click', async () => {
     closeThreadMenu();
-    clearCurrentAiThread();
-    $('#ai-input').focus();
+    await requestClearAiThread();
+    $('#ai-input')?.focus();
   });
   $('#ai-thread-menu').addEventListener('click', (e) => {
     e.stopPropagation();
-    const delBtn = e.target.closest('.ai-thread-del');
+    const delBtn = e.target.closest?.('.ai-thread-del');
     if (delBtn) {
-      deleteAiThread(delBtn.dataset.delThread);
+      const id = delBtn.dataset.delThread;
+      if (id) requestDeleteAiThread(id);
       return;
     }
-    const row = e.target.closest('.ai-thread-menu-row');
-    if (row && row.dataset.threadId) {
-      switchAiThread(row.dataset.threadId);
+    const itemBtn = e.target.closest?.('.ai-thread-menu-item');
+    const row = e.target.closest?.('.ai-thread-menu-row');
+    const id = itemBtn?.dataset?.threadId || row?.dataset?.threadId;
+    if (id) {
+      switchAiThread(id);
+      $('#ai-input')?.focus();
     }
   });
+  $('#ai-thread-menu').addEventListener('keydown', onThreadMenuKeydown);
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('#ai-thread-menu, #ai-thread-trigger')) closeThreadMenu();
+    if (!e.target.closest?.('#ai-thread-menu, #ai-thread-trigger')) closeThreadMenu();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeThreadMenu();
@@ -725,12 +730,11 @@ export function bindEvents() {
     // 命令面板是键盘总入口:焦点在终端、输入框里,或下拉 / 右键菜单打开时都能打开
     if (action === 'palette.open') { executeCommand(action); return; }
     if (!$('#ctx-menu').classList.contains('hidden')) return;
-    // 在 AI 面板内(含输入框/消息区)按 Mod+N 快捷新建会话
-    if ((PLATFORM === 'darwin' ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N') && $('#ai-panel').contains(document.activeElement)) {
+    // 在 AI 面板内按快捷键新建会话
+    if (matchAction('ai.newThread', e) && rightTabShown('ai') && document.activeElement?.closest?.('#rp-ai, #ai-thread-menu')) {
       e.preventDefault();
       closeThreadMenu();
-      createAiThread();
-      $('#ai-input').focus();
+      newAiThread({ focus: true });
       return;
     }
     const terminalInput = !!e.target.closest?.('.term-pane');
@@ -964,9 +968,6 @@ export async function boot() {
   // 回复在 AI 页签里,先把它切出来
   bindSelectionExplain._aiSend = (text, mode, opts) => {
     setRightPanel(true, 'ai');
-    if (opts?.session) {
-      ensureThreadForSession(opts.session);
-    }
     return aiSend(text, mode, opts);
   };
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
@@ -1157,7 +1158,14 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       hostName: t.hostName,
       historyLength: t.history?.length || 0,
       active: t.id === state.activeThreadId,
+      busy: !!t.req,
+      unread: !!t.unread,
+      draft: t.draft || '',
     })),
+    aiActiveText: () => {
+      const activeView = document.querySelector('#ai-messages .ai-thread-view.active');
+      return (activeView || document.querySelector('#ai-messages'))?.textContent || '';
+    },
     // 诊断素材:最后一次命令 + 输出采集(直接断言采集层,不经过 AI 请求)
     diagSource: () => {
       const s = state.sessions.get(state.activeId);

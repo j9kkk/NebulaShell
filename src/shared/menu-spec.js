@@ -32,7 +32,7 @@ export const MENU_SPEC = [
   { submenu: '视图', items: [
     cmd('palette.open'), SEP,
     cmd('panel.sidebar'), cmd('panel.tools'), SEP,
-    cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), SEP,
+    cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), cmd('ai.newThread', { accelerator: false }), SEP,
     cmd('tabs.list'), cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), SEP,
     pre('Fullscreen', '进入全屏'), cmd('window.fullscreen', { only: 'pc' }),
   ] },

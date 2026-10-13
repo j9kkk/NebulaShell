@@ -2,6 +2,7 @@
 
 import { isAppModifier as matchAppModifier } from './interaction.js';
 import { icon } from '../shared/icons.js';
+import { activeThreadOf, installAiThreadState } from '../shared/ai-thread-state.js';
 
 export const $ = (s) => document.querySelector(s);
 
@@ -44,10 +45,8 @@ export const state = {
   cloudResults: [],
   aiThreads: new Map(),  // threadId -> { id, title, hostId, sessionId, history: [], containerEl, req, createdAt }
   activeThreadId: null,
-  _aiHistoryFallback: [],
-  _aiReqFallback: null,
   metrics: new Map(), // sessionId -> 最近一次 ssh:metrics
-  metricHistory: new Map(), // sessionId -> [cpuPct...] 迷你趋势
+  metricHistory: new Map(), // sessionId -> { cpu: [], mem: [], rx: [], tx: [] } 迷你趋势历史队列
   // 标签页(E1)与窗格(E3):每个标签页持有独立的布局树与窗格集合,
   // 切换标签只渲染该标签的窗格;其余标签的终端对象保留在内存中(不销毁),
   // 切回时重新挂载并 refresh。state.layout/panes/zoomPaneId/activePaneId
@@ -72,18 +71,12 @@ export function activeTab() {
 }
 
 export function activeAiThread() {
-  return state.activeThreadId ? state.aiThreads.get(state.activeThreadId) : null;
+  return activeThreadOf(state);
 }
 
+installAiThreadState(state);
+
 Object.defineProperties(state, {
-  aiHistory: {
-    get: () => { const th = activeAiThread(); return th ? th.history : state._aiHistoryFallback; },
-    set: (v) => { const th = activeAiThread(); if (th) th.history = v; else state._aiHistoryFallback = v; },
-  },
-  aiReq: {
-    get: () => { const th = activeAiThread(); return th ? th.req : state._aiReqFallback; },
-    set: (v) => { const th = activeAiThread(); if (th) th.req = v; else state._aiReqFallback = v; },
-  },
   layout: {
     get: () => { const t = activeTab(); return t ? t.layout : null; },
     set: (v) => { const t = activeTab(); if (t) t.layout = v; },
