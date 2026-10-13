@@ -345,6 +345,7 @@ export function bindModalInteractions() {
 
 /// 应用内输入对话框:返回 Promise<string|null>(null = 取消)。
 /// 与 askConfirm 同因 —— wry/WKWebView 未实现原生 prompt,直接调用拿不到输入。
+/// opts.value 预填初始值(如历史收藏的默认名),非空时聚焦后全选,直接输入即覆盖。
 export function askPrompt(message, opts = {}) {
   return queueDialog('prompt', () => runPrompt(message, opts));
 }
@@ -356,6 +357,7 @@ function runPrompt(message, opts) {
     hint = '',
     password = true,
     placeholder = '',
+    value = '',
     validate = null,
   } = opts;
   return new Promise((resolve) => {
@@ -369,7 +371,7 @@ function runPrompt(message, opts) {
     hintEl.textContent = hint || '';
     hintEl.style.display = hint ? 'block' : 'none';
     input.type = password ? 'password' : 'text';
-    input.value = '';
+    input.value = value;
     input.placeholder = placeholder;
     okBtn.textContent = okText;
     okBtn.disabled = false;
@@ -403,6 +405,7 @@ function runPrompt(message, opts) {
     setModalDismissHandler(modal, onCancel);
     openModal(modal);
     input.focus();
+    if (value) input.select();
   });
 }
 

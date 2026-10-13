@@ -173,7 +173,7 @@ async fn slow_download_serial_reads_measure() {
         "8MB @700ms/READ 应走并发分段(预期 ~23s),耗时 {elapsed:?} 异常 —— 可能回退到串行"
     );
 
-    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/big.bin", false).await;
+    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/big.bin", false, false).await;
     let _ = std::fs::remove_dir_all(&dl_dir);
     ssh.disconnect("slow-dl").await;
 }
@@ -230,7 +230,7 @@ async fn slow_download_hits_request_timeout() {
     assert!(r.is_ok(), "set_timeout(30) 后 11s/READ 下载应成功");
     assert_eq!(std::fs::read(&dl).unwrap().len(), payload.len());
 
-    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/mid.bin", false).await;
+    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/mid.bin", false, false).await;
     let _ = std::fs::remove_dir_all(&dl_dir);
     let _ = std::fs::remove_dir_all(&up_dir);
     ssh.disconnect("slow-to").await;
@@ -304,7 +304,7 @@ async fn list_dir_during_slow_download() {
     assert!(matches!(ls, Ok(Ok(_))), "慢下载中列目录必须仍可用");
 
     let _ = downloader.await;
-    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/two.bin", false).await;
+    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/two.bin", false, false).await;
     let _ = std::fs::remove_dir_all(&dl_dir);
     let _ = std::fs::remove_dir_all(&up_dir);
     ssh.disconnect("slow-ls").await;
@@ -354,7 +354,7 @@ async fn fix_set_timeout_allows_slow_reads() {
     assert!(r.is_ok(), "set_timeout(30) 后 11s/READ 下载应成功");
     assert_eq!(std::fs::read(&dl).unwrap().len(), payload.len());
 
-    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/mid.bin", false).await;
+    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/mid.bin", false, false).await;
     let _ = std::fs::remove_dir_all(&dl_dir);
     let _ = std::fs::remove_dir_all(&up_dir);
     ssh.disconnect("slow-fix").await;
@@ -429,7 +429,7 @@ async fn fix_concurrent_range_reads_speedup() {
     assert_eq!(merged.len(), payload.len());
     assert_eq!(merged, payload, "并发分段读内容必须与串行一致");
 
-    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/big.bin", false).await;
+    let _ = nebulashell_lib::sftp::remove(&sftp, "/home/user/big.bin", false, false).await;
     let _ = std::fs::remove_dir_all(&up_dir);
     ssh.disconnect("slow-par").await;
 }

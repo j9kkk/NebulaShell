@@ -137,8 +137,7 @@
           <button id="rp-tab-history" class="rp-tab" type="button" role="tab" data-tab="history" aria-controls="rp-history" aria-selected="false" tabindex="-1" title="命令历史"><span class="mi" data-icon="clock"></span><span class="rp-tab-lbl">命令历史</span></button>
           <button id="rp-tab-snippets" class="rp-tab" type="button" role="tab" data-tab="snippets" aria-controls="rp-snippets" aria-selected="false" tabindex="-1" title="常用命令"><span class="mi" data-icon="zap"></span><span class="rp-tab-lbl">常用命令</span></button>
         </div>
-        <span class="spacer"></span>
-        <button id="btn-ai-close" class="btn icon" title="收起右侧工具栏" aria-label="收起右侧工具栏">✕</button>
+        <!-- 收起入口只有标题栏的右侧工具栏开关(#btn-ai-toggle),页签行不再放 ✕ -->
       </div>
       <div class="rp-pages">
       <section id="rp-ai" class="rp-page active" role="tabpanel" data-page="ai" aria-labelledby="rp-tab-ai">
@@ -176,12 +175,16 @@
       <section id="rp-history" class="rp-page" role="tabpanel" data-page="history" aria-labelledby="rp-tab-history">
         <div class="rp-toolbar">
           <input id="hist-search" class="inp" type="text" placeholder="过滤历史…" aria-label="过滤命令历史" autocomplete="off" spellcheck="false" />
-          <button id="hist-clear" class="btn small" type="button">清空</button>
+          <button id="hist-clear" class="btn icon" type="button" title="清空历史" aria-label="清空历史"><span class="mi" data-icon="trash"></span></button>
         </div>
         <div id="hist-list" class="rp-list"></div>
       </section>
       <!-- 添加行必须是本页最后一个子元素:它锁 --footer-h 高,上边框与状态栏上边框齐平 -->
       <section id="rp-snippets" class="rp-page" role="tabpanel" data-page="snippets" aria-labelledby="rp-tab-snippets">
+        <div class="rp-toolbar">
+          <input id="snippet-search" class="inp" type="text" placeholder="过滤名称/命令…" aria-label="过滤常用命令" autocomplete="off" spellcheck="false" />
+          <button id="snippet-clear" class="btn icon" type="button" title="清空过滤" aria-label="清空过滤"><span class="mi" data-icon="x"></span></button>
+        </div>
         <div id="snippet-list" class="rp-list"></div>
         <div class="snippet-add">
           <input id="snippet-name" type="text" placeholder="名称" aria-label="命令名称" />

@@ -1,5 +1,5 @@
 // 资源监控:指标采集与监控条
-import { $, api, state, toast } from './core.js';
+import { $, api, askPrompt, state, toast } from './core.js';
 import { feedTrusted } from './terminal.js';
 import { icon } from '../shared/icons.js';
 
@@ -50,9 +50,10 @@ export function fmtLat(ms) {
 }
 
 /// 常用命令是右侧工具栏的一个页签(见 right-panel.js)。行内三按钮:
-/// ▶ 执行(常显,主操作) / ✏ 编辑 / 🗑 删除(悬停显现)。整行点击不执行 ——
-/// 避免在远程主机上误触;执行只认 ▶。编辑在行内原位展开,同一时间只允许
-/// 一行处于编辑态:inputs 只存在于 DOM,开始另一行的编辑即丢弃未保存的修改。
+/// ▶ 执行(主操作) / ✏ 编辑 / 🗑 删除,三者常显。整行点击不执行 ——
+/// 避免在远程主机上误触;执行只认 ▶。编辑在行内原地把名称/命令文本换成
+/// 输入框(单行,与展示行同构),同一时间只允许一行处于编辑态:
+/// inputs 只存在于 DOM,开始另一行的编辑即丢弃未保存的修改。
 let editingSnippet = null;
 
 /// 收藏自命令历史时的默认名称:全文截 16 字符(超出加 …),用户可用 ✏ 改名。
@@ -67,16 +68,33 @@ export function isSnippetCmd(cmd) {
   return (state.settings?.snippets || []).some((s) => s.cmd === t);
 }
 
-/// 从命令历史一键收藏(见 tools.js renderHistory 的 ★):命令相同视为已收藏,
-/// 不重复添加;名称与现有条目重名时追加 (N) 后缀。返回是否真的新增。
+/// 从命令历史一键收藏(见 tools.js renderHistory 的 ★):先弹名称输入框,确认后
+/// 才保存 —— 预填命令前 16 字符并全选,直接输入即覆盖,取消/关弹窗不保存。
+/// 命令相同视为已收藏,只提示、不弹框(删除入口只在常用命令页签)。
 export async function addSnippetFromCmd(cmd) {
   const t = String(cmd).trim();
   if (!t) return false;
   const items = state.settings.snippets || [];
   if (items.some((s) => s.cmd === t)) { toast('该命令已在常用命令中', 'info'); return false; }
   const base = snippetNameFor(t);
-  let name = base;
-  for (let n = 2; items.some((s) => s.name === name); n++) name = `${base}(${n})`;
+  // 弹窗里放命令原文(超长截断)让用户确认存的是什么;名称沿用编辑态的 50 字上限
+  const shown = t.length > 160 ? t.slice(0, 160) + '…' : t;
+  const raw = await askPrompt(shown, {
+    title: '存为常用命令',
+    okText: '保存',
+    password: false,
+    value: base,
+    placeholder: '请输入名称',
+    validate: (v) => {
+      const s = v.trim();
+      if (!s) return '请输入名称';
+      if (s.length > 50) return '名称不能超过 50 字符';
+      return null;
+    },
+  });
+  if (raw == null) return false;
+  let name = raw.trim();
+  for (let n = 2; items.some((s) => s.name === name); n++) name = `${name}(${n})`;
   items.push({ name, cmd: t.slice(0, 2000) });
   state.settings.snippets = items;
   await saveSnippets();
@@ -87,9 +105,16 @@ export async function addSnippetFromCmd(cmd) {
 export function renderSnippets() {
   const list = $('#snippet-list');
   list.innerHTML = '';
-  const items = (state.settings && state.settings.snippets) || [];
-  if (!items.length) {
+  const all = (state.settings && state.settings.snippets) || [];
+  // 过滤词留在输入框里(页签切换不丢);名称、命令都做不区分大小写的子串匹配。
+  const kw = ($('#snippet-search')?.value || '').trim().toLowerCase();
+  const items = kw ? all.filter((s) => `${s.name || ''}\n${s.cmd || ''}`.toLowerCase().includes(kw)) : all;
+  if (!all.length) {
     list.innerHTML = '<div class="file-empty">还没有常用命令，在下方添加或从命令历史页签收藏</div>';
+    return;
+  }
+  if (!items.length) {
+    list.innerHTML = '<div class="file-empty">没有匹配的常用命令，换个关键词试试。</div>';
     return;
   }
   for (const s of items) {
@@ -125,17 +150,14 @@ export function renderSnippets() {
   }
 }
 
-/// 行内编辑态:两行输入(名称/命令)+ 保存/取消。Enter 保存、Esc 取消
-/// (preventDefault 挡住右侧栏根节点的 Esc 处理器)。
+/// 行内编辑态:输入框原地替换名称/命令文本(单行,与展示行同构),输入框为空时
+/// 显示占位提示。编辑态只保留保存/取消两个按钮(▶/✏/🗑 不在)。
+/// Enter 保存、Esc 取消(preventDefault 挡住右侧栏根节点的 Esc 处理器)。
 function renderSnippetEditor(row, s) {
-  row.innerHTML = `<div class="s-edit-form">
-      <div class="s-edit-line"><input class="s-edit-name" type="text" maxlength="50" aria-label="命令名称" /></div>
-      <div class="s-edit-line"><input class="s-edit-cmd" type="text" maxlength="2000" aria-label="命令内容" /></div>
-    </div>
-    <div class="s-edit-actions">
-      <button class="s-save" type="button" title="保存" aria-label="保存">${icon('check', { size: 14 })}</button>
-      <button class="s-cancel" type="button" title="取消" aria-label="取消">${icon('x', { size: 14 })}</button>
-    </div>`;
+  row.innerHTML = `<input class="s-edit-name" type="text" maxlength="50" placeholder="请输入名称" aria-label="命令名称" />`
+    + `<input class="s-edit-cmd" type="text" maxlength="2000" placeholder="请输入命令" aria-label="命令内容" />`
+    + `<button class="s-save" type="button" title="保存" aria-label="保存">${icon('check', { size: 14 })}</button>`
+    + `<button class="s-cancel" type="button" title="取消" aria-label="取消">${icon('x', { size: 14 })}</button>`;
   const nameInput = row.querySelector('.s-edit-name');
   const cmdInput = row.querySelector('.s-edit-cmd');
   nameInput.value = s.name;

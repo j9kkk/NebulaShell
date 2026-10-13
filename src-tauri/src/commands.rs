@@ -807,6 +807,7 @@ pub async fn nebula_invoke(
                         &sftp,
                         p["path"].as_str().unwrap_or(""),
                         p["isDir"].as_bool().unwrap_or(false),
+                        p["recursive"].as_bool().unwrap_or(false),
                     )
                     .await
                     .map(|_| json!(null))

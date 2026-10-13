@@ -126,7 +126,15 @@ const PATTERNS = [
   {
     name: '测试适配/接口演化',
     keys: ['#[test]', 'MockRuntime', 'assert', 'mock'],
-    checklist: ['接口变更是否同步更新 e2e 断言', '新增并发逻辑是否补了单测(如信号量/join 场景)'],
+    checklist: [
+      '接口变更是否同步更新 e2e 断言',
+      '新增并发逻辑是否补了单测(如信号量/join 场景)',
+      // 2026-10-12 审查沉淀:1489a02 —— 0.5.0 改 save_settings 返回 Result、AppState
+      // 增 log_hosts 字段,集成测试都没跟上,CI 才暴露。本地 cargo test --lib 不编译
+      // tests/ 目录,是"本地全绿 CI 红"的直接根因。
+      '新增 AppState 字段时,tests/ 里的手写 AppState 字面量 fixture 是否补了该字段',
+      '改命令签名后本地跑过 cargo test --all-targets 了吗(--lib 不编译测试目标,查不出 tests/ 编译错误)',
+    ],
   },
   {
     name: '弹窗/浮层层级',

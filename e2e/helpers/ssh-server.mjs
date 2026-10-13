@@ -317,6 +317,10 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
               else if (cmd === 'nb-progress') stream.write('10%\r50%\r100%\r\n');
               else if (cmd === 'nb-alt') stream.write('\x1b[?1049hhidden-9137\x1b[1;1Hinside\x1b[?1049lback-9137\r\n');
               else if (cmd === 'nb-title') stream.write('\x1b]0;mock-title-9137\x07title-ok\r\n');
+              // 长输出(T9z3/T9z4):行数须远多于终端行数,选区才能整体滚出视口
+              else if (cmd === 'nb-lines') {
+                for (let i = 1; i <= 150; i++) stream.write(`nb-line-${String(i).padStart(3, '0')} quote resubscribe line wx_primary succeeded\r\n`);
+              }
               else if (cmd === 'nb-chunked') {
                 // 同一行分三次、间隔发出:验证按行结束时刻打时间戳。
                 // 提示符由最后一个分块一起写,否则公共提示符会插进这一行中间。
@@ -518,6 +522,15 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
       return n;
     },
     putFile: (p, data) => tree.set(p, { type: 'file', data: Buffer.from(data), mtime: Math.floor(Date.now() / 1000), target: null }),
+    /// 预置目录节点(含沿途父目录);putFile 只放文件节点,目录必须显式建
+    putDir: (p) => {
+      const parts = String(p).split('/').filter(Boolean);
+      let cur = '';
+      for (const seg of parts) {
+        cur += '/' + seg;
+        if (!tree.has(cur) || tree.get(cur).type !== 'dir') tree.set(cur, { type: 'dir', data: null, mtime: Math.floor(Date.now() / 1000), target: null });
+      }
+    },
     removePath: (p) => tree.delete(p),
     close: () => new Promise((r) => {
       for (const s of clientListenServers) { try { s.close(); } catch { /* ignore */ } }

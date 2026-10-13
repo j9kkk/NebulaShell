@@ -664,6 +664,12 @@ export function aiFinishHolder(done) {
 
 export async function aiSend(rawText, mode, opts) {
   if (state.aiReq) return toast('AI 正在回复中，请稍候', 'error');
+  // 未配置模型时不必发注定失败的请求:提示后直达 AI 设置
+  if (!savedModels().length) {
+    toast('请先配置 AI 模型', 'error');
+    openAiSettings();
+    return;
+  }
   let text = (rawText || '').trim();
   if (!text) text = $('#ai-input').value.trim();
   if (!text) return;
@@ -990,12 +996,24 @@ export function renderModelChips() {
 
 /// 对话页的模型选择:无边框触发钮(圆圈 + 模型名 + chevronDown)+ 自定义浮层菜单。
 /// 只列"已勾选启用"的模型 —— 未勾选的模型不应能被选用;菜单尾部带"管理模型"入口。
+/// 0 模型时触发钮保持可点:点击直达 AI 设置(首次使用不必去全局设置里找入口)。
 export function renderModelSwitch() {
   const current = savedAi().model || '';
   const models = savedModels();
   const active = models.find((m) => m.id === current);
-  $('#ai-model-name').textContent = active ? (active.name || active.id) : '未启用模型';
-  $('#ai-model-trigger').disabled = models.length === 0 || !!state.aiReq || modelSwitchPending;
+  const nameEl = $('#ai-model-name');
+  const trigger = $('#ai-model-trigger');
+  if (!active) {
+    nameEl.textContent = '未启用模型，点击配置';
+    trigger.title = '配置 AI 模型';
+    trigger.classList.add('ai-model-unset');
+  } else {
+    nameEl.textContent = active.name || active.id;
+    trigger.title = '切换模型';
+    trigger.classList.remove('ai-model-unset');
+  }
+  // 0 模型不禁用:点击语义是"去配置"(见 openModelMenu);流式中/切换中仍禁用
+  trigger.disabled = !!state.aiReq || modelSwitchPending;
   // 菜单若开着,同步刷新条目(切换完成/禁用态变化时)
   renderModelMenu();
   if ($('#ai-model-menu').classList.contains('hidden')) return;

@@ -121,6 +121,19 @@ export async function auditTerminalViewport() {
   }
 }
 
+// 几何断言工具(evalJs 注入用):行内对齐、同行排列、按钮不拉成整行这类断言
+// 都要在 WebView 里量 getBoundingClientRect,各用例各自内联重写极易漂移(0.5.1
+// 的 T87h 就是第三次手写)。注入形式为源码字符串:evalJs 需要单表达式体,把这段
+// IIFE 拼进计算 JSON 快照的函数里即可拿到 rectOf/centerOf/sameRow/inlineRow。
+// 语义与 T87h 首版一致:坐标四舍五入取整;垂直中心差 ≤2px 视为同行;inlineRow
+// 要求 b 紧跟 a 右侧(允许 2px 重叠容差)且宽度 <140px(矮按钮未被拉伸成整行)。
+export const GEOM_SNIPPET = String.raw`
+const rectOf = (el) => { const b = el.getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
+const centerOf = (a) => a[1] + a[3] / 2;
+const sameRow = (a, b) => Math.abs(centerOf(a) - centerOf(b)) <= 2;
+const inlineRow = (a, b) => sameRow(a, b) && b[0] >= a[0] + a[2] - 2 && b[2] < 140;
+`;
+
 /// 文件分屏工具栏在多个窗格宽度下的几何:按钮不出窗格、互不重叠、保持单行;
 /// 窗格内容宽 ≤400px 时 ⋯ 出现并收起新建文件夹/全选,更宽时 ⋯ 隐藏;✕⤢ 始终在行尾可见。
 /// 宽度用内联样式强制(min-width 一并放开),与布局规划器无关。

@@ -183,9 +183,84 @@ async fn ssh_connect_exec_roundtrip() {
         "下载内容应与上传一致"
     );
 
-    nebulashell_lib::sftp::remove(&sftp, "/home/user/up.bin", false)
+    nebulashell_lib::sftp::remove(&sftp, "/home/user/up.bin", false, false)
         .await
         .expect("删除");
+
+    // —— 递归删除非空目录 ——
+    // 造树:/home/user/rmroot/{a.txt, sub/{deep.txt}, empty/, link -> /home/user/README.md}
+    // 链接目标在目录树外,必须存活 —— 递归删除绝不跟随符号链接。
+    nebulashell_lib::sftp::mkdir(&sftp, "/home/user/rmroot")
+        .await
+        .expect("mkdir root");
+    nebulashell_lib::sftp::mkdir(&sftp, "/home/user/rmroot/sub")
+        .await
+        .expect("mkdir sub");
+    nebulashell_lib::sftp::mkdir(&sftp, "/home/user/rmroot/empty")
+        .await
+        .expect("mkdir empty");
+    let seed_dir = std::env::temp_dir().join(format!("nb-it-rmrec-{}", std::process::id()));
+    std::fs::create_dir_all(seed_dir.join("sub")).unwrap();
+    std::fs::write(seed_dir.join("a.txt"), "a\n").unwrap();
+    std::fs::write(seed_dir.join("sub/deep.txt"), "deep\n").unwrap();
+    nebulashell_lib::sftp::upload(
+        &sftp,
+        handle.clone(),
+        sid.into(),
+        seed_dir.join("a.txt").to_str().unwrap(),
+        "/home/user/rmroot",
+    )
+    .await
+    .expect("seed a.txt");
+    nebulashell_lib::sftp::upload(
+        &sftp,
+        handle.clone(),
+        sid.into(),
+        seed_dir.join("sub/deep.txt").to_str().unwrap(),
+        "/home/user/rmroot/sub",
+    )
+    .await
+    .expect("seed deep.txt");
+    let _ = std::fs::remove_dir_all(&seed_dir);
+    // mock sshd 不支持 SYMLINK(OpUnsupported),链接场景由 e2e mock 覆盖;
+    // 这里仅在有支持时验证"不跟随链接"
+    let link_supported = sftp
+        .symlink("/home/user/README.md", "/home/user/rmroot/link")
+        .await
+        .is_ok();
+
+    // 非 recursive 删非空目录:仍报错(协议语义保留),且目录原封不动
+    assert!(
+        nebulashell_lib::sftp::remove(&sftp, "/home/user/rmroot", true, false)
+            .await
+            .is_err(),
+        "非空目录非递归删除应失败"
+    );
+    assert!(
+        sftp.metadata("/home/user/rmroot").await.is_ok(),
+        "失败后目录应还在"
+    );
+
+    // 递归删除:成功,且链接目标(树外)存活
+    nebulashell_lib::sftp::remove(&sftp, "/home/user/rmroot", true, true)
+        .await
+        .expect("递归删除");
+    let left = nebulashell_lib::sftp::list(&sftp, Some("/home/user".into()))
+        .await
+        .expect("列目录");
+    let names: Vec<&str> = left["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&"rmroot"),
+        "rmroot 应已删除,实际: {names:?}"
+    );
+    // README.md 预置文件一直在;若链接创建成功,它就是链接目标,同样必须存活
+    assert!(names.contains(&"README.md"), "README.md 不应被误删");
+    let _ = link_supported;
 
     let _ = std::fs::remove_dir_all(&dir);
     ssh.disconnect(sid).await;

@@ -848,14 +848,14 @@ export async function removeEntry(en, paneArg) {
   const target = paneSnapshot(pane);
   if (!target) return toast('请先连接并打开目录', 'error');
   const label = items.length === 1
-    ? `「${items[0].name}」${items[0].dir ? '(目录必须为空才能删除)' : ''}`
-    : `${items.length} 项(${items.filter((x) => x.dir).length} 个目录,目录必须为空才能删除)`;
+    ? `「${items[0].name}」${items[0].dir ? '(目录,将连同其全部内容删除)' : ''}`
+    : `${items.length} 项(${items.filter((x) => x.dir).length} 个目录,目录将连同内容一起删除)`;
   if (!(await askConfirm(`确定删除 ${label} 吗?`, { title: items.length === 1 ? (items[0].dir ? '删除目录' : '删除文件') : '批量删除', okText: '删除' }))) return;
   let ok = 0;
   const errors = [];
   for (const item of items) {
     try {
-      await api('sftp:remove', { sessionId: target.sessionId, path: remoteEntryPath(target.cwd, item.name), isDir: item.dir });
+      await api('sftp:remove', { sessionId: target.sessionId, path: remoteEntryPath(target.cwd, item.name), isDir: item.dir, recursive: item.dir });
       ok += 1;
     } catch (e) {
       errors.push(`${item.name}: ${e.message}`);

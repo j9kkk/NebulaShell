@@ -234,6 +234,35 @@ test('removing an enabled model falls back active to first remaining; empty list
   assert.equal($('#ai-model').value, ''); // 全部移除等同勾选弹框全取消,由空态提示引导重建
 });
 
+test('empty model list keeps trigger clickable with config CTA; send is blocked and opens AI settings', async () => {
+  const { ai, state, $, toasts, calls } = await setup();
+  ai.syncSelectedModelsFromSettings();
+  ai.applySelectedModels([]); // 清到 0 模型(空列表是合法态)
+  await ai.saveAiSettings();
+  const trigger = $('#ai-model-trigger');
+  assert.equal(trigger.disabled, false, '0 模型不禁用:点击语义是去配置');
+  assert.equal($('#ai-model-name').textContent, '未启用模型，点击配置');
+  assert.equal(trigger.title, '配置 AI 模型');
+  assert.equal(trigger.classList.contains('ai-model-unset'), true);
+
+  // aiSend 前置守卫:不发请求、提示后打开 AI 设置弹窗
+  const n = calls.filter((c) => c.channel === 'ai:chat').length;
+  await ai.aiSend('你好');
+  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n);
+  assert.equal(toasts.some((t) => /请先配置/.test(t.message)), true);
+  assert.equal($('#modal-settings').classList.contains('hidden'), false);
+});
+
+test('configured model restores trigger title and clears unset state', async () => {
+  const { ai, state, $ } = await setup();
+  ai.syncSelectedModelsFromSettings();
+  const trigger = $('#ai-model-trigger');
+  assert.equal(trigger.classList.contains('ai-model-unset'), false);
+  assert.equal(trigger.title, '切换模型');
+  assert.equal($('#ai-model-name').textContent, 'm1');
+  assert.equal(trigger.disabled, false);
+});
+
 test('endpoint change save without new key emits clearApiKey; freshly typed key replaces it', async () => {
   const { ai, $, calls } = await setup();
   ai.openAiSettings(); ai.fillPreset('deepseek');

@@ -1140,7 +1140,34 @@ export function bindSelectionExplain(session) {
   } catch { /* 老版本 xterm 无此事件:功能降级为无悬浮按钮 */ }
   // 选区随滚动/会话切换变化:滚轮与焦点切换时重算或隐藏
   session.term.onScroll?.(() => { if (explainBubbleFor === session) compute(); });
-  session.pane?.addEventListener?.('scroll', () => { if (explainBubbleFor === session) compute(); }, true);
+  // 用户滚动(滚轮/拖滚动条)不触发 term.onScroll;捕获阶段的 scroll 又早于 xterm 自己的
+  // 处理,此刻 viewportY 还是滚动前的值。推到下一帧再算,否则按钮总落后一格,选区刚滚出
+  // 视口时还留在旧位置压住文字。
+  let scrollFrame = 0;
+  session.pane?.addEventListener?.('scroll', () => {
+    if (explainBubbleFor !== session || scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; if (explainBubbleFor === session) compute(); });
+  }, true);
+}
+
+/// xterm 5.5 的 DOM 渲染器缺陷(上游 6.0 已修):选区整体滚出视口后,选区模型的行号
+/// 被清零,它却照常按第 0 行绘制选区浮层 —— 首行留下一条从选区起始列到结束列的
+/// 不透明色带,层级高于未选中的文字,把该行内容盖住。补上上游的守卫:选区与视口无
+/// 交集时清空浮层。补在原型上:WebGL 上下文丢失回退时 xterm 会新建 DOM 渲染器实例。
+const guardedSelectionRenderers = new WeakSet();
+function guardOffscreenSelection(term) {
+  try {
+    const renderer = term._core?._renderService?._renderer?.value;
+    if (!renderer?._selectionRenderModel || !renderer._selectionContainer) return;
+    const proto = Object.getPrototypeOf(renderer);
+    if (guardedSelectionRenderers.has(proto) || typeof proto.handleSelectionChanged !== 'function') return;
+    const draw = proto.handleSelectionChanged;
+    proto.handleSelectionChanged = function (start, end, columnSelectMode) {
+      draw.call(this, start, end, columnSelectMode);
+      if (!this._selectionRenderModel.hasSelection) this._selectionContainer.replaceChildren();
+    };
+    guardedSelectionRenderers.add(proto);
+  } catch { /* 内部结构变化:保持 xterm 原行为 */ }
 }
 
 export function createSession(host, paneId, tabId, dir, options = {}) {
@@ -1205,6 +1232,7 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   surface.className = 'term-surface';
   pane.appendChild(surface);
   term.open(surface);
+  guardOffscreenSelection(term);
   if (pane.isConnected) { try { fit.fit(); } catch { /* background terminal has no geometry yet */ } }
   // WebGL 渲染器:DOM 渲染器逐字符建 span,大批量输出(构建日志/vim/htop)时
   // 主线程掉帧,是终端输出流畅度的主要瓶颈。上下文丢失(GPU 重置/驱动切换、
@@ -2312,6 +2340,13 @@ export function clearActiveTerm(sessionId = state.activeId) {
   const s = state.sessions.get(sessionId);
   if (!s) return;
   try { s.term.clear(); s.term.write('\x1b[2J\x1b[H'); } catch { /* ignore */ }
+  // 清屏的各入口(底栏按钮/⌘K/命令面板/右键菜单)都会把焦点留在按钮或菜单上,
+  // 用户还得再点一下终端才能敲命令。这里把焦点还给刚清的那个终端,后台标签
+  // 页里的终端不抢(反正 hidden 聚焦不上),模态开着时也不抢(同 activateSession)。
+  const tab = state.tabs.get(s.tabId);
+  if (tab && state.activeTabId === tab.id && !hasOpenModal()) {
+    try { s.term.focus(); } catch { /* ignore */ }
+  }
 }
 
 /* ---------------- 会话日志(J1/J2) ----------------

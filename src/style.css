@@ -606,6 +606,10 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .ai-model-trigger:hover { background: rgba(139, 150, 168, 0.12); color: var(--text); }
 .ai-model-trigger:disabled { opacity: 0.6; cursor: not-allowed; }
+/* 未配置模型态:文案是"点击配置"引导,用 accent 色暗示可点 */
+.ai-model-trigger.ai-model-unset { color: var(--accent); }
+.ai-model-trigger.ai-model-unset:hover { color: var(--accent); filter: brightness(1.15); }
+.ai-model-trigger.ai-model-unset .ai-model-dot { border-color: var(--accent); }
 #ai-model-name { overflow: hidden; text-overflow: ellipsis; }
 .ai-model-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
 /* 下箭头走 SVG 注册表(chevronDown),flex 容器内与圆圈/文字天然同轴,
@@ -1045,26 +1049,26 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #mon-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page)。
-   行内按钮几何统一 20×20 圆角方块:▶ 常显(主操作),✏/🗑/★ 悬停显现。
-   整行点击不再执行命令(误触代价是在远程主机上跑命令),行只是悬停容器。 */
+   行内按钮几何统一 26×26 圆角方块:▶/✏/🗑 全部常显(0.4.x 起,悬停显隐
+   让编辑/删除入口太隐蔽)。整行点击不再执行命令(误触代价是在远程主机上
+   跑命令),行只是悬停容器。 */
 .snippet-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; }
 .snippet-row:hover { background: rgba(91,140,255,0.12); }
 .snippet-row .s-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; max-width: 45%; overflow: hidden; text-overflow: ellipsis; flex: none; }
 .snippet-row .s-cmd { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.snippet-row .s-edit, .snippet-row .s-del { visibility: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; }
+.snippet-row .s-edit, .snippet-row .s-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; }
 .snippet-row .s-edit { color: var(--muted); }
 .snippet-row .s-del { color: var(--danger, #ff6b6b); }
 .snippet-row .s-del:hover { background: rgba(255,107,107,0.12); }
 .snippet-row .s-edit:hover { background: rgba(139,150,168,0.15); }
-.snippet-row:hover .s-edit, .snippet-row:hover .s-del { visibility: visible; }
 .snippet-row .s-exec { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--accent); cursor: pointer; }
 .snippet-row .s-exec:hover { background: rgba(91,140,255,0.15); }
-/* 行内编辑态:两行输入 + 右列保存/取消;input 显式 width:100% 保证两行等宽对齐 */
+/* 行内编辑态:输入框原地替换名称/命令文本,单行、与展示行同构(行高不变);
+   保存/取消在行尾。input 走 flex 槽位,不依赖 UA 默认 width。 */
 .snippet-row.editing { align-items: center; }
-.snippet-row.editing .s-edit-form { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.snippet-row.editing .s-edit-line input { width: 100%; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; }
-.snippet-row.editing .s-edit-actions { flex: none; display: flex; flex-direction: column; gap: 4px; }
-.snippet-row.editing .s-save, .snippet-row.editing .s-cancel { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.snippet-row.editing .s-edit-name { flex: 0 1 38%; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; }
+.snippet-row.editing .s-edit-cmd { flex: 1; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; }
+.snippet-row.editing .s-save, .snippet-row.editing .s-cancel { flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .snippet-row.editing .s-save { color: var(--accent); }
 .snippet-row.editing .s-cancel { color: var(--muted); }
 .snippet-row.editing .s-save:hover { background: rgba(91,140,255,0.15); }
@@ -1072,7 +1076,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 /* 添加行锁 --footer-h(含上边框):上边框与左侧状态栏上边框横向齐平 */
 .snippet-add { flex: none; display: flex; align-items: center; gap: 6px; height: var(--footer-h); padding: 0 12px; border-top: 1px solid var(--border); }
 .snippet-add input { flex: 1; min-width: 0; font-size: 12px; }
-.hist-row { display: flex; gap: 8px; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
+.hist-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
 .hist-row:hover { background: rgba(91,140,255,0.12); }
 .hist-row .h-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Menlo, monospace; }
 .hist-row .h-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }

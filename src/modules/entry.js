@@ -2,11 +2,11 @@
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
-import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, confirmModelPicker, fetchAiModels, fillPreset, filterModelPicker, markBubbleStreaming, movePickerSelection, onAiEndpointChange, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchModel, togglePickerFocus } from './ai.js';
-import { addSnippet, renderMonitorBar } from './monitor.js';
+import { addSnippet, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
@@ -566,7 +566,6 @@ export function bindEvents() {
   bindRightPanel();
   bindHistoryPage();
   bindSettings();
-  $('#btn-ai-close').addEventListener('click', () => setRightPanel(false));
   $('#btn-ai-cancel').addEventListener('click', closeAiSettings);
   // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都丢弃 AI 分区的草稿
   setModalDismissHandler('#modal-settings', closeAiSettings);
@@ -598,6 +597,12 @@ export function bindEvents() {
   // 面板外点击/Esc 关闭。菜单定位 fixed,不随面板滚动。
   $('#ai-model-trigger').addEventListener('click', (e) => {
     e.stopPropagation();
+    // 0 模型:无可切换项,点击语义变为"去配置"——直达 AI 设置分区
+    // (分支放这里:openSettings 在 settings.js,ai.js 反向导入会成环)
+    if (!savedAiModelId() && $('#ai-model-menu').classList.contains('hidden')) {
+      openSettings('ai');
+      return;
+    }
     const menu = $('#ai-model-menu');
     if (menu.classList.contains('hidden')) openModelMenu(); else closeModelMenu();
   });
@@ -648,6 +653,14 @@ export function bindEvents() {
   // 片段 / 指纹 / 关于
   $('#btn-snippet-add').addEventListener('click', addSnippet);
   $('#snippet-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') addSnippet(); });
+  // 常用命令过滤:输入即过滤(名称/命令模糊匹配);✕ 一键清空过滤词并还焦点
+  $('#snippet-search').addEventListener('input', renderSnippets);
+  $('#snippet-clear').addEventListener('click', () => {
+    const q = $('#snippet-search');
+    q.value = '';
+    renderSnippets();
+    q.focus();
+  });
   $('#btn-fp-close').addEventListener('click', () => closeModal('#modal-fp'));
   $('#btn-about-close').addEventListener('click', () => closeModal('#modal-about'));
 
@@ -1005,6 +1018,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     // 口令输入框(导出/导入用)
     promptOpen: () => !$('#modal-prompt').classList.contains('hidden'),
     promptTitle: () => $('#prompt-title').textContent,
+    promptValue: () => $('#prompt-input').value,
     promptFill: (v) => { $('#prompt-input').value = v; },
     promptClickOk: () => $('#btn-prompt-ok').click(),
     promptClickCancel: () => $('#btn-prompt-cancel').click(),
@@ -1093,6 +1107,46 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       const rect = b?.getBoundingClientRect();
       return { hasBubble: !!b, shown: !!b && !b.classList.contains('hidden') && b.classList.contains('show') && b.getClientRects().length > 0,
         top: rect ? Math.round(rect.top) : 0, left: rect ? Math.round(rect.left) : 0 };
+    },
+    /// 选区整体滚出视口(T9z3/T9z4):在 nb-lines 输出上建多行选区,先滚到可见处记下浮层块数
+    /// 与 🔍 状态(对照,应可见),再滚到让它整体落在视口上方/下方,记下仍有面积的浮层块数
+    /// (应为 0)与 🔍 是否还显示(应隐藏)。
+    selectionOverlayOffscreen: async () => {
+      const s = state.sessions.get(state.activeId);
+      if (!s) return null;
+      const t = s.term;
+      const buf = t.buffer.active;
+      // 选区重绘挂在 rAF 上;窗口被遮挡时 rAF 暂停,超时兜底免得钩子挂死
+      const settle = () => Promise.race([
+        new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+        new Promise((r) => setTimeout(r, 400)),
+      ]);
+      const blocks = () => [...s.pane.querySelectorAll('.xterm-selection > div')]
+        .filter((d) => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).length;
+      const rowOf = (prefix) => {
+        for (let i = 0; i < buf.length; i++) if (buf.getLine(i)?.translateToString(true).startsWith(prefix)) return i;
+        return -1;
+      };
+      const bubbleShown = () => !!document.querySelector('#ai-explain-bubble')?.classList.contains('show');
+      const probe = async (prefix, scrollAway) => {
+        const row = rowOf(prefix);
+        if (row < 0) return { row };
+        t.scrollToLine(Math.max(0, row - 2));
+        t.select(7, row, t.cols * 2 + 8); // 跨 3 行、起止列不同:缺陷下首行色带宽 8 列
+        await settle();
+        const visible = blocks();
+        const bubbleBefore = bubbleShown();
+        scrollAway();
+        await settle();
+        return { row, visible, offscreen: blocks(), bubbleBefore, bubbleAfter: bubbleShown(), selected: t.getSelection().length };
+      };
+      // 与滚轮/拖滚动条同一条路径:改 viewport 的 scrollTop,由 xterm 的 scroll 处理换算成行
+      const vp = s.pane.querySelector('.xterm-viewport');
+      const above = await probe('nb-line-005', () => { vp.scrollTop = vp.scrollHeight; });
+      const below = await probe('nb-line-145', () => { vp.scrollTop = 0; });
+      t.clearSelection();
+      t.scrollToBottom();
+      return { rows: t.rows, above, below };
     },
     write: (d) => {
       const s = state.sessions.get(state.activeId);

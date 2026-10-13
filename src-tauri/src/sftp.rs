@@ -105,12 +105,67 @@ pub async fn remove(
     sftp: &russh_sftp::client::SftpSession,
     path: &str,
     is_dir: bool,
+    recursive: bool,
 ) -> Result<(), String> {
-    if is_dir {
-        sftp.remove_dir(path).await.map_err(|e| e.to_string())
-    } else {
-        sftp.remove_file(path).await.map_err(|e| e.to_string())
+    if !is_dir {
+        return sftp.remove_file(path).await.map_err(|e| e.to_string());
     }
+    if !recursive {
+        return sftp.remove_dir(path).await.map_err(|e| e.to_string());
+    }
+    // 递归删除:栈式遍历(download_tree 同款,避免 async 递归装箱)。
+    // 条目一律 lstat 分型 —— 符号链接按文件删、绝不跟随,防止误删链接目标。
+    // 失败不中断:记首个错误、跳过该子项继续删兄弟,最后统一报错(目录留残壳)。
+    let root = path.trim_end_matches('/').to_string();
+    let mut pending: Vec<String> = vec![root.clone()];
+    // 各目录按"处理完成"顺序收集;反转后子目录必在父目录之前,逐层 rmdir
+    let mut to_rmdir: Vec<String> = Vec::new();
+    let mut first_error: Option<(String, String)> = None; // (路径, 错误)
+    while let Some(dir) = pending.pop() {
+        let rd = match sftp.read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some((dir.clone(), e.to_string()));
+                }
+                to_rmdir.push(dir);
+                continue;
+            }
+        };
+        for entry in rd {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let p = format!("{dir}/{name}");
+            // lstat:不跟随符号链接
+            let meta = match sftp.symlink_metadata(&p).await {
+                Ok(m) => m,
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some((p.clone(), e.to_string()));
+                    }
+                    continue;
+                }
+            };
+            if meta.is_dir() {
+                pending.push(p);
+            } else if let Err(e) = sftp.remove_file(&p).await {
+                if first_error.is_none() {
+                    first_error = Some((p.clone(), e.to_string()));
+                }
+            }
+        }
+        to_rmdir.push(dir);
+    }
+    for dir in to_rmdir.into_iter().rev() {
+        // 失败留给 first_error 汇报(如子项删失败导致的非空残壳)
+        let _ = sftp.remove_dir(&dir).await;
+    }
+    if let Some((p, e)) = first_error {
+        return Err(format!("{p}: {e}"));
+    }
+    Ok(())
 }
 
 pub async fn rename(
