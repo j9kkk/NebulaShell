@@ -1,6 +1,7 @@
 // Outer tab geometry and mounting. Inner trees and terminal instances are never rewritten.
 import { layoutMinSize, paneMinSize, planGrid } from './terminal-layout.js';
 import { icon } from '../shared/icons.js';
+import { startMouseDrag } from '../shared/drag.js';
 import { renderSplitTree } from './split-layout-renderer.js';
 
 export const TILE_HEADER_HEIGHT = 28;
@@ -61,60 +62,42 @@ export function ensureWorkspaceTile(tab, { document, activate, close, reorder, t
     if ((event.button !== undefined && event.button !== 0) || typeof document.addEventListener !== 'function') return;
     // 标题栏是拖拽把手,按下不起文字选区(同标签条)
     event.preventDefault?.();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    if (startX === undefined || startY === undefined) return;
-    let dragging = false;
+    if (event.clientX === undefined || event.clientY === undefined) return;
     let dropTargetId = null;
     const clearDropHighlight = () => {
       for (const el of document.querySelectorAll?.('.workspace-tile.drop-target') || []) {
         el.classList.remove('drop-target');
       }
     };
-    const onMove = (ev) => {
-      if (ev.buttons === 0) { onUp(); return; }
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (!dragging) {
-        if (Math.hypot(dx, dy) < 5) return;
-        dragging = true;
-        tile.classList.add('dragging');
-        document.body?.classList?.add('tab-dragging');
-      }
-      ev.preventDefault?.();
-      clearDropHighlight();
-      dropTargetId = null;
-      const allTiles = [...(document.querySelectorAll?.('.workspace-tile') || [])].filter((el) => el !== tile);
-      for (const other of allTiles) {
-        const r = other.getBoundingClientRect?.();
-        if (r && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) {
-          other.classList.add('drop-target');
-          dropTargetId = other.dataset?.tab || null;
-          break;
+    startMouseDrag(event, tile, {
+      onMove: (ev) => {
+        clearDropHighlight();
+        dropTargetId = null;
+        const allTiles = [...(document.querySelectorAll?.('.workspace-tile') || [])].filter((el) => el !== tile);
+        for (const other of allTiles) {
+          const r = other.getBoundingClientRect?.();
+          if (r && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) {
+            other.classList.add('drop-target');
+            dropTargetId = other.dataset?.tab || null;
+            break;
+          }
         }
-      }
-    };
-    const onUp = () => {
-      document.removeEventListener?.('mousemove', onMove);
-      document.removeEventListener?.('mouseup', onUp);
-      if (!dragging) return;
-      tile.classList.remove('dragging');
-      document.body?.classList?.remove('tab-dragging');
-      clearDropHighlight();
-      const ctx = tile._workspaceCtx;
-      if (dropTargetId && dropTargetId !== tab.id && ctx?.reorder && ctx?.tabs) {
-        const ids = [...ctx.tabs.keys()];
-        const fromIdx = ids.indexOf(tab.id);
-        const toIdx = ids.indexOf(dropTargetId);
-        if (fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) {
-          ids.splice(fromIdx, 1);
-          ids.splice(toIdx, 0, tab.id);
-          ctx.reorder(ids);
+      },
+      onEnd: () => {
+        clearDropHighlight();
+        const ctx = tile._workspaceCtx;
+        if (dropTargetId && dropTargetId !== tab.id && ctx?.reorder && ctx?.tabs) {
+          const ids = [...ctx.tabs.keys()];
+          const fromIdx = ids.indexOf(tab.id);
+          const toIdx = ids.indexOf(dropTargetId);
+          if (fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) {
+            ids.splice(fromIdx, 1);
+            ids.splice(toIdx, 0, tab.id);
+            ctx.reorder(ids);
+          }
         }
-      }
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+      },
+    });
   });
   header.addEventListener('click', (event) => { if (!event.target.closest?.('.workspace-tile-close')) activate(tab.id); });
   header.addEventListener('focusin', (event) => { if (!event.target.closest?.('.workspace-tile-close')) activate(tab.id, false); });

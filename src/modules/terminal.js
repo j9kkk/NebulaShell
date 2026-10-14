@@ -13,6 +13,7 @@ import { confirmTransferInterrupt, revealLocalPath } from './file-transfer.js';
 import { fmtSize } from '../shared/format.js';
 import { appendTrusted, createLine, feed as feedLine, firstCommandLine, resetLine } from '../shared/cmdline.js';
 import { endsWithCommand, logicalLineEnd, normalizeSpace, readCommandFromBuffer } from '../shared/term-text.js';
+import { startMouseDrag } from '../shared/drag.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -231,67 +232,49 @@ export function bindTabStrip() {
     if (e.button !== undefined && e.button !== 0) return;
     const tabEl = e.target?.closest?.('.tab');
     if (!tabEl) return;
+    // 关闭钮先行排除,再按默认动作拦截:否则会吞掉它的 mousedown 焦点行为
+    if (e.target?.closest?.('.tab-close') || state.tabs.size <= 1) return;
     // 按下不走默认动作:WebKit 会从标题起选区,拖动中把沿途标签标题一并选中且松手后
     // 残留(只在 mousemove 里 preventDefault 拦不住,选区在按下时就开始了)
     e.preventDefault?.();
-    if (e.target?.closest?.('.tab-close') || state.tabs.size <= 1) return;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let dragging = false;
-    const onMove = (ev) => {
-      // 按键已抬起却没收到 mouseup:就此结束,标签不能跟着空移的鼠标走
-      if (ev.buttons === 0) { onUp(); return; }
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (!dragging) {
-        if (Math.hypot(dx, dy) < 5) return;
-        dragging = true;
-        tabEl.classList.add('dragging');
-        document.body?.classList?.add('tab-dragging');
-      }
-      ev.preventDefault?.();
-      if (strip.scrollWidth > strip.clientWidth && typeof strip.getBoundingClientRect === 'function') {
-        const sr = strip.getBoundingClientRect();
-        const edge = 28;
-        if (ev.clientX < sr.left + edge) strip.scrollLeft -= 10;
-        else if (ev.clientX > sr.right - edge) strip.scrollLeft += 10;
-      }
-      const others = [...strip.querySelectorAll('.tab')].filter((t) => t !== tabEl);
-      let beforeEl = null;
-      for (const other of others) {
-        const r = other.getBoundingClientRect();
-        if (ev.clientX < r.left + r.width / 2) {
-          beforeEl = other;
-          break;
+    startMouseDrag(e, tabEl, {
+      onMove: (ev) => {
+        if (strip.scrollWidth > strip.clientWidth && typeof strip.getBoundingClientRect === 'function') {
+          const sr = strip.getBoundingClientRect();
+          const edge = 28;
+          if (ev.clientX < sr.left + edge) strip.scrollLeft -= 10;
+          else if (ev.clientX > sr.right - edge) strip.scrollLeft += 10;
         }
-      }
-      if (beforeEl) {
-        if (typeof strip.insertBefore === 'function') {
-          if (tabEl.nextElementSibling !== beforeEl) strip.insertBefore(tabEl, beforeEl);
-        } else if (Array.isArray(strip.children)) {
-          const fromIdx = strip.children.indexOf(tabEl);
-          if (fromIdx >= 0) strip.children.splice(fromIdx, 1);
-          const toIdx = strip.children.indexOf(beforeEl);
-          strip.children.splice(toIdx >= 0 ? toIdx : strip.children.length, 0, tabEl);
+        const others = [...strip.querySelectorAll('.tab')].filter((t) => t !== tabEl);
+        let beforeEl = null;
+        for (const other of others) {
+          const r = other.getBoundingClientRect();
+          if (ev.clientX < r.left + r.width / 2) {
+            beforeEl = other;
+            break;
+          }
         }
-      } else if (strip.children?.[strip.children.length - 1] !== tabEl) {
-        strip.appendChild(tabEl);
-      }
-    };
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      if (!dragging) return;
-      tabEl.classList.remove('dragging');
-      document.body?.classList?.remove('tab-dragging');
-      const orderedIds = [...strip.querySelectorAll('.tab')].map((el) => el.dataset.tab).filter(Boolean);
-      reorderTabs(orderedIds);
-      if (tabEl.dataset.tab && state.activeTabId !== tabEl.dataset.tab) {
-        activateTab(tabEl.dataset.tab);
-      }
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+        if (beforeEl) {
+          if (typeof strip.insertBefore === 'function') {
+            if (tabEl.nextElementSibling !== beforeEl) strip.insertBefore(tabEl, beforeEl);
+          } else if (Array.isArray(strip.children)) {
+            const fromIdx = strip.children.indexOf(tabEl);
+            if (fromIdx >= 0) strip.children.splice(fromIdx, 1);
+            const toIdx = strip.children.indexOf(beforeEl);
+            strip.children.splice(toIdx >= 0 ? toIdx : strip.children.length, 0, tabEl);
+          }
+        } else if (strip.children?.[strip.children.length - 1] !== tabEl) {
+          strip.appendChild(tabEl);
+        }
+      },
+      onEnd: () => {
+        const orderedIds = [...strip.querySelectorAll('.tab')].map((el) => el.dataset.tab).filter(Boolean);
+        reorderTabs(orderedIds);
+        if (tabEl.dataset.tab && state.activeTabId !== tabEl.dataset.tab) {
+          activateTab(tabEl.dataset.tab);
+        }
+      },
+    });
   });
   // 尺寸变化(窗口/侧栏/右侧栏)与标签增删、标题变化都会改变是否溢出
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncTabOverflow).observe(strip);
