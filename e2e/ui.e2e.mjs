@@ -5,7 +5,7 @@
 //
 // 前置:先构建 Rust 二进制(npm run build:web && cd src-tauri && cargo build)
 // 用法:node e2e/ui.e2e.mjs
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -816,6 +816,109 @@ async function aiCommandBlockRegressions() {
       && restored.activeId === prior.activeId && restored.broadcast.length === 0
       && restored.tabs.length === prior.tabs.length && restored.sessions.length === prior.sessions.length
       && restored.sessions.every((s) => prior.sessions.some((before) => before.id === s.id && before.readOnly === s.readOnly)), JSON.stringify({ restored, restoredBoundaries }));
+  }
+}
+
+// AI 主机工具:真实 SSE 工具调用 → 真实 IPC → mock sshd 的真实本地 shell。
+// 场景脚本见 helpers/mock-servers.mjs toolScenario;断言只看渲染结果与副作用。
+async function aiHostToolRegressions() {
+  const state = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  const active = state.sessions.find((s) => s.id === state.activeId);
+  if (!active || active.status !== 'connected') {
+    check('T95 AI 主机工具 — SKIP(没有已连接会话)', true, JSON.stringify(state.sessions));
+    return;
+  }
+  const view = '#ai-messages .ai-thread-view.active';
+  const setBase = async (suffix) => {
+    await openAiSettings();
+    await evalJs(`document.querySelector('#ai-baseurl').value = ${JSON.stringify(ai.base)} + ${JSON.stringify(suffix)};
+      document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#btn-ai-save').click(); return 1`);
+    await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden')`, 'true');
+  };
+  const send = (text) => evalJs(`document.querySelector('#ai-input').value = ${JSON.stringify(text)};
+    document.querySelector('#ai-send').click(); return 1`);
+  const lastBubble = `const b = [...document.querySelectorAll('${view} .ai-msg.assistant')].pop(); return b ? b.textContent : ''`;
+  const waitIdle = () => waitEval(`return document.querySelector('#ai-send').title`, '发送', 30000);
+  const clickButton = (scope, label) => evalJs(`const b = [...document.querySelectorAll(${JSON.stringify(scope + ' .btn')})].find((x) => x.textContent === ${JSON.stringify(label)});
+    if (!b) throw new Error('按钮不存在: ' + ${JSON.stringify(label)}); b.click(); return 1`);
+  sshd.putRealFile('/home/user/data/app.log', 'boot ok\n2026-10-14 upstream timed out (110: Connection timed out) while reading upstream\n');
+  fs.mkdirSync(sshd.toReal('/home/user/data/victim'), { recursive: true });
+  try {
+    // 故事 1:手动模式 —— 只读工具自动执行,exec 停在蓝卡,确认后输出回到模型。
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await setBase('/tools/story');
+    await send('网站 502 了，帮我查下');
+    await waitEval(`return !!document.querySelector('${view} .ai-confirm.tier-normal')`, 'true', 30000);
+    const bar = asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#ai-hostbar').hidden,
+      label: document.querySelector('#ai-hostbar-label').textContent, mode: document.querySelector('#ai-mode-toggle').dataset.mode })`));
+    const steps = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('${view} .ai-step')].map((s) => ({ tool: s.dataset.tool, status: s.dataset.status })))`));
+    check('T95 工具回合:主机条显示绑定主机、默认手动;只读工具自动完成,exec 停在蓝色确认卡',
+      !bar.hidden && bar.label.includes('作用于') && bar.mode === 'manual'
+      && ['host_info', 'tail_file', 'read_terminal'].every((t) => steps.some((s) => s.tool === t && s.status === 'ok'))
+      && steps.some((s) => s.tool === 'exec' && s.status === 'pending'), JSON.stringify({ bar, steps }));
+    await clickButton(`${view} .ai-confirm.tier-normal`, '执行');
+    await waitEval(lastBubble, 'STORY-DONE', 30000);
+    const story = await evalJs(lastBubble);
+    const summary = await evalJs(`return document.querySelector('${view} .ai-turn-summary')?.textContent || ''`);
+    check('T95b 确认后 exec 在终端当前目录执行,日志与命令输出回到模型,回合末给出执行记录',
+      story.includes('EXEC-SEEN') && story.includes('LOG-SEEN') && story.includes('CWD-SEEN') && summary.includes('echo NB-EXEC-OK'),
+      JSON.stringify({ story, summary }));
+    const auditFile = path.join(userData, 'session-logs', 'ai-audit.log');
+    const audit = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '';
+    check('T95c AI 执行的命令写入审计日志(含确认方式)', audit.includes('echo NB-EXEC-OK && pwd') && audit.includes('"decision":"confirmed"'), audit.slice(-400));
+
+    // 故事 3:切到自动后,递归删除仍强制确认;跳过理由传回模型,命令不执行。
+    await evalJs(`document.querySelector('#ai-mode-toggle').click(); return 1`);
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitEval(`return document.querySelector('#ai-mode-toggle').dataset.mode`, 'auto');
+    await setBase('/tools/danger');
+    await send('清理 victim 目录');
+    await waitEval(`return !!document.querySelector('${view} .ai-confirm.tier-danger')`, 'true', 30000);
+    const red = asObj(await evalJs(`const c = document.querySelector('${view} .ai-confirm.tier-danger');
+      return JSON.stringify({ text: c.textContent, primary: !!c.querySelector('.btn.primary'), preview: c.querySelector('.ai-confirm-preview pre')?.textContent || '' })`));
+    check('T95d 自动模式下递归删除仍弹红卡:无默认按钮,附只读影响预览',
+      red.text.includes('递归删除') && !red.primary && red.preview.includes('victim'), JSON.stringify(red));
+    await clickButton(`${view} .ai-confirm.tier-danger`, '跳过并说明原因');
+    await evalJs(`document.querySelector('${view} .ai-confirm.tier-danger .ai-confirm-input').value = '保留现场'; return 1`);
+    await clickButton(`${view} .ai-confirm.tier-danger`, '确认跳过');
+    await waitEval(lastBubble, 'DANGER-DONE', 30000);
+    const danger = await evalJs(lastBubble);
+    check('T95e 跳过理由回填给模型,命令没有执行', danger.includes('理由：保留现场') && fs.existsSync(sshd.toReal('/home/user/data/victim')), danger);
+
+    // 停止:运行中的远端命令被结束(进程组),迟到的副作用不发生;之后历史仍合法。
+    await waitIdle();
+    await setBase('/tools/stop');
+    await send('跑个长任务');
+    await waitEval(`return [...document.querySelectorAll('${view} .ai-step[data-tool="exec"]')].pop()?.querySelector('.ai-step-state')?.textContent || ''`, '运行中', 30000);
+    await sleep(800);
+    await evalJs(`document.querySelector('#ai-send').click(); return 1`);
+    await waitEval(`return [...document.querySelectorAll('${view} .ai-step[data-tool="exec"]')].pop()?.dataset.status`, 'aborted', 15000);
+    await sleep(2500);
+    const alive = spawnSync('pgrep', ['-f', 'sleep 31.5']).stdout.toString().trim();
+    check('T95f 停止立即结束远端进程组,迟到的副作用不发生',
+      !alive && !fs.existsSync(sshd.toReal('/home/user/data/late-marker')), JSON.stringify({ alive }));
+    await waitIdle();
+    await setBase('/tools/echo');
+    await send('继续');
+    await waitEval(lastBubble, 'PAIRING-OK', 30000);
+    check('T95g 中止后继续提问:工具调用与结果仍成对,请求未被服务端拒绝', true);
+
+    await setBase('/tools/sensitive');
+    await send('看看 ssh 私钥');
+    await waitEval(lastBubble, 'DENIED-SEEN', 30000);
+    check('T95h read_file 拒绝读取 ~/.ssh 下的密钥', true);
+
+    await setBase('/tools/unsupported');
+    await send('你好');
+    await waitEval(lastBubble, 'PLAIN-OK', 30000);
+    const warn = await evalJs(`return document.querySelector('#ai-hostbar-warn').textContent`);
+    check('T95i 模型不支持工具:自动退回普通对话,主机条给出提示', warn.includes('不支持工具'), warn);
+  } finally {
+    await evalJs(`if (document.querySelector('#ai-send')?.title === '停止生成') document.querySelector('#ai-send').click(); return 1`).catch(() => {});
+    await setBase('');
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`).catch(() => {});
   }
 }
 
@@ -1694,6 +1797,7 @@ async function main() {
   await sleep(300);
 
   await aiCommandBlockRegressions();
+  await aiHostToolRegressions();
 
   check('T9 AI 配置 / 模型发现 / 流式对话 / 保存后下拉即时刷新', true);
 

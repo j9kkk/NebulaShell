@@ -177,6 +177,16 @@
       <!-- 输入区 composer:上边框刻意去掉,视觉与消息区连续;外框(圆角边框)
              把 textarea 与工具行包成一体,textarea 自身无边框。
              底边与状态栏共享面板边缘,无需锁高对齐。 -->
+      <!-- 主机条:AI 工具作用于哪台主机 + 执行模式(手动确认/自动执行);
+           独立成行放在输入区之上,不改 composer 的锁高布局。内容与显隐由 ai-agent-ui.js updateHostBar 维护 -->
+      <div id="ai-hostbar" class="ai-hostbar" hidden>
+        <span class="ai-hostbar-icon mi" data-icon="terminal" aria-hidden="true"></span>
+        <span id="ai-hostbar-label" class="ai-hostbar-label"></span>
+        <span id="ai-hostbar-root" class="ai-root-badge" hidden>root</span>
+        <span id="ai-hostbar-warn" class="ai-hostbar-warn" hidden></span>
+        <span class="spacer"></span>
+        <button id="ai-mode-toggle" class="ai-mode-toggle" type="button" data-mode="manual">手动确认</button>
+      </div>
       <div class="ai-input-row">
         <div class="ai-composer">
           <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
@@ -235,6 +245,12 @@
           <option value="default">跟随全局设置</option>
           <option value="always">总是自动记录</option>
           <option value="never">从不自动记录</option>
+        </select>
+        <label for="host-aiaccess">AI 访问</label>
+        <select id="host-aiaccess" title="AI 助手能否读取该主机的文件、执行命令">
+          <option value="default">允许（可切换自动执行）</option>
+          <option value="manual">仅手动确认（禁用自动执行）</option>
+          <option value="deny">禁止 AI 访问</option>
         </select>
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />
         <label for="host-tags">标签</label><input id="host-tags" type="text" placeholder="多个标签以逗号分隔" />

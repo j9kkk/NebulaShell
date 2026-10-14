@@ -5,7 +5,9 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { routeToolOutput } from './ai-agent-ui.js';
+import { refreshAgentHostBar } from './ai-agent-run.js';
 import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -716,7 +718,7 @@ export function bindEvents() {
   });
 
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
-  $('#ai-send').addEventListener('click', () => (state.aiReq ? stopAiGeneration() : aiSend()));
+  $('#ai-send').addEventListener('click', () => (state.aiReq || threadBusy(activeAiThread()) ? stopAiGeneration() : aiSend()));
   $('#ai-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -915,10 +917,17 @@ export function bindEvents() {
     const match = findRequestHolder(done.requestId);
     if (match) aiFinishHolder(done);
   });
-  window.nebula.on('ai:error', ({ requestId, message }) => {
+  // 工具回合:命令输出流进对应步骤行;模型拼工具参数期间也算活跃(防空闲误判)。
+  window.nebula.on('ai:tool-output', routeToolOutput);
+  window.nebula.on('ai:tool-delta', ({ requestId }) => aiTouchRequest(requestId));
+  // 主机条跟随当前会话与连接状态(作用于哪台主机、是否可用工具)。
+  window.addEventListener('nb:active-session', refreshAgentHostBar);
+  window.nebula.on('ssh:status', () => setTimeout(refreshAgentHostBar, 0));
+  window.nebula.on('ai:error', ({ requestId, message, code }) => {
     const match = findRequestHolder(requestId);
     if (match) {
       const h = match.holder;
+      h.failedCode = code || null;
       // 先撤等待态再写错误文案:clearBubbleState 会清掉"正在思考…"占位,
       // 反过来的话首 token 前报错会把刚写好的错误提示一起抹掉。
       if (h.bubble) {

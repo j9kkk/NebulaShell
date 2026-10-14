@@ -11,6 +11,53 @@ function readBody(req) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// AI 主机工具场景:无状态,按请求里的对话进度决定这一轮返回什么(轮次 = 最后一条
+// 用户消息之后的 assistant 条数)。工具调用与结果不配对时像真实服务端一样返回 400,
+// 用来验证中止/清理后历史依然合法。
+function toolScenario(name, body) {
+  const msgs = body.messages || [];
+  const ids = msgs.filter((m) => m.role === 'assistant' && m.tool_calls).flatMap((m) => m.tool_calls.map((c) => c.id));
+  const results = msgs.filter((m) => m.role === 'tool').map((m) => m.tool_call_id);
+  if (ids.length !== results.length || ids.some((id) => !results.includes(id))) {
+    return { status: 400, body: { error: { message: 'tool_call pairing broken' } } };
+  }
+  const after = msgs.slice(msgs.map((m) => m.role).lastIndexOf('user') + 1);
+  const round = after.filter((m) => m.role === 'assistant').length;
+  const lastTool = String([...after].reverse().find((m) => m.role === 'tool')?.content || '');
+  const anyTool = (s) => msgs.some((m) => m.role === 'tool' && String(m.content).includes(s));
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+  const call = (id, name, args) => ({ id, name, args });
+  switch (name) {
+    case 'story':
+      if (!hasTools) return { text: 'NO-TOOLS' };
+      if (round === 0) {
+        return { text: '先看看主机和日志。', calls: [
+          call('c_info', 'host_info', {}),
+          call('c_tail', 'tail_file', { path: '/home/user/data/app.log', lines: 20 }),
+          call('c_term', 'read_terminal', { lines: 30 }),
+        ] };
+      }
+      if (round === 1) return { calls: [call('c_exec', 'exec', { cmd: 'echo NB-EXEC-OK && pwd' })] };
+      return { text: `STORY-DONE ${lastTool.includes('NB-EXEC-OK') ? 'EXEC-SEEN' : 'EXEC-MISSING'} ${anyTool('upstream timed out') ? 'LOG-SEEN' : 'LOG-MISSING'} ${lastTool.includes('/data') ? 'CWD-SEEN' : 'CWD-MISSING'}` };
+    case 'danger':
+      if (round === 0) return { calls: [call('d1', 'exec', { cmd: 'rm -rf /home/user/data/victim' })] };
+      return { text: 'DANGER-DONE ' + lastTool.split('\n')[0] };
+    case 'stop':
+      if (round === 0) return { calls: [call('s1', 'exec', { cmd: 'sleep 31.5 && touch /home/user/data/late-marker' })] };
+      return { text: 'STOP-CONTINUED' };
+    case 'echo':
+      return { text: 'PAIRING-OK' };
+    case 'unsupported':
+      if (hasTools) return { status: 400, body: { error: { message: 'model mock-x does not support tools' } } };
+      return { text: 'PLAIN-OK' };
+    case 'sensitive':
+      if (round === 0) return { calls: [call('k1', 'read_file', { path: '~/.ssh/id_rsa' })] };
+      return { text: lastTool.includes('path_denied') ? 'DENIED-SEEN' : 'DENIED-MISSING' };
+    default:
+      return { text: 'UNKNOWN-SCENARIO' };
+  }
+}
+
 export const TENCENT_MOCK_INSTANCES = [
   {
     InstanceId: 'ins-e2e-1', InstanceName: 'e2e-cvm-1', InstanceState: 'RUNNING',
@@ -222,6 +269,32 @@ export async function startMockAiServer() {
       calls.openai++;
       await readBody(req);
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      return;
+    }
+    // AI 主机工具:/tools/<场景>/... 按对话进度返回真实 SSE 工具调用(参数分两片下发)。
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/tools')) {
+      calls.openai++;
+      const body = JSON.parse((await readBody(req)) || '{}');
+      calls.toolRequests = calls.toolRequests || [];
+      calls.toolRequests.push(body);
+      const reply = toolScenario(url.pathname.split('/')[2], body);
+      if (reply.status) {
+        res.writeHead(reply.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(reply.body));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const write = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+      if (reply.text) write({ choices: [{ delta: { role: 'assistant', content: reply.text } }] });
+      (reply.calls || []).forEach((c, index) => {
+        const args = JSON.stringify(c.args);
+        const cut = Math.floor(args.length / 2);
+        write({ choices: [{ delta: { tool_calls: [{ index, id: c.id, type: 'function', function: { name: c.name, arguments: args.slice(0, cut) } }] } }] });
+        write({ choices: [{ delta: { tool_calls: [{ index, function: { arguments: args.slice(cut) } }] } }] });
+      });
+      write({ choices: [{ delta: {}, finish_reason: reply.calls?.length ? 'tool_calls' : 'stop' }] });
+      res.write('data: [DONE]\n\n');
+      res.end();
       return;
     }
     // Command fixtures use real SSE/IPC, never inject assistant DOM or ai:done.

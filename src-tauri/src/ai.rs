@@ -216,7 +216,13 @@ pub async fn list_models(
     Ok(out)
 }
 
-/// 流式对话;每 250ms 一帧,SSE 逐行解析(与 Electron 版 ai.js 语义一致)
+/// 服务端拒绝工具调用时 Err 文本的前缀；commands 据此给 ai:error 加 code。
+pub const TOOLS_UNSUPPORTED: &str = "[tools_unsupported]";
+
+/// 流式对话;每 250ms 一帧,SSE 逐行解析(与 Electron 版 ai.js 语义一致)。
+/// 生产路径走 chat_stream_with_tools;这里保留给不带工具的既有测试。
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_stream<
     R: tauri::Runtime,
     E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
@@ -230,7 +236,40 @@ pub async fn chat_stream<
     messages: Value,
     abort_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
+    chat_stream_with_tools(
+        app,
+        request_id,
+        protocol,
+        base_url,
+        api_key,
+        model,
+        messages,
+        Value::Null,
+        abort_flag,
+    )
+    .await
+}
+
+/// 同上，可带工具定义；messages 为中立格式（见 ai_wire）。工具调用随 ai:done
+/// 的 toolCalls 字段返回，由前端执行后再发下一轮。
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_stream_with_tools<
+    R: tauri::Runtime,
+    E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+>(
+    app: E,
+    request_id: String,
+    protocol: String,
+    base_url: String,
+    api_key: String,
+    model: String,
+    messages: Value,
+    tools: Value,
+    abort_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
     let started = Instant::now();
+    let wire_tools = crate::ai_wire::tools_for(&protocol, &tools);
+    let with_tools = wire_tools.is_some();
     if abort_flag.load(Ordering::Relaxed) {
         emit_evt(
             &app,
@@ -253,29 +292,15 @@ pub async fn chat_stream<
         .map_err(|e| e.to_string())?;
     let (url, body, req) = if protocol == "anthropic" {
         let url = format!("{}/messages", base_url.trim().trim_end_matches('/'));
-        let system: Vec<&str> = messages
-            .as_array()
-            .map(|m| {
-                m.iter()
-                    .filter(|m| m["role"] == "system")
-                    .filter_map(|m| m["content"].as_str())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let msgs: Vec<Value> = messages
-            .as_array()
-            .map(|m| {
-                m.iter()
-                    .filter(|m| m["role"] != "system")
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let body = json!({
+        let (system, msgs) = crate::ai_wire::to_anthropic(&messages, with_tools);
+        let mut body = json!({
             "model": model, "max_tokens": 4096,
-            "system": if system.is_empty() { json!(null) } else { json!(system.join("\n")) },
+            "system": system,
             "messages": msgs, "stream": true
         });
+        if let Some(t) = &wire_tools {
+            body["tools"] = t.clone();
+        }
         let r = client
             .post(&url)
             .header("x-api-key", &api_key)
@@ -285,10 +310,16 @@ pub async fn chat_stream<
     } else {
         let url = format!("{}/chat/completions", base_url.trim().trim_end_matches('/'));
         // include_usage:OpenAI 兼容流式默认不带 usage,显式请求后最后一帧会附带
-        let body = json!({
-            "model": model, "messages": messages, "stream": true,
+        let mut body = json!({
+            "model": model,
+            "messages": crate::ai_wire::to_openai_messages(&messages, with_tools),
+            "stream": true,
             "stream_options": { "include_usage": true }
         });
+        // 不发 tool_choice:默认即 auto,部分兼容网关对显式 tool_choice 另有开关要求。
+        if let Some(t) = &wire_tools {
+            body["tools"] = t.clone();
+        }
         let mut r = client.post(&url).json(&body);
         if !api_key.is_empty() {
             r = r.header("authorization", format!("Bearer {}", api_key));
@@ -320,10 +351,16 @@ pub async fn chat_stream<
             );
             return Ok(());
         };
+        let text = text.unwrap_or_default();
+        let prefix = if with_tools && crate::ai_wire::is_tools_unsupported(status.as_u16(), &text) {
+            TOOLS_UNSUPPORTED
+        } else {
+            ""
+        };
         return Err(format!(
-            "AI 请求失败 HTTP {}: {}",
+            "{prefix}AI 请求失败 HTTP {}: {}",
             status,
-            error_excerpt(&text.unwrap_or_default(), 300)
+            error_excerpt(&text, 300)
         ));
     }
 
@@ -337,6 +374,12 @@ pub async fn chat_stream<
     let mut usage_out: Option<i64> = None;
     // 结束标记只说明传输完成;明确的截断原因必须跨帧保留,不能被 usage 帧覆盖。
     let mut finish_reason: Option<String> = None;
+    let mut acc = crate::ai_wire::ToolAcc::default();
+    let finished = |finish: &str, usage_in, usage_out, acc: &crate::ai_wire::ToolAcc| {
+        let mut payload = done_payload(&request_id, finish, usage_in, usage_out, started);
+        acc.attach(&mut payload);
+        payload
+    };
     loop {
         let Some(chunk) = wait_cancellable(stream.next(), &abort_flag, AI_IDLE_TIMEOUT).await?
         else {
@@ -374,17 +417,8 @@ pub async fn chat_stream<
                 continue;
             }
             if data == "[DONE]" {
-                emit_evt(
-                    &app,
-                    "ai:done",
-                    done_payload(
-                        &request_id,
-                        finish_reason.as_deref().unwrap_or("stop"),
-                        usage_in,
-                        usage_out,
-                        started,
-                    ),
-                );
+                let finish = finish_reason.as_deref().unwrap_or("stop");
+                emit_evt(&app, "ai:done", finished(finish, usage_in, usage_out, &acc));
                 return Ok(());
             }
             let evt: Value = match serde_json::from_str(data) {
@@ -393,21 +427,19 @@ pub async fn chat_stream<
             };
             collect_usage(protocol.as_str(), &evt, &mut usage_in, &mut usage_out);
             collect_finish_reason(protocol.as_str(), &evt, &mut finish_reason);
+            if let Some(name) = acc.feed(&protocol, &evt) {
+                emit_evt(
+                    &app,
+                    "ai:tool-delta",
+                    json!({ "requestId": request_id, "name": name }),
+                );
+            }
             match emit_deltas(&app, &request_id, protocol.as_str(), &evt) {
                 Ok(FrameOutcome::Continue) => {}
                 // Anthropic 用 message_stop 收尾,保留此前 message_delta 的明确原因
                 Ok(FrameOutcome::Done) => {
-                    emit_evt(
-                        &app,
-                        "ai:done",
-                        done_payload(
-                            &request_id,
-                            finish_reason.as_deref().unwrap_or("stop"),
-                            usage_in,
-                            usage_out,
-                            started,
-                        ),
-                    );
+                    let finish = finish_reason.as_deref().unwrap_or("stop");
+                    emit_evt(&app, "ai:done", finished(finish, usage_in, usage_out, &acc));
                     return Ok(());
                 }
                 Err(e) => return Err(e),
@@ -415,11 +447,7 @@ pub async fn chat_stream<
         }
         buffer.drain(..start);
     }
-    emit_evt(
-        &app,
-        "ai:done",
-        done_payload(&request_id, "end", usage_in, usage_out, started),
-    );
+    emit_evt(&app, "ai:done", finished("end", usage_in, usage_out, &acc));
     Ok(())
 }
 
@@ -530,6 +558,9 @@ fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + '
                             json!({ "requestId": request_id, "text": text }),
                         );
                     }
+                } else {
+                    // 工具参数(input_json_delta)、签名等分片:不是正文,但流仍活跃。
+                    emit_evt(app, "ai:progress", json!({ "requestId": request_id }));
                 }
             }
             "message_stop" => return Ok(FrameOutcome::Done),
@@ -572,6 +603,7 @@ fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + '
             json!({ "requestId": request_id, "text": think }),
         );
     } else if !delta["role"].is_null()
+        || !delta["tool_calls"].is_null()
         || !evt["choices"][0]["finish_reason"].is_null()
         || !evt["usage"].is_null()
     {

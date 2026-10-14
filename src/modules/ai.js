@@ -8,6 +8,7 @@ import { renderMarkdown } from '../shared/markdown.js';
 import { stripTerminalNoise } from '../shared/term-text.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
+import { agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend } from './ai-agent-run.js';
 
 export const AI_HISTORY_LIMIT = 20;
 export const AI_THREAD_LIMIT = 20;
@@ -102,11 +103,35 @@ export function activeAiThread() {
   return state.activeThreadId ? state.aiThreads.get(state.activeThreadId) : null;
 }
 
+/// 线程忙：有流式请求，或工具回合进行中（执行命令、等确认时没有流式请求）。
+export function threadBusy(th) {
+  return !!(th && (th.req || th.agentRun));
+}
+
 export function trimAiHistory(targetThread) {
   const th = targetThread || activeAiThread();
-  if (th && th.history && th.history.length > AI_HISTORY_LIMIT) {
-    th.history = th.history.slice(-AI_HISTORY_LIMIT);
+  if (!th || !th.history) return;
+  const agentic = th.history.some((m) => m.role === 'tool' || m.toolCalls);
+  if (!agentic) {
+    if (th.history.length > AI_HISTORY_LIMIT) th.history = th.history.slice(-AI_HISTORY_LIMIT);
+    return;
   }
+  // 含工具往返的历史按回合裁：从用户消息处切，工具调用与结果不能拆开；
+  // 当前回合再长也整段保留（发请求时另有按体积的压缩）。
+  const limit = AI_HISTORY_LIMIT * 3;
+  if (th.history.length <= limit) return;
+  let start = th.history.length - limit;
+  while (start < th.history.length && th.history[start].role !== 'user') start++;
+  if (start >= th.history.length) start = th.history.findLastIndex((m) => m.role === 'user');
+  if (start > 0) th.history = th.history.slice(start);
+}
+
+/// 工具步骤、确认卡等非气泡元素挂到指定线程的消息列表（后台线程也挂到自己那里）。
+export function appendToThreadView(thread, el) {
+  const container = ensureThreadContainer(thread) || $('#ai-messages');
+  container.appendChild(el);
+  while (container.children.length > AI_DOM_LIMIT) container.removeChild(container.firstChild);
+  if (thread?.id === state.activeThreadId) aiStickScroll();
 }
 
 function ensureThreadContainer(thread) {
@@ -165,7 +190,7 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
   // AI_THREAD_LIMIT = 20: 淘汰非活动、非忙碌会话,空会话优先、最旧其次
   if (state.aiThreads.size >= AI_THREAD_LIMIT) {
     const candidates = [...state.aiThreads.values()]
-      .filter((th) => th.id !== state.activeThreadId && !th.req);
+      .filter((th) => th.id !== state.activeThreadId && !threadBusy(th));
     if (candidates.length > 0) {
       candidates.sort((a, b) => {
         const aEmpty = a.history.length === 0 ? 0 : 1;
@@ -223,13 +248,13 @@ export function newAiThread({ focus = false } = {}) {
   ensureDefaultAiThread();
   const cur = activeAiThread();
 
-  if (cur && cur.history.length === 0 && !cur.req) {
+  if (cur && cur.history.length === 0 && !threadBusy(cur)) {
     if (focus) $('#ai-input')?.focus();
     return cur;
   }
 
   const otherEmpty = [...state.aiThreads.values()]
-    .filter((th) => th.id !== cur?.id && th.history.length === 0 && !th.req && !th.hostId)
+    .filter((th) => th.id !== cur?.id && th.history.length === 0 && !threadBusy(th) && !th.hostId)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
 
   if (otherEmpty) {
@@ -299,7 +324,7 @@ export function switchAiThread(threadId) {
     input.value = target.draft || '';
   }
 
-  setAiBusy(!!target.req);
+  setAiBusy(threadBusy(target));
   renderAiThreadBar();
   closeThreadMenu();
   refreshThreadUi();
@@ -314,6 +339,7 @@ export function clearCurrentAiThread() {
     thread.req = null;
     setAiBusy(false);
   }
+  thread.agentRun?.ctrl.abort();
   thread.history = [];
   if (thread.containerEl) {
     thread.containerEl.innerHTML = '';
@@ -340,6 +366,7 @@ export function deleteAiThread(threadId) {
     discardHolder(thread.req);
     thread.req = null;
   }
+  thread.agentRun?.ctrl.abort();
   if (thread.containerEl) {
     thread.containerEl.remove();
   }
@@ -436,12 +463,12 @@ export function renderAiThreadBar() {
     : baseTitle;
   titleEl.textContent = disp;
 
-  const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.req);
+  const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!threadBusy(th));
   const nonActiveUnread = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.unread);
   trigger.classList.toggle('has-busy', nonActiveBusy);
   trigger.classList.toggle('has-unread', nonActiveUnread);
 
-  const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.req).length;
+  const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!threadBusy(th)).length;
   const unreadCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.unread).length;
   let tip = `当前对话：${disp}（点击切换或管理历史会话）`;
   const extras = [];
@@ -471,6 +498,7 @@ export function refreshThreadUi() {
   if (isAiDrawerOpen()) {
     renderAiDrawer($('#ai-drawer-search')?.value || '');
   }
+  refreshAgentHostBar();
 }
 
 function formatThreadTime(ts) {
@@ -556,7 +584,7 @@ export function renderAiDrawer(kw = '') {
   const activeId = state.activeThreadId;
   for (const th of filtered) {
     const isActive = th.id === activeId;
-    const isBusy = !!th.req;
+    const isBusy = !!threadBusy(th);
     const isUnread = !!th.unread;
     const safeTitle = escapeHtml(th.title || '新对话');
     const msgCount = (th.history && th.history.length) || 0;
@@ -653,7 +681,7 @@ export function renderThreadMenu() {
 
   list.innerHTML = threads.map((th) => {
     const isActive = th.id === activeId;
-    const isBusy = !!th.req;
+    const isBusy = !!threadBusy(th);
     const isUnread = !!th.unread;
     const safeTitle = escapeHtml(th.title || '新对话');
     const fullTitle = th.hostName ? `${th.title || '新对话'} · ${th.hostName}` : (th.title || '新对话');
@@ -813,7 +841,9 @@ export function ensureThreadForSession(session) {
   const cur = activeAiThread();
 
   // 1. 当前会话为空且空闲 → (重新)绑定到该主机并复用
-  if (cur && cur.history.length === 0 && !cur.req) {
+  if (cur && cur.history.length === 0 && !threadBusy(cur)) {
+    // 换主机即撤销自动执行授权：自动模式是对某一台主机的授权。
+    if (cur.hostId !== hostId) cur.execMode = 'manual';
     cur.hostId = hostId;
     cur.hostName = hostName;
     cur.sessionId = sessionId;
@@ -822,14 +852,14 @@ export function ensureThreadForSession(session) {
   }
 
   // 2. 当前会话属于该主机且空闲 → 复用(更新 sessionId)
-  if (cur && cur.hostId === hostId && !cur.req) {
+  if (cur && cur.hostId === hostId && !threadBusy(cur)) {
     cur.sessionId = sessionId;
     return cur;
   }
 
   // 3. 该主机最近更新的空闲会话 → 切过去
   const sameHost = [...state.aiThreads.values()]
-    .filter((th) => th.hostId === hostId && !th.req)
+    .filter((th) => th.hostId === hostId && !threadBusy(th))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
   if (sameHost) {
     sameHost.sessionId = sessionId;
@@ -839,7 +869,7 @@ export function ensureThreadForSession(session) {
 
   // 4. 任一空且空闲的未绑定会话 → 绑定并切过去
   const unbindEmpty = [...state.aiThreads.values()]
-    .filter((th) => th.history.length === 0 && !th.req && !th.hostId)
+    .filter((th) => th.history.length === 0 && !threadBusy(th) && !th.hostId)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
   if (unbindEmpty) {
     unbindEmpty.hostId = hostId;
@@ -1136,7 +1166,8 @@ export function bindAiScroll() {
 // meta 行用 .ai-meta,低对比度、不随气泡 padding 走,见 style.css。
 export function renderAiMessage(role, text, opts) {
   ensureDefaultAiThread();
-  const thread = activeAiThread();
+  // 工具回合可能在后台线程里继续出气泡：必须挂到发起它的线程，而不是当前显示的线程。
+  const thread = opts?.thread || activeAiThread();
   const el = document.createElement('div');
   el.className = 'ai-msg ' + role;
   el.dataset.role = role;
@@ -1219,6 +1250,7 @@ export function renderAiMessage(role, text, opts) {
       container.removeChild(first);
     }
   }
+  if (thread && thread.id !== state.activeThreadId) return el;
   if (role === 'user') {
     // 发送/提问本身就是"看最新"的明确意图:无条件回底
     aiForceStickScroll();
@@ -1400,8 +1432,11 @@ export function aiTouchRequest(requestId) {
 
 export function stopAiGeneration() {
   const cur = activeAiThread();
+  // 工具回合:中止整个回合(正在跑的远端命令、等待中的确认卡一并结束)。
+  const run = cur?.agentRun;
+  if (run) run.ctrl.abort();
   const h = cur?.req;
-  if (!h) return false;
+  if (!h) return !!run;
   h.cancelled = true;
   // 先结束本地 holder 并保留已返回文本;晚到的 delta/done/error 不再匹配。
   aiFinishHolder({ requestId: h.id, finishReason: 'aborted', elapsedMs: Date.now() - h.started });
@@ -1409,7 +1444,8 @@ export function stopAiGeneration() {
   return true;
 }
 
-export function aiRequest(messages, bubble, override, { thread = null, detached = false } = {}) {
+// record=false:工具回合的历史由 ai-agent 按中立格式自己写;tools 随请求下发。
+export function aiRequest(messages, bubble, override, { thread = null, detached = false, record = true, tools = null } = {}) {
   return new Promise((resolve) => {
     const requestId = crypto.randomUUID();
     const s = savedAi();
@@ -1442,7 +1478,7 @@ export function aiRequest(messages, bubble, override, { thread = null, detached 
     }
     const holder = {
       id: requestId, acc: '', bubble, resolve, messages: snapshot,
-      model: config.model || '', started: Date.now(), recordHistory: !!bubble,
+      model: config.model || '', started: Date.now(), recordHistory: !!bubble && record,
       threadId: targetThread?.id || null, detached: false,
     };
     if (targetThread) targetThread.req = holder;
@@ -1456,7 +1492,7 @@ export function aiRequest(messages, bubble, override, { thread = null, detached 
     }
     refreshThreadUi();
     aiTouchRequest(requestId);
-    api('ai:chat', { requestId, messages: snapshot, ai: config }).then(() => {
+    api('ai:chat', { requestId, messages: snapshot, ai: config, ...(tools ? { tools } : {}) }).then(() => {
       // 若停止早于后端登记 abort flag,登记完成后再补一次取消。
       if (holder.cancelled) api('ai:abort', { requestId }).catch(() => {});
     }).catch((e) => failAiRequest(holder, e.message));
@@ -1503,7 +1539,10 @@ export function aiFinishHolder(done) {
     removeThinking(h.bubble);
     if (!h.failed && h.acc) setAiBody(h.bubble, h.acc);
     refreshAiCodeActions(h.bubble);
-    if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {
+    if (!h.acc && !h.failed && done?.toolCalls?.length) {
+      // 只调用工具、没有正文的一轮:步骤行就是它的内容,不留空气泡。
+      h.bubble.remove();
+    } else if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {
       aiBodyOf(h.bubble).textContent = done?.finishReason === 'aborted' ? '（已停止生成）' : '（AI 未返回内容）';
     }
     // 响应元信息(模型/token/耗时):有内容才挂,没有就不占视觉
@@ -1525,8 +1564,12 @@ export function aiFinishHolder(done) {
   }
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
   h.resolve(h.failed
-    ? { error: h.failed, text: h.acc }
-    : { ok: true, text: h.acc, aborted: done?.finishReason === 'aborted', usage: done && done.usage, elapsedMs: done && done.elapsedMs });
+    ? { error: h.failed, code: h.failedCode || null, text: h.acc }
+    : {
+      ok: true, text: h.acc, aborted: h.cancelled || done?.finishReason === 'aborted', usage: done && done.usage,
+      elapsedMs: done && done.elapsedMs, finishReason: done?.finishReason,
+      toolCalls: done?.toolCalls, reasoning: done?.reasoning, thinkingBlocks: done?.thinkingBlocks,
+    });
 }
 
 export async function aiSend(rawText, mode, opts) {
@@ -1542,7 +1585,7 @@ export async function aiSend(rawText, mode, opts) {
   }
   ensureDefaultAiThread();
   const thread = activeAiThread();
-  if (thread?.req) return toast('AI 正在回复中，请稍候', 'error');
+  if (threadBusy(thread)) return toast('AI 正在处理中，请稍候或先停止', 'error');
 
   const isFromInput = !String(rawText ?? '').trim();
   let text = (rawText || '').trim();
@@ -1581,6 +1624,11 @@ export async function aiSend(rawText, mode, opts) {
     refreshThreadUi();
   }
   if (thread) thread.updatedAt = Date.now();
+
+  // 绑定了已连接主机、模型支持工具：走工具回合(AI 可直接读日志、执行命令)。
+  if (thread && !opts?.noTools && agentAvailable(thread)) {
+    return runAgentSend(thread, agentBinding(thread), { content, display: text, md: userMd });
+  }
 
   const userMsg = { role: 'user', content };
   const historyList = thread ? thread.history : [];
@@ -1957,7 +2005,7 @@ export function closeModelMenu() {
 let modelSwitchPending = false;
 export async function switchModel(model) {
   if (!model || modelSwitchPending) return;
-  if (activeAiThread()?.req) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
+  if (threadBusy(activeAiThread())) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
   if (!savedModels().some((m) => m.id === model)) { renderModelSwitch(); return; }
   modelSwitchPending = true;
   renderModelSwitch();

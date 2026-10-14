@@ -1644,7 +1644,7 @@ pub async fn nebula_invoke(
             tokio::spawn(async move {
                 // 流式任务与前端之间只有事件一条通道:Err 若在这里被吞掉,
                 // 前端会永远停在"生成中…"(表现为"配置后对话无响应"),必须转成 ai:error。
-                if let Err(e) = crate::ai::chat_stream(
+                if let Err(e) = crate::ai::chat_stream_with_tools(
                     app.clone(),
                     request_id2.clone(),
                     config.protocol,
@@ -1652,14 +1652,19 @@ pub async fn nebula_invoke(
                     config.api_key,
                     config.model,
                     payload["messages"].clone(),
+                    payload["tools"].clone(),
                     flag,
                 )
                 .await
                 {
+                    let (code, message) = match e.strip_prefix(crate::ai::TOOLS_UNSUPPORTED) {
+                        Some(rest) => (json!("tools_unsupported"), rest.to_string()),
+                        None => (Value::Null, e),
+                    };
                     crate::ai::emit_evt(
                         &app_err,
                         "ai:error",
-                        json!({ "requestId": request_id2.clone(), "message": e }),
+                        json!({ "requestId": request_id2.clone(), "message": message, "code": code }),
                     );
                 }
                 drop(registration);
@@ -1673,6 +1678,11 @@ pub async fn nebula_invoke(
             }
             ok(json!(null))
         }
+        // AI 主机工具：结果统一放在 data 里，status 字段区分完成/待确认/出错。
+        "ai:tool-exec" => ok(crate::ai_tools::tool_exec(&app, &state, &payload).await),
+        "ai:tool-cancel" => ok(crate::ai_tools::tool_cancel(&payload)),
+        "ai:tool-audit" => ok(crate::ai_tools::tool_audit(&state, &payload)),
+        "ai:guard-classify" => ok(crate::ai_tools::guard_classify(&payload)),
 
         "dialog:pickKey" => {
             if state.test_mode {

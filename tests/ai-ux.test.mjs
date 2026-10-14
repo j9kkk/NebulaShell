@@ -259,8 +259,15 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
   const interaction = new vm.SyntheticModule(['popupPosition'], function () {
     this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
   }, { context });
+  // 工具回合另有 tests/ai-agent.test.mjs 覆盖;这里桩成「不可用」,本文件只测普通对话路径。
+  const agentRun = new vm.SyntheticModule(['agentAvailable', 'agentBinding', 'refreshAgentHostBar', 'runAgentSend'], function () {
+    this.setExport('agentAvailable', () => false);
+    this.setExport('agentBinding', () => ({ session: null }));
+    this.setExport('refreshAgentHostBar', () => {});
+    this.setExport('runAgentSend', async () => {});
+  }, { context });
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();

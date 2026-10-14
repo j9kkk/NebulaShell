@@ -853,6 +853,100 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-composer-tools .spacer { flex: 1 1 0; min-width: 0; }
 /* 发送钮:30px 方形图标钮(↑/■),不再拉伸行高 */
 .ai-input-row .ai-send { flex: none; width: 30px; height: 30px; padding: 0; font-size: 16px; border-radius: 8px; }
+
+/* ---- AI 工具回合:主机条 / 步骤行 / 确认卡(档位色由 --tier 决定) ---- */
+.ai-hostbar {
+  display: flex; flex: none; align-items: center; gap: 6px; min-width: 0;
+  margin: 0 12px; padding: 2px 3px 2px 8px;
+  font-size: 12px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg2);
+}
+.ai-hostbar[hidden], .ai-hostbar-warn[hidden], .ai-root-badge[hidden] { display: none; }
+.ai-hostbar-label { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ai-hostbar-warn { color: var(--warn); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ai-root-badge { flex: none; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px; color: #fff; background: var(--danger); }
+/* 26px = 全局小号按钮档(.btn.small),窄面板几何审计要求按钮不低于 25px */
+.ai-mode-toggle {
+  flex: none; height: 26px; padding: 0 8px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; border: 1px solid var(--border); background: transparent; color: var(--text);
+}
+.ai-mode-toggle:hover:not(:disabled) { border-color: var(--accent); }
+.ai-mode-toggle[data-mode="auto"] { border-color: var(--warn); color: var(--warn); }
+.ai-mode-toggle:disabled { opacity: .5; cursor: default; }
+
+.ai-step, .ai-turn-card { flex-shrink: 0; align-self: stretch; margin-left: 32px; font-size: 12px; }
+.ai-step { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); overflow: hidden; }
+.ai-step-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  padding: 5px 8px; border: 0; background: transparent; color: var(--text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.ai-step-head:hover { background: var(--hover-bg); }
+.ai-step-icon { flex: none; display: inline-flex; color: var(--muted); }
+.ai-step[data-status="running"] .ai-step-icon, .ai-step[data-status="pending"] .ai-step-icon { animation: ai-step-pulse 1.2s ease-in-out infinite; }
+@keyframes ai-step-pulse { 50% { opacity: .35; } }
+.ai-step-title { display: flex; align-items: baseline; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.ai-step-verb { flex: none; color: var(--muted); }
+.ai-step-detail, .ai-turn-summary code {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.ai-step-state { flex: none; color: var(--muted); }
+.ai-step-state.ok { color: var(--accent); }
+.ai-step-state.warn { color: var(--warn); }
+.ai-step-state.error { color: var(--danger); }
+.ai-step-stop {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 1px solid var(--border); border-radius: 5px;
+  background: transparent; color: var(--danger); cursor: pointer;
+}
+.ai-step-body[hidden], .ai-step-card:empty { display: none; }
+.ai-step-log, .ai-confirm-cmd, .ai-confirm-preview pre {
+  margin: 0; white-space: pre-wrap; word-break: break-all;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text);
+}
+.ai-step-log { max-height: 240px; overflow: auto; padding: 6px 8px; border-top: 1px solid var(--border); }
+.ai-card-done { padding: 2px 8px 6px 28px; color: var(--muted); }
+
+.ai-confirm, .ai-sudo {
+  --tier: var(--accent);
+  position: relative; display: flex; flex-direction: column; gap: 6px;
+  margin: 0 8px 8px; padding: 8px 10px; border: 1px solid var(--tier); border-radius: 8px; outline: none;
+}
+.ai-confirm::before, .ai-sudo::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: var(--tier); opacity: .07; pointer-events: none;
+}
+.ai-confirm > *, .ai-sudo > * { position: relative; }
+.ai-confirm.tier-egress { --tier: var(--warn); }
+.ai-confirm.tier-danger { --tier: var(--danger); border-width: 2px; }
+.ai-confirm-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--tier); }
+.ai-confirm-meta { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.ai-confirm-cmd, .ai-confirm-preview pre { max-height: 160px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: var(--bg); }
+.ai-confirm-reasons { margin: 0; padding-left: 18px; color: var(--tier); }
+.ai-confirm-preview-title { margin-bottom: 4px; color: var(--muted); }
+.ai-confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ai-confirm-actions .btn, .ai-turn-card .btn { --ctl-h: 26px; padding: 0 10px; font-size: 12px; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { color: var(--text); border-color: var(--border); }
+.ai-confirm-edit, .ai-confirm-input {
+  box-sizing: border-box; width: 100%; padding: 5px 8px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.ai-confirm-actions .ai-confirm-input, .ai-sudo-row .ai-confirm-input { flex: 1 1 160px; width: auto; }
+.ai-sudo-row { display: flex; align-items: center; gap: 8px; }
+.ai-sudo-remember { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--muted); }
+.ai-sudo-error { color: var(--danger); }
+.ai-sudo-hint { font-size: 11px; color: var(--muted); }
+
+.ai-turn-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.ai-turn-summary-title { color: var(--muted); }
+.ai-turn-summary ul { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.ai-turn-summary li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ai-turn-summary li code { flex: 1 1 auto; }
+.ai-turn-summary li span { flex: none; color: var(--muted); }
+.ai-turn-summary li[data-state="warn"] span { color: var(--warn); }
 /* 模型触发钮:无边框纯文字样式(当前模型名 + 下箭头),与参考稿一致 */
 .ai-model-trigger {
   display: inline-flex; align-items: center; gap: 6px;

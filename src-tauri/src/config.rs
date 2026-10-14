@@ -801,6 +801,13 @@ impl Store {
                 }
                 Some(_) | None => host["sessionLog"] = json!("default"),
             }
+            // AI 访问策略:default / manual(只允许手动确认)/ deny(禁止);
+            // 未传则保留原值,旧版编辑器保存时不会把策略冲掉
+            match input["aiAccess"].as_str() {
+                Some("manual") | Some("deny") => host["aiAccess"] = input["aiAccess"].clone(),
+                Some(_) => host["aiAccess"] = json!("default"),
+                None => {}
+            }
         }
         if !input["cloud"].is_null() {
             host["cloud"] = input["cloud"].clone();
@@ -943,6 +950,7 @@ impl Store {
                         "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
                         "jumpIds": h["jumpIds"], "initcmd": h["initcmd"], "cloud": h["cloud"],
                         "sessionLog": h["sessionLog"].as_str().unwrap_or("default"),
+                        "aiAccess": h["aiAccess"].as_str().unwrap_or("default"),
                     })
                 })
                 .collect();
@@ -1206,7 +1214,7 @@ impl Store {
         json!({
             "ai": {
                 "provider": ai["provider"], "protocol": ai["protocol"], "baseUrl": ai["baseUrl"],
-                "model": ai["model"], "models": ai["models"],
+                "model": ai["model"], "models": ai["models"], "toolSupport": ai["toolSupport"],
                 "apiKeySet": !self.dec(ai["apiKeyEnc"].as_str().unwrap_or("")).is_empty()
             },
             "terminal": data["settings"]["terminal"].clone(),
@@ -1463,6 +1471,10 @@ impl Store {
                 if let Some(arr) = v.as_array() {
                     out["models"] = json!(arr);
                 }
+            }
+            // 各模型是否支持工具调用(键为 "baseUrl::model"),由前端探测后回写。
+            if let Some(v) = ai.get("toolSupport").filter(|v| v.is_object()) {
+                out["toolSupport"] = v.clone();
             }
             if let Some(v) = ai.get("apiKey") {
                 let plain = v.as_str().unwrap_or("");
