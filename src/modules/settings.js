@@ -19,6 +19,14 @@ export function revertUnsavedTheme() {
   if (el) el.value = saved;
 }
 
+// 设置窗口关闭的统一出口:先回滚未保存的主题预览,再关窗口(同时丢弃 AI 分区未保存草稿)。
+// 任何关闭入口(各分区取消/保存、#btn-ai-cancel、Esc、遮罩)都必须走这里,禁止自行拼装步骤——
+// 顺序有依赖:先还原主题再关窗,closeAiSettings 才能按已保存主题收尾。
+export function dismissSettings() {
+  revertUnsavedTheme();
+  closeAiSettings();
+}
+
 function fillTermSettings() {
   const t = (state.settings && state.settings.terminal) || { fontSize: 13, theme: 'nebula', scrollback: 2000 };
   $('#term-fontsize').value = t.fontSize || 13;
@@ -97,15 +105,9 @@ export function bindSettings() {
   $('#term-theme').addEventListener('change', () => {
     applyTheme($('#term-theme').value);
   });
-  $('#btn-term-cancel').addEventListener('click', () => {
-    revertUnsavedTheme();
-    closeAiSettings();
-  });
+  $('#btn-term-cancel').addEventListener('click', dismissSettings);
   $('#btn-term-save').addEventListener('click', saveTermSettings);
-  $('#btn-log-cancel').addEventListener('click', () => {
-    revertUnsavedTheme();
-    closeAiSettings();
-  });
+  $('#btn-log-cancel').addEventListener('click', dismissSettings);
   $('#btn-log-save').addEventListener('click', saveLogSettings);
   $('#setlog-pick').addEventListener('click', async () => {
     try {
@@ -115,7 +117,7 @@ export function bindSettings() {
   });
   $('#setlog-open').addEventListener('click', openLogFolder);
   $('#btn-keys-close').addEventListener('click', () => {
-    revertUnsavedTheme();
+    dismissSettings();
     closeModal('#modal-settings');
   });
 }
@@ -132,7 +134,7 @@ export async function saveTermSettings() {
   state.settings = await api('settings:save', patch);
   // 自定义键位可能随 settings 更新:清缓存让下一次匹配/提示重新解析。
   invalidateKeymapCache();
-  closeAiSettings(); // 关窗口,同时丢弃 AI 分区未保存的草稿
+  dismissSettings(); // 关窗口,同时回滚主题预览并丢弃 AI 分区未保存的草稿
   // 全部即时应用:applyTheme 同步顶层 HTML data-theme 与所有终端实例配色;
   // 回滚行数改 options 后 xterm 内部会触发一次 resize 并按新上限裁剪缓冲区(旧行随之释放),无需重建终端。
   const ts = (state.settings && state.settings.terminal) || {};
@@ -166,7 +168,7 @@ async function saveLogSettings() {
   };
   try {
     state.settings = await api('settings:save', patch);
-    closeAiSettings(); // 关窗口,同时丢弃其它分区未保存的草稿
+    dismissSettings(); // 关窗口,同时回滚主题预览并丢弃其它分区未保存的草稿
     toast('会话日志设置已保存（对之后开始的日志生效）', 'success');
   } catch (e) {
     toast(e?.message || '保存失败', 'error');

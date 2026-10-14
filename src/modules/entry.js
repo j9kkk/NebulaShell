@@ -5,14 +5,14 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeAiSettings, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
 import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
 } from './sftp.js';
 import { bindTransferUi, confirmTransferInterrupt, lastDownloadLocation, revealLastDownload } from './file-transfer.js';
-import { bindSettings, openSettings, revertUnsavedTheme, settingsOpen, settingsSection } from './settings.js';
+import { bindSettings, dismissSettings, openSettings, settingsOpen, settingsSection } from './settings.js';
 import { bindRightPanel, rightPanelOpen, rightPanelTab, rightTabShown, setRightPanel, toggleRightPanel, toggleRightTab } from './right-panel.js';
 import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, openHistoryModal, saveForwardRule } from './tools.js';
 import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
@@ -573,15 +573,9 @@ export function bindEvents() {
   bindRightPanel();
   bindHistoryPage();
   bindSettings();
-  $('#btn-ai-cancel').addEventListener('click', () => {
-    revertUnsavedTheme();
-    closeAiSettings();
-  });
-  // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都丢弃 AI 分区的草稿并同步已保存主题
-  setModalDismissHandler('#modal-settings', () => {
-    revertUnsavedTheme();
-    closeAiSettings();
-  });
+  $('#btn-ai-cancel').addEventListener('click', dismissSettings);
+  // 设置窗口任何方式关闭(Esc、遮罩、各分区的取消/保存)都走统一出口:回滚主题预览+丢弃 AI 分区草稿
+  setModalDismissHandler('#modal-settings', dismissSettings);
   setModalDismissHandler('#modal-model-picker', closeModelPicker);
   $('#ai-baseurl').addEventListener('input', onAiEndpointChange);
   $('#ai-protocol').addEventListener('change', onAiEndpointChange);
