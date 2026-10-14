@@ -110,25 +110,11 @@ pub fn clean_history(history: &mut Vec<Value>) -> bool {
 fn machine_key_material() -> Vec<u8> {
     let mut material = Vec::new();
     material.extend_from_slice(b"nebulashell-v1");
-    // 主机名
-    if let Ok(h) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
-        material.extend_from_slice(h.as_bytes());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let mut cmd = std::process::Command::new("hostname");
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        if let Ok(out) = cmd.output() {
-            material.extend_from_slice(&out.stdout);
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Ok(out) = std::process::Command::new("hostname").output() {
-            material.extend_from_slice(&out.stdout);
-        }
+    // 主机名(Windows 子进程不闪控制台窗口,统一走 win32::no_window)
+    let mut hostname_cmd = std::process::Command::new("hostname");
+    crate::win32::no_window(&mut hostname_cmd);
+    if let Ok(out) = hostname_cmd.output() {
+        material.extend_from_slice(&out.stdout);
     }
     // 用户名
     if let Ok(u) = std::env::var("USER").or_else(|_| std::env::var("USERNAME")) {

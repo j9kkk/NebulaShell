@@ -447,23 +447,8 @@ pub async fn nebula_invoke(
             if !allow {
                 return err_msg(format!("不允许打开外部链接: {}", url));
             }
-            #[cfg(target_os = "macos")]
-            {
-                let _ = std::process::Command::new("open").arg(url).spawn();
-            }
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x08000000;
-                let _ = std::process::Command::new("cmd")
-                    .args(["/C", "start", "", url])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .spawn();
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-            }
+            // 三平台统一走 win32::open_url:Windows 不经 shell(URL 的 & 不会被 cmd 拆开)
+            crate::win32::open_url(url);
             ok(json!(null))
         }
 

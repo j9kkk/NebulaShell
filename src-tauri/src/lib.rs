@@ -13,6 +13,7 @@ mod term_text;
 #[cfg(target_os = "macos")]
 mod traffic_lights;
 pub mod transfer;
+mod win32;
 
 #[cfg(test)]
 mod cloud_test;
