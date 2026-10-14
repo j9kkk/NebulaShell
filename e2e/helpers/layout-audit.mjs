@@ -71,12 +71,8 @@ export async function auditNarrowPanels() {
     const tabbar = document.querySelector('#tabbar').getBoundingClientRect();
     const aiHeader = document.querySelector('.ai-header').getBoundingClientRect();
     if (Math.abs(tabbar.bottom - aiHeader.bottom) > 1) issues.push({ kind: 'tabbar-aiheader-misaligned', tabbar: tabbar.bottom, aiHeader: aiHeader.bottom });
-    // 右侧栏(此刻展开):常用命令页添加行上边框与状态栏上边框齐平;历史工具行输入框与按钮等高
-    const snippetAdd = document.querySelector('#rp-snippets .snippet-add').getBoundingClientRect();
-    if (Math.abs(snippetAdd.top - status.top) > 1) issues.push({ kind: 'snippet-add-misaligned', snippets: snippetAdd.top, main: status.top });
-    const histSearch = document.querySelector('#hist-search').getBoundingClientRect();
-    const histClear = document.querySelector('#hist-clear').getBoundingClientRect();
-    if (Math.abs(histSearch.height - histClear.height) > 0.5) issues.push({ kind: 'history-toolbar-height', input: histSearch.height, button: histClear.height });
+    // (常用命令与命令历史已迁出右侧栏为独立弹窗:原页内添加行/工具行的齐平与等高
+    //  断言改由 e2e T45b/T46e 在弹窗上量,这里不再查已移除的 #rp-snippets。)
     document.querySelector('#sidebar').classList.add('collapsed');
     await frame();
     audit(document.querySelector('#sidebar'), 40);

@@ -1,5 +1,5 @@
 // 资源监控:指标采集与监控条
-import { $, api, askPrompt, state, toast } from './core.js';
+import { $, api, askPrompt, closeModal, openModal, state, toast } from './core.js';
 import { popupPosition } from './interaction.js';
 import { feedTrusted } from './terminal.js';
 import { icon } from '../shared/icons.js';
@@ -103,15 +103,27 @@ export async function addSnippetFromCmd(cmd) {
   return true;
 }
 
+export function openSnippetsModal() {
+  closeModal('#modal-history');   // 两个管理弹窗互斥:同时叠开会互相遮挡且焦点游移
+  openModal('#modal-snippets');
+  renderSnippets();
+  const search = $('#snippet-search');
+  if (search) {
+    search.focus();
+    search.select?.();
+  }
+}
+
 export function renderSnippets() {
   const list = $('#snippet-list');
+  if (!list) return;
   list.innerHTML = '';
   const all = (state.settings && state.settings.snippets) || [];
-  // 过滤词留在输入框里(页签切换不丢);名称、命令都做不区分大小写的子串匹配。
+  // 过滤词留在输入框里(弹窗或页签切换不丢);名称、命令都做不区分大小写的子串匹配。
   const kw = ($('#snippet-search')?.value || '').trim().toLowerCase();
   const items = kw ? all.filter((s) => `${s.name || ''}\n${s.cmd || ''}`.toLowerCase().includes(kw)) : all;
   if (!all.length) {
-    list.innerHTML = '<div class="file-empty">还没有常用命令，在下方添加或从命令历史页签收藏</div>';
+    list.innerHTML = '<div class="file-empty">还没有常用命令，在下方添加或从命令历史收藏</div>';
     return;
   }
   if (!items.length) {
@@ -133,6 +145,10 @@ export function renderSnippets() {
       row.querySelector('.s-cmd').textContent = s.cmd;
       row.title = s.cmd;
       row.querySelector('.s-exec').addEventListener('click', async () => {
+        // 模态打开期间终端拒写(见 commandBlockTargetAvailability),先收起本弹窗再投递
+        if ($('#modal-snippets') && !$('#modal-snippets').classList.contains('hidden')) {
+          closeModal('#modal-snippets');
+        }
         const r = await feedTrusted(s.cmd, { execute: true });
         if (!r.ok) toast(r.reason, 'error');
       });

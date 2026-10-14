@@ -307,3 +307,22 @@ test('0.5.5 AI 助手新建对话:⌘N / Ctrl+Shift+N 命中,Ctrl+N 不命中,�
     assert.equal(km.accelOf('ai.newThread'), 'Ctrl+Shift+N');
   }
 });
+
+test('命令历史与常用命令快捷键:⌘⇧H / Ctrl+Shift+H; ⌘⇧S / Ctrl+Shift+S; 进 APP_ACTIONS', async () => {
+  const { keymap: mac } = await setup('darwin');
+  assert.equal(mac.APP_ACTIONS.includes('session.history'), true);
+  assert.equal(mac.APP_ACTIONS.includes('tools.snippets'), true);
+  assert.equal(mac.appShortcutOf(evt('H', { metaKey: true, shiftKey: true, code: 'KeyH' })), 'session.history');
+  assert.equal(mac.appShortcutOf(evt('S', { metaKey: true, shiftKey: true, code: 'KeyS' })), 'tools.snippets');
+  assert.equal(mac.accelOf('session.history'), '⌘⇧H');
+  assert.equal(mac.accelOf('tools.snippets'), '⌘⇧S');
+
+  for (const platform of ['windows', 'linux']) {
+    const { keymap: km } = await setup(platform);
+    assert.equal(km.appShortcutOf(evt('H', { ctrlKey: true, shiftKey: true, code: 'KeyH' })), 'session.history', platform);
+    assert.equal(km.appShortcutOf(evt('S', { ctrlKey: true, shiftKey: true, code: 'KeyS' })), 'tools.snippets', platform);
+    assert.equal(km.accelOf('session.history'), 'Ctrl+Shift+H');
+    assert.equal(km.accelOf('tools.snippets'), 'Ctrl+Shift+S');
+  }
+});
+

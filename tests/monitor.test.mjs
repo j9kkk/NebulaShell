@@ -52,6 +52,8 @@ async function createMonitorModule() {
     $: (sel) => getEl(sel),
     api: async () => {},
     askPrompt: async () => null,
+    closeModal: () => {},
+    openModal: () => {},
     state,
     toast: () => {},
   };

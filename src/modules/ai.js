@@ -1,5 +1,5 @@
 // AI 助手:流式对话、模型切换、设置弹窗、诊断
-import { $, api, askConfirm, closeModal, copyText, openModal, state, toast } from './core.js';
+import { $, api, askConfirm, askPrompt, closeModal, copyText, openModal, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
 import { popupPosition } from './interaction.js';
@@ -426,6 +426,8 @@ export function renderAiThreadBar() {
     trigger.title = '切换对话';
     trigger.classList.remove('has-busy', 'has-unread');
     trigger.setAttribute('aria-expanded', 'false');
+    const countBadge = $('#ai-thread-count-badge');
+    if (countBadge) countBadge.classList.remove('visible');
     return;
   }
   const baseTitle = thread.title || '新对话';
@@ -448,6 +450,13 @@ export function renderAiThreadBar() {
   if (extras.length) tip += `\n（${extras.join('，')}）`;
   trigger.title = tip;
 
+  const countBadge = $('#ai-thread-count-badge');
+  if (countBadge) {
+    const totalCount = state.aiThreads.size;
+    countBadge.textContent = totalCount > 1 ? String(totalCount) : '';
+    countBadge.classList.toggle('visible', totalCount > 1);
+  }
+
   const menu = $('#ai-thread-menu');
   const isOpen = menu && !menu.classList.contains('hidden');
   trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
@@ -458,6 +467,167 @@ export function refreshThreadUi() {
   const menu = $('#ai-thread-menu');
   if (menu && !menu.classList.contains('hidden')) {
     renderThreadMenu();
+  }
+  if (isAiDrawerOpen()) {
+    renderAiDrawer($('#ai-drawer-search')?.value || '');
+  }
+}
+
+function formatThreadTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (isToday) return timeStr;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${timeStr}`;
+}
+
+export async function renameAiThread(id, newTitle) {
+  const th = state.aiThreads.get(id);
+  if (!th) return;
+  const trimmed = (newTitle || '').trim();
+  if (trimmed) {
+    th.title = trimmed;
+    th.autoTitle = false;
+    refreshThreadUi();
+  }
+}
+
+export function isAiDrawerOpen() {
+  const drawer = $('#ai-drawer');
+  return !!drawer && !drawer.classList.contains('hidden');
+}
+
+export function openAiDrawer() {
+  closeThreadMenu();
+  const drawer = $('#ai-drawer');
+  const toggleBtn = $('#ai-drawer-toggle');
+  if (!drawer) return;
+  drawer.classList.remove('hidden');
+  if (toggleBtn) {
+    toggleBtn.setAttribute('aria-expanded', 'true');
+    toggleBtn.classList.add('active');
+  }
+  const searchInp = $('#ai-drawer-search');
+  renderAiDrawer(searchInp ? searchInp.value : '');
+  if (searchInp) {
+    searchInp.focus();
+    searchInp.select?.();
+  }
+}
+
+export function closeAiDrawer({ focusToggle = false } = {}) {
+  const drawer = $('#ai-drawer');
+  const toggleBtn = $('#ai-drawer-toggle');
+  if (drawer) drawer.classList.add('hidden');
+  if (toggleBtn) {
+    toggleBtn.setAttribute('aria-expanded', 'false');
+    toggleBtn.classList.remove('active');
+    if (focusToggle && typeof toggleBtn.focus === 'function') toggleBtn.focus();
+  }
+}
+
+export function toggleAiDrawer() {
+  if (isAiDrawerOpen()) closeAiDrawer();
+  else openAiDrawer();
+}
+
+export function renderAiDrawer(kw = '') {
+  const list = $('#ai-drawer-list');
+  if (!list) return;
+  ensureDefaultAiThread();
+  const query = (kw || '').trim().toLowerCase();
+  const allThreads = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const filtered = query
+    ? allThreads.filter((th) => `${th.title || ''} ${th.hostName || ''}`.toLowerCase().includes(query))
+    : allThreads;
+
+  list.innerHTML = '';
+  if (!allThreads.length) {
+    list.innerHTML = '<div class="ai-drawer-empty">暂无对话记录</div>';
+    return;
+  }
+  if (!filtered.length) {
+    list.innerHTML = '<div class="ai-drawer-empty">未找到匹配的对话</div>';
+    return;
+  }
+
+  const activeId = state.activeThreadId;
+  for (const th of filtered) {
+    const isActive = th.id === activeId;
+    const isBusy = !!th.req;
+    const isUnread = !!th.unread;
+    const safeTitle = escapeHtml(th.title || '新对话');
+    const msgCount = (th.history && th.history.length) || 0;
+    const timeStr = formatThreadTime(th.updatedAt);
+
+    const card = document.createElement('div');
+    card.className = 'ai-drawer-card' + (isActive ? ' active' : '') + (isBusy ? ' busy' : '') + (isUnread ? ' unread' : '');
+    card.dataset.threadId = th.id;
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.title = `${th.title || '新对话'}\n点击切换到此对话`;
+
+    let badgeHtml = '';
+    if (isBusy) {
+      badgeHtml = '<span class="ai-drawer-badge busy">生成中…</span>';
+    } else if (isUnread) {
+      badgeHtml = '<span class="ai-drawer-badge unread">新回复</span>';
+    } else if (th.hostName) {
+      badgeHtml = `<span class="ai-drawer-badge host">${escapeHtml(th.hostName)}</span>`;
+    }
+
+    card.innerHTML = `
+      <div class="ai-drawer-card-top">
+        <span class="ai-drawer-card-title">${safeTitle}</span>
+        ${badgeHtml}
+      </div>
+      <div class="ai-drawer-card-meta">
+        <span class="ai-drawer-card-info">${msgCount} 条对话 · ${timeStr}</span>
+        <div class="ai-drawer-card-actions">
+          <button type="button" class="ai-drawer-btn-rename" data-rename-thread="${escapeHtml(th.id)}" title="重命名" aria-label="重命名对话">${icon('pencil', { size: 13 })}</button>
+          <button type="button" class="ai-drawer-btn-del" data-del-thread="${escapeHtml(th.id)}" title="删除对话" aria-label="删除对话">${icon('trash', { size: 13 })}</button>
+        </div>
+      </div>
+    `;
+
+    card.addEventListener('click', (e) => {
+      if (e.target.closest?.('.ai-drawer-btn-rename, .ai-drawer-btn-del')) return;
+      switchAiThread(th.id);
+      closeAiDrawer();
+      $('#ai-input')?.focus();
+    });
+
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        switchAiThread(th.id);
+        closeAiDrawer();
+        $('#ai-input')?.focus();
+      }
+    });
+
+    const renameBtn = card.querySelector('.ai-drawer-btn-rename');
+    renameBtn?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const newName = await askPrompt('重命名对话', {
+        title: '重命名对话',
+        defaultValue: th.title || '新对话',
+        placeholder: '输入新的对话标题'
+      });
+      if (newName != null && newName.trim()) {
+        renameAiThread(th.id, newName.trim());
+      }
+    });
+
+    const delBtn = card.querySelector('.ai-drawer-btn-del');
+    delBtn?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await requestDeleteAiThread(th.id);
+    });
+
+    list.appendChild(card);
   }
 }
 

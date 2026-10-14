@@ -9,6 +9,12 @@ export const CATEGORY_LABEL = { app: '应用', layout: '标签与分屏', panel:
 /// 命令面板自身也是模态,但不应让面板里的命令全部显示为禁用。
 export const PALETTE_MODAL_ID = 'modal-palette';
 
+/// 命令历史 / 常用命令这两个管理弹窗互斥(打开一个会收起另一个),
+/// 所以它们的唤起命令必须能在"兄弟弹窗已打开"时继续执行 —— 否则键盘
+/// 快捷键与标题栏菜单在弹窗开着时会被自己的模态守卫拦掉,表现为弹窗切不过去。
+const MODAL_SWITCH_COMMANDS = new Set(['session.history', 'tools.snippets', 'panel.history', 'panel.snippets']);
+const SWITCHABLE_MODAL_IDS = new Set(['modal-history', 'modal-snippets']);
+
 /// definition 字段:
 ///   label     名称,字符串或 (ctx) => 字符串
 ///   category  app / layout / panel / session / host
@@ -28,16 +34,19 @@ function labelOf(command, ctx) {
   return command.kind === 'dialog' && label && !label.endsWith('…') ? label + '…' : label;
 }
 
-function blockedByModal(command) {
+function blockedByModal(id, command) {
   if (command.allowInModal) return false;
   const top = topModal();
-  return !!top && top.id !== PALETTE_MODAL_ID;
+  if (!top) return false;
+  if (top.id === PALETTE_MODAL_ID) return false;
+  // 切换管理弹窗:顶层就是那个弹窗时,允许唤起兄弟弹窗的命令穿透
+  return !(SWITCHABLE_MODAL_IDS.has(top.id) && MODAL_SWITCH_COMMANDS.has(id));
 }
 
 export function commandState(id, ctx) {
   const command = commands.get(id);
   if (!command) return null;
-  const modal = blockedByModal(command);
+  const modal = blockedByModal(id, command);
   const enabled = !modal && (command.enabled ? !!command.enabled(ctx) : true);
   let reason = '';
   if (!enabled) reason = modal ? '请先关闭对话框' : evaluate(command.reason, ctx) || '当前状态不可执行';
@@ -51,8 +60,10 @@ export function commandState(id, ctx) {
 }
 
 /// 全部注册命令的静态描述 + 当前状态,供命令面板、菜单栏和可达性测试使用。
+/// internal 命令是历史入口的兼容别名(见 entry.js),不进面板也不参与
+/// "每个注册命令都能从菜单栏到达"的校验。
 export function listCommands(ctx) {
-  return [...commands.entries()].map(([id, command]) => ({
+  return [...commands.entries()].filter(([, command]) => !command.internal).map(([id, command]) => ({
     id,
     category: command.category || 'app',
     keywords: command.keywords || [],

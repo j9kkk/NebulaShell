@@ -455,19 +455,32 @@ export async function saveForwardRule() {
   }
 }
 
-/* ---------------- 命令历史(F2) ---------------- */
+/* ---------------- 命令历史 ---------------- */
 
-/// 命令历史是右侧工具栏的一个页签(见 right-panel.js);这里只绑定页内控件。
-export function bindHistoryPage() {
-  $('#hist-search').addEventListener('input', (e) => renderHistory(e.target.value));
-  $('#hist-clear').addEventListener('click', async () => {
-    if (!(await askConfirm('清空全部命令历史?', { title: '清空历史', okText: '清空' }))) return;
-    await api('history:clear');
-    renderHistory($('#hist-search').value);
-  });
+export function openHistoryModal() {
+  closeModal('#modal-snippets');   // 两个管理弹窗互斥:同时叠开会互相遮挡且焦点游移
+  openModal('#modal-history');
+  const search = $('#hist-search');
+  renderHistory(search ? search.value : '');
+  if (search) {
+    search.focus();
+    search.select?.();
+  }
 }
 
-/// 重新拉取并渲染。keepScroll:切回页签时刷新数据但保持阅读位置。
+/// 命令历史管理弹窗(亦可在历史页内使用);绑定控件与关闭逻辑。
+export function bindHistoryPage() {
+  $('#hist-search')?.addEventListener('input', (e) => renderHistory(e.target.value));
+  $('#hist-clear')?.addEventListener('click', async () => {
+    if (!(await askConfirm('清空全部命令历史?', { title: '清空历史', okText: '清空' }))) return;
+    await api('history:clear');
+    renderHistory($('#hist-search')?.value || '');
+  });
+  $('#btn-hist-close')?.addEventListener('click', () => closeModal('#modal-history'));
+  $('#btn-hist-done')?.addEventListener('click', () => closeModal('#modal-history'));
+}
+
+/// 重新拉取并渲染。keepScroll:切回页签或重搜时刷新数据但保持阅读位置。
 /// 行尾 ★ 一键收藏为常用命令(逻辑见 monitor.js addSnippetFromCmd);
 /// 已收藏的命令 ★ 点亮,点击只提示、不重复添加 —— 删除入口只在常用命令页签。
 export async function renderHistory(kw, { keepScroll = false } = {}) {
@@ -491,6 +504,11 @@ export async function renderHistory(kw, { keepScroll = false } = {}) {
     favBtn.setAttribute('aria-label', favBtn.title);
     row.title = `${h.cmd}\n点击填入当前终端,不回车`;
     row.addEventListener('click', async () => {
+      // 先收起弹窗:终端写入在模态打开期间被拒(见 commandBlockTargetAvailability),
+      // 留在弹窗里点行只会得到"请先关闭模态窗口"。
+      if ($('#modal-history') && !$('#modal-history').classList.contains('hidden')) {
+        closeModal('#modal-history');
+      }
       const r = await feedTrusted(h.cmd);
       if (!r.ok) toast(r.reason, 'error');
     });

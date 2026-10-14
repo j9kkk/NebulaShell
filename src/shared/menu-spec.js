@@ -27,12 +27,13 @@ export const MENU_SPEC = [
     pre('Undo', '撤销'), pre('Redo', '重做'), SEP,
     pre('Cut', '剪切'), pre('Copy', '拷贝'), pre('Paste', '粘贴'), pre('SelectAll', '全选'),
     cmd('term.copy', { only: 'pc' }), cmd('term.paste', { only: 'pc' }), SEP,
-    cmd('session.search'), cmd('session.clear'),
+    cmd('session.search'), cmd('session.clear'), SEP,
+    cmd('session.history'),
   ] },
   { submenu: '视图', items: [
     cmd('palette.open'), SEP,
     cmd('panel.sidebar'), cmd('panel.tools'), SEP,
-    cmd('panel.ai'), cmd('panel.history'), cmd('panel.snippets'), cmd('ai.newThread', { accelerator: false }), SEP,
+    cmd('ai.newThread', { accelerator: false }), SEP,
     cmd('tabs.list'), cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), SEP,
     pre('Fullscreen', '进入全屏'), cmd('window.fullscreen', { only: 'pc' }),
   ] },
@@ -44,7 +45,7 @@ export const MENU_SPEC = [
   { submenu: '会话', items: [
     cmd('session.reconnect'), cmd('session.disconnect'), SEP,
     cmd('session.readonly'), cmd('session.log'), cmd('session.log.folder'), SEP,
-    cmd('tools.broadcast'), cmd('session.diagnose'),
+    cmd('tools.snippets'), cmd('tools.broadcast'), cmd('session.diagnose'),
   ] },
   { submenu: '窗口', role: 'window', only: 'mac', items: [
     pre('Minimize', '最小化'), pre('Maximize', '缩放'), SEP,

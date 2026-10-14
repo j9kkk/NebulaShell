@@ -2898,82 +2898,218 @@ async function main() {
 
 
 
-  // 右侧工具栏(阶段 3):AI / 命令历史 / 常用命令是同一个面板的三个页签,不再浮在终端上
+  // 阶段 3 & 迁移升级:
+  // 1. 常用命令与命令历史迁移至主菜单与独立弹窗(#modal-snippets, #modal-history)
+  // 2. 右侧栏纯净化为专职 AI 助手,单层 36px 顶栏对齐标签栏,内置会话管理抽屉(#ai-drawer)
   const rp = async () => asObj(await evalJs(`return JSON.stringify(window.__nbTest.rightPanel())`));
   const runCmd = async (id) => { await evalJs(`window.__nbTest.runCommand(${JSON.stringify(id)}); return 1`); await sleep(250); };
-  await runCmd('panel.snippets');
-  const snipTab = asObj(await evalJs(`return JSON.stringify((() => {
-    const panel = document.querySelector('#ai-panel');
-    const vis = (sel) => getComputedStyle(document.querySelector(sel)).visibility;
-    const pr = panel.getBoundingClientRect(); const lr = document.querySelector('#layout-root').getBoundingClientRect();
-    return { open: !panel.classList.contains('hidden'), tab: panel.dataset.tab, snippets: vis('#rp-snippets'), ai: vis('#rp-ai'), history: vis('#rp-history'),
-      selected: [...panel.querySelectorAll('.rp-tab')].filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.dataset.tab),
-      inPanel: panel.contains(document.querySelector('#snippet-list')) && panel.contains(document.querySelector('#hist-list')),
-      noOverlap: pr.left >= lr.right - 1, floating: !!document.querySelector('#snippet-menu, #history-panel'),
-      toolsPressed: document.querySelector('#btn-ai-toggle').getAttribute('aria-pressed'),
-      checked: { tools: window.__nbTest.commandState('panel.tools').checked, snippets: window.__nbTest.commandState('panel.snippets').checked,
-        ai: window.__nbTest.commandState('panel.ai').checked } };
+
+  // 打开常用命令弹窗
+  await runCmd('tools.snippets');
+  const snipModal = asObj(await evalJs(`return JSON.stringify((() => {
+    const modal = document.querySelector('#modal-snippets');
+    const isHidden = modal.classList.contains('hidden');
+    const list = modal.querySelector('#snippet-list');
+    const search = modal.querySelector('#snippet-search');
+    const addName = modal.querySelector('#snippet-name');
+    const addCmd = modal.querySelector('#snippet-cmd');
+    const btnAdd = modal.querySelector('#btn-snippet-add');
+    const btnDone = modal.querySelector('#btn-snippet-done');
+    const card = modal.querySelector('.modal-card');
+    return {
+      open: !isHidden,
+      hasList: !!list,
+      hasSearch: !!search,
+      hasAddForm: !!(addName && addCmd && btnAdd),
+      hasDone: !!btnDone,
+      isWide: card?.classList.contains('wide'),
+      cmdLabel: window.__nbTest.commandState('tools.snippets').label,
+      aliasLabel: window.__nbTest.commandState('panel.snippets').label,
+    };
   })())`));
-  check('T43 常用命令是右侧工具栏页签:在面板内显示、不遮挡终端、无浮动面板',
-    snipTab.open && snipTab.tab === 'snippets' && snipTab.snippets === 'visible' && snipTab.ai === 'hidden' && snipTab.history === 'hidden'
-      && JSON.stringify(snipTab.selected) === '["snippets"]' && snipTab.inPanel && snipTab.noOverlap && !snipTab.floating
-      && snipTab.toolsPressed === 'true'
-      && snipTab.checked.tools === true && snipTab.checked.snippets === true && snipTab.checked.ai === false,
-    JSON.stringify(snipTab));
 
-  // 开关语义:对正在显示的页签再执行一次 = 收起;别的页签 = 切过去;标题栏开关整个面板并记住页签
-  const toggles = [];
-  await runCmd('panel.snippets'); toggles.push(await rp());
-  await runCmd('panel.history'); toggles.push(await rp());
-  await runCmd('panel.ai'); toggles.push(await rp());
-  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`); await sleep(250); toggles.push(await rp());
-  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`); await sleep(250); toggles.push(await rp());
-  const shape = toggles.map((t) => (t.open ? t.tab : 'closed'));
-  check('T44 页签命令:再执行一次收起、切换页签不收起;标题栏开关整个面板并保留页签',
-    JSON.stringify(shape) === JSON.stringify(['closed', 'history', 'ai', 'closed', 'ai']), JSON.stringify(shape));
+  // 打开命令历史弹窗
+  await runCmd('session.history');
+  const histModal = asObj(await evalJs(`return JSON.stringify((() => {
+    const modal = document.querySelector('#modal-history');
+    const isHidden = modal.classList.contains('hidden');
+    const list = modal.querySelector('#hist-list');
+    const search = modal.querySelector('#hist-search');
+    const clear = modal.querySelector('#hist-clear');
+    const btnDone = modal.querySelector('#btn-hist-done');
+    const card = modal.querySelector('.modal-card');
+    return {
+      open: !isHidden,
+      hasList: !!list,
+      hasSearch: !!search,
+      hasClear: !!clear,
+      hasDone: !!btnDone,
+      isWide: card?.classList.contains('wide'),
+      cmdLabel: window.__nbTest.commandState('session.history').label,
+      aliasLabel: window.__nbTest.commandState('panel.history').label,
+    };
+  })())`));
 
-  // 各页保留自己的状态:历史的过滤词、AI 对话的滚动位置;方向键在页签间切换
-  await runCmd('panel.history');
+  // 关闭历史弹窗与常用命令弹窗
+  await evalJs(`document.querySelector('#btn-hist-done').click(); document.querySelector('#btn-snippet-done').click(); return 1`);
+  await sleep(150);
+  const modalsClosed = asObj(await evalJs(`return JSON.stringify({
+    hist: document.querySelector('#modal-history').classList.contains('hidden'),
+    snippets: document.querySelector('#modal-snippets').classList.contains('hidden'),
+  })`));
+
+  check('T43 常用命令与命令历史迁移为独立管理弹窗:居中展示、宽屏无遮挡、具备完整管理控件',
+    snipModal.open && snipModal.hasList && snipModal.hasSearch && snipModal.hasAddForm && snipModal.isWide
+      && histModal.open && histModal.hasList && histModal.hasSearch && histModal.hasClear && histModal.isWide
+      && modalsClosed.hist && modalsClosed.snippets,
+    JSON.stringify({ snipModal, histModal, modalsClosed }));
+
+  // AI 面板纯净化:单层 36px 顶栏对齐标签栏,内置会话抽屉(#ai-drawer)支持展开与收起
+  await runCmd('panel.ai');
+  const aiHeaderSnap = asObj(await evalJs(`return JSON.stringify((() => {
+    const panel = document.querySelector('#ai-panel');
+    const header = panel.querySelector('.ai-header');
+    const hr = header ? header.getBoundingClientRect() : { height: 0 };
+    const tabbar = document.querySelector('#tabbar');
+    const tr = tabbar ? tabbar.getBoundingClientRect() : { height: 0 };
+    return {
+      open: !panel.classList.contains('hidden'),
+      hasTrigger: !!panel.querySelector('#ai-thread-trigger'),
+      hasNew: !!panel.querySelector('#ai-thread-new'),
+      hasDrawerToggle: !!panel.querySelector('#ai-drawer-toggle'),
+      hasCountBadge: !!panel.querySelector('#ai-thread-count-badge'),
+      hasClear: !!panel.querySelector('#ai-thread-clear'),
+      hasDrawer: !!panel.querySelector('#ai-drawer'),
+      drawerHidden: panel.querySelector('#ai-drawer').classList.contains('hidden'),
+      headerHeight: Math.round(hr.height),
+      tabbarHeight: Math.round(tr.height),
+    };
+  })())`));
+
+  // 展开抽屉
+  await evalJs(`document.querySelector('#ai-drawer-toggle').click(); return 1`);
+  await sleep(150);
+  const drawerOpen = asObj(await evalJs(`return JSON.stringify((() => {
+    const drawer = document.querySelector('#ai-drawer');
+    return {
+      open: !drawer.classList.contains('hidden'),
+      hasHead: !!drawer.querySelector('.ai-drawer-head'),
+      hasSearch: !!drawer.querySelector('#ai-drawer-search'),
+      hasList: !!drawer.querySelector('#ai-drawer-list'),
+      hasClose: !!drawer.querySelector('#ai-drawer-close'),
+      hasNew: !!drawer.querySelector('#ai-drawer-new'),
+      btnExpanded: document.querySelector('#ai-drawer-toggle').getAttribute('aria-expanded'),
+    };
+  })())`));
+
+  // 收起抽屉
+  await evalJs(`document.querySelector('#ai-drawer-close').click(); return 1`);
+  await sleep(150);
+  const drawerClosed = await evalJs(`return document.querySelector('#ai-drawer').classList.contains('hidden')`);
+
+  // 标题栏按钮开关整个 AI 面板
+  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`);
+  await sleep(200);
+  const aiClosed = await evalJs(`return document.querySelector('#ai-panel').classList.contains('hidden')`);
+  await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`);
+  await sleep(200);
+  const aiReopened = await evalJs(`return !document.querySelector('#ai-panel').classList.contains('hidden')`);
+
+  check('T44 AI 面板纯净化:单层 36px 顶栏对齐标签栏,内置会话抽屉展开与收起,标题栏开关面板',
+    aiHeaderSnap.open && aiHeaderSnap.hasTrigger && aiHeaderSnap.hasNew && aiHeaderSnap.hasDrawerToggle
+      && aiHeaderSnap.hasClear && aiHeaderSnap.drawerHidden && Math.abs(aiHeaderSnap.headerHeight - aiHeaderSnap.tabbarHeight) <= 1
+      && drawerOpen.open && drawerOpen.hasSearch && drawerOpen.hasList && drawerOpen.btnExpanded === 'true'
+      && drawerClosed === true && aiClosed === true && aiReopened === true,
+    JSON.stringify({ aiHeaderSnap, drawerOpen, drawerClosed, aiClosed, aiReopened }));
+
+  // 弹窗与抽屉状态保留:命令历史过滤词保留,AI 会话抽屉关键词检索
+  await runCmd('session.history');
   await evalJs(`const q = document.querySelector('#hist-search'); q.value = 'zz-no-such-cmd'; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
   await waitEval(`return document.querySelector('#hist-list').textContent`, '暂无历史', 8000);
-  await evalJs(`document.querySelector('#rp-tab-ai').click(); return 1`); await sleep(200);
-  const aiScroll = Number(await evalJs(`const b = document.querySelector('#ai-messages'); b.scrollTop = Math.floor((b.scrollHeight - b.clientHeight) / 2); return Math.round(b.scrollTop)`));
-  await evalJs(`document.querySelector('#rp-tab-ai').focus(); return 1`);
-  const arrow = await focusedKey('ArrowRight'); await sleep(300);
-  const onHistory = asObj(await evalJs(`return JSON.stringify({ tab: window.__nbTest.rightPanel().tab, filter: document.querySelector('#hist-search').value,
-    list: document.querySelector('#hist-list').textContent.trim() })`));
-  await evalJs(`document.querySelector('#rp-tab-ai').click(); return 1`); await sleep(200);
-  const aiScrollBack = Number(await evalJs(`return Math.round(document.querySelector('#ai-messages').scrollTop)`));
-  check('T45 切换页签保留各页状态(过滤词/对话滚动位置),方向键在页签间切换并移动焦点',
-    arrow.prevented && arrow.focus === 'rp-tab-history' && onHistory.tab === 'history' && onHistory.filter === 'zz-no-such-cmd'
-      && onHistory.list === '暂无历史' && (windowHidden || (aiScroll > 0 && Math.abs(aiScrollBack - aiScroll) <= 1)),
-    JSON.stringify({ arrow, onHistory, aiScroll, aiScrollBack, windowHidden }));
+  await evalJs(`document.querySelector('#btn-hist-close').click(); return 1`);
+  await sleep(150);
+  // 重新打开历史弹窗:过滤词与列表状态保留
+  await runCmd('session.history');
+  const onHistory = asObj(await evalJs(`return JSON.stringify({
+    filter: document.querySelector('#hist-search').value,
+    list: document.querySelector('#hist-list').textContent.trim()
+  })`));
   await evalJs(`const q = document.querySelector('#hist-search'); q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('#ai-messages').scrollTop = 1e9; return 1`);
+    document.querySelector('#btn-hist-close').click(); return 1`);
+  await sleep(150);
 
-  // Esc:焦点在右侧栏输入框里时还给终端,面板不收起
-  const escFrom = [];
-  for (const [tab, input] of [['history', '#hist-search'], ['ai', '#ai-input']]) {
-    await evalJs(`document.querySelector('#rp-tab-${tab}').click(); document.querySelector('${input}').focus(); return 1`);
-    const r = await focusedKey('Escape'); await sleep(100);
-    escFrom.push({ input, prevented: r.prevented, terminal: await evalJs(`return document.activeElement?.classList.contains('xterm-helper-textarea')`), panel: await rp() });
-  }
-  check('T46 右侧栏输入框里按 Esc 焦点回到终端,面板保持打开',
-    escFrom.every((e) => e.prevented && e.terminal === true && e.panel.open && !e.panel.focusInside), JSON.stringify(escFrom));
+  // AI 会话抽屉搜索过滤
+  await evalJs(`document.querySelector('#ai-drawer-toggle').click(); return 1`);
+  await sleep(150);
+  await evalJs(`const q = document.querySelector('#ai-drawer-search'); q.value = 'zz-no-such-thread'; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
+  await waitEval(`return document.querySelector('#ai-drawer-list').textContent`, '未找到匹配的对话', 8000);
+  await evalJs(`const q = document.querySelector('#ai-drawer-search'); q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true })); return 1`);
+  await sleep(150);
+  const drawerListHasItems = await evalJs(`return !document.querySelector('#ai-drawer-list').textContent.includes('未找到匹配的对话')`);
+  await evalJs(`document.querySelector('#ai-drawer-close').click(); return 1`);
+  await sleep(150);
 
-  // 右侧栏小修(0.2.3):历史工具行等高;常用命令页添加行与状态栏上边框齐平、无提示行、改名"常用命令"
-  const rpFix = asObj(await evalJs(`return JSON.stringify((() => {
+  check('T45 状态保留:命令历史弹窗保留过滤词,AI 会话抽屉支持即时搜索与列表还原',
+    onHistory.filter === 'zz-no-such-cmd' && onHistory.list === '暂无历史' && drawerListHasItems,
+    JSON.stringify({ onHistory, drawerListHasItems }));
+
+  // Esc 语义:AI 抽屉内按 Esc 收起抽屉;AI 输入框内按 Esc 焦点回到终端面板不收起;弹窗内按 Esc 关闭弹窗
+  // 1. AI 抽屉打开时按 Esc -> 收起抽屉
+  await evalJs(`document.querySelector('#ai-drawer-toggle').click(); document.querySelector('#ai-drawer-search').focus(); return 1`);
+  await sleep(100);
+  const escDrawer = await focusedKey('Escape');
+  await sleep(150);
+  const drawerClosedOnEsc = await evalJs(`return document.querySelector('#ai-drawer').classList.contains('hidden')`);
+
+  // 2. AI 输入框按 Esc -> 焦点还给终端,AI 面板保持打开
+  await evalJs(`document.querySelector('#ai-input').focus(); return 1`);
+  await sleep(100);
+  const escAi = await focusedKey('Escape');
+  await sleep(100);
+  const aiTermFocus = await evalJs(`return document.activeElement?.classList.contains('xterm-helper-textarea')`);
+  const aiOpenOnEsc = await evalJs(`return !document.querySelector('#ai-panel').classList.contains('hidden')`);
+
+  // 3. 弹窗内按 Esc -> 弹窗关闭
+  await runCmd('session.history');
+  await sleep(100);
+  await evalJs(`document.querySelector('#hist-search').focus(); return 1`);
+  const escHist = await focusedKey('Escape');
+  await sleep(150);
+  const histClosedOnEsc = await evalJs(`return document.querySelector('#modal-history').classList.contains('hidden')`);
+
+  check('T46 Esc 语义:AI 抽屉按 Esc 收起,AI 输入框按 Esc 焦点归还终端且面板保持打开,弹窗按 Esc 关闭',
+    escDrawer.prevented && drawerClosedOnEsc && escAi.prevented && aiTermFocus && aiOpenOnEsc && histClosedOnEsc,
+    JSON.stringify({ escDrawer, drawerClosedOnEsc, escAi, aiTermFocus, aiOpenOnEsc, histClosedOnEsc }));
+
+  // 命令历史弹窗工具行:过滤框与清空按钮等高
+  await runCmd('session.history');
+  const histFix = asObj(await evalJs(`return JSON.stringify((() => {
     const r = (sel) => document.querySelector(sel).getBoundingClientRect();
-    const search = r('#hist-search'), clear = r('#hist-clear'), add = r('#rp-snippets .snippet-add'), bar = r('#statusbar');
-    return { searchH: search.height, clearH: clear.height, addTop: Math.round(add.top * 10) / 10, barTop: Math.round(bar.top * 10) / 10,
-      lastChild: !!document.querySelector('#rp-snippets').lastElementChild?.classList.contains('snippet-add'),
-      hints: document.querySelectorAll('.rp-hint').length, tabText: document.querySelector('#rp-tab-snippets').textContent.trim(),
-      cmdLabel: window.__nbTest.commandState('panel.snippets').label };
+    const search = r('#hist-search'), clear = r('#hist-clear');
+    return { searchH: search.height, clearH: clear.height };
   })())`));
-  check('T45b 命令历史工具行:过滤框与清空按钮等高', Math.abs(rpFix.searchH - rpFix.clearH) < 0.5, JSON.stringify(rpFix));
-  check('T46e 常用命令页:添加行上边框与状态栏上边框齐平,无提示行,页签与命令名为"常用命令"',
-    Math.abs(rpFix.addTop - rpFix.barTop) <= 1 && rpFix.lastChild && rpFix.hints === 0 && rpFix.tabText === '常用命令' && rpFix.cmdLabel === '常用命令',
-    JSON.stringify(rpFix));
+  await evalJs(`document.querySelector('#btn-hist-close').click(); return 1`);
+  await sleep(100);
+  check('T45b 命令历史工具行:过滤框与清空按钮等高', Math.abs(histFix.searchH - histFix.clearH) < 0.5, JSON.stringify(histFix));
+
+  // 常用命令弹窗:工具行与添加行完整可用,命令名与命令描述正确
+  await runCmd('tools.snippets');
+  const snipFix = asObj(await evalJs(`return JSON.stringify((() => {
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const search = r('#snippet-search'), clear = r('#snippet-clear'), add = r('.modal-snippet-add');
+    return {
+      searchH: search.height, clearH: clear.height,
+      hasAdd: !!add,
+      cmdLabel: window.__nbTest.commandState('tools.snippets').label,
+      histCmdLabel: window.__nbTest.commandState('session.history').label,
+    };
+  })())`));
+  await evalJs(`document.querySelector('#btn-snippet-close').click(); return 1`);
+  await sleep(100);
+  check('T46e 常用命令弹窗:工具行等高,添加行完整,命令名为"常用命令…"',
+    Math.abs(snipFix.searchH - snipFix.clearH) < 0.5 && snipFix.hasAdd
+      && snipFix.cmdLabel === '常用命令…' && snipFix.histCmdLabel === '命令历史…',
+    JSON.stringify(snipFix));
 
   // 常用命令行内交互:▶ 执行(常显,唯一执行入口) / ✏ 行内编辑 / 历史 ★ 一键收藏
   const tag43 = 'nb43' + Date.now().toString(36);
@@ -3054,6 +3190,7 @@ async function main() {
   f = await snipRows();
   const filterVal = await evalJs(`return document.querySelector('#snippet-search').value`);
   check('T43f ✕ 清空过滤:过滤词清空、列表还原', filterVal === '' && f.rows.length >= 2 && f.rows.includes(favCmd) && f.empty === '', JSON.stringify({ filterVal, ...f }));
+  await evalJs(`document.querySelector('#modal-snippets').classList.add('hidden'); document.querySelector('#modal-history').classList.add('hidden'); return 1`);
 
   // 设置窗口:⌘, / Ctrl+, 在终端里打开(终端分区);三个分区;⚙ 直接到 AI 分区
   const isMac = (await evalJs(`return window.nebula.platform`)) === 'darwin';
@@ -4305,8 +4442,7 @@ async function main() {
     // 右侧工具栏页签按 panel.<页签> 计;AI 面板 ⚙ 已移除(2026-10-11),
     // settings.open 与命令面板、关于一样只驻一级菜单(另有 ⌘, 与模型菜单「管理模型」)
     const surfaces = asObj(await evalJs(`return JSON.stringify({
-      static: [...document.querySelectorAll('#titlebar [data-command], #tabbar [data-command], #statusbar [data-command], #sidebar [data-command], .pane-toolbar [data-command]')].map((b) => b.dataset.command)
-        .concat([...document.querySelectorAll('#ai-panel .rp-tab')].map((t) => 'panel.' + t.dataset.tab)),
+      static: [...document.querySelectorAll('#titlebar [data-command], #tabbar [data-command], #statusbar [data-command], #sidebar [data-command], .pane-toolbar [data-command]')].map((b) => b.dataset.command),
       macMenu: window.__nbTest.nativeMenu().commandIds,
       pcMenu: window.__nbTest.menubar().menus.flatMap((m) => m.items.filter((i) => i && i !== '-').map((i) => i.command)),
       more: !!document.querySelector('#more-menu, #btn-more') })`));
@@ -4318,16 +4454,17 @@ async function main() {
     await openDropdown('#btn-host-manage'); const manageItems = (await ctxSnapshot()).items; await focusedKey('Escape');
     const near = new Set([...surfaces.static, ...[...termItems, ...tabItems, ...splitItems, ...manageItems].map((i) => i.command).filter(Boolean)]);
     const movedOut = ['pane.reflow', 'tab.file.add', 'pane.zoom', 'workspace.close', 'session.reconnect', 'session.readonly', 'session.log',
-      'tools.forwards', 'tools.broadcast', 'tools.batch', 'hosts.import', 'hosts.export', 'settings.fingerprints',
-      'panel.ai', 'panel.history', 'panel.snippets'];
+      'tools.forwards', 'tools.broadcast', 'tools.batch', 'hosts.import', 'hosts.export', 'settings.fingerprints'];
     const formerMore = ['palette.open', 'panel.sidebar', 'panel.tools', 'workspace.tile', 'settings.open', 'app.about'];
     const missing = movedOut.filter((id) => !near.has(id));
     const notInMenus = formerMore.filter((id) => !surfaces.macMenu.includes(id) || !surfaces.pcMenu.includes(id));
+    const menusIncludeMigrated = surfaces.macMenu.includes('session.history') && surfaces.pcMenu.includes('session.history')
+      && surfaces.macMenu.includes('tools.snippets') && surfaces.pcMenu.includes('tools.snippets');
     // 命令面板(本身就是键盘总入口)、设置与关于只在一级菜单,其余也都有就近入口
     const noNear = formerMore.filter((id) => !['palette.open', 'app.about', 'settings.open'].includes(id) && !near.has(id));
-    check('T92f 可达性:16 个命令都有就近入口;原 ⋯ 的 6 项都在两种一级菜单里,面板开关在标题栏,除命令面板、设置与「关于」外都另有就近入口',
-      !surfaces.more && !missing.length && !notInMenus.length && !noNear.length,
-      JSON.stringify({ missing, notInMenus, noNear, near: [...near] }));
+    check('T92f 可达性:13 个命令都有就近入口;原 ⋯ 的 6 项都在两种一级菜单里,命令历史与常用命令在主菜单,面板开关在标题栏,除命令面板、设置与「关于」外都另有就近入口',
+      !surfaces.more && !missing.length && !notInMenus.length && !noNear.length && menusIncludeMigrated,
+      JSON.stringify({ missing, notInMenus, noNear, menusIncludeMigrated, near: [...near] }));
 
     // 清理:关掉本组新开的分屏窗格
     if (created) await evalJs(`document.querySelector('.term-pane[data-pane="${created.paneId}"] .pane-close-btn')?.click(); return 1`);

@@ -5,8 +5,8 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiSettings, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, togglePickerFocus, toggleThreadMenu } from './ai.js';
-import { addSnippet, renderMonitorBar, renderSnippets } from './monitor.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeAiSettings, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
@@ -14,7 +14,7 @@ import {
 import { bindTransferUi, confirmTransferInterrupt, lastDownloadLocation, revealLastDownload } from './file-transfer.js';
 import { bindSettings, openSettings, revertUnsavedTheme, settingsOpen, settingsSection } from './settings.js';
 import { bindRightPanel, rightPanelOpen, rightPanelTab, rightTabShown, setRightPanel, toggleRightPanel, toggleRightTab } from './right-panel.js';
-import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, saveForwardRule } from './tools.js';
+import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, openHistoryModal, saveForwardRule } from './tools.js';
 import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
 import { bindPalette, isPaletteOpen, openPalette, paletteInput, paletteSnapshot } from './palette.js';
 import { buildNativeMenu, nativeMenuSnapshot } from './native-menu.js';
@@ -439,14 +439,13 @@ function setupWorkspaceCommands() {
 
   // 面板
   registerCommand('panel.sidebar', { label: '主机侧栏', category: 'panel', keywords: ['sidebar', 'hosts', 'zjcl', 'cebianlan'], checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
-  // 右侧工具栏:panel.tools 开关整个面板;三个页签命令打开对应页签,对正在显示的页签再执行一次则收起
-  registerCommand('panel.tools', { label: '右侧工具栏', category: 'panel', keywords: ['tools', 'right panel', 'toolbar', 'ycgjl', 'gongjulan', 'youce'], checked: () => rightPanelOpen(), run: toggleRightPanel });
-  registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'zs', 'zhushou'], checked: () => rightTabShown('ai'), run: () => toggleRightTab('ai') });
-  registerCommand('panel.history', { label: '命令历史', category: 'panel', keywords: ['history', 'mlls', 'lishi'], checked: () => rightTabShown('history'), run: () => toggleRightTab('history') });
-  registerCommand('panel.snippets', { label: '常用命令', category: 'panel', keywords: ['snippets', '片段', 'cyml', 'changyong', 'cypd', 'pianduan'], checked: () => rightTabShown('snippets'), run: () => toggleRightTab('snippets') });
+  // AI 助手面板:panel.tools 开关面板
+  registerCommand('panel.tools', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'tools', 'right panel', 'toolbar', 'ycgjl', 'gongjulan', 'youce', 'zhushou'], checked: () => rightPanelOpen(), run: toggleRightPanel });
   registerCommand('ai.newThread', { label: '新建 AI 对话', category: 'panel', keywords: ['new chat', 'ai', 'xjdh', 'xinjianduihua'], run: () => { setRightPanel(true, 'ai'); newAiThread({ focus: true }); } });
 
   // 会话
+  registerCommand('session.history', { label: '命令历史', category: 'session', kind: 'dialog', keywords: ['history', 'command history', 'mlls', 'lishi'], run: openHistoryModal });
+  registerCommand('tools.snippets', { label: '常用命令', category: 'session', kind: 'dialog', keywords: ['snippets', '片段', 'cyml', 'changyong', 'cypd', 'pianduan'], run: openSnippetsModal });
   registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return openTermSearch(); } });
   registerCommand('session.clear', { label: '清屏', category: 'session', keywords: ['clear', 'cls', 'qp', 'qingping'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => clearActiveTerm(session(ctx).sessionId) });
   registerCommand('session.reconnect', { label: '重连当前会话', category: 'session', keywords: ['reconnect', 'cl', 'chonglian'], enabled: (ctx) => !!session(ctx) && !live(session(ctx)),
@@ -513,6 +512,13 @@ function setupWorkspaceCommands() {
   document.addEventListener('nebula:state-change', refreshCommandStates);
   document.addEventListener('nebula:modal-scope', refreshCommandStates);
 }
+
+// 兼容别名:老键位/旧脚本仍在用的入口名,指向迁移后的新命令。标记 internal
+// —— 不进命令面板,也不要求出现在一级菜单里(否则"所有注册命令可达"的校验
+// 会要求这些别名各自再上一遍菜单)。
+registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', internal: true, keywords: ['ai'], checked: () => rightPanelOpen(), run: toggleRightPanel });
+registerCommand('panel.history', { label: '命令历史', category: 'panel', kind: 'dialog', internal: true, keywords: ['history'], run: openHistoryModal });
+registerCommand('panel.snippets', { label: '常用命令', category: 'panel', kind: 'dialog', internal: true, keywords: ['snippets'], run: openSnippetsModal });
 
 export function bindEvents() {
   $('#btn-cloud-add-account').addEventListener('click', () => editCloudAccount(null));
@@ -655,10 +661,35 @@ export function bindEvents() {
   });
   $('#ai-thread-new').addEventListener('click', () => {
     closeThreadMenu();
+    closeAiDrawer();
     newAiThread({ focus: true });
+  });
+  $('#ai-drawer-toggle')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleAiDrawer();
+  });
+  $('#ai-drawer-new')?.addEventListener('click', () => {
+    closeAiDrawer();
+    newAiThread({ focus: true });
+  });
+  $('#ai-drawer-close')?.addEventListener('click', () => {
+    closeAiDrawer({ focusToggle: true });
+  });
+  $('#ai-drawer-search')?.addEventListener('input', (e) => {
+    renderAiDrawer(e.target.value);
+  });
+  $('#ai-drawer-search')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      // 我们已消费这次 Esc:标记 defaultPrevented,免得右侧栏/文档层再处理一遍。
+      // (stopPropagation 让事件到不了那些监听器,但 prevented 语义要自己给全。)
+      e.preventDefault();
+      e.stopPropagation();
+      closeAiDrawer({ focusToggle: true });
+    }
   });
   $('#ai-thread-clear').addEventListener('click', async () => {
     closeThreadMenu();
+    closeAiDrawer();
     await requestClearAiThread();
     $('#ai-input')?.focus();
   });
@@ -681,9 +712,13 @@ export function bindEvents() {
   $('#ai-thread-menu').addEventListener('keydown', onThreadMenuKeydown);
   document.addEventListener('click', (e) => {
     if (!e.target.closest?.('#ai-thread-menu, #ai-thread-trigger')) closeThreadMenu();
+    if (!e.target.closest?.('#ai-drawer, #ai-drawer-toggle')) closeAiDrawer();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeThreadMenu();
+    if (e.key === 'Escape') {
+      closeThreadMenu();
+      if (isAiDrawerOpen()) closeAiDrawer();
+    }
   });
 
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
@@ -708,6 +743,8 @@ export function bindEvents() {
   });
   $('#btn-fp-close').addEventListener('click', () => closeModal('#modal-fp'));
   $('#btn-about-close').addEventListener('click', () => closeModal('#modal-about'));
+  $('#btn-snippet-close')?.addEventListener('click', () => closeModal('#modal-snippets'));
+  $('#btn-snippet-done')?.addEventListener('click', () => closeModal('#modal-snippets'));
 
   // 终端搜索
   $('#term-search-next').addEventListener('click', () => doTermSearch(false));
@@ -731,9 +768,10 @@ export function bindEvents() {
     if (action === 'palette.open') { executeCommand(action); return; }
     if (!$('#ctx-menu').classList.contains('hidden')) return;
     // 在 AI 面板内按快捷键新建会话
-    if (matchAction('ai.newThread', e) && rightTabShown('ai') && document.activeElement?.closest?.('#rp-ai, #ai-thread-menu')) {
+    if (matchAction('ai.newThread', e) && rightTabShown('ai') && document.activeElement?.closest?.('#ai-panel, #ai-thread-menu, #ai-drawer, #rp-ai')) {
       e.preventDefault();
       closeThreadMenu();
+      closeAiDrawer();
       newAiThread({ focus: true });
       return;
     }

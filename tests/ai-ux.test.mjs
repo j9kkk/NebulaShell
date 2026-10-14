@@ -201,11 +201,12 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
     clearTimeout: (id) => timers.delete(id),
     cancelAnimationFrame: (id) => cancelledFrames.push(id),
   });
-  const core = new vm.SyntheticModule(['$', 'state', 'api', 'toast', 'openModal', 'closeModal', 'copyText', 'askConfirm'], function () {
+  const core = new vm.SyntheticModule(['$', 'state', 'api', 'toast', 'openModal', 'closeModal', 'copyText', 'askConfirm', 'askPrompt'], function () {
     this.setExport('$', $); this.setExport('state', state);
     this.setExport('toast', (message, type) => toasts.push({ message, type }));
     this.setExport('copyText', async (text) => { copies.push(text); return true; });
     this.setExport('askConfirm', async (message, opts) => { confirmations.push({ message, opts }); return confirm(message, opts, state); });
+    this.setExport('askPrompt', async (title, defaultValue = '') => defaultValue);
     this.setExport('openModal', (id) => $(id).classList.remove('hidden'));
     this.setExport('closeModal', (id) => $(id).classList.add('hidden'));
     this.setExport('api', async (channel, payload) => {
@@ -1493,5 +1494,74 @@ test('requestDeleteAiThread focuses trigger before askConfirm when menu is open'
   assert.equal(focusedBeforeConfirm, otherEl);
   assert.equal(focusCalls.length, 0);
 });
+
+test('ai drawer: open, close, toggle, keyword search, count badge and rename', async () => {
+  const { ai, state, $ } = await setup();
+  const drawer = $('#ai-drawer');
+  drawer.classList.add('hidden');
+  const toggleBtn = $('#ai-drawer-toggle');
+  const countBadge = $('#ai-thread-count-badge');
+  const searchInp = $('#ai-drawer-search');
+  const list = $('#ai-drawer-list');
+
+  // 1. Initial state: default thread
+  const th1 = ai.ensureDefaultAiThread();
+  assert.equal(ai.isAiDrawerOpen(), false);
+
+  // 2. Open drawer
+  ai.openAiDrawer();
+  assert.equal(ai.isAiDrawerOpen(), true);
+  assert.equal(drawer.classList.contains('hidden'), false);
+  assert.equal(toggleBtn.getAttribute('aria-expanded'), 'true');
+  assert.equal(toggleBtn.classList.contains('active'), true);
+
+  // 3. Toggle drawer -> closes
+  ai.toggleAiDrawer();
+  assert.equal(ai.isAiDrawerOpen(), false);
+  assert.equal(drawer.classList.contains('hidden'), true);
+  assert.equal(toggleBtn.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggleBtn.classList.contains('active'), false);
+
+  // 4. Create multiple threads and check badge count
+  const th2 = ai.createAiThread({ title: 'Nginx config' });
+  const th3 = ai.createAiThread({ title: 'Docker container' });
+  ai.renderAiThreadBar();
+  assert.equal(countBadge.textContent, '3');
+  assert.equal(countBadge.classList.contains('visible'), true);
+
+  // 5. Render drawer with filter
+  ai.openAiDrawer();
+  assert.equal(list.children.length, 3);
+
+  // Filter keyword 'nginx'
+  ai.renderAiDrawer('nginx');
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].dataset.threadId, th2.id);
+
+  // Filter keyword 'docker'
+  ai.renderAiDrawer('docker');
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].dataset.threadId, th3.id);
+
+  // Clear filter
+  ai.renderAiDrawer('');
+  assert.equal(list.children.length, 3);
+
+  // 6. Rename thread
+  await ai.renameAiThread(th2.id, 'Nginx Reverse Proxy');
+  assert.equal(th2.title, 'Nginx Reverse Proxy');
+  assert.equal(th2.autoTitle, false);
+
+  // Active thread rename updates trigger title
+  ai.switchAiThread(th2.id);
+  assert.equal($('#ai-thread-title').textContent, 'Nginx Reverse Proxy');
+  await ai.renameAiThread(th2.id, 'Production Nginx');
+  assert.equal($('#ai-thread-title').textContent, 'Production Nginx');
+
+  // Close drawer
+  ai.closeAiDrawer();
+  assert.equal(ai.isAiDrawerOpen(), false);
+});
+
 
 

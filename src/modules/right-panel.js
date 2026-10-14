@@ -1,17 +1,11 @@
-// 右侧工具栏:AI 助手 / 命令历史 / 常用命令 三个页签,容器沿用 #ai-panel。
-//
-// 状态只有两样:面板是否打开(#ai-panel.hidden)和当前页签(#ai-panel[data-tab])。
-// 页签页叠在同一格,非活动页只是不可见(见 style.css .rp-page),各页的滚动位置、
-// 过滤词、输入草稿都留在原处。
-//
-// 命令语义:panel.tools 开关整个面板;panel.ai / panel.history / panel.snippets
-// 打开对应页签,对正在显示的页签再执行一次则收起面板。
+// 右侧工具栏:专职 AI 助手(容器沿用 #ai-panel)。
+// 命令历史与常用命令已迁移至主菜单与独立弹窗。
 import { $, state } from './core.js';
 import { refreshCommandStates } from './commands.js';
-import { aiStickScroll } from './ai.js';
-import { renderSnippets } from './monitor.js';
+import { aiStickScroll, closeAiDrawer } from './ai.js';
+import { openSnippetsModal, renderSnippets } from './monitor.js';
 import { fitAllVisible, scheduleResizeSync } from './terminal.js';
-import { renderHistory } from './tools.js';
+import { openHistoryModal, renderHistory } from './tools.js';
 
 export const RIGHT_TABS = ['ai', 'history', 'snippets'];
 
@@ -24,7 +18,7 @@ export const rightTabShown = (tab) => rightPanelOpen() && rightPanelTab() === ta
 /// 但保持阅读位置;AI 页补一次贴底(隐藏期间收到的回复)。
 function onShown(tab) {
   if (tab === 'ai') aiStickScroll();
-  else if (tab === 'history') renderHistory($('#hist-search').value, { keepScroll: true });
+  else if (tab === 'history') renderHistory($('#hist-search')?.value, { keepScroll: true });
   else if (tab === 'snippets') renderSnippets();
 }
 
@@ -47,9 +41,17 @@ function focusTerminal() {
 
 /// 打开或收起面板;tab 给出时切到该页签。收起时焦点若在面板里,还给终端。
 export function setRightPanel(open, tab = null) {
+  if (tab === 'history') {
+    if (open) openHistoryModal();
+    return;
+  }
+  if (tab === 'snippets') {
+    if (open) openSnippetsModal();
+    return;
+  }
   const wasOpen = rightPanelOpen();
   const before = rightPanelTab();
-  const target = RIGHT_TABS.includes(tab) ? tab : before;
+  const target = 'ai';
   if (open) selectTab(target);
   if (!open && wasOpen && panel().contains(document.activeElement)) focusTerminal();
   panel().classList.toggle('hidden', !open);
@@ -62,6 +64,8 @@ export function setRightPanel(open, tab = null) {
 export const toggleRightPanel = () => setRightPanel(!rightPanelOpen());
 
 export function toggleRightTab(tab) {
+  if (tab === 'history') { openHistoryModal(); return; }
+  if (tab === 'snippets') { openSnippetsModal(); return; }
   if (rightTabShown(tab)) setRightPanel(false);
   else setRightPanel(true, tab);
 }
@@ -89,6 +93,11 @@ export function bindRightPanel() {
     if (!$('#ai-thread-menu')?.classList.contains('hidden')) return;
     if (!$('#ai-model-menu')?.classList.contains('hidden')) return;
     if (event.target.closest?.('.ai-code-menu[open]')) return;
+    if (!$('#ai-drawer')?.classList.contains('hidden')) {
+      closeAiDrawer({ focusToggle: true });
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     focusTerminal();
   });

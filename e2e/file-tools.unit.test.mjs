@@ -106,7 +106,7 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
     },
   });
   const imports = {
-    './core.js': { $, api, state, askConfirm: confirm, askPrompt: async () => null, copyText: async () => true, toast: (...args) => toasts.push(args),
+    './core.js': { $, api, state, askConfirm: confirm, askPrompt: async (_msg, opts) => opts?.value ?? null, copyText: async () => true, toast: (...args) => toasts.push(args),
       showCtxMenu: () => {}, bindMenuButton: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
       setModalDismissHandler: (element, handler) => { element.dismiss = handler; },
       hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim(),

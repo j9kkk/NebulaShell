@@ -201,6 +201,28 @@ const PATTERNS = [
       '同族命令处理方式应一致(同文件里 update 透传而 add/remove 丢弃即不一致信号)',
     ],
   },
+  {
+    // 2026-10-14 审查沉淀:0.5.5 标签拖拽逻辑在 terminal.js/terminal-workspace.js
+    // 两处完整复制,0.5.7 修"丢 mouseup + 文字选区"被迫在两个文件各打一遍补丁。
+    name: '交互逻辑跨文件复制/补丁打两遍',
+    keys: ['tab-dragging', 'onMove', 'insertBefore', 'draggable'],
+    checklist: [
+      '同一交互(拖拽/排序/悬停)出现在 2+ 文件时先抽公共 helper(shared/),修 bug 才不用各打一遍',
+      '拖拽 mousedown 先判断排除目标(close 钮等)再 preventDefault,顺序反了会吞掉子元素的焦点/默认行为',
+      'onMove 检查 ev.buttons === 0 兜底 mouseup 丢失,该兜底属公共逻辑不应在各处重复添加',
+    ],
+  },
+  {
+    // 2026-10-14 审查沉淀:0.5.4 revertUnsavedTheme+closeAiSettings 在 settings.js/entry.js
+    // 共 5 个关闭入口重复,新增关闭入口漏调即主题回滚失效。
+    name: '关闭/清理路径散弹式重复',
+    keys: ['revertUnsavedTheme', 'closeAiSettings', 'cancel', 'dismiss'],
+    checklist: [
+      '模态的"取消/关闭"有多个入口时收敛为单一清理函数,入口只调用不自行拼装步骤',
+      '新增关闭入口(快捷键/遮罩点击/E2E)必须走统一出口,禁止绕过直接各调一句',
+      '清理步骤有先后依赖(先回滚预览再关窗)时把顺序固化在出口内,调用方不感知',
+    ],
+  },
 ];
 
 function classify(c) {

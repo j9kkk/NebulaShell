@@ -139,20 +139,10 @@
     <!-- 右侧工具栏:AI 助手 / 命令历史 / 常用命令 三个页签(容器沿用 #ai-panel)。
          页签页叠放在同一格,非活动页只是不可见 —— 滚动位置、过滤词、输入草稿
          都留在原处(见 right-panel.js)。 -->
-    <div id="ai-resizer" class="resizer hidden" title="拖动调整右侧工具栏宽度"></div>
-    <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="右侧工具栏">
+    <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手宽度"></div>
+    <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="AI 助手">
+      <!-- 单层高集成度 AI 顶栏(高度 36px,与左侧标签栏严格对齐):切换会话、新建会话、历史抽屉、清空 -->
       <div class="ai-header">
-        <div class="rp-tabs" role="tablist" aria-label="右侧工具栏">
-          <button id="rp-tab-ai" class="rp-tab" type="button" role="tab" data-tab="ai" aria-controls="rp-ai" aria-selected="true" title="AI 助手"><span class="mi" data-icon="sparkles"></span><span class="rp-tab-lbl">AI 助手</span></button>
-          <button id="rp-tab-history" class="rp-tab" type="button" role="tab" data-tab="history" aria-controls="rp-history" aria-selected="false" tabindex="-1" title="命令历史"><span class="mi" data-icon="clock"></span><span class="rp-tab-lbl">命令历史</span></button>
-          <button id="rp-tab-snippets" class="rp-tab" type="button" role="tab" data-tab="snippets" aria-controls="rp-snippets" aria-selected="false" tabindex="-1" title="常用命令"><span class="mi" data-icon="zap"></span><span class="rp-tab-lbl">常用命令</span></button>
-        </div>
-        <!-- 收起入口只有标题栏的右侧工具栏开关(#btn-ai-toggle),页签行不再放 ✕ -->
-      </div>
-      <div class="rp-pages">
-      <section id="rp-ai" class="rp-page active" role="tabpanel" data-page="ai" aria-labelledby="rp-tab-ai">
-      <!-- 会话控制栏:切换当前会话、新建会话、清空当前会话 -->
-      <div class="ai-thread-bar">
         <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
           <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
           <span id="ai-thread-title" class="ai-thread-title">新对话</span>
@@ -161,8 +151,24 @@
         </button>
         <span class="spacer"></span>
         <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建对话" data-title="新建对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
+        <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
         <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
       </div>
+
+      <!-- 会话管理抽屉:在面板内切出全量会话管理与搜索 -->
+      <div id="ai-drawer" class="ai-drawer hidden" aria-label="会话管理抽屉">
+        <div class="ai-drawer-head">
+          <span class="ai-drawer-title">全部对话</span>
+          <span class="spacer"></span>
+          <button id="ai-drawer-new" class="btn small" type="button">＋ 新建</button>
+          <button id="ai-drawer-close" class="btn icon small" type="button" title="收起抽屉" aria-label="收起抽屉"><span class="mi" data-icon="x"></span></button>
+        </div>
+        <div class="ai-drawer-search-row">
+          <input id="ai-drawer-search" class="inp" type="text" placeholder="搜索对话标题…" aria-label="搜索对话" autocomplete="off" spellcheck="false" />
+        </div>
+        <div id="ai-drawer-list" class="ai-drawer-list" role="list"></div>
+      </div>
+
       <div class="ai-messages-wrap">
         <div id="ai-messages"></div>
         <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
@@ -189,28 +195,6 @@
             <button id="ai-send" class="btn primary ai-send" type="button" title="发送"></button>
           </div>
         </div>
-      </div>
-      </section>
-      <section id="rp-history" class="rp-page" role="tabpanel" data-page="history" aria-labelledby="rp-tab-history">
-        <div class="rp-toolbar">
-          <input id="hist-search" class="inp" type="text" placeholder="过滤历史…" aria-label="过滤命令历史" autocomplete="off" spellcheck="false" />
-          <button id="hist-clear" class="btn icon" type="button" title="清空历史" aria-label="清空历史"><span class="mi" data-icon="trash"></span></button>
-        </div>
-        <div id="hist-list" class="rp-list"></div>
-      </section>
-      <!-- 添加行必须是本页最后一个子元素:它锁 --footer-h 高,上边框与状态栏上边框齐平 -->
-      <section id="rp-snippets" class="rp-page" role="tabpanel" data-page="snippets" aria-labelledby="rp-tab-snippets">
-        <div class="rp-toolbar">
-          <input id="snippet-search" class="inp" type="text" placeholder="过滤名称/命令…" aria-label="过滤常用命令" autocomplete="off" spellcheck="false" />
-          <button id="snippet-clear" class="btn icon" type="button" title="清空过滤" aria-label="清空过滤"><span class="mi" data-icon="x"></span></button>
-        </div>
-        <div id="snippet-list" class="rp-list"></div>
-        <div class="snippet-add">
-          <input id="snippet-name" type="text" placeholder="名称" aria-label="命令名称" />
-          <input id="snippet-cmd" type="text" placeholder="命令，例如：df -h" aria-label="命令内容" />
-          <button id="btn-snippet-add" class="btn small primary" type="button">添加</button>
-        </div>
-      </section>
       </div>
     </aside>
 
@@ -598,6 +582,53 @@
         <span class="spacer"></span>
         <button id="btn-fw-save" class="btn primary">保存规则</button>
         <button id="btn-fw-close" class="btn">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 命令历史管理弹窗 -->
+  <div id="modal-history" class="modal hidden">
+    <div class="modal-card wide modal-history-card">
+      <div class="modal-head">
+        <h3>命令历史</h3>
+        <span class="spacer"></span>
+        <button id="btn-hist-close" class="btn icon" type="button" title="关闭" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
+      <div class="modal-toolbar">
+        <input id="hist-search" class="inp" type="text" placeholder="过滤命令历史（模糊匹配命令内容与主机名）…" aria-label="过滤命令历史" autocomplete="off" spellcheck="false" />
+        <button id="hist-clear" class="btn icon" type="button" title="清空全部历史" aria-label="清空历史"><span class="mi" data-icon="trash"></span></button>
+      </div>
+      <div id="hist-list" class="rp-list modal-hist-list"></div>
+      <div class="modal-actions modal-foot">
+        <span class="muted small-note">提示：点击行将命令填入当前活动终端（不回车执行） · 点击 ★ 收藏为常用命令</span>
+        <span class="spacer"></span>
+        <button id="btn-hist-done" class="btn primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 常用命令管理弹窗 -->
+  <div id="modal-snippets" class="modal hidden">
+    <div class="modal-card wide modal-snippets-card">
+      <div class="modal-head">
+        <h3>常用命令</h3>
+        <span class="spacer"></span>
+        <button id="btn-snippet-close" class="btn icon" type="button" title="关闭" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
+      <div class="modal-toolbar">
+        <input id="snippet-search" class="inp" type="text" placeholder="过滤名称/命令内容…" aria-label="过滤常用命令" autocomplete="off" spellcheck="false" />
+        <button id="snippet-clear" class="btn icon" type="button" title="清空过滤" aria-label="清空过滤"><span class="mi" data-icon="x"></span></button>
+      </div>
+      <div id="snippet-list" class="rp-list modal-snippet-list"></div>
+      <div class="modal-snippet-add">
+        <input id="snippet-name" type="text" placeholder="名称，例如：磁盘占用" aria-label="命令名称" />
+        <input id="snippet-cmd" type="text" placeholder="命令内容，例如：df -h" aria-label="命令内容" />
+        <button id="btn-snippet-add" class="btn small primary" type="button">＋ 添加</button>
+      </div>
+      <div class="modal-actions modal-foot">
+        <span class="muted small-note">提示：点击 ▶ 在当前终端直接执行 · 点击 ✏ 编辑名称或命令</span>
+        <span class="spacer"></span>
+        <button id="btn-snippet-done" class="btn primary">完成</button>
       </div>
     </div>
   </div>

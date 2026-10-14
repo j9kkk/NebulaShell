@@ -43,8 +43,10 @@ export const DEFAULT_KEYMAP = {
   'session.clear':   { mac: 'cmd+K',                                      label: '清屏' },
   // 面板开关(标题栏左右两个按钮)。Win/Linux 不用 Ctrl+B:readline 的后退一个字符
   'panel.sidebar':   { mac: 'cmd+B',           ...pc('ctrl+shift+B'),     label: '主机侧栏' },
-  'panel.tools':     { mac: 'alt+cmd+B',       ...pc('ctrl+shift+alt+B'), label: '右侧工具栏' },
+  'panel.tools':     { mac: 'alt+cmd+B',       ...pc('ctrl+shift+alt+B'), label: 'AI 助手' },
   'ai.newThread':    { mac: 'cmd+N',           ...pc('ctrl+shift+N'),     label: '新建 AI 对话' },
+  'session.history': { mac: 'cmd+shift+H',     ...pc('ctrl+shift+H'),     label: '命令历史' },
+  'tools.snippets':  { mac: 'cmd+shift+S',     ...pc('ctrl+shift+S'),     label: '常用命令' },
   // F11 全屏(Windows Terminal 惯例);macOS 用系统的「进入全屏」(⌃⌘F)
   'window.fullscreen': { ...pc('F11'),                                    label: '全屏' },
   // 以下两项只由 macOS 菜单栏的加速键触发(页面不拦截,模态打开时也可用)
@@ -55,7 +57,7 @@ export const DEFAULT_KEYMAP = {
 /// 应用级动作:无论焦点在哪(包括终端内)都归应用处理,由全局分发执行。
 /// 复制/粘贴/全选属于所在组件,不在此列;window.close / app.quit 交给菜单栏。
 export const APP_ACTIONS = ['pane.zoom', 'session.search', 'workspace.close', 'tab.new', 'pane.split', 'tab.switch',
-  'palette.open', 'settings.open', 'session.clear', 'panel.sidebar', 'panel.tools', 'window.fullscreen'];
+  'palette.open', 'settings.open', 'session.clear', 'panel.sidebar', 'panel.tools', 'session.history', 'tools.snippets', 'window.fullscreen'];
 
 const platformKey = () => (PLATFORM === 'darwin' ? 'mac' : PLATFORM === 'windows' ? 'win' : 'linux');
 
