@@ -511,10 +511,10 @@ test('tab and tile header presses cancel the default action; a drag whose mouseu
     return event;
   };
 
-  // A press on a tab never starts a text selection, including on its close button; right-click keeps its default
+  // A press on a tab never starts a text selection; close button keeps its default mousedown; right-click keeps its default
   assert.equal(press(tabA.querySelector('.tab-title')).defaultPrevented, true);
   h.document.dispatchEvent({ type: 'mouseup', clientX: 20, clientY: 15 });
-  assert.equal(press(tabA.querySelector('.tab-close')).defaultPrevented, true);
+  assert.equal(press(tabA.querySelector('.tab-close')).defaultPrevented, false);
   assert.equal(press(tabA, { button: 2 }).defaultPrevented, false);
 
   press(tabA);

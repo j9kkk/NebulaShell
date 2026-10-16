@@ -3,9 +3,9 @@ import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenu
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
-import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
+import { clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows, toggleHostSecret, toggleJumpMenu, updateSessionLogHint } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
 import { closeModeMenu, hideModeHelp, onModeMenuKeydown, revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu } from './ai-agent-ui.js';
 import { refreshAgentHostBar } from './ai-agent-run.js';
 import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
@@ -556,12 +556,35 @@ export function bindEvents() {
   $('#host-auth').addEventListener('change', toggleAuthRows);
   $('#btn-host-save').addEventListener('click', saveHostModal);
   $('#btn-host-cancel').addEventListener('click', () => closeModal('#modal-host'));
+  $('#btn-reveal-host-password')?.addEventListener('click', () => toggleHostSecret('password'));
+  $('#host-password')?.addEventListener('input', () => onHostSecretInput('password'));
+  $('#btn-reveal-host-passphrase')?.addEventListener('click', () => toggleHostSecret('passphrase'));
+  $('#host-passphrase')?.addEventListener('input', () => onHostSecretInput('passphrase'));
+  $('#btn-clear-key')?.addEventListener('click', clearHostPrivateKey);
+
+  $('#btn-host-add-jump')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleJumpMenu();
+  });
+  $('#host-jump-chips')?.addEventListener('click', (e) => {
+    if (!e.target.closest('.jump-chip')) {
+      e.stopPropagation();
+      toggleJumpMenu();
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#host-jump-box')) toggleJumpMenu(false);
+  });
+
+  $('#host-sessionlog')?.addEventListener('change', updateSessionLogHint);
+
   $('#btn-pick-key').addEventListener('click', async () => {
     try {
       const r = await api('dialog:pickKey');
       if (r) {
         state.pickedKey = r;
         $('#key-path').textContent = r.path;
+        $('#btn-clear-key')?.classList.remove('hidden');
       }
     } catch (e) {
       toast('读取私钥失败：' + e.message, 'error');
@@ -587,6 +610,8 @@ export function bindEvents() {
     if (!event.target.closest('.model-chip, .model-chips-input')) $('#ai-model-inline').focus();
   });
   $('#btn-ai-save').addEventListener('click', saveAiSettings);
+  $('#btn-reveal-ai-apikey')?.addEventListener('click', toggleAiApiKeyVisibility);
+  $('#ai-apikey')?.addEventListener('input', onAiApiKeyInput);
   $('#btn-ai-test').addEventListener('click', aiTestConnection);
   $('#ai-provider').addEventListener('change', () => fillPreset($('#ai-provider').value));
   $('#btn-ai-fetch-models').addEventListener('click', fetchAiModels);
@@ -603,17 +628,24 @@ export function bindEvents() {
     else if (e.key === 'Enter') { e.preventDefault(); confirmModelPicker(); }
   });
   // 模型选择:触发钮开菜单,菜单项切换,「管理模型」进 AI 设置;
-  // 面板外点击/Esc 关闭。菜单定位 fixed,不随面板滚动。
-  $('#ai-model-trigger').addEventListener('click', (e) => {
-    e.stopPropagation();
+  // 面板外点击/Esc/窗口缩放 关闭。菜单定位 fixed,不随面板滚动。
+  $('#ai-model-trigger').addEventListener('click', () => {
     // 0 模型:无可切换项,点击语义变为"去配置"——直达 AI 设置分区
     // (分支放这里:openSettings 在 settings.js,ai.js 反向导入会成环)
     if (!savedAiModelId() && $('#ai-model-menu').classList.contains('hidden')) {
+      closeModeMenu();
+      closeThreadMenu();
       openSettings('ai');
       return;
     }
     const menu = $('#ai-model-menu');
-    if (menu.classList.contains('hidden')) openModelMenu(); else closeModelMenu();
+    if (menu.classList.contains('hidden')) {
+      closeModeMenu();
+      closeThreadMenu();
+      openModelMenu();
+    } else {
+      closeModelMenu();
+    }
   });
   $('#ai-model-menu-list').addEventListener('click', (e) => {
     const item = e.target.closest('.ai-model-menu-item');
@@ -629,14 +661,23 @@ export function bindEvents() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeModelMenu(); closeModeMenu(); }
   });
+  window.addEventListener('resize', () => {
+    closeModelMenu();
+    closeModeMenu();
+    closeThreadMenu();
+  });
   // 执行模式选择器:触发钮开菜单(绑定单点在这里,updateModePicker 不再设 onclick,
   // 否则双绑定一次点击开又关);菜单项切换模式,切 auto 的确认在 ai-agent-run.js;
   // 「?」悬停/聚焦立即展开帮助浮层(原生 title 要停约 1 秒),移进浮层保持展开;
   // 点击不外抛以免关掉菜单。
-  $('#ai-mode-trigger').addEventListener('click', (e) => {
-    e.stopPropagation();
+  $('#ai-mode-trigger').addEventListener('click', () => {
     // 打开前按当前绑定重算一次，头部「主机 · 名称」不依赖上一次状态事件是否到达。
     refreshAgentHostBar();
+    const menu = $('#ai-mode-menu');
+    if (menu?.classList.contains('hidden')) {
+      closeModelMenu();
+      closeThreadMenu();
+    }
     toggleModeMenu();
   });
   $('#ai-mode-menu-list').addEventListener('click', (e) => {
@@ -684,8 +725,12 @@ export function bindEvents() {
   // 「解释选中内容」按钮已移除:入口迁移为终端选区末尾的悬浮 🔍 按钮
   // (terminal.js bindSelectionExplain)。
   // AI 会话管理工具栏与下拉菜单
-  $('#ai-thread-trigger').addEventListener('click', (e) => {
-    e.stopPropagation();
+  $('#ai-thread-trigger').addEventListener('click', () => {
+    const menu = $('#ai-thread-menu');
+    if (menu?.classList.contains('hidden')) {
+      closeModelMenu();
+      closeModeMenu();
+    }
     toggleThreadMenu();
   });
   $('#ai-thread-new').addEventListener('click', () => {
@@ -993,6 +1038,9 @@ function setupResizers() {
     grip.addEventListener('pointerdown', (ev) => {
       const panel = el();
       if (!panel || panel.classList.contains('hidden') || panel.classList.contains('collapsed') || hasOpenModal()) return;
+      closeModelMenu();
+      closeModeMenu();
+      closeThreadMenu();
       ev.preventDefault();
       grip.setPointerCapture(ev.pointerId);
       grip.classList.add('dragging');
@@ -1036,6 +1084,9 @@ function setupResizers() {
     // 双击把手:sidebar 收起(拖到最窄的直觉延伸);其余面板恢复默认宽度。
     // 收起走 toggleSidebar,让工具栏按钮的 active 态同步。
     grip.addEventListener('dblclick', () => {
+      closeModelMenu();
+      closeModeMenu();
+      closeThreadMenu();
       if (id === 'sidebar-resizer') { toggleSidebar(); return; }
       el().style.width = '';
       fitAllVisible();

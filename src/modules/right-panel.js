@@ -54,6 +54,11 @@ export function setRightPanel(open, tab = null) {
   const target = 'ai';
   if (open) selectTab(target);
   if (!open && wasOpen && panel().contains(document.activeElement)) focusTerminal();
+  if (!open) {
+    $('#ai-model-menu')?.classList.add('hidden');
+    $('#ai-mode-menu')?.classList.add('hidden');
+    $('#ai-thread-menu')?.classList.add('hidden');
+  }
   panel().classList.toggle('hidden', !open);
   $('#ai-resizer').classList.toggle('hidden', !open);
   if (open && (!wasOpen || target !== before)) onShown(target);
@@ -92,6 +97,7 @@ export function bindRightPanel() {
     if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
     if (!$('#ai-thread-menu')?.classList.contains('hidden')) return;
     if (!$('#ai-model-menu')?.classList.contains('hidden')) return;
+    if (!$('#ai-mode-menu')?.classList.contains('hidden')) return;
     if (event.target.closest?.('.ai-code-menu[open]')) return;
     if (!$('#ai-drawer')?.classList.contains('hidden')) {
       closeAiDrawer({ focusToggle: true });

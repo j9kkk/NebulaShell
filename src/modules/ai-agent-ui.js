@@ -604,6 +604,8 @@ export function openModeMenu(info = lastPickerInfo) {
   const menu = $('#ai-mode-menu');
   const trigger = $('#ai-mode-trigger');
   if (!menu || !trigger || trigger.disabled) return;
+  $('#ai-model-menu')?.classList.add('hidden');
+  $('#ai-thread-menu')?.classList.add('hidden');
   if (info) lastPickerInfo = info;
   renderModeMenu(lastPickerInfo);
   menu.classList.remove('hidden');

@@ -2,6 +2,8 @@
 import { $, api, askConfirm, askPrompt, closeModal, copyText, openModal, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
+
+export const MASKED_SECRET = '••••••••';
 import { popupPosition } from './interaction.js';
 import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
 import { renderMarkdown } from '../shared/markdown.js';
@@ -61,19 +63,90 @@ export function onAiEndpointChange() {
   }
   const same = endpoint === aiEndpointIdentity(savedAi());
   const usableSavedKey = same && savedAi().apiKeySet;
-  $('#ai-apikey').placeholder = usableSavedKey ? '已保存（留空保持不变）' : '密钥（此端点没有已保存密钥）';
+  const keyInput = $('#ai-apikey');
+  const revealBtn = $('#btn-reveal-ai-apikey');
+  if (usableSavedKey) {
+    if (!keyInput.value || keyInput.value === MASKED_SECRET) {
+      keyInput.value = MASKED_SECRET;
+      keyInput.type = 'password';
+    }
+    if (revealBtn) {
+      revealBtn.classList.remove('hidden');
+      revealBtn.title = '显示密钥';
+      revealBtn.innerHTML = icon('eyeOff');
+    }
+  } else {
+    if (keyInput.value === MASKED_SECRET) {
+      keyInput.value = '';
+      keyInput.type = 'password';
+    }
+    keyInput.placeholder = '密钥（此端点没有已保存密钥）';
+    if (revealBtn) revealBtn.classList.toggle('hidden', !keyInput.value);
+  }
   const status = $('#ai-key-status');
   if (status) status.textContent = usableSavedKey ? '' : '新端点需填写密钥（本地服务可留空）';
+}
+
+export async function toggleAiApiKeyVisibility() {
+  const input = $('#ai-apikey');
+  const btn = $('#btn-reveal-ai-apikey');
+  if (!input || !btn) return;
+  if (input.type === 'password') {
+    if (input.value === MASKED_SECRET) {
+      try {
+        const res = await api('ai:revealApiKey');
+        input.value = res?.apiKey || '';
+      } catch (e) {
+        toast('获取 API Key 明文失败：' + e.message, 'error');
+        return;
+      }
+    }
+    input.type = 'text';
+    btn.title = '隐藏密钥';
+    btn.innerHTML = icon('eye');
+  } else {
+    input.type = 'password';
+    btn.title = '显示密钥';
+    btn.innerHTML = icon('eyeOff');
+  }
+}
+
+export function onAiApiKeyInput() {
+  const input = $('#ai-apikey');
+  const btn = $('#btn-reveal-ai-apikey');
+  if (!input || !btn) return;
+  const val = input.value;
+  btn.classList.toggle('hidden', val.length === 0);
+  if (val.length === 0 && input.type === 'text') {
+    input.type = 'password';
+    btn.title = '显示密钥';
+    btn.innerHTML = icon('eyeOff');
+  }
 }
 
 export function readAiDraft() {
   // 除入口事件外再校验一次,避免脚本或预设更改绕过 input/change 事件。
   onAiEndpointChange();
+  const rawKey = $('#ai-apikey').value.trim();
+  const same = aiDraft.endpoint === aiEndpointIdentity(savedAi());
+  const hadSavedKey = same && savedAi().apiKeySet;
+  let clearApiKey = false;
+  let apiKey = '';
+  let useSavedApiKey = false;
+
+  if (hadSavedKey && rawKey === '') {
+    clearApiKey = true;
+  } else if (rawKey !== '' && rawKey !== MASKED_SECRET) {
+    apiKey = rawKey;
+  } else if (rawKey === MASKED_SECRET && hadSavedKey) {
+    useSavedApiKey = true;
+  }
+
   return {
     ...draftEndpoint(), model: $('#ai-model').value.trim(),
-    apiKey: $('#ai-apikey').value.trim(),
-    // 留空保存 = 沿用已存密钥的前提是端点没变;换端点后旧密钥在保存时被清除。
-    useSavedApiKey: aiDraft.endpoint === aiEndpointIdentity(savedAi()),
+    apiKey,
+    useSavedApiKey,
+    clearApiKey,
   };
 }
 
@@ -793,6 +866,8 @@ export function openThreadMenu() {
   const menu = $('#ai-thread-menu');
   const trigger = $('#ai-thread-trigger');
   if (!menu || !trigger) return;
+  $('#ai-model-menu')?.classList.add('hidden');
+  $('#ai-mode-menu')?.classList.add('hidden');
   renderThreadMenu();
   menu.classList.remove('hidden');
   trigger.setAttribute('aria-expanded', 'true');
@@ -2065,6 +2140,8 @@ export function openModelMenu() {
   const menu = $('#ai-model-menu');
   const trigger = $('#ai-model-trigger');
   if (trigger.disabled) return;
+  $('#ai-mode-menu')?.classList.add('hidden');
+  $('#ai-thread-menu')?.classList.add('hidden');
   renderModelMenu();
   menu.classList.remove('hidden');
   // 菜单展开在触发钮上方(输入区在面板底部,向下没有空间),右缘对齐触发钮
@@ -2229,8 +2306,8 @@ export async function saveAiSettings() {
     },
   };
   if (draft.apiKey) payload.ai.apiKey = draft.apiKey;
-  // 换端点且未填新密钥时通知后端清除旧密钥(后端另有 endpoint_changed 兜底)。
-  else if (!draft.useSavedApiKey) payload.ai.clearApiKey = true;
+  // 换端点且未填新密钥,或主动清空已有密钥时通知后端清除密钥。
+  else if (draft.clearApiKey || !draft.useSavedApiKey) payload.ai.clearApiKey = true;
   try {
     state.settings = await api('settings:save', payload);
     closeAiSettings();

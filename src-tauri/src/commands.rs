@@ -491,6 +491,20 @@ pub async fn nebula_invoke(
             Ok(h) => ok(h),
             Err(e) => err_msg(e),
         },
+        "hosts:revealSecret" => {
+            let id = payload["id"].as_str().unwrap_or("");
+            let field = payload["field"].as_str().unwrap_or("password");
+            if !matches!(field, "password" | "passphrase") {
+                return err_msg("不支持的凭据字段");
+            }
+            match state.store.host_full(id) {
+                Ok(h) => {
+                    let secret = h[field].as_str().unwrap_or("");
+                    ok(json!({ "field": field, "value": secret }))
+                }
+                Err(e) => err_msg(e),
+            }
+        }
         "hosts:exportFile" => {
             // includeCredentials 为真时必须带 passphrase,由 Store 用 scrypt+AES-GCM 加密;
             // 否则导出文件不含任何凭据(明文密码落盘后很难收回)。
@@ -1596,6 +1610,14 @@ pub async fn nebula_invoke(
             Ok(s) => ok(s),
             Err(e) => err_msg(e),
         },
+        "ai:revealApiKey" => {
+            let key = {
+                let data = state.store.data.lock().unwrap();
+                let saved = &data["settings"]["ai"];
+                state.store.dec(saved["apiKeyEnc"].as_str().unwrap_or(""))
+            };
+            ok(json!({ "apiKey": key }))
+        }
 
         "ai:models" => {
             let (saved, saved_key) = {

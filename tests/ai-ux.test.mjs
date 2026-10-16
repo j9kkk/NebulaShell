@@ -9,7 +9,7 @@ import { webcrypto } from 'node:crypto';
 class Element {
   constructor() {
     this.value = ''; this.children = []; this.dataset = {}; this.disabled = false;
-    this.parentNode = null;
+    this.parentNode = null; this.style = {}; this.offsetWidth = 200; this.offsetHeight = 150;
     this._text = ''; this._html = ''; this.listeners = new Map();
     this._classes = new Set();
     this.classList = {
@@ -39,6 +39,9 @@ class Element {
   }
   get innerHTML() { return this._html; }
   get parentElement() { return this.parentNode; }
+  getBoundingClientRect() {
+    return { top: 100, bottom: 120, left: 200, right: 300, width: 100, height: 20 };
+  }
   get previousElementSibling() {
     const siblings = this.parentNode?.children;
     if (!siblings) return null;
@@ -202,6 +205,7 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
   const context = vm.createContext({
     console, crypto: webcrypto, performance, Date,
     document: doc,
+    window: { innerWidth: 1024, innerHeight: 768 },
     CSS: { escape: (x) => x },
     setTimeout: (cb, ms) => { const id = ++timerId; timers.set(id, { cb, ms }); return id; },
     clearTimeout: (id) => timers.delete(id),
@@ -413,6 +417,34 @@ test('configured model restores trigger title and clears unset state', async () 
   assert.equal(trigger.title, '切换模型');
   assert.equal($('#ai-model-name').textContent, 'm1');
   assert.equal(trigger.disabled, false);
+});
+
+test('openModelMenu and openThreadMenu enforce mutual exclusivity by hiding peer menus', async () => {
+  const { ai, $ } = await setup();
+  ai.syncSelectedModelsFromSettings();
+
+  const modelMenu = $('#ai-model-menu');
+  const modeMenu = $('#ai-mode-menu');
+  const threadMenu = $('#ai-thread-menu');
+
+  modelMenu.classList.add('hidden');
+  modeMenu.classList.add('hidden');
+  threadMenu.classList.add('hidden');
+
+  // Mode menu is open, then openModelMenu is called
+  modeMenu.classList.remove('hidden');
+  assert.equal(modeMenu.classList.contains('hidden'), false);
+
+  ai.openModelMenu();
+  assert.equal(modelMenu.classList.contains('hidden'), false, 'model menu opened');
+  assert.equal(modeMenu.classList.contains('hidden'), true, 'mode menu hidden when model menu opens');
+  assert.equal(threadMenu.classList.contains('hidden'), true);
+
+  // Now thread menu is opened
+  ai.openThreadMenu();
+  assert.equal(threadMenu.classList.contains('hidden'), false, 'thread menu opened');
+  assert.equal(modelMenu.classList.contains('hidden'), true, 'model menu hidden when thread menu opens');
+  assert.equal(modeMenu.classList.contains('hidden'), true);
 });
 
 test('endpoint change save without new key emits clearApiKey; freshly typed key replaces it', async () => {

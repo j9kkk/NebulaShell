@@ -226,26 +226,45 @@
           <option value="key">私钥</option>
         </select>
         <div id="row-password" class="form-row">
-          <label for="host-password">密码</label><div class="secret-field"><input id="host-password" type="password" placeholder="密码" autocomplete="off" /><label class="secret-control" for="host-clear-password"><input id="host-clear-password" type="checkbox" />忘记已保存密码</label></div>
+          <label for="host-password">密码</label>
+          <div class="secret-input-wrap">
+            <input id="host-password" type="password" placeholder="密码" autocomplete="off" />
+            <button id="btn-reveal-host-password" class="btn icon btn-reveal-secret hidden" type="button" title="显示密码" aria-label="显示密码"><span class="mi" data-icon="eyeOff"></span></button>
+          </div>
         </div>
         <div id="row-key" class="form-row hidden">
           <label>私钥文件</label>
           <div class="key-row">
-            <button id="btn-pick-key" class="btn small">选择文件…</button>
+            <button id="btn-pick-key" class="btn small" type="button">选择文件…</button>
             <span id="key-path" class="key-path">未选择</span>
-            <label class="secret-control" for="host-clear-key"><input id="host-clear-key" type="checkbox" />忘记私钥</label>
+            <button id="btn-clear-key" class="btn icon btn-clear-secret hidden" type="button" title="清除私钥" aria-label="清除私钥"><span class="mi" data-icon="x"></span></button>
           </div>
-          <label for="host-passphrase">私钥口令</label><div class="secret-field"><input id="host-passphrase" type="password" placeholder="无则留空" autocomplete="off" /><label class="secret-control" for="host-clear-passphrase"><input id="host-clear-passphrase" type="checkbox" />忘记已保存口令</label></div>
+          <label for="host-passphrase">私钥口令</label>
+          <div class="secret-input-wrap">
+            <input id="host-passphrase" type="password" placeholder="无则留空" autocomplete="off" />
+            <button id="btn-reveal-host-passphrase" class="btn icon btn-reveal-secret hidden" type="button" title="显示口令" aria-label="显示口令"><span class="mi" data-icon="eyeOff"></span></button>
+          </div>
         </div>
-        <label>跳板机</label>
-        <select id="host-jump" multiple size="1" data-title="按住 %1 点选,自上而下形成跳板链" data-accel="mod"><option value="">(无)</option></select>
+        <label for="host-jump-chips">跳板机</label>
+        <div id="host-jump-box" class="jump-row">
+          <div id="host-jump-chips" class="jump-chips" tabindex="0" role="combobox" aria-haspopup="listbox" aria-expanded="false" title="点击添加跳板机，按先后次序形成跳板链">
+            <span id="host-jump-list" class="jump-chips-list"></span>
+            <span id="host-jump-placeholder" class="jump-chips-empty">点击添加跳板机（形成跳板链）</span>
+          </div>
+          <button id="btn-host-add-jump" class="btn icon" type="button" title="添加跳板机" aria-label="添加跳板机"><span class="mi" data-icon="plus"></span></button>
+          <div id="host-jump-menu" class="jump-menu hidden"></div>
+          <select id="host-jump" multiple class="hidden"></select>
+        </div>
         <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
         <label for="host-sessionlog">会话日志</label>
-        <select id="host-sessionlog">
-          <option value="default">跟随全局设置</option>
-          <option value="always">总是自动记录</option>
-          <option value="never">从不自动记录</option>
-        </select>
+        <div class="sessionlog-field">
+          <select id="host-sessionlog">
+            <option value="default">跟随全局设置</option>
+            <option value="always">总是自动记录</option>
+            <option value="never">从不自动记录</option>
+          </select>
+          <span id="host-sessionlog-hint" class="muted sessionlog-hint"></span>
+        </div>
         <label for="host-aiaccess">AI 访问</label>
         <select id="host-aiaccess" title="AI 助手能否读取该主机的文件、执行命令">
           <option value="default">允许（可切换自动执行）</option>
@@ -370,9 +389,11 @@
           <button id="btn-ai-fetch-models" class="btn icon" title="拉取模型列表" aria-label="拉取模型列表"><span class="mi" data-icon="plus"></span></button>
         </div>
         <label for="ai-apikey">API Key</label>
-        <!-- 约定:留空 = 保留已保存密钥;换端点保存时后端自动清掉旧密钥(防跨厂商泄漏) -->
         <div class="secret-field">
-          <div class="secret-control"><input id="ai-apikey" type="password" placeholder="密钥" autocomplete="off" /></div>
+          <div class="secret-input-wrap">
+            <input id="ai-apikey" type="password" placeholder="密钥" autocomplete="off" />
+            <button id="btn-reveal-ai-apikey" class="btn icon btn-reveal-secret hidden" type="button" title="显示密钥" aria-label="显示密钥"><span class="mi" data-icon="eyeOff"></span></button>
+          </div>
           <span id="ai-key-status" class="muted key-status" aria-live="polite"></span>
         </div>
         <!-- 默认模型:由"模型"一栏里点选的芯片决定,不再直接编辑 -->
