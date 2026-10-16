@@ -834,6 +834,8 @@ export function renderLayout() {
   syncWorkspaceChrome(state.tabs, state.activeTabId);
   updateWelcome();
   notifyTerminalStateChange();
+  // 可见性在此调用中变化(切标签 reparent/平铺重排):GL 上下文按需挂/卸。
+  syncWebglForVisibility();
   // Reparenting can clear the browser's DOM focus. Preserve only the input that
   // was actually focused before this synchronous mount, never an inferred or
   // remembered terminal (and never a removed/hidden/background owner).
@@ -1308,6 +1310,47 @@ function guardOffscreenSelection(term) {
   } catch { /* 内部结构变化:保持 xterm 原行为 */ }
 }
 
+/// —— WebGL 渲染器按需挂载:只有可见会话持有 GL 上下文 ——
+/// 每个 GL 上下文在 webview 的 GPU 进程里占约 10MB 物理内存,且后台标签
+/// 长期驻留会随标签数线性累积。改为:会话可见(激活标签/平铺瓦片内)时挂
+/// WebglAddon,不可见时 dispose 并显式 loseContext 归还显存,回退 DOM 渲染器。
+/// dispose 只摘 canvas 不销毁 GL 上下文(addon 源码无 loseContext 调用),
+/// 实测 GPU 进程内存不归还;必须补 loseContext 才真正释放。
+function attachWebgl(session) {
+  if (!session?.term || session._webgl || window.__NB_E2E__) return;
+  // e2e 测试桥环境下禁用 WebGL:遮挡窗口的 WebGL 合成器暂停刷新,
+  // canvas 尺寸不随 fit 更新,布局审计会得到成片的假"裁切"。
+  // DOM 渲染器走主线程布局,无此问题;正常使用仍默认 WebGL。
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => detachWebgl(session));
+    session.term.loadAddon(webgl);
+    session._webgl = webgl;
+  } catch { /* WebGL 不可用:保持 DOM 渲染器 */ }
+}
+
+function detachWebgl(session) {
+  const webgl = session?._webgl;
+  if (!webgl) return;
+  session._webgl = null;
+  try { webgl.dispose(); } catch { /* ignore */ }
+  try {
+    const gl = webgl._gl || webgl._renderer?._gl;
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch { /* ignore */ }
+}
+
+/// 按当前可见性对齐全量会话的渲染器:可见挂 WebGL,不可见回 DOM。
+/// renderLayout 与 activateSession 后调用,覆盖切标签/分屏/缩放/平铺切换。
+function syncWebglForVisibility() {
+  if (window.__NB_E2E__) return;
+  const visible = visibleSessions();
+  for (const s of state.sessions.values()) {
+    if (visible.includes(s)) attachWebgl(s);
+    else detachWebgl(s);
+  }
+}
+
 export function createSession(host, paneId, tabId, dir, options = {}) {
   // Resolve explicit pane ownership before any active-tab accessor or await.
   let tab = paneId ? paneOwner(paneId, tabId) : (tabId ? state.tabs.get(tabId) : activeTab());
@@ -1375,16 +1418,7 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   // WebGL 渲染器:DOM 渲染器逐字符建 span,大批量输出(构建日志/vim/htop)时
   // 主线程掉帧,是终端输出流畅度的主要瓶颈。上下文丢失(GPU 重置/驱动切换、
   // GL 上下文数超限)时 dispose 自己,xterm 自动退回 DOM 渲染器,可用性不受影响。
-  try {
-    // e2e 测试桥环境下禁用 WebGL:遮挡窗口的 WebGL 合成器暂停刷新,
-    // canvas 尺寸不随 fit 更新,布局审计会得到成片的假"裁切"。
-    // DOM 渲染器走主线程布局,无此问题;正常使用仍默认 WebGL。
-    if (!window.__NB_E2E__) {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* ignore */ } });
-      term.loadAddon(webgl);
-    }
-  } catch { /* WebGL 不可用:保持 DOM 渲染器 */ }
+  // 挂载时机统一走 syncWebglForVisibility:仅可见会话持有 GL 上下文。
   // innerHTML 清空会抹掉窗格按钮,重新挂回
   appendPaneButtons(pane, targetPaneId, tab.id);
 
@@ -1602,6 +1636,7 @@ export function activateSession(sessionId, { focus = true } = {}) {
   updateStatusbar(s);
   if (selectionChanged) loadSessionLogState(s);
   renderMonitorBar();
+  syncWebglForVisibility();
 }
 
 /// 关闭会话。有传输任务借用该连接时,先经确认底座;closeTab 已做过
@@ -1622,6 +1657,9 @@ function closeSessionNow(sessionId) {
   void stopSessionLog(sessionId);
   if (s._paintTimer) { clearInterval(s._paintTimer); s._paintTimer = null; }
   resetCommandCapture(s);
+  // 先卸 WebGL 并显式 loseContext:term.dispose() 只会摘 canvas,
+  // GL 上下文会滞留在 GPU 进程里不归还(见 attachWebgl 注释)。
+  detachWebgl(s);
   s.term.dispose();
   // 只在"所属标签"里摘除窗格(可能同时有多个标签各自的分屏)
   const tab = s.tabId ? state.tabs.get(s.tabId) : null;
