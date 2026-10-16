@@ -308,8 +308,8 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
     history: [],
     containerEl: container,
     req: null,
-    // 默认「对话模式」:AI 只回复文字,不动主机;要执行命令再切手动/自动。
-    execMode: 'chat',
+    // 默认「手动确认」:AI 可走工具循环,但每条命令先确认;要全自动再切自动档。
+    execMode: 'manual',
     scroll: { top: 0, pinned: true },
     draft: '',
     unread: false,
@@ -425,8 +425,8 @@ export function clearCurrentAiThread() {
   thread.title = '新对话';
   thread.autoTitle = true;
   thread.unread = false;
-  // 清空即开始新任务：撤销自动执行与会话授权、下载污点，执行模式回到默认「对话模式」。
-  thread.execMode = 'chat';
+  // 清空即开始新任务：撤销自动执行与会话授权、下载污点，执行模式回到默认「手动确认」。
+  thread.execMode = 'manual';
   thread.autoAcked = false;
   thread.allowlist = [];
   thread.taint = [];

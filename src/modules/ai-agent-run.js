@@ -86,7 +86,7 @@ function addGrant(thread, allowable) {
 
 /// 能否让本次发送走工具循环。对话模式(chat)不派工具,其余同旧判定。
 export function agentAvailable(thread) {
-  if ((thread.execMode || 'chat') === 'chat') return false;
+  if ((thread.execMode || 'manual') === 'chat') return false;
   const b = agentBinding(thread);
   return !!(b.session && modelToolsCapable() && b.session.host?.aiAccess !== 'deny');
 }
@@ -121,7 +121,7 @@ export function refreshAgentHostBar() {
   else if (crossTab) warn = `当前标签是 ${hostLabelOf(active.host)}，本会话作用于 ${thread.hostName}`;
   const host = s?.host || {};
   const modeLocked = host.aiAccess === 'manual';
-  const mode = modeLocked ? 'manual' : (thread.execMode || 'chat');
+  const mode = modeLocked ? 'manual' : (thread.execMode || 'manual');
   // 菜单头部只标明作用的主机：root 由徽标表示，不再重复写用户名；没有可绑定的主机时明确提示。
   const ctxLabel = s
     ? '主机 · ' + hostLabelOf(host)

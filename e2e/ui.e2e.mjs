@@ -869,8 +869,8 @@ async function aiHostToolRegressions() {
       const r = { shown: !p.classList.contains('hidden'), title: b.title, text: p.textContent, rows: p.querySelectorAll('.mh-row').length };
       b.dispatchEvent(new MouseEvent('mouseleave'));
       return JSON.stringify(r)`));
-    check('T-AT10 模式选择器:菜单含三档,默认「对话模式」,头部「主机 · 名称」,「?」立即展开结构化帮助并强调主机安全',
-      modeItems.length === 3 && modeItems.find((m) => m.mode === 'chat')?.active
+    check('T-AT10 模式选择器:菜单含三档,默认「手动确认」,头部「主机 · 名称」,「?」立即展开结构化帮助并强调主机安全',
+      modeItems.length === 3 && modeItems.find((m) => m.mode === 'manual')?.active
       && !modeItems.find((m) => m.mode === 'manual')?.disabled
       && ctx.startsWith('主机 · ') && help.shown && !help.title && help.rows === 6
       && help.text.includes('主机安全') && help.text.includes('不会发送给 AI'),

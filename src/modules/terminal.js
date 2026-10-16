@@ -1640,6 +1640,11 @@ export function syncPaneStatusBanner(session, error = session?.lastError) {
   if (!pane || typeof pane.querySelector !== 'function') return;
   let el = pane.querySelector('.pane-status-banner');
   if (session.status === 'connected') { if (el) el.remove(); return; }
+  // 首次建立连接(打开标签/新建会话未曾连接过)时窗格内不展示横幅,由标签栏与底部状态栏提供连接反馈,避免重复
+  if (session.status === 'connecting' && !session.everConnected) {
+    if (el) el.remove();
+    return;
+  }
   if (!el) {
     el = document.createElement('div');
     el.className = 'pane-status-banner';
