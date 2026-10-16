@@ -46,6 +46,15 @@ function fmtSecs(ms) {
   return ms >= 10_000 ? Math.round(ms / 1000) + ' 秒' : (ms / 1000).toFixed(1) + ' 秒';
 }
 
+/// 授权条目：后端给数组（一条命令可同时命中下载、修改文件等多类），每条 {rule, label, keys}。
+function grantItems(v) {
+  return (Array.isArray(v) ? v : v ? [v] : []).filter((a) => a?.keys?.length);
+}
+
+function grantText(items, sep = ' · ') {
+  return items.map((a) => `${a.label}${sep}${a.keys.join('、')}`).join('；');
+}
+
 /// 只在用户正在 AI 面板里操作时抢焦点：用户在终端里打字时弹出卡片不能吞掉按键。
 function aiPanelFocused() {
   const panel = $('#ai-panel');
@@ -67,7 +76,7 @@ export function routeToolOutput({ toolRunId, chunk }) {
   refs.onGrow?.();
 }
 
-export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunAndAuto, audit, canUseSaved }) {
+export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunAndAuto, canAllow, onAllowAlways, audit, canUseSaved }) {
   const steps = new Map();
 
   const stateText = (refs, text, cls = '') => {
@@ -173,6 +182,13 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
       }
       const text = [res.output, res.note].filter(Boolean).join('\n');
       if (text) refs.log.textContent = text;
+      // 按会话授权免确认执行的命令要能一眼看出来（可追溯，也提醒授权仍在生效）。
+      const whitelisted = grantItems(res.whitelisted);
+      if (whitelisted.length) {
+        const tag = el('span', 'ai-step-tag', '按授权');
+        tag.title = `按会话授权自动执行：${grantText(whitelisted)}`;
+        refs.state.before(tag);
+      }
       if (!text && !refs.streamed) refs.body.hidden = true;
       else if (status === 'ok') {
         refs.body.hidden = true;
@@ -203,6 +219,9 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
           for (const r of p.reasons) ul.append(el('li', null, r));
           card.append(ul);
         }
+        // 后端复核出的实际作用对象：要结束的进程、模拟出的卸载集合（含连带卸载）。
+        if (p.procs?.length) card.append(el('div', 'ai-confirm-targets', '将结束：' + p.procs.map((x) => `${x.name}（${x.pid}）`).join('、')));
+        if (p.pkgs?.length) card.append(el('div', 'ai-confirm-targets', '将卸载：' + p.pkgs.join('、')));
         if (p.preview) {
           const pv = el('div', 'ai-confirm-preview');
           pv.append(el('div', 'ai-confirm-preview-title', '影响范围（只读预览）'), el('pre', null, p.preview.output || '（无输出）'));
@@ -213,12 +232,31 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
         const edit = btn('改后执行', 'btn');
         const skip = btn('跳过', 'btn');
         const skipWhy = btn('跳过并说明原因', 'btn ghost');
-        actions.append(run, edit, skip, skipWhy);
+        const baseActions = [run, edit, skip, skipWhy];
         if (tier === 'normal' && !p.forceConfirm && onRunAndAuto) {
           const auto = btn('执行并切到自动', 'btn ghost');
           auto.addEventListener('click', () => { onRunAndAuto(); done({ decision: 'run' }, '已执行，并切换到自动模式'); });
-          actions.append(auto);
+          baseActions.push(auto);
         }
+        // 会话授权（仅自动模式）：后端判定这类命令可授权才给 allowable；
+        // 差一点可授权时给 allowBlocked，说明为什么不能「总是允许」。
+        const allowHere = !!canAllow?.();
+        const grants = grantItems(p.allowable);
+        if (allowHere && grants.length) {
+          const always = btn(`本会话总是允许：${grantText(grants)}`, 'btn ghost ai-confirm-allow');
+          always.title = grants.some((a) => a.rule !== 'egress.download')
+            ? '授权后，本会话内此范围的同类操作将直接执行，无法撤销（仅本会话、本主机有效，可在执行模式菜单里撤销授权）。'
+            : '之后在自动模式下，对这些站点的同类下载直接执行（仅本会话、本主机有效，可在执行模式菜单里撤销）。\n'
+              + '仅在信任该站点运营方时使用：AI 可能把读到的内容写进访问地址。';
+          always.addEventListener('click', () => {
+            onAllowAlways?.(grants);
+            done({ decision: 'run' }, `已执行，并授权本会话自动${grantText(grants, '：')}`);
+          });
+          baseActions.push(always);
+        } else if (allowHere && p.allowBlocked) {
+          card.append(el('div', 'ai-confirm-hint', `这条命令不能设为「总是允许」：${p.allowBlocked}`));
+        }
+        actions.append(...baseActions);
         card.append(actions);
 
         const onAbort = () => done(null, '已中止');
@@ -251,7 +289,7 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
             const v = area.value.trim();
             if (v) done({ decision: 'edit', cmd: v }, v === p.cmd ? '已确认执行' : '已改为：' + v);
           });
-          cancel.addEventListener('click', () => { area.replaceWith(cmd); actions.replaceChildren(run, edit, skip, skipWhy); });
+          cancel.addEventListener('click', () => { area.replaceWith(cmd); actions.replaceChildren(...baseActions); });
           actions.replaceChildren(apply, cancel);
           area.focus();
         });
@@ -355,21 +393,276 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
   };
 }
 
-/// 主机条：AI 工具作用于哪台主机、执行模式，以及为什么暂时不能用工具。
-export function updateHostBar(info, { onToggleMode } = {}) {
-  const bar = $('#ai-hostbar');
-  if (!bar) return;
-  bar.hidden = !info?.visible;
-  if (!info?.visible) return;
-  $('#ai-hostbar-label').textContent = info.label || '';
-  $('#ai-hostbar-root').hidden = !info.isRoot;
-  const warn = $('#ai-hostbar-warn');
-  warn.textContent = info.warn || '';
-  warn.hidden = !info.warn;
-  const toggle = $('#ai-mode-toggle');
-  toggle.dataset.mode = info.mode;
-  toggle.textContent = info.mode === 'auto' ? '自动执行' : '手动确认';
-  toggle.disabled = !!info.modeLocked || !!info.disabled;
-  toggle.title = info.modeLocked ? '该主机设置为只允许手动确认' : info.mode === 'auto' ? '自动：普通命令直接执行，高危/外联仍需确认。点击切回手动' : '手动：每条命令都先确认。点击切换到自动';
-  toggle.onclick = onToggleMode || null;
+/// 执行模式选择器（原主机条已并入）：触发钮显示「主机名 · 模式」，菜单展开时
+/// 顶部标明「主机 · 名称」（未绑定时「未链接主机」）。对话模式不绑定主机，触发钮只显「对话模式」。
+const MODES = [
+  { id: 'chat', icon: 'messageSquare', title: '对话模式', desc: '不操作主机，命令仅展示供你自己执行' },
+  { id: 'manual', icon: 'lock', title: '手动确认', desc: '执行命令前先向你确认' },
+  { id: 'auto', icon: 'zap', title: '自动执行', desc: '普通命令自动执行，高危和外联仍会确认' },
+];
+const MODE_TITLES = Object.fromEntries(MODES.map((m) => [m.id, m.title]));
+// 「?」帮助浮层的内容：三档沿用菜单图标；主机安全逐条配图标，会外发数据的那条用警示色。
+const MODE_HELP = {
+  modes: {
+    chat: 'AI 只回复文字，命令由你自己决定是否执行。',
+    manual: '每条命令先展示给你，确认后才执行。',
+    auto: '普通命令直接执行；高危、外联、覆盖文件的命令仍会停下来确认。',
+  },
+  grant: '下载、修改或删除文件、结束进程、卸载软件包可在确认卡上「本会话总是允许」（按站点、目录、进程名或包名）。之后同类操作直接执行、无法撤销；授权可在本菜单撤销。',
+  security: [
+    { icon: 'terminal', text: '命令只在当前会话绑定的主机上执行。' },
+    { icon: 'key', text: 'sudo 密码与 SSH 登录凭据不会发送给 AI。' },
+    { icon: 'alert', warn: true, text: '命令输出和读取的文件内容会发送给 AI 模型。发送前自动脱敏常见的密钥、令牌与密码格式，但无法保证识别所有敏感信息。' },
+  ],
+};
+
+function iconBox(cls, name, size) {
+  const box = el('span', cls);
+  box.innerHTML = icon(name, { size });
+  return box;
+}
+
+function renderModeHelp(pop) {
+  const head = el('div', 'mh-head');
+  head.append(el('div', 'mh-title', '执行模式'), el('div', 'mh-sub', '决定 AI 能否在你的主机上执行命令'));
+  const modes = el('div', 'mh-list');
+  for (const m of MODES) {
+    const body = el('div', 'mh-body');
+    body.append(el('div', 'mh-name', m.title), el('div', 'mh-desc', MODE_HELP.modes[m.id]));
+    if (m.id === 'auto') {
+      const note = el('div', 'mh-note');
+      note.append(iconBox('mh-note-icon', 'checkCircle', 12), el('span', null, MODE_HELP.grant));
+      body.append(note);
+    }
+    const row = el('div', `mh-row mh-mode-${m.id}`);
+    row.append(iconBox('mh-icon', m.icon, 13), body);
+    modes.append(row);
+  }
+  const section = el('div', 'mh-section');
+  section.append(iconBox('mh-section-icon', 'lock', 12), el('span', null, '主机安全'));
+  const security = el('div', 'mh-list');
+  for (const s of MODE_HELP.security) {
+    const row = el('div', 'mh-row mh-sec' + (s.warn ? ' warn' : ''));
+    row.append(iconBox('mh-icon', s.icon, 13), el('div', 'mh-desc', s.text));
+    security.append(row);
+  }
+  pop.replaceChildren(head, modes, section, security);
+}
+
+let helpHideTimer = null;
+
+/// 悬停/聚焦「?」立即展开（原生 title 有延迟）。优先放在菜单左侧——输入区在 AI 面板里，
+/// 面板多贴窗口右侧；左右都放不下就放到菜单上方。
+export function showModeHelp() {
+  const pop = $('#ai-mode-help-pop');
+  const menu = $('#ai-mode-menu');
+  if (!pop || !menu || menu.classList.contains('hidden')) return;
+  clearTimeout(helpHideTimer);
+  if (!pop.childElementCount) renderModeHelp(pop);
+  pop.classList.remove('hidden');
+  const mr = menu.getBoundingClientRect();
+  const w = pop.offsetWidth;
+  const h = pop.offsetHeight;
+  const gap = 8;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const fitsLeft = mr.left - w - gap >= gap;
+  const fitsRight = mr.right + gap + w <= vw - gap;
+  let left;
+  let top;
+  if (fitsLeft || fitsRight) {
+    left = fitsLeft ? mr.left - w - gap : mr.right + gap;
+    top = Math.min(mr.top, vh - h - gap);
+  } else {
+    left = Math.min(mr.left, vw - w - gap);
+    top = mr.top - h - gap >= gap ? mr.top - h - gap : Math.min(mr.bottom + gap, vh - h - gap);
+  }
+  pop.style.left = Math.max(gap, left) + 'px';
+  pop.style.top = Math.max(gap, top) + 'px';
+}
+
+/// 移开指针时稍等再收起，留出从「?」移进浮层的时间。
+export function hideModeHelp({ delay = 0 } = {}) {
+  clearTimeout(helpHideTimer);
+  const hide = () => $('#ai-mode-help-pop')?.classList.add('hidden');
+  if (delay) helpHideTimer = setTimeout(hide, delay);
+  else hide();
+}
+
+// 最近一次渲染的选择器信息与选中回调:菜单开合/选中由 entry.js 的事件调用,
+// 状态留在本模块,entry 不持有跨模块变量。
+let lastPickerInfo = null;
+let pickerHandlers = {};
+
+export function selectMode(mode) {
+  pickerHandlers.onSelectMode?.(mode);
+}
+
+export function revokeGrant(index) {
+  pickerHandlers.onRevoke?.(index);
+}
+
+export function updateModePicker(info, { onSelectMode, onRevoke } = {}) {
+  const trigger = $('#ai-mode-trigger');
+  if (!trigger) return;
+  if (info) {
+    lastPickerInfo = info;
+    if (onSelectMode) pickerHandlers = { onSelectMode, onRevoke };
+  }
+  const visible = !!info?.visible;
+  trigger.hidden = !visible;
+  if (!visible) {
+    closeModeMenu();
+    return;
+  }
+  const mode = info.mode || 'manual';
+  trigger.dataset.mode = mode;
+  trigger.dataset.locked = info.modeLocked ? 'true' : 'false';
+  trigger.dataset.degraded = info.warn ? 'true' : 'false';
+  $('#ai-mode-name').textContent = MODE_TITLES[mode] || mode;
+  const hostEl = $('#ai-mode-host');
+  const sepEl = trigger.querySelector('.ai-mode-sep');
+  const host = info.hostLabel || '';
+  hostEl.textContent = host;
+  hostEl.parentElement.hidden = !host;
+  sepEl.hidden = !host;
+  const iconWrap = trigger.querySelector('.ai-mode-icon');
+  iconWrap.innerHTML = icon(MODES.find((m) => m.id === mode)?.icon || 'lock', { size: 13 });
+  const grants = info.grants?.length ? `\n本会话已授权 ${info.grants.length} 项（点击查看或撤销）` : '';
+  trigger.title = info.warn
+    ? info.warn
+    : info.modeLocked
+      ? `执行模式：${MODE_TITLES[mode]}（该主机设置为只允许手动确认）\n点击查看/切换执行模式`
+      : `执行模式：${MODE_TITLES[mode]}${host ? ` · ${host}` : ''}\n点击切换执行模式${grants}`;
+  trigger.disabled = !!info.disabled;
+  // 开合绑定在 entry.js(addEventListener 一次);这里只管状态,避免双绑定开又关。
+  // 菜单若开着，同步刷新（线程/绑定变化时）
+  if (!$('#ai-mode-menu').classList.contains('hidden')) renderModeMenu(lastPickerInfo);
+}
+
+/// 「本会话已授权」：逐项可撤销。授权只在自动模式生效，手动/对话模式下仅作展示。
+function renderGrants(info) {
+  const box = $('#ai-mode-grants');
+  if (!box) return;
+  const grants = info.grants || [];
+  box.hidden = !grants.length;
+  box.replaceChildren();
+  if (!grants.length) return;
+  const head = el('div', 'ai-mode-grants-title', info.mode === 'auto' ? '本会话已授权' : '本会话已授权（切到自动执行后生效）');
+  box.append(head);
+  grants.forEach((g, i) => {
+    const row = el('div', 'ai-mode-grant');
+    row.append(el('span', 'ai-mode-grant-name', `${g.label || '下载'} · ${g.key}`));
+    const revoke = btn(null, 'ai-mode-grant-revoke');
+    revoke.innerHTML = icon('x', { size: 12 });
+    revoke.title = '撤销这项授权';
+    revoke.setAttribute('aria-label', `撤销授权：${g.label || '下载'} · ${g.key}`);
+    revoke.dataset.revoke = String(i);
+    row.append(revoke);
+    box.append(row);
+  });
+}
+
+export function renderModeMenu(info) {
+  const list = $('#ai-mode-menu-list');
+  if (!list) return;
+  $('#ai-mode-menu-ctx').innerHTML = '';
+  $('#ai-mode-menu-ctx').textContent = info.ctxLabel || '';
+  if (info.isRoot) {
+    $('#ai-mode-menu-ctx').append(Object.assign(document.createElement('span'), { className: 'ai-root-badge', textContent: 'root' }));
+  }
+  list.innerHTML = '';
+  for (const m of MODES) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ai-mode-menu-item' + (m.id === info.mode ? ' active' : '');
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', m.id === info.mode ? 'true' : 'false');
+    item.dataset.mode = m.id;
+    const ic = document.createElement('span');
+    ic.className = 'mi';
+    ic.innerHTML = icon(m.icon, { size: 14 });
+    const body = document.createElement('span');
+    body.className = 'mode-item-body';
+    const title = document.createElement('span');
+    title.className = 'mode-item-title';
+    title.append(Object.assign(document.createElement('span'), { textContent: m.title }));
+    title.append(Object.assign(document.createElement('span'), { className: 'check', textContent: '✓' }));
+    body.append(title);
+    body.append(Object.assign(document.createElement('span'), { className: 'mode-item-desc', textContent: m.desc }));
+    if (m.id === 'auto' && info.modeLocked) {
+      item.disabled = true;
+      body.append(Object.assign(document.createElement('span'), { className: 'mode-item-lock', textContent: '该主机设置为只允许手动确认' }));
+    }
+    item.append(ic, body);
+    list.append(item);
+  }
+  renderGrants(info);
+}
+
+export function openModeMenu(info = lastPickerInfo) {
+  const menu = $('#ai-mode-menu');
+  const trigger = $('#ai-mode-trigger');
+  if (!menu || !trigger || trigger.disabled) return;
+  if (info) lastPickerInfo = info;
+  renderModeMenu(lastPickerInfo);
+  menu.classList.remove('hidden');
+  trigger.setAttribute('aria-expanded', 'true');
+  // 锚定触发钮上方（输入区在面板底部，向下没有空间），左缘对齐触发钮
+  const tr = trigger.getBoundingClientRect();
+  const size = { width: menu.offsetWidth || 240, height: menu.offsetHeight || 220 };
+  const left = Math.max(8, Math.min(tr.left, window.innerWidth - size.width - 8));
+  menu.style.left = left + 'px';
+  menu.style.top = Math.max(8, tr.top - size.height - 6) + 'px';
+  const active = menu.querySelector('.ai-mode-menu-item.active');
+  if (active) active.focus();
+}
+
+export function closeModeMenu({ focusTrigger = false } = {}) {
+  const menu = $('#ai-mode-menu');
+  const trigger = $('#ai-mode-trigger');
+  hideModeHelp();
+  if (menu) menu.classList.add('hidden');
+  if (trigger) {
+    trigger.setAttribute('aria-expanded', 'false');
+    if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+  }
+}
+
+export function toggleModeMenu() {
+  const menu = $('#ai-mode-menu');
+  if (!menu) return;
+  if (menu.classList.contains('hidden')) openModeMenu();
+  else closeModeMenu();
+}
+
+export function onModeMenuKeydown(e) {
+  if (!e) return;
+  const menu = $('#ai-mode-menu');
+  if (!menu || menu.classList.contains('hidden')) return;
+  const key = e.key;
+  if (key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeModeMenu({ focusTrigger: true });
+    return;
+  }
+  if (key === 'Tab') {
+    closeModeMenu();
+    return;
+  }
+  const items = Array.from(menu.querySelectorAll('.ai-mode-menu-item:not(:disabled)'));
+  if (!items.length) return;
+  const activeEl = document.activeElement;
+  const currentIndex = items.indexOf(activeEl);
+  if (key === 'ArrowDown' || key === 'Down') {
+    e.preventDefault();
+    items[(currentIndex + 1) % items.length]?.focus();
+  } else if (key === 'ArrowUp' || key === 'Up') {
+    e.preventDefault();
+    items[(currentIndex - 1 + items.length) % items.length]?.focus();
+  } else if ((key === 'Enter' || key === ' ') && items.includes(activeEl)) {
+    e.preventDefault();
+    activeEl.click();
+  }
 }

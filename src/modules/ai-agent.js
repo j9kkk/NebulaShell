@@ -25,6 +25,7 @@ export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMod
     `你可以调用工具直接操作用户当前绑定的主机：${who}。` +
       (os ? `系统：${os}。` : '系统未知：动手前先调用 host_info 确认发行版，再给出匹配的命令。') +
       (cwd ? `终端当前目录：${cwd}（exec 默认在此执行）。` : ''),
+    // 对话模式不会进入工具循环（前端不带 tools）；此处兜底按手动描述，防误用。
     execMode === 'auto'
       ? '执行模式：自动。普通命令直接执行；高危、外联、覆盖已有文件的命令仍会停下来等用户确认。'
       : '执行模式：手动。你发起的每条 exec 都会先给用户确认，用户可能执行、改写后执行或跳过。',

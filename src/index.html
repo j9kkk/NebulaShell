@@ -177,21 +177,21 @@
       <!-- 输入区 composer:上边框刻意去掉,视觉与消息区连续;外框(圆角边框)
              把 textarea 与工具行包成一体,textarea 自身无边框。
              底边与状态栏共享面板边缘,无需锁高对齐。 -->
-      <!-- 主机条:AI 工具作用于哪台主机 + 执行模式(手动确认/自动执行);
-           独立成行放在输入区之上,不改 composer 的锁高布局。内容与显隐由 ai-agent-ui.js updateHostBar 维护 -->
-      <div id="ai-hostbar" class="ai-hostbar" hidden>
-        <span class="ai-hostbar-icon mi" data-icon="terminal" aria-hidden="true"></span>
-        <span id="ai-hostbar-label" class="ai-hostbar-label"></span>
-        <span id="ai-hostbar-root" class="ai-root-badge" hidden>root</span>
-        <span id="ai-hostbar-warn" class="ai-hostbar-warn" hidden></span>
-        <span class="spacer"></span>
-        <button id="ai-mode-toggle" class="ai-mode-toggle" type="button" data-mode="manual">手动确认</button>
-      </div>
+      <!-- 执行模式选择器(原主机条已并入):触发钮显示「主机名 · 模式」,
+           菜单展开时顶部展示完整「将作用于 host · user」。内容与显隐由
+           ai-agent-ui.js updateModePicker 维护 -->
       <div class="ai-input-row">
         <div class="ai-composer">
           <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
           <div class="ai-composer-tools">
-            <!-- 左侧预留位(将来附件/上下文模式),布局与参考稿同构 -->
+            <!-- 执行模式:与模型选择同行。主机名 flex-shrink 可截断,模式名永不截断 -->
+            <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu" hidden>
+              <span class="ai-mode-icon mi" data-icon="lock" aria-hidden="true"></span>
+              <span class="ai-mode-host-wrap"><span id="ai-mode-host" class="ai-mode-host"></span></span>
+              <span class="ai-mode-sep" aria-hidden="true">·</span>
+              <span id="ai-mode-name" class="ai-mode-name">手动确认</span>
+              <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+            </button>
             <span class="spacer"></span>
             <!-- 模型选择:无边框触发钮 + 自定义浮层菜单(列已启用模型 + 管理模型入口)。
                  不用原生 <select>:要展示"管理模型"入口与选中 ✓,原生下拉做不到。 -->
@@ -361,13 +361,13 @@
         <label>Base URL</label><input id="ai-baseurl" type="text" placeholder="https://api.example.com/v1" />
         <label>模型</label>
         <div class="model-row">
-          <!-- 启用模型列表框:点 chip 切换生效模型,✕ 移除启用;
-               框尾输入模型 ID 回车即添加(替代原"手动模型 ID"独立输入行) -->
+          <!-- 启用模型列表框:点 chip 设为默认模型(带"默认"徽标),✕ 移除启用;
+               框尾输入模型 ID 回车即添加。列表换行平铺,便于一眼看全已启用模型 -->
           <div id="ai-model-chips" class="model-chips">
             <span id="ai-model-chips-list" class="model-chips-list"></span>
             <input id="ai-model-inline" class="model-chips-input" type="text" placeholder="输入模型 ID，回车添加" title="输入模型 ID 后回车添加" autocomplete="off" spellcheck="false" />
           </div>
-          <button id="btn-ai-fetch-models" class="btn" title="从供应商拉取可用模型列表,并在弹框中勾选要启用的模型">拉取模型</button>
+          <button id="btn-ai-fetch-models" class="btn icon" title="拉取模型列表" aria-label="拉取模型列表"><span class="mi" data-icon="plus"></span></button>
         </div>
         <label for="ai-apikey">API Key</label>
         <!-- 约定:留空 = 保留已保存密钥;换端点保存时后端自动清掉旧密钥(防跨厂商泄漏) -->
@@ -375,7 +375,7 @@
           <div class="secret-control"><input id="ai-apikey" type="password" placeholder="密钥" autocomplete="off" /></div>
           <span id="ai-key-status" class="muted key-status" aria-live="polite"></span>
         </div>
-        <!-- 生效模型:由"模型"一栏里点选的芯片决定,不再直接编辑 -->
+        <!-- 默认模型:由"模型"一栏里点选的芯片决定,不再直接编辑 -->
         <input id="ai-model" type="hidden" />
       </div>
       <p class="muted small-note">支持 OpenAI / DeepSeek / 智谱 / Kimi / Claude / Ollama 等主流厂商，任意 OpenAI 兼容或 Anthropic 协议的自定义供应商。密钥加密存储在本地。</p>
@@ -697,6 +697,20 @@
   <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" aria-label="切换对话">
     <div id="ai-thread-menu-list" role="menu"></div>
   </div>
+  <!-- 执行模式菜单浮层:与模型菜单同机制(挂 body + fixed 锚定触发钮上方)。
+       顶部「主机 · 名称」(未绑定时「未链接主机」),右上角「?」悬停/聚焦立即展开帮助浮层。
+       条目由 ai-agent-ui.js renderModeMenu 生成。 -->
+  <div id="ai-mode-menu" class="ai-model-menu ai-mode-menu hidden" role="menu" aria-label="选择执行模式">
+    <div class="ai-mode-menu-head">
+      <span id="ai-mode-menu-ctx" class="ai-mode-menu-ctx"></span>
+      <button id="ai-mode-help" class="ai-mode-help" type="button" aria-label="关于执行模式与主机安全" aria-describedby="ai-mode-help-pop">?</button>
+    </div>
+    <div id="ai-mode-menu-list" role="menu"></div>
+    <!-- 本会话已授权（规则 + 目标），逐项可撤销；条目由 ai-agent-ui.js renderGrants 生成 -->
+    <div id="ai-mode-grants" class="ai-mode-grants" hidden></div>
+  </div>
+  <!-- 执行模式帮助浮层:替代原生 title(悬停约 1 秒才出现),内容由 ai-agent-ui.js renderModeHelp 生成 -->
+  <div id="ai-mode-help-pop" class="ai-mode-help-pop hidden" role="tooltip"></div>
   <div id="ctx-menu" class="hidden"></div>
   <!-- 任务中心浮层:点击状态栏 ⇅ 向上弹出(见 file-transfer.js renderTaskCenter)。
        必须挂在 body:留在 #statusbar 里会被其 overflow-y:hidden 整体裁掉(开了也看不见) -->

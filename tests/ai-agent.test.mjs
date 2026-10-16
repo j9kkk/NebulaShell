@@ -143,6 +143,29 @@ test('needs-confirm：跳过带理由回填模型，确认则带 confirmedTier �
   assertPaired(thread.history);
 });
 
+test('会话授权数据通路：确认卡拿到 allowable/allowBlocked，步骤结束拿到 whitelisted', async () => {
+  const confirms = [];
+  const ends = [];
+  const allowable = [{ rule: 'egress.download', label: '下载', keys: ['github.com'] }];
+  const whitelisted = [{ rule: 'egress.download', label: '下载', keys: ['nodejs.org'] }];
+  const { ctx } = harness({
+    rounds: [{ toolCalls: [call('a', 'exec', { cmd: 'curl -o x https://github.com/x' }), call('b', 'exec', { cmd: 'curl -o y https://nodejs.org/y' })] }, { content: '好的' }],
+    onExec: (req) => {
+      if (req.args.cmd.includes('nodejs')) return { status: 'done', output: '', exitCode: 0, decision: 'whitelisted', whitelisted };
+      return req.confirmed
+        ? { status: 'done', output: '', exitCode: 0, decision: 'confirmed', downloads: ['/srv/x'] }
+        : { status: 'needs-confirm', tier: 'egress', reasons: ['从外部地址下载'], allowable, allowBlocked: null };
+    },
+    adapter: {
+      requestConfirm: async (p) => { confirms.push({ allowable: p.allowable, allowBlocked: p.allowBlocked }); return { decision: 'run' }; },
+      stepEnd: (step, res) => ends.push(res.whitelisted || null),
+    },
+  });
+  await runAgentTurn(ctx);
+  assert.deepEqual(confirms, [{ allowable, allowBlocked: null }]);
+  assert.deepEqual(ends, [null, whitelisted]);
+});
+
 test('改后执行：结果首行写实际命令；改后升档再确认一次', async () => {
   let asked = 0;
   const { ctx, execs, chats } = harness({

@@ -55,6 +55,8 @@ pub struct Lexed {
     pub unbalanced: bool,
     /// 出现函数定义 `name() ...`。
     pub func_def: bool,
+    /// 出现子 shell 分组 `( ... )`：分段已拍平，组内 `cd` 的作用范围无从得知。
+    pub subshell: bool,
 }
 
 pub fn lex(src: &str) -> Lexed {
@@ -146,6 +148,7 @@ impl Lexer<'_> {
                         self.out.func_def = true;
                         self.i += 2;
                     } else {
+                        self.out.subshell = true;
                         self.i += 1;
                         self.end_segment(Sep::Seq);
                     }

@@ -11,7 +11,10 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-use crate::ai_exec_guard::{classify, preview_command, GuardCtx, Tier, R_OVERWRITE_EXISTING};
+use crate::ai_exec_guard::grant::{self, GrantTarget};
+use crate::ai_exec_guard::{
+    classify, preview_command, resolve_path, GuardCtx, Tier, Verdict, R_OVERWRITE_EXISTING,
+};
 use crate::commands::AppState;
 use files::PathError;
 use run::{RunEnd, RunSpec};
@@ -71,7 +74,7 @@ pub fn guard_classify(p: &Value) -> Value {
         cmd,
         &GuardCtx {
             os_known: true,
-            is_root: false,
+            ..GuardCtx::default()
         },
     );
     serde_json::to_value(v).unwrap_or(Value::Null)
@@ -194,11 +197,7 @@ pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> V
         }
         "exec" => {
             let manual = access == "manual" || p["mode"].as_str() != Some("auto");
-            let confirmed_tier = p["confirmed"]
-                .as_bool()
-                .unwrap_or(false)
-                .then(|| serde_json::from_value::<Tier>(p["confirmedTier"].clone()).ok())
-                .flatten();
+            let policy = ExecPolicy::from_request(p, manual);
             // 「使用已保存的登录密码」：明文只在后端会话里，不经前端往返。
             let password = if p["useSavedPassword"] == true {
                 match session.host["password"].as_str().filter(|s| !s.is_empty()) {
@@ -210,7 +209,7 @@ pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> V
             } else {
                 p["sudoPassword"].as_str().map(str::to_string)
             };
-            exec_tool(&ctx, args, manual, confirmed_tier, password.as_deref()).await
+            exec_tool(&ctx, args, &policy, password.as_deref()).await
         }
         other => err("unsupported", format!("未知工具：{other}")),
     }
@@ -372,37 +371,49 @@ async fn command_tool(ctx: &Ctx<'_>, tool: &str, args: &Value) -> Value {
     }
 }
 
-/// 写入目标中已存在的普通文件（`[ -f ]`，目录不算）。
-async fn existing_files(ctx: &Ctx<'_>, cwd: &str, targets: &[String]) -> Vec<String> {
-    let quoted: Vec<String> = targets
-        .iter()
-        .map(|t| match t.strip_prefix("~/") {
-            Some(rest) => format!("~/{}", crate::ai_exec_guard::shell_quote(rest)),
-            None => crate::ai_exec_guard::shell_quote(t),
-        })
-        .collect();
-    let script = format!(
-        "{}for f in {}; do [ -f \"$f\" ] && printf '%s\\n' \"$f\"; done; true",
-        if cwd.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "cd -- {} 2>/dev/null; ",
-                crate::ai_exec_guard::shell_quote(cwd)
-            )
-        },
-        quoted.join(" ")
-    );
-    match run::quick(ctx.state, &ctx.sid, &script, None, Duration::from_secs(10)).await {
-        Ok((_, out)) => out
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect(),
+/// 远端补判「覆盖已有文件」（脚本见 `grant::overwrite_script`）：命中的已有文件
+/// 随授权目标一并登记；合并目录、来源看不清只升档不登记，会话授权随之失效。
+async fn overwrite_check(ctx: &Ctx<'_>, cwd: &str, v: &mut Verdict) {
+    let script = grant::overwrite_script(cwd, &v.redirect_targets, &v.copy_dests);
+    let out = match run::quick(ctx.state, &ctx.sid, &script, None, Duration::from_secs(10)).await {
+        Ok((_, out)) => out,
         // 查不了就当作会覆盖：宁可多一次确认。
-        Err(_) => targets.to_vec(),
+        Err(_) => {
+            for t in v.redirect_targets.clone() {
+                v.add(Tier::Danger, &format!("{R_OVERWRITE_EXISTING}：{t}"));
+            }
+            v.block_allow(grant::B_RECHECK);
+            return;
+        }
+    };
+    for line in out.lines() {
+        if let Some(p) = line.strip_prefix("@@O ") {
+            v.add_targets(
+                Tier::Danger,
+                &format!("{R_OVERWRITE_EXISTING}：{p}"),
+                [GrantTarget::File {
+                    class: grant::G_MODIFY,
+                    path: resolve_path(cwd, p),
+                }],
+            );
+        } else if let Some(p) = line.strip_prefix("@@M ") {
+            v.add(
+                Tier::Danger,
+                &format!("{R_OVERWRITE_EXISTING}：{p}/（合并目录）"),
+            );
+        } else if line == "@@U" {
+            v.block_allow(grant::B_TARGET);
+        }
     }
+}
+
+/// 授权复核：一次远端执行取回目标目录真实路径、命中进程与卸载模拟（脚本见 grant）。
+async fn grant_facts(ctx: &Ctx<'_>, cwd: &str, v: &Verdict) -> Option<grant::Facts> {
+    let script = grant::facts_script(cwd, &v.grant_targets);
+    let (_, out) = run::quick(ctx.state, &ctx.sid, &script, None, Duration::from_secs(20))
+        .await
+        .ok()?;
+    Some(grant::parse_facts(&out, v.grant_targets.len()))
 }
 
 async fn preview(ctx: &Ctx<'_>, cmd: &str, cwd: &str) -> Value {
@@ -432,11 +443,56 @@ async fn preview(ctx: &Ctx<'_>, cmd: &str, cwd: &str) -> Value {
     }
 }
 
+/// 前端随请求带来的执行策略：手动/自动、用户已确认的档位、会话授权与下载污点。
+/// 授权列表只是「用户允许过什么」，命中与否由 guard 在全部补判之后判定。
+struct ExecPolicy {
+    manual: bool,
+    confirmed_tier: Option<Tier>,
+    allow: Vec<(String, String)>,
+    tainted: Vec<String>,
+}
+
+impl ExecPolicy {
+    fn from_request(p: &Value, manual: bool) -> Self {
+        let confirmed_tier = p["confirmed"]
+            .as_bool()
+            .unwrap_or(false)
+            .then(|| serde_json::from_value::<Tier>(p["confirmedTier"].clone()).ok())
+            .flatten();
+        let allow = p["allow"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| {
+                        Some((
+                            e["rule"].as_str()?.to_string(),
+                            e["key"].as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tainted = p["tainted"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ExecPolicy {
+            manual,
+            confirmed_tier,
+            allow,
+            tainted,
+        }
+    }
+}
+
 async fn exec_tool(
     ctx: &Ctx<'_>,
     args: &Value,
-    manual: bool,
-    confirmed_tier: Option<Tier>,
+    policy: &ExecPolicy,
     sudo_password: Option<&str>,
 ) -> Value {
     let cmd = args["cmd"].as_str().unwrap_or("").trim().to_string();
@@ -453,26 +509,60 @@ async fn exec_tool(
         &GuardCtx {
             os_known: info.os_known,
             is_root: info.is_root,
+            tainted: &policy.tainted,
+            cwd: &cwd,
         },
     );
-    if verdict.tier < Tier::Danger && !verdict.redirect_targets.is_empty() {
-        for f in existing_files(ctx, &cwd, &verdict.redirect_targets).await {
-            verdict.add(Tier::Danger, &format!("{R_OVERWRITE_EXISTING}：{f}"));
-        }
+    let auto = !policy.manual;
+    let writes = !verdict.redirect_targets.is_empty() || !verdict.copy_dests.is_empty();
+    // 已是高危的命令本不必再查覆盖；但自动模式下它可能被授权，覆盖目标必须先补进来。
+    if writes && (verdict.tier < Tier::Danger || (auto && grant::candidate(&verdict))) {
+        overwrite_check(ctx, &cwd, &mut verdict).await;
     }
-    let needs = manual || verdict.force_confirm || verdict.tier > Tier::Normal;
-    let accepted = confirmed_tier.is_some_and(|t| t >= verdict.tier);
-    if needs && !accepted {
+    // 会话授权只在自动模式生效，且必须在全部补判与远端复核之后判定（升档即失效）。
+    let mut facts = grant::Facts::default();
+    let grant_result = if auto {
+        if grant::candidate(&verdict) && !verdict.grant_targets.is_empty() {
+            match grant_facts(ctx, &cwd, &verdict).await {
+                Some(f) => facts = f,
+                None => verdict.block_allow(grant::B_RECHECK),
+            }
+        }
+        let who = grant::Who {
+            uid: info.uid,
+            as_root: verdict.as_root,
+        };
+        grant::evaluate(&verdict, &facts, &policy.tainted, who)
+    } else {
+        Err(None)
+    };
+    let allowed = grant_result
+        .as_ref()
+        .ok()
+        .filter(|items| grant::covered(items, &policy.allow))
+        .cloned();
+    let needs = policy.manual || verdict.force_confirm || verdict.tier > Tier::Normal;
+    let accepted = policy.confirmed_tier.is_some_and(|t| t >= verdict.tier);
+    if needs && !accepted && allowed.is_none() {
         let preview = if verdict.tier == Tier::Danger {
             preview(ctx, &cmd, &cwd).await
         } else {
             Value::Null
         };
+        let procs: Vec<Value> = grant::kill_preview(&verdict, &facts)
+            .into_iter()
+            .map(|(pid, name)| json!({ "pid": pid, "name": name }))
+            .collect();
         return json!({
             "status": "needs-confirm",
             "cmd": cmd,
             "tier": verdict.tier,
             "reasons": verdict.reasons,
+            "ruleIds": verdict.rule_ids,
+            "allowable": grant_result.as_ref().ok(),
+            "allowBlocked": grant_result.as_ref().err().cloned().flatten(),
+            "procs": procs,
+            "pkgs": grant::pkg_preview(&verdict, &facts),
             "preview": preview,
             "asRoot": verdict.as_root,
             "forceConfirm": verdict.force_confirm,
@@ -524,6 +614,24 @@ async fn exec_tool(
         }
     }
 
+    // 结束进程无法撤销，执行前把进程快照（PID、名字、完整命令行）记进审计，事后可查证。
+    let killed: Vec<Value> = if verdict
+        .grant_targets
+        .iter()
+        .any(|t| matches!(t, GrantTarget::Kill(_)))
+    {
+        let snap = if facts.procs.is_empty() {
+            grant_facts(ctx, &cwd, &verdict).await.unwrap_or_default()
+        } else {
+            facts
+        };
+        grant::kill_snapshot(&verdict, &snap)
+            .into_iter()
+            .map(|(pid, name, uid, args)| json!({ "pid": pid, "name": name, "uid": uid, "args": args }))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let idle = clamp(&args["idleTimeout"], 120, 600);
     let res = run::run(
         ctx.state,
@@ -542,7 +650,13 @@ async fn exec_tool(
         },
     )
     .await;
-    let decision = if accepted { "confirmed" } else { "auto" };
+    let decision = if accepted {
+        "confirmed"
+    } else if needs {
+        "whitelisted"
+    } else {
+        "auto"
+    };
     let r = match res {
         Ok(r) => r,
         Err(e) => return err("failed", e),
@@ -552,14 +666,15 @@ async fn exec_tool(
         RunEnd::Aborted => "aborted",
         RunEnd::IdleTimeout | RunEnd::HardTimeout => "timeout",
     };
-    audit(
-        ctx.state,
-        json!({
-            "ts": now_ms(), "host": ctx.label, "user": info.user, "sessionId": ctx.sid,
-            "cmd": cmd, "cwd": cwd, "tier": verdict.tier, "mode": if manual { "manual" } else { "auto" },
-            "decision": decision, "end": end, "exitCode": r.exit_code, "durationMs": r.duration_ms,
-        }),
-    );
+    let mut entry = json!({
+        "ts": now_ms(), "host": ctx.label, "user": info.user, "sessionId": ctx.sid,
+        "cmd": cmd, "cwd": cwd, "tier": verdict.tier, "mode": if policy.manual { "manual" } else { "auto" },
+        "decision": decision, "allowedBy": allowed, "end": end, "exitCode": r.exit_code, "durationMs": r.duration_ms,
+    });
+    if !killed.is_empty() {
+        entry["killed"] = json!(killed);
+    }
+    audit(ctx.state, entry);
     let code = r.exit_code.map_or("—".to_string(), |c| c.to_string());
     crate::commands::record_session_event(
         ctx.app,
@@ -571,6 +686,13 @@ async fn exec_tool(
         "output": r.output, "truncated": r.truncated, "originalBytes": r.total_bytes, "durationMs": r.duration_ms,
     });
     let mut out = base;
+    if let Some(a) = &allowed {
+        out["whitelisted"] = json!(a);
+    }
+    // 下载产物无论退出码如何都记入污点：失败的下载也可能留下半个文件。
+    if !verdict.downloads.is_empty() {
+        out["downloads"] = json!(verdict.downloads);
+    }
     match r.end {
         RunEnd::Exited => out["status"] = json!("done"),
         RunEnd::Aborted => {

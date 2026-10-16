@@ -39,6 +39,12 @@ class Element {
   }
   get innerHTML() { return this._html; }
   get parentElement() { return this.parentNode; }
+  get previousElementSibling() {
+    const siblings = this.parentNode?.children;
+    if (!siblings) return null;
+    const i = siblings.indexOf(this);
+    return i > 0 ? siblings[i - 1] : null;
+  }
   appendChild(child) {
     if (child) {
       if (child.parentNode) {
@@ -1572,3 +1578,102 @@ test('ai drawer: open, close, toggle, keyword search, count badge and rename', a
 
 
 
+
+test('clicking a chip sets it as default model with badge shown', async () => {
+  const { ai, $ } = await chipSetup();
+  const list = () => $('#ai-model-chips-list');
+  assert.equal(list().children.length, 2);
+  // 点第二个 chip → 设为默认(草稿),徽标与 title 跟随(点击后重渲染,须重新取节点)
+  list().children[1].listeners.get('click')();
+  const chips = list().children;
+  assert.equal($('#ai-model').value, 'm2');
+  assert.equal(chips[1].classList.contains('active'), true);
+  assert.match(chips[1].title, /默认模型/);
+  assert.ok(chips[1].children.some((c) => c.classList.contains('model-chip-default') && c.textContent === '默认'), '默认徽标');
+  assert.equal(chips[0].classList.contains('active'), false);
+  assert.match(chips[0].title, /设为默认模型/);
+  // ✕ 删除走 applySelectedModels,不触发设默认
+  chips[1].querySelector('.model-chip-del').listeners.get('click')({ stopPropagation() {} });
+  assert.equal($('#ai-model').value, 'm1', '默认被移除时回落到剩余第一个');
+});
+
+test('saveAiSettings enforces default-model invariant and toasts the fallback', async () => {
+  const { ai, $, state, toasts } = await chipSetup();
+  // 草稿默认与启用集合不一致(漏选) → 保存时自动落第一个
+  $('#ai-model').value = '';
+  await ai.saveAiSettings();
+  assert.equal(state.settings.ai.model, 'm1');
+  assert.equal(ai.savedAiModelId(), 'm1');
+  assert.ok(toasts.some((t) => /已设 m1 为默认模型/.test(t.message)));
+});
+
+/// chips 用例专用:打开设置弹窗让 aiSelected 就位(mock settings 已有 m1/m2)
+async function chipSetup() {
+  const ctx = await setup();
+  ctx.ai.openAiSettings();
+  return ctx;
+}
+
+test('failed reply gains retry: history truncated and original message resent', async () => {
+  let failNext = true;
+  const { ai, state, calls } = await setup(async (channel, payload) => {
+    if (channel === 'ai:chat' && failNext) throw new Error('boom: connection reset');
+    return { requestId: payload.requestId };
+  });
+  const th = ai.ensureDefaultAiThread();
+  const sent = () => calls.filter((c) => c.channel === 'ai:chat');
+  const n0 = sent().length;
+
+  // 第一次发送:后端拒绝 → 气泡 failed,用户消息已落历史
+  await ai.aiSend('查一下磁盘', '', { noTools: true });
+  assert.equal(sent().length, n0 + 1);
+  assert.equal(th.history.length, 1, '失败的 user 消息已落历史');
+  const failedBubble = th.containerEl.children.at(-1);
+  assert.equal(failedBubble.dataset.responseState, 'failed');
+
+  // 重发:历史截断到失败回合之前,再发一次(这次放行)
+  failNext = false;
+  const userBubble = failedBubble.previousElementSibling;
+  assert.equal(userBubble.dataset.role, 'user');
+  assert.equal(userBubble.__raw, '查一下磁盘');
+  assert.equal(userBubble.dataset.aiMode, '');
+  const retryBtn = failedBubble.querySelector('[data-ai-retry]');
+  assert.ok(retryBtn, '失败气泡带重发按钮');
+  failedBubble.listeners.get('click')({ target: retryBtn, stopPropagation() {} });
+  // 截断+重发同步发生:重发的 user 消息立即落回历史(旧的已截掉)
+  assert.equal(th.history.length, 1, '失败回合已截断,重发消息已落历史');
+  assert.equal(failedBubble.removed, true, '失败气泡已移除');
+  assert.equal(userBubble.removed, true, '旧用户气泡一并移除,避免视觉重复');
+  assert.equal(sent().length, n0 + 2, '重发请求已发出');
+  const lastSent = sent().at(-1).payload.messages.at(-1);
+  assert.equal(lastSent.role, 'user');
+  assert.equal(lastSent.content, '查一下磁盘');
+
+  // 完成后历史重新落回一条 user + 一条 assistant
+  const h = state.aiReq;
+  h.acc = '磁盘使用正常';
+  ai.aiFinishHolder({ requestId: h.id, finishReason: 'stop' });
+  assert.equal(th.history.length, 2);
+});
+
+test('retry is rejected while thread is busy', async () => {
+  const { ai, state, calls, toasts } = await setup();
+  const th = ai.ensureDefaultAiThread();
+  const user = ai.renderAiMessage('user', '你好吗');
+  user.__raw = '你好吗';
+  const failed = ai.renderAiMessage('assistant', '⚠️ 超时');
+  failed.dataset.responseState = 'failed';
+  th.history.push({ role: 'user', content: '你好吗' });
+
+  // 占住线程
+  const blocker = makeBubble();
+  const req = ai.aiRequest([{ role: 'user', content: '占位' }], blocker);
+
+  const n = calls.filter((c) => c.channel === 'ai:chat').length;
+  const retryBtn = failed.querySelector('[data-ai-retry]');
+  failed.listeners.get('click')({ target: retryBtn, stopPropagation() {} });
+  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n, '忙时不发重发请求');
+  assert.ok(toasts.some((t) => /正在处理中/.test(t.message)));
+  ai.aiFinishHolder({ requestId: state.aiReq.id });
+  await req;
+});

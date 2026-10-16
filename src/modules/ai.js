@@ -39,9 +39,12 @@ function draftEndpoint() {
   return { protocol: $('#ai-protocol').value, baseUrl: $('#ai-baseurl').value.trim() };
 }
 
+const FETCH_BTN_TITLE = '拉取模型列表';
+const FETCH_BTN_TITLE_BUSY = '正在拉取模型列表…';
+
 function resetModelFetchButton() {
   const btn = $('#btn-ai-fetch-models');
-  if (btn) { btn.__aiFetchSeq = 0; btn.disabled = false; btn.textContent = '拉取模型'; }
+  if (btn) { btn.__aiFetchSeq = 0; btn.disabled = false; btn.title = FETCH_BTN_TITLE; }
 }
 
 export function onAiEndpointChange() {
@@ -232,6 +235,8 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
     history: [],
     containerEl: container,
     req: null,
+    // 默认「对话模式」:AI 只回复文字,不动主机;要执行命令再切手动/自动。
+    execMode: 'chat',
     scroll: { top: 0, pinned: true },
     draft: '',
     unread: false,
@@ -347,6 +352,11 @@ export function clearCurrentAiThread() {
   thread.title = '新对话';
   thread.autoTitle = true;
   thread.unread = false;
+  // 清空即开始新任务：撤销自动执行与会话授权、下载污点，执行模式回到默认「对话模式」。
+  thread.execMode = 'chat';
+  thread.autoAcked = false;
+  thread.allowlist = [];
+  thread.taint = [];
   thread.scroll = { top: 0, pinned: true };
   restoreThreadScroll(thread);
   thread.updatedAt = Date.now();
@@ -842,8 +852,14 @@ export function ensureThreadForSession(session) {
 
   // 1. 当前会话为空且空闲 → (重新)绑定到该主机并复用
   if (cur && cur.history.length === 0 && !threadBusy(cur)) {
-    // 换主机即撤销自动执行授权：自动模式是对某一台主机的授权。
-    if (cur.hostId !== hostId) cur.execMode = 'manual';
+    // 换主机即撤销自动执行与会话授权、下载污点：这些都是对某一台主机的授权。
+    // 对话模式不操作主机,换主机无安全含义,保留用户的档位选择。
+    if (cur.hostId !== hostId) {
+      if (cur.execMode !== 'chat') cur.execMode = 'manual';
+      cur.autoAcked = false;
+      cur.allowlist = [];
+      cur.taint = [];
+    }
     cur.hostId = hostId;
     cur.hostName = hostName;
     cur.sessionId = sessionId;
@@ -1180,6 +1196,12 @@ export function renderAiMessage(role, text, opts) {
     el.__originHostName = originHostName;
   }
   el.addEventListener('click', (event) => {
+    const retry = event.target.closest?.('[data-ai-retry]');
+    if (retry && el.contains(retry)) {
+      event.stopPropagation();
+      retryFailedMessage(el);
+      return;
+    }
     const button = event.target.closest?.('[data-ai-code-action]');
     if (!button || !el.contains(button) || button.disabled) return;
     event.stopPropagation();
@@ -1235,6 +1257,19 @@ export function renderAiMessage(role, text, opts) {
   });
   // 复制按钮锚定气泡本体(.ai-col):悬停时贴气泡右上角,不随气泡外的元信息走
   col.appendChild(copy);
+  // 失败重发按钮:仅 data-response-state="failed" 时随 hover 显现(CSS 控制),
+  // 点一下把这条失败回合从历史截断并重发原用户消息。同样锚定 .ai-col,
+  // 免疫 setAiBody 对正文的整体重写。
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'ai-retry';
+  retry.title = '重发这条消息';
+  retry.setAttribute('aria-label', '重发这条消息');
+  retry.dataset.aiRetry = '1';
+  retry.innerHTML = icon('rotate') + '<span>重发</span>';
+  // 点击交给气泡根上的事件委托(el 的 click 监听识别 [data-ai-retry] 并重发),
+  // 这里不能再 stopPropagation —— 否则委托收不到,按钮就是个摆设。
+  col.appendChild(retry);
   setAiBody(el, text, opts);
   const container = ensureThreadContainer(thread) || $('#ai-messages');
   container.appendChild(el);
@@ -1309,6 +1344,9 @@ export function markBubblePending(bubble) {
   if (row) row.insertBefore(sp, col);
   else col.appendChild(sp);
   body.textContent = '正在思考…';
+  // 占位写入让气泡长高约一行:与 renderAiMessage 里的首次贴底相隔同帧,
+  // 不收口就会从第一条回复起差出一点。调用方保证只对活动线程的气泡调用。
+  aiStickScroll();
 }
 
 /// 首个 token 到达:撤掉等待态、清空占位,转入流式态(光标闪烁由 CSS 画)
@@ -1625,7 +1663,8 @@ export async function aiSend(rawText, mode, opts) {
   }
   if (thread) thread.updatedAt = Date.now();
 
-  // 绑定了已连接主机、模型支持工具：走工具回合(AI 可直接读日志、执行命令)。
+  // 绑定了已连接主机、模型支持工具、执行模式非「对话模式」：走工具回合
+  // (AI 可直接读日志、执行命令)。对话模式走下面的旧路径,代码块带执行按钮。
   if (thread && !opts?.noTools && agentAvailable(thread)) {
     return runAgentSend(thread, agentBinding(thread), { content, display: text, md: userMd });
   }
@@ -1635,7 +1674,11 @@ export async function aiSend(rawText, mode, opts) {
   const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...historyList, userMsg];
   historyList.push(userMsg);
   trimAiHistory(thread);
-  renderAiMessage('user', text, { md: userMd });
+  const userBubble = renderAiMessage('user', text, { md: userMd });
+  // 记录发起参数:失败重发(retryFailedMessage)按原样重建这次发送
+  userBubble.dataset.aiMode = mode || '';
+  userBubble.dataset.aiMd = userMd ? '1' : '0';
+  if (opts?.title) userBubble.dataset.aiTitle = opts.title;
   // 占位在创建气泡的同一帧挂上(spinner + "正在思考…"):
   // 若先 append 空气泡再补等待态,失败路径会把一颗空壳气泡留在对话里。
   const bubble = renderAiMessage('assistant', '');
@@ -1652,6 +1695,35 @@ export async function aiSend(rawText, mode, opts) {
   if (body && !body.textContent && !body.querySelector('img,pre,table')) {
     bubble.remove();
   }
+}
+
+/// 失败气泡上的「重发」:把这条失败回合从会话历史里截掉,再按原文本重新
+/// 走一次 aiSend —— 对所有失败来源(超时/HTTP/流错误)通用,也覆盖 diagnose/
+/// explain 等 mode(记录在用户气泡的 dataset 上)。
+/// 截断而不是追加,是因为失败时用户消息已经 push 进 history(aiSend 发请求前
+/// 落库),直接再发会产生两条相同的 user 消息。
+function retryFailedMessage(bubble) {
+  const thread = activeAiThread();
+  if (!thread || threadBusy(thread)) return toast('AI 正在处理中，请稍候或先停止', 'error');
+  // 找到失败 assistant 气泡前面最近的用户气泡作为重发源
+  let userBubble = null;
+  let node = bubble.previousElementSibling;
+  while (node) {
+    if (node.dataset?.role === 'user') { userBubble = node; break; }
+    node = node.previousElementSibling;
+  }
+  if (!userBubble) return;
+  const raw = String(userBubble.__raw ?? '').trim();
+  if (!raw) return;
+  // 截断历史:去掉失败回合的 user 消息,以及失败时可能落进来的部分 assistant 正文
+  const idx = thread.history.map((m) => m.role).lastIndexOf('user');
+  if (idx >= 0 && thread.history[idx]?.content != null) thread.history.length = idx;
+  bubble.remove();
+  userBubble.remove();
+  aiSend(raw, userBubble.dataset.aiMode || '', {
+    md: userBubble.dataset.aiMd === '1',
+    title: userBubble.dataset.aiTitle || undefined,
+  });
 }
 
 export async function aiTestConnection() {
@@ -1692,7 +1764,7 @@ export async function fetchAiModels() {
   const isCurrent = () => aiDraft === draft && seq === modelsFetchSeq && endpoint === aiEndpointIdentity(draftEndpoint());
   btn.__aiFetchSeq = seq;
   btn.disabled = true;
-  btn.textContent = '获取中…';
+  btn.title = FETCH_BTN_TITLE_BUSY;
   try {
     const list = await api('ai:models', config);
     if (!isCurrent()) return;
@@ -1714,7 +1786,7 @@ export async function fetchAiModels() {
     // 新端点的 fetch 不得被旧 fetch 的 finally 提前解锁。
     if (btn.__aiFetchSeq === seq) {
       btn.disabled = false;
-      btn.textContent = '拉取模型';
+      btn.title = FETCH_BTN_TITLE;
     }
   }
 }
@@ -1868,7 +1940,8 @@ export function closeModelPicker() {
   closeModal('#modal-model-picker');
 }
 
-/// 确定:勾选结果写回设置表单并立即反映到"模型"一栏(仍需点"保存"落盘)
+/// 确定:勾选结果写回设置表单并立即反映到"模型"一栏(仍需点"保存"落盘)。
+/// 默认模型由 applySelectedModels 维护:此前为空时第一个勾选自动成为默认。
 export function confirmModelPicker() {
   applySelectedModels(state.aiModels.filter((m) => pickerChecked.has(m.id)));
   closeModelPicker();
@@ -1879,9 +1952,10 @@ export function filterModelPicker(kw) {
   renderModelPickerList();
 }
 
-/// 用勾选结果更新"已启用模型"集合与当前生效模型。
-/// 生效模型若被取消勾选,自动落到剩下的第一个 —— 否则设置里会留下一个
-/// 列表上已看不见、却仍在被请求使用的模型。
+/// 用勾选结果更新"已启用模型"集合与默认模型。
+/// 默认模型若被取消勾选/移除,自动落到剩下的第一个 —— 否则保存后会留下
+/// 一个列表上已看不见、却仍作为默认被请求使用的模型(不变量:列表非空则
+/// 默认必存在)。
 export function applySelectedModels(list) {
   state.aiSelected = list.map(normModel).filter((m) => m.id);
   const ids = state.aiSelected.map((m) => m.id);
@@ -1891,18 +1965,18 @@ export function applySelectedModels(list) {
   renderModelChips();
 }
 
-/// "模型"一栏:chip 列表 + 框内输入。点 chip = 设为当前生效模型;
-/// chip 右侧 ✕ = 从启用列表移除(生效模型被移除时自动落到剩下的第一个);
-/// 框尾输入模型 ID 回车即添加(addManualAiModel)。chip 只渲染进
-/// #ai-model-chips-list —— 输入框是 #ai-model-chips 的常驻兄弟节点,
-/// 不能被 innerHTML 重置一起清掉。
+/// "模型"一栏:chip 列表 + 框内输入。点 chip = 设为默认模型(新会话/后续
+/// 请求的默认值,会话内仍可在 AI 边栏随时切换);chip 右侧 ✕ = 从启用列表
+/// 移除(默认模型被移除时自动落到剩下的第一个);框尾输入模型 ID 回车即
+/// 添加(addManualAiModel)。chip 只渲染进 #ai-model-chips-list —— 输入框
+/// 是 #ai-model-chips 的常驻兄弟节点,不能被 innerHTML 重置一起清掉。
 export function renderModelChips() {
   const list = $('#ai-model-chips-list') || $('#ai-model-chips');
   list.innerHTML = '';
   if (!state.aiSelected.length) {
     const em = document.createElement('span');
     em.className = 'model-chips-empty';
-    em.textContent = '未选择模型 — 在右侧框输入 ID 回车，或点"拉取模型"勾选';
+    em.textContent = '未选择模型 — 在右侧框输入 ID 回车，或点右侧 + 按钮拉取勾选';
     list.appendChild(em);
     return;
   }
@@ -1912,11 +1986,17 @@ export function renderModelChips() {
     chip.className = 'model-chip' + (m.id === active ? ' active' : '');
     chip.setAttribute('role', 'button');
     chip.setAttribute('tabindex', '0');
-    chip.title = m.id === active ? `${m.id}(当前使用)` : `点击切换为 ${m.id}`;
+    chip.title = m.id === active ? `默认模型 · ${m.id}` : `设为默认模型：${m.id}`;
     const name = document.createElement('span');
     name.className = 'model-chip-name';
     name.textContent = m.name || m.id;
     chip.appendChild(name);
+    if (m.id === active) {
+      const badge = document.createElement('span');
+      badge.className = 'model-chip-default';
+      badge.textContent = '默认';
+      chip.appendChild(badge);
+    }
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'model-chip-del';
@@ -1928,14 +2008,14 @@ export function renderModelChips() {
       applySelectedModels(state.aiSelected.filter((x) => x.id !== m.id));
     });
     chip.appendChild(del);
-    const setActive = () => {
+    const setDefault = () => {
       $('#ai-model').value = m.id;
       renderModelChips();
       renderModelSwitch();
     };
-    chip.addEventListener('click', setActive);
+    chip.addEventListener('click', setDefault);
     chip.addEventListener('keydown', (e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); setActive(); }
+      if ((e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); setDefault(); }
     });
     list.appendChild(chip);
   }
@@ -2132,10 +2212,19 @@ export function fillPreset(key) {
 
 export async function saveAiSettings() {
   const draft = readAiDraft();
+  // 不变量:启用列表非空则默认模型必存在。草稿漏选(如只勾选未点选)时
+  // 自动落第一个并提示,保证保存出去的配置永远可直接发起请求。
+  let model = draft.model;
+  if (state.aiSelected.length && !state.aiSelected.some((m) => m.id === model)) {
+    model = state.aiSelected[0].id;
+    $('#ai-model').value = model;
+    renderModelChips();
+    toast(`已设 ${model} 为默认模型`, 'success');
+  }
   const payload = {
     ai: {
       provider: $('#ai-provider').value,
-      protocol: draft.protocol, baseUrl: draft.baseUrl, model: draft.model,
+      protocol: draft.protocol, baseUrl: draft.baseUrl, model,
       models: state.aiSelected.map((m) => ({ ...m })),
     },
   };
