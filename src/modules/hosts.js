@@ -111,8 +111,189 @@ export function escapeHtml(s) {
 
 /* ---------------- 主机编辑弹窗 ---------------- */
 
+export const MASKED_SECRET = '••••••••';
+
+let hostSecretState = {
+  password: { has: false, plain: null, revealed: false },
+  passphrase: { has: false, plain: null, revealed: false },
+  clearPrivateKey: false,
+};
+
+let currentJumpIds = [];
+
+export function updateSessionLogHint() {
+  const sel = $('#host-sessionlog');
+  const hint = $('#host-sessionlog-hint');
+  if (!sel || !hint) return;
+  if (sel.value === 'default') {
+    const auto = !!state.settings?.sessionLog?.auto;
+    hint.textContent = `当前全局：${auto ? '已开启自动记录' : '未开启自动记录'}`;
+  } else {
+    hint.textContent = '';
+  }
+}
+
+export async function toggleHostSecret(field) {
+  const st = hostSecretState[field];
+  if (!st) return;
+  const input = $(`#host-${field}`);
+  const btn = $(`#btn-reveal-host-${field}`);
+  const hostId = $('#host-id').value;
+  if (!st.revealed) {
+    if (st.has && st.plain === null && input.value === MASKED_SECRET && hostId) {
+      try {
+        const res = await api('hosts:revealSecret', { id: hostId, field });
+        st.plain = res?.value || '';
+        input.value = st.plain;
+      } catch (e) {
+        toast('获取明文失败：' + e.message, 'error');
+        return;
+      }
+    }
+    input.type = 'text';
+    st.revealed = true;
+    if (btn) {
+      btn.title = '隐藏' + (field === 'password' ? '密码' : '口令');
+      btn.innerHTML = icon('eye');
+    }
+  } else {
+    input.type = 'password';
+    st.revealed = false;
+    if (btn) {
+      btn.title = '显示' + (field === 'password' ? '密码' : '口令');
+      btn.innerHTML = icon('eyeOff');
+    }
+  }
+}
+
+export function onHostSecretInput(field) {
+  const input = $(`#host-${field}`);
+  const btn = $(`#btn-reveal-host-${field}`);
+  if (!input) return;
+  const val = input.value;
+  const st = hostSecretState[field];
+  if (btn) btn.classList.toggle('hidden', val.length === 0);
+  if (val.length === 0 && st && st.revealed) {
+    input.type = 'password';
+    st.revealed = false;
+    if (btn) {
+      btn.title = '显示' + (field === 'password' ? '密码' : '口令');
+      btn.innerHTML = icon('eyeOff');
+    }
+  }
+}
+
+export function clearHostPrivateKey() {
+  state.pickedKey = null;
+  hostSecretState.clearPrivateKey = true;
+  $('#key-path').textContent = '未选择';
+  $('#btn-clear-key')?.classList.add('hidden');
+}
+
+export function renderJumpChips() {
+  const listEl = $('#host-jump-list');
+  const emptyEl = $('#host-jump-placeholder');
+  const hiddenSel = $('#host-jump');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  if (hiddenSel) hiddenSel.innerHTML = '';
+
+  if (currentJumpIds.length === 0) {
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    return;
+  }
+  if (emptyEl) emptyEl.classList.add('hidden');
+
+  currentJumpIds.forEach((id, idx) => {
+    const h = state.hosts.find((x) => x.id === id);
+    const name = h ? `${h.name || h.host}` : id;
+
+    if (idx > 0) {
+      const arrow = document.createElement('span');
+      arrow.className = 'jump-arrow';
+      arrow.textContent = '→';
+      listEl.appendChild(arrow);
+    }
+
+    const chip = document.createElement('span');
+    chip.className = 'jump-chip';
+    chip.dataset.id = id;
+    chip.title = `${name}${h ? ` (${h.host})` : ''} - 跳板第 ${idx + 1} 级`;
+
+    const num = document.createElement('span');
+    num.className = 'jump-chip-index';
+    num.textContent = String(idx + 1);
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'jump-chip-name';
+    nameSpan.textContent = name;
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'jump-chip-remove';
+    delBtn.title = '移除此跳板';
+    delBtn.setAttribute('aria-label', `移除跳板 ${name}`);
+    delBtn.innerHTML = icon('x');
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentJumpIds = currentJumpIds.filter((x) => x !== id);
+      renderJumpChips();
+    });
+
+    chip.appendChild(num);
+    chip.appendChild(nameSpan);
+    chip.appendChild(delBtn);
+    listEl.appendChild(chip);
+
+    if (hiddenSel) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.selected = true;
+      hiddenSel.appendChild(opt);
+    }
+  });
+}
+
+export function toggleJumpMenu(open) {
+  const menu = $('#host-jump-menu');
+  if (!menu) return;
+  const shouldOpen = open !== undefined ? open : menu.classList.contains('hidden');
+  if (!shouldOpen) {
+    menu.classList.add('hidden');
+    return;
+  }
+  const hostId = $('#host-id').value;
+  const candidates = state.hosts.filter((h) => (!hostId || h.id !== hostId) && !currentJumpIds.includes(h.id));
+  menu.innerHTML = '';
+  if (!candidates.length) {
+    const empty = document.createElement('div');
+    empty.className = 'jump-menu-empty';
+    empty.textContent = state.hosts.length <= 1 ? '暂无可用的其他主机作为跳板' : '所有其他主机已在跳板链中';
+    menu.appendChild(empty);
+  } else {
+    for (const h of candidates) {
+      const item = document.createElement('div');
+      item.className = 'jump-menu-item';
+      item.innerHTML = `<span>${escapeHtml(h.name || h.host)}</span><span class="muted">${escapeHtml(h.host)}</span>`;
+      item.addEventListener('click', () => {
+        currentJumpIds.push(h.id);
+        renderJumpChips();
+        toggleJumpMenu(false);
+      });
+      menu.appendChild(item);
+    }
+  }
+  menu.classList.remove('hidden');
+}
+
 export function openHostModal(host) {
   state.pickedKey = null;
+  hostSecretState = {
+    password: { has: !!(host && host.hasPassword), plain: null, revealed: false },
+    passphrase: { has: !!(host && host.hasPassphrase), plain: null, revealed: false },
+    clearPrivateKey: false,
+  };
+
   $('#host-modal-title').textContent = host ? '编辑主机' : '新建主机';
   $('#host-id').value = host ? host.id : '';
   $('#host-name').value = host ? host.name : '';
@@ -120,38 +301,59 @@ export function openHostModal(host) {
   $('#host-port').value = host ? host.port : 22;
   $('#host-username').value = host ? host.username : 'root';
   $('#host-auth').value = host ? host.authType : 'password';
-  $('#host-password').value = '';
-  $('#host-password').placeholder = host && host.hasPassword ? '已保存（留空保持不变）' : '密码';
-  $('#host-passphrase').value = '';
-  $('#host-passphrase').placeholder = host && host.hasPassphrase ? '已保存（留空保持不变）' : '无则留空';
+
+  // 密码初始化
+  const pwInput = $('#host-password');
+  const pwRevealBtn = $('#btn-reveal-host-password');
+  pwInput.type = 'password';
+  if (host && host.hasPassword) {
+    pwInput.value = MASKED_SECRET;
+    if (pwRevealBtn) {
+      pwRevealBtn.classList.remove('hidden');
+      pwRevealBtn.title = '显示密码';
+      pwRevealBtn.innerHTML = icon('eyeOff');
+    }
+  } else {
+    pwInput.value = '';
+    if (pwRevealBtn) pwRevealBtn.classList.add('hidden');
+  }
+
+  // 私钥口令初始化
+  const ppInput = $('#host-passphrase');
+  const ppRevealBtn = $('#btn-reveal-host-passphrase');
+  ppInput.type = 'password';
+  if (host && host.hasPassphrase) {
+    ppInput.value = MASKED_SECRET;
+    if (ppRevealBtn) {
+      ppRevealBtn.classList.remove('hidden');
+      ppRevealBtn.title = '显示口令';
+      ppRevealBtn.innerHTML = icon('eyeOff');
+    }
+  } else {
+    ppInput.value = '';
+    if (ppRevealBtn) ppRevealBtn.classList.add('hidden');
+  }
+
+  // 私钥文件路径与清除按钮
   $('#key-path').textContent = host && host.keyPath ? host.keyPath : '未选择';
+  const clearKeyBtn = $('#btn-clear-key');
+  if (clearKeyBtn) {
+    clearKeyBtn.classList.toggle('hidden', !(host && host.keyPath));
+  }
+
   $('#host-group').value = host ? groupOf(host) : '';
   if ($('#host-tags')) $('#host-tags').value = (host?.tags || []).join(', ');
-  for (const field of ['password', 'key', 'passphrase']) {
-    const control = $(`#host-clear-${field}`);
-    if (control) {
-      control.checked = false;
-      control.disabled = !host;
-    }
-  }
-  // 跳板机多选(I3):排除自身
-  const jumpSel = $('#host-jump');
-  jumpSel.innerHTML = '<option value="">(无)</option>';
-  for (const h of state.hosts) {
-    if (host && h.id === host.id) continue;
-    const o = document.createElement('option');
-    o.value = h.id;
-    o.textContent = `${h.name}(${h.host})`;
-    jumpSel.appendChild(o);
-  }
-  if (host && Array.isArray(host.jumpIds)) {
-    for (const id of host.jumpIds) {
-      const o = [...jumpSel.options].find((x) => x.value === id);
-      if (o) o.selected = true;
-    }
-  }
+
+  // 跳板机初始化
+  currentJumpIds = (host && Array.isArray(host.jumpIds)) ? [...host.jumpIds] : [];
+  renderJumpChips();
+  toggleJumpMenu(false);
+
   $('#host-initcmd').value = host && host.initcmd ? host.initcmd : '';
   $('#host-sessionlog').value = (host && host.sessionLog) || 'default';
+  updateSessionLogHint();
+
+  if ($('#host-aiaccess')) $('#host-aiaccess').value = (host && host.aiAccess) || 'default';
   toggleAuthRows();
   openModal('#modal-host');
   $('#host-name').focus();
@@ -165,7 +367,6 @@ export function toggleAuthRows() {
 
 export async function saveHostModal() {
   const id = $('#host-id').value;
-  const jumpIds = [...$('#host-jump').selectedOptions].map((o) => o.value).filter(Boolean);
   const payload = {
     id: id || undefined,
     name: $('#host-name').value.trim(),
@@ -174,27 +375,53 @@ export async function saveHostModal() {
     username: $('#host-username').value.trim() || 'root',
     authType: $('#host-auth').value,
     group: $('#host-group').value.trim(),
-    jumpIds,
+    jumpIds: [...currentJumpIds],
     initcmd: $('#host-initcmd').value.trim(),
     sessionLog: $('#host-sessionlog') ? $('#host-sessionlog').value : 'default',
-    password: $('#host-password').value || undefined,
-    passphrase: $('#host-passphrase').value || undefined,
+    aiAccess: $('#host-aiaccess') ? $('#host-aiaccess').value : undefined,
   };
+
+  const clearSecrets = [];
+
+  // 密码处理: 手动清空已有密码视为删除; 非空且非占位掩码视为新密码; 占位掩码保持不变
+  const pwVal = $('#host-password').value;
+  if (hostSecretState.password.has && pwVal === '') {
+    clearSecrets.push('password');
+  } else if (pwVal !== '' && pwVal !== MASKED_SECRET) {
+    payload.password = pwVal;
+  }
+
+  // 私钥口令处理
+  const ppVal = $('#host-passphrase').value;
+  if (hostSecretState.passphrase.has && ppVal === '') {
+    clearSecrets.push('passphrase');
+  } else if (ppVal !== '' && ppVal !== MASKED_SECRET) {
+    payload.passphrase = ppVal;
+  }
+
+  // 私钥文件清除
+  if (hostSecretState.clearPrivateKey) {
+    clearSecrets.push('privateKey');
+  }
+
+  if (clearSecrets.length > 0) {
+    payload.clearSecrets = clearSecrets;
+  }
+
   if ($('#host-tags')) payload.tags = $('#host-tags').value.split(',').map((tag) => tag.trim()).filter(Boolean);
-  payload.clearSecrets = ['password', 'privateKey', 'passphrase'].filter((field) =>
-    $(`#host-clear-${field === 'privateKey' ? 'key' : field}`)?.checked);
+
   if (!payload.host) return toast('请填写主机地址', 'error');
   if (payload.authType === 'key') {
     if (state.pickedKey) {
       payload.privateKey = state.pickedKey.content;
       payload.keyPath = state.pickedKey.path;
-    } else if (id) {
+    } else if (id && !hostSecretState.clearPrivateKey) {
       // 编辑时不重选私钥文件 → 保持原私钥
     } else {
       return toast('请选择私钥文件', 'error');
     }
   }
-  if (payload.clearSecrets.length && !(await askConfirm('保存后将删除所选的已保存凭据。空白输入原本会保留凭据，此处为明确删除。', { title: '清除主机凭据', okText: '清除并保存' }))) return;
+
   try {
     await api('hosts:save', payload);
     closeModal('#modal-host');

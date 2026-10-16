@@ -347,7 +347,7 @@ test('pane banner explains disconnect with reason and Enter hint, and clears whe
   s.manualDisconnect = true; s.reconnectScheduled = false;
   h.syncPaneStatusBanner(s, s.lastError);
   assert.match(banner().children.find((c) => c.className === 'psb-text').textContent, /已断开 root@example.invalid:22$/);
-  // 连接中与已连接形态
+  // 连接中与已连接形态(已连接过的会话断开后重连,横幅切为连接中提示)
   s.manualDisconnect = false; s.status = 'connecting';
   h.syncPaneStatusBanner(s);
   assert.match(banner().className, /connecting/);
@@ -356,6 +356,11 @@ test('pane banner explains disconnect with reason and Enter hint, and clears whe
   s.status = 'connected';
   h.syncPaneStatusBanner(s);
   assert.equal(banner(), null);
+  // 首次打开标签连接中:窗格内不展示横幅(避免与底部状态栏重复)
+  const fresh = h.addSession();
+  fresh.status = 'connecting';
+  h.syncPaneStatusBanner(fresh);
+  assert.equal(fresh.pane.querySelector('.pane-status-banner'), null, '首次连接不创建窗格横幅');
 });
 
 test('Enter on a disconnected pane reconnects in place; other input is dropped and connecting swallows Enter', async () => {

@@ -3,9 +3,11 @@ import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenu
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
-import { openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows } from './hosts.js';
+import { clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows, toggleHostSecret, toggleJumpMenu, updateSessionLogHint } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { closeModeMenu, hideModeHelp, onModeMenuKeydown, revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu } from './ai-agent-ui.js';
+import { refreshAgentHostBar } from './ai-agent-run.js';
 import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -554,12 +556,35 @@ export function bindEvents() {
   $('#host-auth').addEventListener('change', toggleAuthRows);
   $('#btn-host-save').addEventListener('click', saveHostModal);
   $('#btn-host-cancel').addEventListener('click', () => closeModal('#modal-host'));
+  $('#btn-reveal-host-password')?.addEventListener('click', () => toggleHostSecret('password'));
+  $('#host-password')?.addEventListener('input', () => onHostSecretInput('password'));
+  $('#btn-reveal-host-passphrase')?.addEventListener('click', () => toggleHostSecret('passphrase'));
+  $('#host-passphrase')?.addEventListener('input', () => onHostSecretInput('passphrase'));
+  $('#btn-clear-key')?.addEventListener('click', clearHostPrivateKey);
+
+  $('#btn-host-add-jump')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleJumpMenu();
+  });
+  $('#host-jump-chips')?.addEventListener('click', (e) => {
+    if (!e.target.closest('.jump-chip')) {
+      e.stopPropagation();
+      toggleJumpMenu();
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#host-jump-box')) toggleJumpMenu(false);
+  });
+
+  $('#host-sessionlog')?.addEventListener('change', updateSessionLogHint);
+
   $('#btn-pick-key').addEventListener('click', async () => {
     try {
       const r = await api('dialog:pickKey');
       if (r) {
         state.pickedKey = r;
         $('#key-path').textContent = r.path;
+        $('#btn-clear-key')?.classList.remove('hidden');
       }
     } catch (e) {
       toast('读取私钥失败：' + e.message, 'error');
@@ -585,6 +610,8 @@ export function bindEvents() {
     if (!event.target.closest('.model-chip, .model-chips-input')) $('#ai-model-inline').focus();
   });
   $('#btn-ai-save').addEventListener('click', saveAiSettings);
+  $('#btn-reveal-ai-apikey')?.addEventListener('click', toggleAiApiKeyVisibility);
+  $('#ai-apikey')?.addEventListener('input', onAiApiKeyInput);
   $('#btn-ai-test').addEventListener('click', aiTestConnection);
   $('#ai-provider').addEventListener('change', () => fillPreset($('#ai-provider').value));
   $('#btn-ai-fetch-models').addEventListener('click', fetchAiModels);
@@ -601,17 +628,24 @@ export function bindEvents() {
     else if (e.key === 'Enter') { e.preventDefault(); confirmModelPicker(); }
   });
   // 模型选择:触发钮开菜单,菜单项切换,「管理模型」进 AI 设置;
-  // 面板外点击/Esc 关闭。菜单定位 fixed,不随面板滚动。
-  $('#ai-model-trigger').addEventListener('click', (e) => {
-    e.stopPropagation();
+  // 面板外点击/Esc/窗口缩放 关闭。菜单定位 fixed,不随面板滚动。
+  $('#ai-model-trigger').addEventListener('click', () => {
     // 0 模型:无可切换项,点击语义变为"去配置"——直达 AI 设置分区
     // (分支放这里:openSettings 在 settings.js,ai.js 反向导入会成环)
     if (!savedAiModelId() && $('#ai-model-menu').classList.contains('hidden')) {
+      closeModeMenu();
+      closeThreadMenu();
       openSettings('ai');
       return;
     }
     const menu = $('#ai-model-menu');
-    if (menu.classList.contains('hidden')) openModelMenu(); else closeModelMenu();
+    if (menu.classList.contains('hidden')) {
+      closeModeMenu();
+      closeThreadMenu();
+      openModelMenu();
+    } else {
+      closeModelMenu();
+    }
   });
   $('#ai-model-menu-list').addEventListener('click', (e) => {
     const item = e.target.closest('.ai-model-menu-item');
@@ -622,9 +656,51 @@ export function bindEvents() {
   $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openSettings('ai'); });
   document.addEventListener('click', (e) => {
     if (!e.target.closest?.('#ai-model-menu, #ai-model-trigger')) closeModelMenu();
+    if (!e.target.closest?.('#ai-mode-menu, #ai-mode-trigger, #ai-mode-help-pop')) closeModeMenu();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModelMenu();
+    if (e.key === 'Escape') { closeModelMenu(); closeModeMenu(); }
+  });
+  window.addEventListener('resize', () => {
+    closeModelMenu();
+    closeModeMenu();
+    closeThreadMenu();
+  });
+  // 执行模式选择器:触发钮开菜单(绑定单点在这里,updateModePicker 不再设 onclick,
+  // 否则双绑定一次点击开又关);菜单项切换模式,切 auto 的确认在 ai-agent-run.js;
+  // 「?」悬停/聚焦立即展开帮助浮层(原生 title 要停约 1 秒),移进浮层保持展开;
+  // 点击不外抛以免关掉菜单。
+  $('#ai-mode-trigger').addEventListener('click', () => {
+    // 打开前按当前绑定重算一次，头部「主机 · 名称」不依赖上一次状态事件是否到达。
+    refreshAgentHostBar();
+    const menu = $('#ai-mode-menu');
+    if (menu?.classList.contains('hidden')) {
+      closeModelMenu();
+      closeThreadMenu();
+    }
+    toggleModeMenu();
+  });
+  $('#ai-mode-menu-list').addEventListener('click', (e) => {
+    const item = e.target.closest('.ai-mode-menu-item');
+    if (!item || item.disabled) return;
+    closeModeMenu();
+    selectMode(item.dataset.mode);
+  });
+  $('#ai-mode-menu-list').addEventListener('keydown', onModeMenuKeydown);
+  const modeHelp = $('#ai-mode-help');
+  modeHelp.addEventListener('click', (e) => { e.stopPropagation(); showModeHelp(); });
+  modeHelp.addEventListener('mouseenter', showModeHelp);
+  modeHelp.addEventListener('focus', showModeHelp);
+  modeHelp.addEventListener('mouseleave', () => hideModeHelp({ delay: 150 }));
+  modeHelp.addEventListener('blur', () => hideModeHelp());
+  $('#ai-mode-help-pop').addEventListener('mouseenter', showModeHelp);
+  $('#ai-mode-help-pop').addEventListener('mouseleave', () => hideModeHelp({ delay: 150 }));
+  // 撤销会话授权：菜单保持打开，便于连续撤销多项（撤销会重绘列表，被点的按钮
+  // 随即脱离文档，不拦冒泡的话 document 的「点外部关菜单」会误判为点在外面）。
+  $('#ai-mode-grants').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const revoke = e.target.closest('[data-revoke]');
+    if (revoke) revokeGrant(Number(revoke.dataset.revoke));
   });
   // 「诊断报错」按钮已移除:入口迁移至终端右键菜单(openTermCtxMenu)。
 
@@ -649,8 +725,12 @@ export function bindEvents() {
   // 「解释选中内容」按钮已移除:入口迁移为终端选区末尾的悬浮 🔍 按钮
   // (terminal.js bindSelectionExplain)。
   // AI 会话管理工具栏与下拉菜单
-  $('#ai-thread-trigger').addEventListener('click', (e) => {
-    e.stopPropagation();
+  $('#ai-thread-trigger').addEventListener('click', () => {
+    const menu = $('#ai-thread-menu');
+    if (menu?.classList.contains('hidden')) {
+      closeModelMenu();
+      closeModeMenu();
+    }
     toggleThreadMenu();
   });
   $('#ai-thread-new').addEventListener('click', () => {
@@ -716,7 +796,7 @@ export function bindEvents() {
   });
 
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
-  $('#ai-send').addEventListener('click', () => (state.aiReq ? stopAiGeneration() : aiSend()));
+  $('#ai-send').addEventListener('click', () => (state.aiReq || threadBusy(activeAiThread()) ? stopAiGeneration() : aiSend()));
   $('#ai-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -882,6 +962,12 @@ export function bindEvents() {
     if (!h.bubble) return;
     markBubbleStreaming(h.bubble);
     aiShowThinking(h.bubble, h.thinking);
+    // 思考块插入让气泡长高:delta 路径的 rAF 写入有贴底收口,
+    // 纯思考阶段(推理型模型可长达数十秒)没有,视图会停在此前位置。
+    // 只在活动线程跟随,后台线程气泡增长不打扰当前阅读。
+    if (match.thread?.id == null || match.thread?.id === state.activeThreadId) {
+      aiStickScroll();
+    }
   });
   window.nebula.on('ai:delta', ({ requestId, text }) => {
     const match = findRequestHolder(requestId);
@@ -915,10 +1001,17 @@ export function bindEvents() {
     const match = findRequestHolder(done.requestId);
     if (match) aiFinishHolder(done);
   });
-  window.nebula.on('ai:error', ({ requestId, message }) => {
+  // 工具回合:命令输出流进对应步骤行;模型拼工具参数期间也算活跃(防空闲误判)。
+  window.nebula.on('ai:tool-output', routeToolOutput);
+  window.nebula.on('ai:tool-delta', ({ requestId }) => aiTouchRequest(requestId));
+  // 主机条跟随当前会话与连接状态(作用于哪台主机、是否可用工具)。
+  window.addEventListener('nb:active-session', refreshAgentHostBar);
+  window.nebula.on('ssh:status', () => setTimeout(refreshAgentHostBar, 0));
+  window.nebula.on('ai:error', ({ requestId, message, code }) => {
     const match = findRequestHolder(requestId);
     if (match) {
       const h = match.holder;
+      h.failedCode = code || null;
       // 先撤等待态再写错误文案:clearBubbleState 会清掉"正在思考…"占位,
       // 反过来的话首 token 前报错会把刚写好的错误提示一起抹掉。
       if (h.bubble) {
@@ -945,6 +1038,9 @@ function setupResizers() {
     grip.addEventListener('pointerdown', (ev) => {
       const panel = el();
       if (!panel || panel.classList.contains('hidden') || panel.classList.contains('collapsed') || hasOpenModal()) return;
+      closeModelMenu();
+      closeModeMenu();
+      closeThreadMenu();
       ev.preventDefault();
       grip.setPointerCapture(ev.pointerId);
       grip.classList.add('dragging');
@@ -988,6 +1084,9 @@ function setupResizers() {
     // 双击把手:sidebar 收起(拖到最窄的直觉延伸);其余面板恢复默认宽度。
     // 收起走 toggleSidebar,让工具栏按钮的 active 态同步。
     grip.addEventListener('dblclick', () => {
+      closeModelMenu();
+      closeModeMenu();
+      closeThreadMenu();
       if (id === 'sidebar-resizer') { toggleSidebar(); return; }
       el().style.width = '';
       fitAllVisible();
@@ -1141,6 +1240,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     // 不能读整 chip 的 textContent —— 里面还有 ✕ 移除按钮的文字
     modelChips: () => [...document.querySelectorAll('#ai-model-chips .model-chip')].map((b) => (b.querySelector('.model-chip-name') || b).textContent),
     modelChipActive: () => ($('#ai-model-chips .model-chip.active .model-chip-name') || {}).textContent || '',
+    modelChipDefaultBadge: () => ($('#ai-model-chips .model-chip.active .model-chip-default') || {}).textContent || '',
     modelSwitchOptions: () => [...document.querySelectorAll('#ai-model-menu-list .ai-model-menu-item')].map((b) => b.dataset.model),
     modelSwitchValue: () => savedAiModelId(),
     // 对话气泡的状态类与文本:等待态/流式态渲染的观测点

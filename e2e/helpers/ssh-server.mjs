@@ -3,6 +3,10 @@
 import ssh2 from 'ssh2';
 import crypto from 'node:crypto';
 import net from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 const { Server } = ssh2;
 const { STATUS_CODE: SFTP_STATUS_CODE, OPEN_MODE: SFTP_OPEN_MODE } = ssh2.utils.sftp;
@@ -239,6 +243,11 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     .privateKey.export({ type: 'pkcs1', format: 'pem' });
   const tree = makeMemFs();
   const sftpOpts = { readDelayMs: sftpReadDelayMs };
+  // AI 工具 exec 走真实本地 shell(带 __NB_PGID 包装脚本的命令):远端 /home/user
+  // 映射到这个临时目录,进程组、超时、中止都是真的。
+  const realHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-mock-home-'));
+  fs.mkdirSync(path.join(realHome, 'data'), { recursive: true });
+  const toReal = (s) => String(s).split('/home/user').join(realHome);
 
   const clientListenServers = [];
   const windowChanges = [];
@@ -383,6 +392,24 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
         session.on('exec', (ac, reject, info) => {
           emit('exec', +1);
           const stream = ac();
+          if (String(info.command).includes('__NB_PGID')) {
+            // detached = 新会话/进程组,与 sshd 对 exec 会话 setsid 的行为一致。
+            const child = spawn('sh', ['-c', toReal(info.command)], {
+              cwd: realHome, detached: true, env: { ...process.env, HOME: realHome },
+            });
+            child.stdout.on('data', (d) => stream.write(d));
+            child.stderr.on('data', (d) => stream.stderr.write(d));
+            stream.on('data', (d) => { try { child.stdin.write(d); } catch { /* ignore */ } });
+            stream.on('eof', () => { try { child.stdin.end(); } catch { /* ignore */ } });
+            child.stdin.on('error', () => {});
+            child.on('close', (code, signal) => {
+              try {
+                if (signal) stream.exit(signal.replace(/^SIG/, ''), false, ''); else stream.exit(code ?? 0);
+                stream.end();
+              } catch { /* 客户端已关通道 */ }
+            });
+            return;
+          }
           if (String(info.command).includes('utf8split')) {
             // 逐字节发送一个多字节字符串:强制跨 SSH 消息边界,
             // 用于回归"from_utf8_lossy 逐消息转换会把汉字切坏"。
@@ -522,6 +549,14 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
       return n;
     },
     putFile: (p, data) => tree.set(p, { type: 'file', data: Buffer.from(data), mtime: Math.floor(Date.now() / 1000), target: null }),
+    /// AI 工具测试:同一份文件同时放进内存 SFTP 与真实 shell 的映射目录。
+    realHome,
+    toReal,
+    putRealFile: (p, data) => {
+      tree.set(p, { type: 'file', data: Buffer.from(data), mtime: Math.floor(Date.now() / 1000), target: null });
+      fs.mkdirSync(path.dirname(toReal(p)), { recursive: true });
+      fs.writeFileSync(toReal(p), data);
+    },
     /// 预置目录节点(含沿途父目录);putFile 只放文件节点,目录必须显式建
     putDir: (p) => {
       const parts = String(p).split('/').filter(Boolean);
@@ -534,6 +569,7 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
     removePath: (p) => tree.delete(p),
     close: () => new Promise((r) => {
       for (const s of clientListenServers) { try { s.close(); } catch { /* ignore */ } }
+      try { fs.rmSync(realHome, { recursive: true, force: true }); } catch { /* ignore */ }
       server.close(r);
     }),
   };

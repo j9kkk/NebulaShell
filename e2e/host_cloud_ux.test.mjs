@@ -159,15 +159,14 @@ test('fingerprint modal exposes and copies the full fingerprint accessibly', asy
   assert.deepEqual(f.copies, [fp]);
 });
 
-test('host modal resets secret-clear controls and explicitly serializes selected clears', async () => {
+test('host modal displays masked password for existing credentials and clears secrets when emptied', async () => {
   const f = await fixture();
-  f.$('#host-clear-password').checked = true;
-  f.$('#host-clear-key').checked = true;
-  f.hosts.openHostModal({ id: 'host', name: 'edited', host: 'server.test', username: 'root', port: 22, authType: 'password', hasPassword: true, tags: ['ops'] });
-  assert.equal(f.$('#host-clear-password').checked, false);
-  assert.equal(f.$('#host-clear-key').checked, false);
-  f.$('#host-clear-password').checked = true;
-  f.$('#host-clear-passphrase').checked = true;
+  f.hosts.openHostModal({ id: 'host', name: 'edited', host: 'server.test', username: 'root', port: 22, authType: 'password', hasPassword: true, hasPassphrase: true, tags: ['ops'] });
+  assert.equal(f.$('#host-password').value, '••••••••');
+  assert.equal(f.$('#host-passphrase').value, '••••••••');
+  // 手动清空密码框与口令框
+  f.$('#host-password').value = '';
+  f.$('#host-passphrase').value = '';
   f.$('#host-tags').value = 'ops, team, ';
   await f.hosts.saveHostModal();
   const payload = f.calls.find((call) => call.channel === 'hosts:save').payload;

@@ -12,7 +12,7 @@ import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSessi
 import { confirmTransferInterrupt, revealLocalPath } from './file-transfer.js';
 import { fmtSize } from '../shared/format.js';
 import { appendTrusted, createLine, feed as feedLine, firstCommandLine, resetLine } from '../shared/cmdline.js';
-import { endsWithCommand, logicalLineEnd, normalizeSpace, readCommandFromBuffer } from '../shared/term-text.js';
+import { endsWithCommand, logicalLineEnd, normalizeSpace, readCommandFromBuffer, stripTerminalNoise } from '../shared/term-text.js';
 import { startMouseDrag } from '../shared/drag.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -1489,6 +1489,9 @@ export function activateSession(sessionId, { focus = true } = {}) {
   state.activeId = sessionId;
   tab.activePaneId = null;
   tab.sessionId = sessionId;
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('nb:active-session'));
+  }
   syncFocusedPane(tab.id, s.paneId);
   if (visibleSessions().includes(s)) {
     try { s.fit.fit(); } catch { /* ignore */ }
@@ -1637,6 +1640,11 @@ export function syncPaneStatusBanner(session, error = session?.lastError) {
   if (!pane || typeof pane.querySelector !== 'function') return;
   let el = pane.querySelector('.pane-status-banner');
   if (session.status === 'connected') { if (el) el.remove(); return; }
+  // 首次建立连接(打开标签/新建会话未曾连接过)时窗格内不展示横幅,由标签栏与底部状态栏提供连接反馈,避免重复
+  if (session.status === 'connecting' && !session.everConnected) {
+    if (el) el.remove();
+    return;
+  }
   if (!el) {
     el = document.createElement('div');
     el.className = 'pane-status-banner';
@@ -2513,6 +2521,23 @@ export function loadSessionLogState(s) {
     if (r.file) s.logFile = r.file;
     if (state.activeId === s.sessionId && state.sessions.get(s.sessionId) === s) updateStatusbar(s);
   }).catch(() => {});
+}
+
+/// AI 工具 read_terminal:读指定会话 xterm 缓冲区最近 n 行(n 上限 500),
+/// 过 stripTerminalNoise 去控制序列(写法同上方 __NB_TERM_TEXT__ 的 buffer 遍历)。
+/// 空行按屏幕原样保留;只裁掉末尾整段空白,让模型看到的是用户实际可见内容。
+export function readTerminalLines(session, n = 500) {
+  if (!session || !session.term || !session.term.buffer) return '';
+  const limit = Math.max(1, Math.min(500, Number(n) || 500));
+  const buf = session.term.buffer.active;
+  if (!buf) return '';
+  const from = Math.max(0, buf.length - limit);
+  const lines = [];
+  for (let i = from; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    lines.push(stripTerminalNoise(line ? line.translateToString(true) : ''));
+  }
+  return lines.join('\n').replace(/\n+$/, '');
 }
 
 /* ---------------- AI 模型切换(K6) + 诊断(K7) ---------------- */

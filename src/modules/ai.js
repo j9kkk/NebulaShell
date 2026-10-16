@@ -2,12 +2,15 @@
 import { $, api, askConfirm, askPrompt, closeModal, copyText, openModal, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
+
+export const MASKED_SECRET = '••••••••';
 import { popupPosition } from './interaction.js';
 import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
 import { renderMarkdown } from '../shared/markdown.js';
 import { stripTerminalNoise } from '../shared/term-text.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
+import { agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend } from './ai-agent-run.js';
 
 export const AI_HISTORY_LIMIT = 20;
 export const AI_THREAD_LIMIT = 20;
@@ -38,9 +41,12 @@ function draftEndpoint() {
   return { protocol: $('#ai-protocol').value, baseUrl: $('#ai-baseurl').value.trim() };
 }
 
+const FETCH_BTN_TITLE = '拉取模型列表';
+const FETCH_BTN_TITLE_BUSY = '正在拉取模型列表…';
+
 function resetModelFetchButton() {
   const btn = $('#btn-ai-fetch-models');
-  if (btn) { btn.__aiFetchSeq = 0; btn.disabled = false; btn.textContent = '拉取模型'; }
+  if (btn) { btn.__aiFetchSeq = 0; btn.disabled = false; btn.title = FETCH_BTN_TITLE; }
 }
 
 export function onAiEndpointChange() {
@@ -57,19 +63,90 @@ export function onAiEndpointChange() {
   }
   const same = endpoint === aiEndpointIdentity(savedAi());
   const usableSavedKey = same && savedAi().apiKeySet;
-  $('#ai-apikey').placeholder = usableSavedKey ? '已保存（留空保持不变）' : '密钥（此端点没有已保存密钥）';
+  const keyInput = $('#ai-apikey');
+  const revealBtn = $('#btn-reveal-ai-apikey');
+  if (usableSavedKey) {
+    if (!keyInput.value || keyInput.value === MASKED_SECRET) {
+      keyInput.value = MASKED_SECRET;
+      keyInput.type = 'password';
+    }
+    if (revealBtn) {
+      revealBtn.classList.remove('hidden');
+      revealBtn.title = '显示密钥';
+      revealBtn.innerHTML = icon('eyeOff');
+    }
+  } else {
+    if (keyInput.value === MASKED_SECRET) {
+      keyInput.value = '';
+      keyInput.type = 'password';
+    }
+    keyInput.placeholder = '密钥（此端点没有已保存密钥）';
+    if (revealBtn) revealBtn.classList.toggle('hidden', !keyInput.value);
+  }
   const status = $('#ai-key-status');
   if (status) status.textContent = usableSavedKey ? '' : '新端点需填写密钥（本地服务可留空）';
+}
+
+export async function toggleAiApiKeyVisibility() {
+  const input = $('#ai-apikey');
+  const btn = $('#btn-reveal-ai-apikey');
+  if (!input || !btn) return;
+  if (input.type === 'password') {
+    if (input.value === MASKED_SECRET) {
+      try {
+        const res = await api('ai:revealApiKey');
+        input.value = res?.apiKey || '';
+      } catch (e) {
+        toast('获取 API Key 明文失败：' + e.message, 'error');
+        return;
+      }
+    }
+    input.type = 'text';
+    btn.title = '隐藏密钥';
+    btn.innerHTML = icon('eye');
+  } else {
+    input.type = 'password';
+    btn.title = '显示密钥';
+    btn.innerHTML = icon('eyeOff');
+  }
+}
+
+export function onAiApiKeyInput() {
+  const input = $('#ai-apikey');
+  const btn = $('#btn-reveal-ai-apikey');
+  if (!input || !btn) return;
+  const val = input.value;
+  btn.classList.toggle('hidden', val.length === 0);
+  if (val.length === 0 && input.type === 'text') {
+    input.type = 'password';
+    btn.title = '显示密钥';
+    btn.innerHTML = icon('eyeOff');
+  }
 }
 
 export function readAiDraft() {
   // 除入口事件外再校验一次,避免脚本或预设更改绕过 input/change 事件。
   onAiEndpointChange();
+  const rawKey = $('#ai-apikey').value.trim();
+  const same = aiDraft.endpoint === aiEndpointIdentity(savedAi());
+  const hadSavedKey = same && savedAi().apiKeySet;
+  let clearApiKey = false;
+  let apiKey = '';
+  let useSavedApiKey = false;
+
+  if (hadSavedKey && rawKey === '') {
+    clearApiKey = true;
+  } else if (rawKey !== '' && rawKey !== MASKED_SECRET) {
+    apiKey = rawKey;
+  } else if (rawKey === MASKED_SECRET && hadSavedKey) {
+    useSavedApiKey = true;
+  }
+
   return {
     ...draftEndpoint(), model: $('#ai-model').value.trim(),
-    apiKey: $('#ai-apikey').value.trim(),
-    // 留空保存 = 沿用已存密钥的前提是端点没变;换端点后旧密钥在保存时被清除。
-    useSavedApiKey: aiDraft.endpoint === aiEndpointIdentity(savedAi()),
+    apiKey,
+    useSavedApiKey,
+    clearApiKey,
   };
 }
 
@@ -102,11 +179,35 @@ export function activeAiThread() {
   return state.activeThreadId ? state.aiThreads.get(state.activeThreadId) : null;
 }
 
+/// 线程忙：有流式请求，或工具回合进行中（执行命令、等确认时没有流式请求）。
+export function threadBusy(th) {
+  return !!(th && (th.req || th.agentRun));
+}
+
 export function trimAiHistory(targetThread) {
   const th = targetThread || activeAiThread();
-  if (th && th.history && th.history.length > AI_HISTORY_LIMIT) {
-    th.history = th.history.slice(-AI_HISTORY_LIMIT);
+  if (!th || !th.history) return;
+  const agentic = th.history.some((m) => m.role === 'tool' || m.toolCalls);
+  if (!agentic) {
+    if (th.history.length > AI_HISTORY_LIMIT) th.history = th.history.slice(-AI_HISTORY_LIMIT);
+    return;
   }
+  // 含工具往返的历史按回合裁：从用户消息处切，工具调用与结果不能拆开；
+  // 当前回合再长也整段保留（发请求时另有按体积的压缩）。
+  const limit = AI_HISTORY_LIMIT * 3;
+  if (th.history.length <= limit) return;
+  let start = th.history.length - limit;
+  while (start < th.history.length && th.history[start].role !== 'user') start++;
+  if (start >= th.history.length) start = th.history.findLastIndex((m) => m.role === 'user');
+  if (start > 0) th.history = th.history.slice(start);
+}
+
+/// 工具步骤、确认卡等非气泡元素挂到指定线程的消息列表（后台线程也挂到自己那里）。
+export function appendToThreadView(thread, el) {
+  const container = ensureThreadContainer(thread) || $('#ai-messages');
+  container.appendChild(el);
+  while (container.children.length > AI_DOM_LIMIT) container.removeChild(container.firstChild);
+  if (thread?.id === state.activeThreadId) aiStickScroll();
 }
 
 function ensureThreadContainer(thread) {
@@ -165,7 +266,7 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
   // AI_THREAD_LIMIT = 20: 淘汰非活动、非忙碌会话,空会话优先、最旧其次
   if (state.aiThreads.size >= AI_THREAD_LIMIT) {
     const candidates = [...state.aiThreads.values()]
-      .filter((th) => th.id !== state.activeThreadId && !th.req);
+      .filter((th) => th.id !== state.activeThreadId && !threadBusy(th));
     if (candidates.length > 0) {
       candidates.sort((a, b) => {
         const aEmpty = a.history.length === 0 ? 0 : 1;
@@ -207,6 +308,8 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
     history: [],
     containerEl: container,
     req: null,
+    // 默认「手动确认」:AI 可走工具循环,但每条命令先确认;要全自动再切自动档。
+    execMode: 'manual',
     scroll: { top: 0, pinned: true },
     draft: '',
     unread: false,
@@ -223,13 +326,13 @@ export function newAiThread({ focus = false } = {}) {
   ensureDefaultAiThread();
   const cur = activeAiThread();
 
-  if (cur && cur.history.length === 0 && !cur.req) {
+  if (cur && cur.history.length === 0 && !threadBusy(cur)) {
     if (focus) $('#ai-input')?.focus();
     return cur;
   }
 
   const otherEmpty = [...state.aiThreads.values()]
-    .filter((th) => th.id !== cur?.id && th.history.length === 0 && !th.req && !th.hostId)
+    .filter((th) => th.id !== cur?.id && th.history.length === 0 && !threadBusy(th) && !th.hostId)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
 
   if (otherEmpty) {
@@ -299,7 +402,7 @@ export function switchAiThread(threadId) {
     input.value = target.draft || '';
   }
 
-  setAiBusy(!!target.req);
+  setAiBusy(threadBusy(target));
   renderAiThreadBar();
   closeThreadMenu();
   refreshThreadUi();
@@ -314,6 +417,7 @@ export function clearCurrentAiThread() {
     thread.req = null;
     setAiBusy(false);
   }
+  thread.agentRun?.ctrl.abort();
   thread.history = [];
   if (thread.containerEl) {
     thread.containerEl.innerHTML = '';
@@ -321,6 +425,11 @@ export function clearCurrentAiThread() {
   thread.title = '新对话';
   thread.autoTitle = true;
   thread.unread = false;
+  // 清空即开始新任务：撤销自动执行与会话授权、下载污点，执行模式回到默认「手动确认」。
+  thread.execMode = 'manual';
+  thread.autoAcked = false;
+  thread.allowlist = [];
+  thread.taint = [];
   thread.scroll = { top: 0, pinned: true };
   restoreThreadScroll(thread);
   thread.updatedAt = Date.now();
@@ -340,6 +449,7 @@ export function deleteAiThread(threadId) {
     discardHolder(thread.req);
     thread.req = null;
   }
+  thread.agentRun?.ctrl.abort();
   if (thread.containerEl) {
     thread.containerEl.remove();
   }
@@ -436,12 +546,12 @@ export function renderAiThreadBar() {
     : baseTitle;
   titleEl.textContent = disp;
 
-  const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.req);
+  const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!threadBusy(th));
   const nonActiveUnread = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.unread);
   trigger.classList.toggle('has-busy', nonActiveBusy);
   trigger.classList.toggle('has-unread', nonActiveUnread);
 
-  const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.req).length;
+  const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!threadBusy(th)).length;
   const unreadCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.unread).length;
   let tip = `当前对话：${disp}（点击切换或管理历史会话）`;
   const extras = [];
@@ -471,6 +581,7 @@ export function refreshThreadUi() {
   if (isAiDrawerOpen()) {
     renderAiDrawer($('#ai-drawer-search')?.value || '');
   }
+  refreshAgentHostBar();
 }
 
 function formatThreadTime(ts) {
@@ -556,7 +667,7 @@ export function renderAiDrawer(kw = '') {
   const activeId = state.activeThreadId;
   for (const th of filtered) {
     const isActive = th.id === activeId;
-    const isBusy = !!th.req;
+    const isBusy = !!threadBusy(th);
     const isUnread = !!th.unread;
     const safeTitle = escapeHtml(th.title || '新对话');
     const msgCount = (th.history && th.history.length) || 0;
@@ -653,7 +764,7 @@ export function renderThreadMenu() {
 
   list.innerHTML = threads.map((th) => {
     const isActive = th.id === activeId;
-    const isBusy = !!th.req;
+    const isBusy = !!threadBusy(th);
     const isUnread = !!th.unread;
     const safeTitle = escapeHtml(th.title || '新对话');
     const fullTitle = th.hostName ? `${th.title || '新对话'} · ${th.hostName}` : (th.title || '新对话');
@@ -755,6 +866,8 @@ export function openThreadMenu() {
   const menu = $('#ai-thread-menu');
   const trigger = $('#ai-thread-trigger');
   if (!menu || !trigger) return;
+  $('#ai-model-menu')?.classList.add('hidden');
+  $('#ai-mode-menu')?.classList.add('hidden');
   renderThreadMenu();
   menu.classList.remove('hidden');
   trigger.setAttribute('aria-expanded', 'true');
@@ -813,7 +926,15 @@ export function ensureThreadForSession(session) {
   const cur = activeAiThread();
 
   // 1. 当前会话为空且空闲 → (重新)绑定到该主机并复用
-  if (cur && cur.history.length === 0 && !cur.req) {
+  if (cur && cur.history.length === 0 && !threadBusy(cur)) {
+    // 换主机即撤销自动执行与会话授权、下载污点：这些都是对某一台主机的授权。
+    // 对话模式不操作主机,换主机无安全含义,保留用户的档位选择。
+    if (cur.hostId !== hostId) {
+      if (cur.execMode !== 'chat') cur.execMode = 'manual';
+      cur.autoAcked = false;
+      cur.allowlist = [];
+      cur.taint = [];
+    }
     cur.hostId = hostId;
     cur.hostName = hostName;
     cur.sessionId = sessionId;
@@ -822,14 +943,14 @@ export function ensureThreadForSession(session) {
   }
 
   // 2. 当前会话属于该主机且空闲 → 复用(更新 sessionId)
-  if (cur && cur.hostId === hostId && !cur.req) {
+  if (cur && cur.hostId === hostId && !threadBusy(cur)) {
     cur.sessionId = sessionId;
     return cur;
   }
 
   // 3. 该主机最近更新的空闲会话 → 切过去
   const sameHost = [...state.aiThreads.values()]
-    .filter((th) => th.hostId === hostId && !th.req)
+    .filter((th) => th.hostId === hostId && !threadBusy(th))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
   if (sameHost) {
     sameHost.sessionId = sessionId;
@@ -839,7 +960,7 @@ export function ensureThreadForSession(session) {
 
   // 4. 任一空且空闲的未绑定会话 → 绑定并切过去
   const unbindEmpty = [...state.aiThreads.values()]
-    .filter((th) => th.history.length === 0 && !th.req && !th.hostId)
+    .filter((th) => th.history.length === 0 && !threadBusy(th) && !th.hostId)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
   if (unbindEmpty) {
     unbindEmpty.hostId = hostId;
@@ -1136,7 +1257,8 @@ export function bindAiScroll() {
 // meta 行用 .ai-meta,低对比度、不随气泡 padding 走,见 style.css。
 export function renderAiMessage(role, text, opts) {
   ensureDefaultAiThread();
-  const thread = activeAiThread();
+  // 工具回合可能在后台线程里继续出气泡：必须挂到发起它的线程，而不是当前显示的线程。
+  const thread = opts?.thread || activeAiThread();
   const el = document.createElement('div');
   el.className = 'ai-msg ' + role;
   el.dataset.role = role;
@@ -1149,6 +1271,12 @@ export function renderAiMessage(role, text, opts) {
     el.__originHostName = originHostName;
   }
   el.addEventListener('click', (event) => {
+    const retry = event.target.closest?.('[data-ai-retry]');
+    if (retry && el.contains(retry)) {
+      event.stopPropagation();
+      retryFailedMessage(el);
+      return;
+    }
     const button = event.target.closest?.('[data-ai-code-action]');
     if (!button || !el.contains(button) || button.disabled) return;
     event.stopPropagation();
@@ -1204,6 +1332,19 @@ export function renderAiMessage(role, text, opts) {
   });
   // 复制按钮锚定气泡本体(.ai-col):悬停时贴气泡右上角,不随气泡外的元信息走
   col.appendChild(copy);
+  // 失败重发按钮:仅 data-response-state="failed" 时随 hover 显现(CSS 控制),
+  // 点一下把这条失败回合从历史截断并重发原用户消息。同样锚定 .ai-col,
+  // 免疫 setAiBody 对正文的整体重写。
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'ai-retry';
+  retry.title = '重发这条消息';
+  retry.setAttribute('aria-label', '重发这条消息');
+  retry.dataset.aiRetry = '1';
+  retry.innerHTML = icon('rotate') + '<span>重发</span>';
+  // 点击交给气泡根上的事件委托(el 的 click 监听识别 [data-ai-retry] 并重发),
+  // 这里不能再 stopPropagation —— 否则委托收不到,按钮就是个摆设。
+  col.appendChild(retry);
   setAiBody(el, text, opts);
   const container = ensureThreadContainer(thread) || $('#ai-messages');
   container.appendChild(el);
@@ -1219,6 +1360,7 @@ export function renderAiMessage(role, text, opts) {
       container.removeChild(first);
     }
   }
+  if (thread && thread.id !== state.activeThreadId) return el;
   if (role === 'user') {
     // 发送/提问本身就是"看最新"的明确意图:无条件回底
     aiForceStickScroll();
@@ -1277,6 +1419,9 @@ export function markBubblePending(bubble) {
   if (row) row.insertBefore(sp, col);
   else col.appendChild(sp);
   body.textContent = '正在思考…';
+  // 占位写入让气泡长高约一行:与 renderAiMessage 里的首次贴底相隔同帧,
+  // 不收口就会从第一条回复起差出一点。调用方保证只对活动线程的气泡调用。
+  aiStickScroll();
 }
 
 /// 首个 token 到达:撤掉等待态、清空占位,转入流式态(光标闪烁由 CSS 画)
@@ -1400,8 +1545,11 @@ export function aiTouchRequest(requestId) {
 
 export function stopAiGeneration() {
   const cur = activeAiThread();
+  // 工具回合:中止整个回合(正在跑的远端命令、等待中的确认卡一并结束)。
+  const run = cur?.agentRun;
+  if (run) run.ctrl.abort();
   const h = cur?.req;
-  if (!h) return false;
+  if (!h) return !!run;
   h.cancelled = true;
   // 先结束本地 holder 并保留已返回文本;晚到的 delta/done/error 不再匹配。
   aiFinishHolder({ requestId: h.id, finishReason: 'aborted', elapsedMs: Date.now() - h.started });
@@ -1409,7 +1557,8 @@ export function stopAiGeneration() {
   return true;
 }
 
-export function aiRequest(messages, bubble, override, { thread = null, detached = false } = {}) {
+// record=false:工具回合的历史由 ai-agent 按中立格式自己写;tools 随请求下发。
+export function aiRequest(messages, bubble, override, { thread = null, detached = false, record = true, tools = null } = {}) {
   return new Promise((resolve) => {
     const requestId = crypto.randomUUID();
     const s = savedAi();
@@ -1442,7 +1591,7 @@ export function aiRequest(messages, bubble, override, { thread = null, detached 
     }
     const holder = {
       id: requestId, acc: '', bubble, resolve, messages: snapshot,
-      model: config.model || '', started: Date.now(), recordHistory: !!bubble,
+      model: config.model || '', started: Date.now(), recordHistory: !!bubble && record,
       threadId: targetThread?.id || null, detached: false,
     };
     if (targetThread) targetThread.req = holder;
@@ -1456,7 +1605,7 @@ export function aiRequest(messages, bubble, override, { thread = null, detached 
     }
     refreshThreadUi();
     aiTouchRequest(requestId);
-    api('ai:chat', { requestId, messages: snapshot, ai: config }).then(() => {
+    api('ai:chat', { requestId, messages: snapshot, ai: config, ...(tools ? { tools } : {}) }).then(() => {
       // 若停止早于后端登记 abort flag,登记完成后再补一次取消。
       if (holder.cancelled) api('ai:abort', { requestId }).catch(() => {});
     }).catch((e) => failAiRequest(holder, e.message));
@@ -1503,7 +1652,10 @@ export function aiFinishHolder(done) {
     removeThinking(h.bubble);
     if (!h.failed && h.acc) setAiBody(h.bubble, h.acc);
     refreshAiCodeActions(h.bubble);
-    if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {
+    if (!h.acc && !h.failed && done?.toolCalls?.length) {
+      // 只调用工具、没有正文的一轮:步骤行就是它的内容,不留空气泡。
+      h.bubble.remove();
+    } else if (!h.acc && !h.failed && !aiBodyOf(h.bubble).textContent) {
       aiBodyOf(h.bubble).textContent = done?.finishReason === 'aborted' ? '（已停止生成）' : '（AI 未返回内容）';
     }
     // 响应元信息(模型/token/耗时):有内容才挂,没有就不占视觉
@@ -1525,8 +1677,12 @@ export function aiFinishHolder(done) {
   }
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
   h.resolve(h.failed
-    ? { error: h.failed, text: h.acc }
-    : { ok: true, text: h.acc, aborted: done?.finishReason === 'aborted', usage: done && done.usage, elapsedMs: done && done.elapsedMs });
+    ? { error: h.failed, code: h.failedCode || null, text: h.acc }
+    : {
+      ok: true, text: h.acc, aborted: h.cancelled || done?.finishReason === 'aborted', usage: done && done.usage,
+      elapsedMs: done && done.elapsedMs, finishReason: done?.finishReason,
+      toolCalls: done?.toolCalls, reasoning: done?.reasoning, thinkingBlocks: done?.thinkingBlocks,
+    });
 }
 
 export async function aiSend(rawText, mode, opts) {
@@ -1542,7 +1698,7 @@ export async function aiSend(rawText, mode, opts) {
   }
   ensureDefaultAiThread();
   const thread = activeAiThread();
-  if (thread?.req) return toast('AI 正在回复中，请稍候', 'error');
+  if (threadBusy(thread)) return toast('AI 正在处理中，请稍候或先停止', 'error');
 
   const isFromInput = !String(rawText ?? '').trim();
   let text = (rawText || '').trim();
@@ -1582,12 +1738,22 @@ export async function aiSend(rawText, mode, opts) {
   }
   if (thread) thread.updatedAt = Date.now();
 
+  // 绑定了已连接主机、模型支持工具、执行模式非「对话模式」：走工具回合
+  // (AI 可直接读日志、执行命令)。对话模式走下面的旧路径,代码块带执行按钮。
+  if (thread && !opts?.noTools && agentAvailable(thread)) {
+    return runAgentSend(thread, agentBinding(thread), { content, display: text, md: userMd });
+  }
+
   const userMsg = { role: 'user', content };
   const historyList = thread ? thread.history : [];
   const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...historyList, userMsg];
   historyList.push(userMsg);
   trimAiHistory(thread);
-  renderAiMessage('user', text, { md: userMd });
+  const userBubble = renderAiMessage('user', text, { md: userMd });
+  // 记录发起参数:失败重发(retryFailedMessage)按原样重建这次发送
+  userBubble.dataset.aiMode = mode || '';
+  userBubble.dataset.aiMd = userMd ? '1' : '0';
+  if (opts?.title) userBubble.dataset.aiTitle = opts.title;
   // 占位在创建气泡的同一帧挂上(spinner + "正在思考…"):
   // 若先 append 空气泡再补等待态,失败路径会把一颗空壳气泡留在对话里。
   const bubble = renderAiMessage('assistant', '');
@@ -1604,6 +1770,35 @@ export async function aiSend(rawText, mode, opts) {
   if (body && !body.textContent && !body.querySelector('img,pre,table')) {
     bubble.remove();
   }
+}
+
+/// 失败气泡上的「重发」:把这条失败回合从会话历史里截掉,再按原文本重新
+/// 走一次 aiSend —— 对所有失败来源(超时/HTTP/流错误)通用,也覆盖 diagnose/
+/// explain 等 mode(记录在用户气泡的 dataset 上)。
+/// 截断而不是追加,是因为失败时用户消息已经 push 进 history(aiSend 发请求前
+/// 落库),直接再发会产生两条相同的 user 消息。
+function retryFailedMessage(bubble) {
+  const thread = activeAiThread();
+  if (!thread || threadBusy(thread)) return toast('AI 正在处理中，请稍候或先停止', 'error');
+  // 找到失败 assistant 气泡前面最近的用户气泡作为重发源
+  let userBubble = null;
+  let node = bubble.previousElementSibling;
+  while (node) {
+    if (node.dataset?.role === 'user') { userBubble = node; break; }
+    node = node.previousElementSibling;
+  }
+  if (!userBubble) return;
+  const raw = String(userBubble.__raw ?? '').trim();
+  if (!raw) return;
+  // 截断历史:去掉失败回合的 user 消息,以及失败时可能落进来的部分 assistant 正文
+  const idx = thread.history.map((m) => m.role).lastIndexOf('user');
+  if (idx >= 0 && thread.history[idx]?.content != null) thread.history.length = idx;
+  bubble.remove();
+  userBubble.remove();
+  aiSend(raw, userBubble.dataset.aiMode || '', {
+    md: userBubble.dataset.aiMd === '1',
+    title: userBubble.dataset.aiTitle || undefined,
+  });
 }
 
 export async function aiTestConnection() {
@@ -1644,7 +1839,7 @@ export async function fetchAiModels() {
   const isCurrent = () => aiDraft === draft && seq === modelsFetchSeq && endpoint === aiEndpointIdentity(draftEndpoint());
   btn.__aiFetchSeq = seq;
   btn.disabled = true;
-  btn.textContent = '获取中…';
+  btn.title = FETCH_BTN_TITLE_BUSY;
   try {
     const list = await api('ai:models', config);
     if (!isCurrent()) return;
@@ -1666,7 +1861,7 @@ export async function fetchAiModels() {
     // 新端点的 fetch 不得被旧 fetch 的 finally 提前解锁。
     if (btn.__aiFetchSeq === seq) {
       btn.disabled = false;
-      btn.textContent = '拉取模型';
+      btn.title = FETCH_BTN_TITLE;
     }
   }
 }
@@ -1820,7 +2015,8 @@ export function closeModelPicker() {
   closeModal('#modal-model-picker');
 }
 
-/// 确定:勾选结果写回设置表单并立即反映到"模型"一栏(仍需点"保存"落盘)
+/// 确定:勾选结果写回设置表单并立即反映到"模型"一栏(仍需点"保存"落盘)。
+/// 默认模型由 applySelectedModels 维护:此前为空时第一个勾选自动成为默认。
 export function confirmModelPicker() {
   applySelectedModels(state.aiModels.filter((m) => pickerChecked.has(m.id)));
   closeModelPicker();
@@ -1831,9 +2027,10 @@ export function filterModelPicker(kw) {
   renderModelPickerList();
 }
 
-/// 用勾选结果更新"已启用模型"集合与当前生效模型。
-/// 生效模型若被取消勾选,自动落到剩下的第一个 —— 否则设置里会留下一个
-/// 列表上已看不见、却仍在被请求使用的模型。
+/// 用勾选结果更新"已启用模型"集合与默认模型。
+/// 默认模型若被取消勾选/移除,自动落到剩下的第一个 —— 否则保存后会留下
+/// 一个列表上已看不见、却仍作为默认被请求使用的模型(不变量:列表非空则
+/// 默认必存在)。
 export function applySelectedModels(list) {
   state.aiSelected = list.map(normModel).filter((m) => m.id);
   const ids = state.aiSelected.map((m) => m.id);
@@ -1843,18 +2040,18 @@ export function applySelectedModels(list) {
   renderModelChips();
 }
 
-/// "模型"一栏:chip 列表 + 框内输入。点 chip = 设为当前生效模型;
-/// chip 右侧 ✕ = 从启用列表移除(生效模型被移除时自动落到剩下的第一个);
-/// 框尾输入模型 ID 回车即添加(addManualAiModel)。chip 只渲染进
-/// #ai-model-chips-list —— 输入框是 #ai-model-chips 的常驻兄弟节点,
-/// 不能被 innerHTML 重置一起清掉。
+/// "模型"一栏:chip 列表 + 框内输入。点 chip = 设为默认模型(新会话/后续
+/// 请求的默认值,会话内仍可在 AI 边栏随时切换);chip 右侧 ✕ = 从启用列表
+/// 移除(默认模型被移除时自动落到剩下的第一个);框尾输入模型 ID 回车即
+/// 添加(addManualAiModel)。chip 只渲染进 #ai-model-chips-list —— 输入框
+/// 是 #ai-model-chips 的常驻兄弟节点,不能被 innerHTML 重置一起清掉。
 export function renderModelChips() {
   const list = $('#ai-model-chips-list') || $('#ai-model-chips');
   list.innerHTML = '';
   if (!state.aiSelected.length) {
     const em = document.createElement('span');
     em.className = 'model-chips-empty';
-    em.textContent = '未选择模型 — 在右侧框输入 ID 回车，或点"拉取模型"勾选';
+    em.textContent = '未选择模型 — 在右侧框输入 ID 回车，或点右侧 + 按钮拉取勾选';
     list.appendChild(em);
     return;
   }
@@ -1864,11 +2061,17 @@ export function renderModelChips() {
     chip.className = 'model-chip' + (m.id === active ? ' active' : '');
     chip.setAttribute('role', 'button');
     chip.setAttribute('tabindex', '0');
-    chip.title = m.id === active ? `${m.id}(当前使用)` : `点击切换为 ${m.id}`;
+    chip.title = m.id === active ? `默认模型 · ${m.id}` : `设为默认模型：${m.id}`;
     const name = document.createElement('span');
     name.className = 'model-chip-name';
     name.textContent = m.name || m.id;
     chip.appendChild(name);
+    if (m.id === active) {
+      const badge = document.createElement('span');
+      badge.className = 'model-chip-default';
+      badge.textContent = '默认';
+      chip.appendChild(badge);
+    }
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'model-chip-del';
@@ -1880,14 +2083,14 @@ export function renderModelChips() {
       applySelectedModels(state.aiSelected.filter((x) => x.id !== m.id));
     });
     chip.appendChild(del);
-    const setActive = () => {
+    const setDefault = () => {
       $('#ai-model').value = m.id;
       renderModelChips();
       renderModelSwitch();
     };
-    chip.addEventListener('click', setActive);
+    chip.addEventListener('click', setDefault);
     chip.addEventListener('keydown', (e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); setActive(); }
+      if ((e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); setDefault(); }
     });
     list.appendChild(chip);
   }
@@ -1937,6 +2140,8 @@ export function openModelMenu() {
   const menu = $('#ai-model-menu');
   const trigger = $('#ai-model-trigger');
   if (trigger.disabled) return;
+  $('#ai-mode-menu')?.classList.add('hidden');
+  $('#ai-thread-menu')?.classList.add('hidden');
   renderModelMenu();
   menu.classList.remove('hidden');
   // 菜单展开在触发钮上方(输入区在面板底部,向下没有空间),右缘对齐触发钮
@@ -1957,7 +2162,7 @@ export function closeModelMenu() {
 let modelSwitchPending = false;
 export async function switchModel(model) {
   if (!model || modelSwitchPending) return;
-  if (activeAiThread()?.req) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
+  if (threadBusy(activeAiThread())) { renderModelSwitch(); return toast('生成结束后再切换模型', 'error'); }
   if (!savedModels().some((m) => m.id === model)) { renderModelSwitch(); return; }
   modelSwitchPending = true;
   renderModelSwitch();
@@ -2084,16 +2289,25 @@ export function fillPreset(key) {
 
 export async function saveAiSettings() {
   const draft = readAiDraft();
+  // 不变量:启用列表非空则默认模型必存在。草稿漏选(如只勾选未点选)时
+  // 自动落第一个并提示,保证保存出去的配置永远可直接发起请求。
+  let model = draft.model;
+  if (state.aiSelected.length && !state.aiSelected.some((m) => m.id === model)) {
+    model = state.aiSelected[0].id;
+    $('#ai-model').value = model;
+    renderModelChips();
+    toast(`已设 ${model} 为默认模型`, 'success');
+  }
   const payload = {
     ai: {
       provider: $('#ai-provider').value,
-      protocol: draft.protocol, baseUrl: draft.baseUrl, model: draft.model,
+      protocol: draft.protocol, baseUrl: draft.baseUrl, model,
       models: state.aiSelected.map((m) => ({ ...m })),
     },
   };
   if (draft.apiKey) payload.ai.apiKey = draft.apiKey;
-  // 换端点且未填新密钥时通知后端清除旧密钥(后端另有 endpoint_changed 兜底)。
-  else if (!draft.useSavedApiKey) payload.ai.clearApiKey = true;
+  // 换端点且未填新密钥,或主动清空已有密钥时通知后端清除密钥。
+  else if (draft.clearApiKey || !draft.useSavedApiKey) payload.ai.clearApiKey = true;
   try {
     state.settings = await api('settings:save', payload);
     closeAiSettings();

@@ -1,4 +1,7 @@
 mod ai;
+pub mod ai_exec_guard;
+mod ai_tools;
+mod ai_wire;
 mod bridge;
 mod cloud;
 pub mod commands;

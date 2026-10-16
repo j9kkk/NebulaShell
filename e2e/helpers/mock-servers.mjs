@@ -11,6 +11,82 @@ function readBody(req) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// AI 主机工具场景:无状态,按请求里的对话进度决定这一轮返回什么(轮次 = 最后一条
+// 用户消息之后的 assistant 条数)。工具调用与结果不配对时像真实服务端一样返回 400,
+// 用来验证中止/清理后历史依然合法。
+function toolScenario(name, body, vars = {}) {
+  const msgs = body.messages || [];
+  const ids = msgs.filter((m) => m.role === 'assistant' && m.tool_calls).flatMap((m) => m.tool_calls.map((c) => c.id));
+  const results = msgs.filter((m) => m.role === 'tool').map((m) => m.tool_call_id);
+  if (ids.length !== results.length || ids.some((id) => !results.includes(id))) {
+    return { status: 400, body: { error: { message: 'tool_call pairing broken' } } };
+  }
+  const after = msgs.slice(msgs.map((m) => m.role).lastIndexOf('user') + 1);
+  const round = after.filter((m) => m.role === 'assistant').length;
+  const lastTool = String([...after].reverse().find((m) => m.role === 'tool')?.content || '');
+  const anyTool = (s) => msgs.some((m) => m.role === 'tool' && String(m.content).includes(s));
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+  const call = (id, name, args) => ({ id, name, args });
+  switch (name) {
+    case 'story':
+      if (!hasTools) return { text: 'NO-TOOLS' };
+      if (round === 0) {
+        return { text: '先看看主机和日志。', calls: [
+          call('c_info', 'host_info', {}),
+          call('c_tail', 'tail_file', { path: '/home/user/data/app.log', lines: 20 }),
+          call('c_term', 'read_terminal', { lines: 30 }),
+        ] };
+      }
+      if (round === 1) return { calls: [call('c_exec', 'exec', { cmd: 'echo NB-EXEC-OK && pwd' })] };
+      return { text: `STORY-DONE ${lastTool.includes('NB-EXEC-OK') ? 'EXEC-SEEN' : 'EXEC-MISSING'} ${anyTool('upstream timed out') ? 'LOG-SEEN' : 'LOG-MISSING'} ${lastTool.includes('/data') ? 'CWD-SEEN' : 'CWD-MISSING'}` };
+    case 'danger':
+      if (round === 0) return { calls: [call('d1', 'exec', { cmd: 'rm -rf /home/user/data/victim' })] };
+      return { text: 'DANGER-DONE ' + lastTool.split('\n')[0] };
+    case 'stop':
+      if (round === 0) return { calls: [call('s1', 'exec', { cmd: 'sleep 31.5 && touch /home/user/data/late-marker' })] };
+      return { text: 'STOP-CONTINUED' };
+    case 'echo':
+      return { text: 'PAIRING-OK' };
+    case 'unsupported':
+      if (hasTools) return { status: 400, body: { error: { message: 'model mock-x does not support tools' } } };
+      return { text: 'PLAIN-OK' };
+    case 'sensitive':
+      if (round === 0) return { calls: [call('k1', 'read_file', { path: '~/.ssh/id_rsa' })] };
+      return { text: lastTool.includes('path_denied') ? 'DENIED-SEEN' : 'DENIED-MISSING' };
+    // 会话授权（.invalid 域名不会真的连上，只验证判定与界面）：
+    // 下载 → 授权后同站下载免确认 → 执行下载产物（污点）→ 上传（永不可授权）。
+    case 'allow':
+      if (round === 0) return { calls: [call('w1', 'exec', { cmd: 'curl -sS -m 3 -o dl-a.txt https://dl.nebula-e2e.invalid/a.txt' })] };
+      if (round === 1) return { calls: [call('w2', 'exec', { cmd: 'curl -sS -m 3 -o dl-b.txt https://dl.nebula-e2e.invalid/b.txt' })] };
+      if (round === 2) return { calls: [call('w3', 'exec', { cmd: 'bash dl-b.txt' })] };
+      if (round === 3) return { calls: [call('w4', 'exec', { cmd: 'curl -sS -m 3 -d x=1 https://dl.nebula-e2e.invalid/up' })] };
+      return { text: 'ALLOW-DONE' };
+    case 'allow-manual':
+      if (round === 0) return { calls: [call('m1', 'exec', { cmd: 'curl -sS -m 3 -o dl-c.txt https://dl.nebula-e2e.invalid/c.txt' })] };
+      return { text: 'MANUAL-DONE' };
+    // 高危授权（真实本地 shell，/home/user 映射临时目录）：原地修改 → 授权目录 → 同目录
+    // 第二条免确认；写穿符号链接、删除（另一类授权）、敏感位置仍逐条确认。
+    // sed 用 -i.bak 形式：GNU 与 BSD(macOS) 都认。
+    case 'allow-file':
+      if (round === 0) return { calls: [call('f1', 'exec', { cmd: "sed -i.bak 's/port=80/port=8080/' /home/user/data/app/conf.txt" })] };
+      if (round === 1) return { calls: [call('f2', 'exec', { cmd: "sed -i.bak 's/a=1/a=2/' /home/user/data/app/other.txt" })] };
+      if (round === 2) return { calls: [call('f3', 'exec', { cmd: 'echo hacked > /home/user/data/app/link.txt' })] };
+      if (round === 3) return { calls: [call('f4', 'exec', { cmd: 'rm /home/user/data/app/other.txt.bak' })] };
+      if (round === 4) return { calls: [call('f5', 'exec', { cmd: "sed -i.bak 's/x/y/' /etc/sudoers" })] };
+      return { text: 'FILE-DONE' };
+    // 结束进程按进程名授权（PID 是测试自己启动的专用进程）；PID 1 与卸载（本机没有
+    // apt-get，模拟失败）仍逐条确认。
+    case 'allow-kill':
+      if (round === 0) return { calls: [call('k1', 'exec', { cmd: `kill ${vars.pidA}` })] };
+      if (round === 1) return { calls: [call('k2', 'exec', { cmd: `kill ${vars.pidB}` })] };
+      if (round === 2) return { calls: [call('k3', 'exec', { cmd: 'kill 1' })] };
+      if (round === 3) return { calls: [call('k4', 'exec', { cmd: 'apt-get remove -y nbmockpkg' })] };
+      return { text: 'KILL-DONE' };
+    default:
+      return { text: 'UNKNOWN-SCENARIO' };
+  }
+}
+
 export const TENCENT_MOCK_INSTANCES = [
   {
     InstanceId: 'ins-e2e-1', InstanceName: 'e2e-cvm-1', InstanceState: 'RUNNING',
@@ -197,6 +273,8 @@ export const AI_COMMAND_BLOCKS = [
 
 export async function startMockAiServer() {
   const calls = { openai: 0, anthropic: 0, models: 0 };
+  // 场景参数由测试写入（如测试自己启动的进程 PID），工具场景按它生成命令。
+  const vars = {};
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     // 模型列表端点（dsh 式快速配置）：OpenAI 兼容用 Bearer，Anthropic 用 x-api-key
@@ -222,6 +300,32 @@ export async function startMockAiServer() {
       calls.openai++;
       await readBody(req);
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      return;
+    }
+    // AI 主机工具:/tools/<场景>/... 按对话进度返回真实 SSE 工具调用(参数分两片下发)。
+    if (req.method === 'POST' && url.pathname.endsWith('/chat/completions') && url.pathname.startsWith('/tools')) {
+      calls.openai++;
+      const body = JSON.parse((await readBody(req)) || '{}');
+      calls.toolRequests = calls.toolRequests || [];
+      calls.toolRequests.push(body);
+      const reply = toolScenario(url.pathname.split('/')[2], body, vars);
+      if (reply.status) {
+        res.writeHead(reply.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(reply.body));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const write = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+      if (reply.text) write({ choices: [{ delta: { role: 'assistant', content: reply.text } }] });
+      (reply.calls || []).forEach((c, index) => {
+        const args = JSON.stringify(c.args);
+        const cut = Math.floor(args.length / 2);
+        write({ choices: [{ delta: { tool_calls: [{ index, id: c.id, type: 'function', function: { name: c.name, arguments: args.slice(0, cut) } }] } }] });
+        write({ choices: [{ delta: { tool_calls: [{ index, function: { arguments: args.slice(cut) } }] } }] });
+      });
+      write({ choices: [{ delta: {}, finish_reason: reply.calls?.length ? 'tool_calls' : 'stop' }] });
+      res.write('data: [DONE]\n\n');
+      res.end();
       return;
     }
     // Command fixtures use real SSE/IPC, never inject assistant DOM or ai:done.
@@ -339,5 +443,5 @@ export async function startMockAiServer() {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  return { port, calls, base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
+  return { port, calls, vars, base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
 }

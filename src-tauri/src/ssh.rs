@@ -1088,6 +1088,77 @@ impl SshService {
         Ok((code, text, truncated, original_bytes))
     }
 
+    /// 开一条 exec 通道并交给调用方逐事件读取（AI 工具：流式输出、可中止）。
+    ///
+    /// 不分配 PTY；stdin 写完（或没有）立即发 EOF，等待交互输入的命令会读到
+    /// EOF 而不是永久挂起。超时与中止由调用方驱动，远端进程的清理也由调用方负责
+    /// —— 只关通道不会结束远端进程。
+    pub async fn exec_open(
+        &self,
+        session_id: &str,
+        command: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<ExecChannel, String> {
+        let handle = {
+            let sessions = self.sessions.lock().await;
+            let s = sessions.get(session_id).ok_or("会话不存在或已断开")?;
+            if !s.alive.load(Ordering::Relaxed) {
+                return Err("会话不存在或已断开".to_string());
+            }
+            s.handle.clone()
+        };
+        let channel = {
+            let h = handle.lock().await;
+            h.channel_open_session().await.map_err(|e| e.to_string())?
+        };
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(bytes) = stdin {
+            channel.data(bytes).await.map_err(|e| e.to_string())?;
+        }
+        channel.eof().await.map_err(|e| e.to_string())?;
+        Ok(ExecChannel { channel })
+    }
+}
+
+pub enum ExecEvent {
+    Data(Vec<u8>),
+    Exit(i64),
+    Signal(String),
+}
+
+pub struct ExecChannel {
+    channel: russh::Channel<russh::client::Msg>,
+}
+
+impl ExecChannel {
+    /// 下一条有意义的事件；None 表示通道已关闭。可安全地放在 select! 里取消。
+    pub async fn next(&mut self) -> Option<ExecEvent> {
+        loop {
+            match self.channel.wait().await? {
+                russh::ChannelMsg::Data { data } | russh::ChannelMsg::ExtendedData { data, .. } => {
+                    return Some(ExecEvent::Data(data.to_vec()))
+                }
+                russh::ChannelMsg::ExitStatus { exit_status } => {
+                    return Some(ExecEvent::Exit(exit_status as i64))
+                }
+                russh::ChannelMsg::ExitSignal { signal_name, .. } => {
+                    return Some(ExecEvent::Signal(format!("{signal_name:?}")))
+                }
+                russh::ChannelMsg::Close => return None,
+                _ => {}
+            }
+        }
+    }
+
+    pub async fn close(self) {
+        let _ = self.channel.close().await;
+    }
+}
+
+impl SshService {
     /// 命中且代次仍一致的缓存通道;不一致(被重连/替换)视为未命中。
     async fn cached_sftp(&self, session_id: &str) -> Option<Arc<russh_sftp::client::SftpSession>> {
         let (cache, sessions) = tokio::join!(self.sftp_sessions.lock(), self.sessions.lock());

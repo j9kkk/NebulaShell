@@ -5,7 +5,7 @@
 //
 // 前置:先构建 Rust 二进制(npm run build:web && cd src-tauri && cargo build)
 // 用法:node e2e/ui.e2e.mjs
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -819,6 +819,304 @@ async function aiCommandBlockRegressions() {
   }
 }
 
+// AI 主机工具:真实 SSE 工具调用 → 真实 IPC → mock sshd 的真实本地 shell。
+// 场景脚本见 helpers/mock-servers.mjs toolScenario;断言只看渲染结果与副作用。
+async function aiHostToolRegressions() {
+  const state = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  const active = state.sessions.find((s) => s.id === state.activeId);
+  if (!active || active.status !== 'connected') {
+    check('T95 AI 主机工具 — SKIP(没有已连接会话)', true, JSON.stringify(state.sessions));
+    return;
+  }
+  const view = '#ai-messages .ai-thread-view.active';
+  const setBase = async (suffix) => {
+    await openAiSettings();
+    await evalJs(`document.querySelector('#ai-baseurl').value = ${JSON.stringify(ai.base)} + ${JSON.stringify(suffix)};
+      document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#btn-ai-save').click(); return 1`);
+    await waitEval(`return document.querySelector('#modal-settings').classList.contains('hidden')`, 'true');
+  };
+  const send = (text) => evalJs(`document.querySelector('#ai-input').value = ${JSON.stringify(text)};
+    document.querySelector('#ai-send').click(); return 1`);
+  const lastBubble = `const b = [...document.querySelectorAll('${view} .ai-msg.assistant')].pop(); return b ? b.textContent : ''`;
+  const waitIdle = () => waitEval(`return document.querySelector('#ai-send').title`, '发送', 30000);
+  const clickButton = (scope, label) => evalJs(`const b = [...document.querySelectorAll(${JSON.stringify(scope + ' .btn')})].find((x) => x.textContent === ${JSON.stringify(label)});
+    if (!b) throw new Error('按钮不存在: ' + ${JSON.stringify(label)}); b.click(); return 1`);
+  sshd.putRealFile('/home/user/data/app.log', 'boot ok\n2026-10-14 upstream timed out (110: Connection timed out) while reading upstream\n');
+  fs.mkdirSync(sshd.toReal('/home/user/data/victim'), { recursive: true });
+  // 模式选择器辅助:展开菜单、点选某档;断言读触发钮 dataset 与菜单头部上下文。
+  const openModeMenu = () => evalJs(`const t = document.querySelector('#ai-mode-trigger');
+    if (t.hidden) throw new Error('模式触发钮不可见');
+    t.click(); return 1`);
+  const pickMode = (mode) => evalJs(`const item = document.querySelector('#ai-mode-menu-list .ai-mode-menu-item[data-mode="${mode}"]');
+    if (!item) throw new Error('模式项不存在: ${mode}');
+    if (item.disabled) throw new Error('模式项被禁用: ${mode}');
+    item.click(); return 1`);
+  const modeState = async () => asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#ai-mode-trigger').hidden,
+    host: document.querySelector('#ai-mode-host').textContent, mode: document.querySelector('#ai-mode-trigger').dataset.mode })`));
+  const modeMenuCtx = () => evalJs(`return document.querySelector('#ai-mode-menu-ctx').textContent`);
+  try {
+    // T-AT10a:模式菜单开合、顶部安全上下文、「?」帮助 title。
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await openModeMenu();
+    await waitEval(`return !document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
+    const modeItems = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-mode-menu-list .ai-mode-menu-item')].map((b) => ({ mode: b.dataset.mode, disabled: b.disabled, active: b.classList.contains('active') })))`));
+    const ctx = await modeMenuCtx();
+    // 「?」悬停立即展开结构化帮助浮层(不再用要停约 1 秒的原生 title)。
+    const help = asObj(await evalJs(`const b = document.querySelector('#ai-mode-help');
+      b.dispatchEvent(new MouseEvent('mouseenter'));
+      const p = document.querySelector('#ai-mode-help-pop');
+      const r = { shown: !p.classList.contains('hidden'), title: b.title, text: p.textContent, rows: p.querySelectorAll('.mh-row').length };
+      b.dispatchEvent(new MouseEvent('mouseleave'));
+      return JSON.stringify(r)`));
+    check('T-AT10 模式选择器:菜单含三档,默认「手动确认」,头部「主机 · 名称」,「?」立即展开结构化帮助并强调主机安全',
+      modeItems.length === 3 && modeItems.find((m) => m.mode === 'manual')?.active
+      && !modeItems.find((m) => m.mode === 'manual')?.disabled
+      && ctx.startsWith('主机 · ') && help.shown && !help.title && help.rows === 6
+      && help.text.includes('主机安全') && help.text.includes('不会发送给 AI'),
+      JSON.stringify({ modeItems, ctx, help: { ...help, text: help.text.length } }));
+    // 键盘:Esc 关菜单并还焦点给触发钮。
+    await evalJs(`document.querySelector('#ai-mode-menu-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
+    await waitEval(`return document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
+    await openModeMenu();
+    await pickMode('chat');
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'chat');
+    const chatState = await modeState();
+    check('T-AT9a 切「对话模式」:档位为 chat;未发送前 hostLabel 预览活动标签将绑定的主机',
+      chatState.mode === 'chat' && !chatState.hidden, JSON.stringify(chatState));
+    await setBase('/tools/story');
+    await send('你好,介绍一下自己');
+    await waitIdle();
+    const chatBubble = await evalJs(lastBubble);
+    const chatReqHasTools = (ai.calls.toolRequests || []).length > 0
+      && (ai.calls.toolRequests.at(-1).tools?.length ?? 0) > 0;
+    check('T-AT9b 对话模式发送:请求不带 tools,走普通对话路径', !chatReqHasTools && !!chatBubble, JSON.stringify({ hasTools: chatReqHasTools, bubble: chatBubble.slice(0, 80) }));
+    // 切回手动,工具路径恢复(下一故事 T95 验证)。
+    await openModeMenu();
+    await pickMode('manual');
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'manual');
+
+    // 故事 1:手动模式 —— 只读工具自动执行,exec 停在蓝卡,确认后输出回到模型。
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await setBase('/tools/story');
+    await send('网站 502 了，帮我查下');
+    await waitEval(`return !!document.querySelector('${view} .ai-confirm.tier-normal')`, 'true', 30000);
+    const bar = await modeState();
+    const steps = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('${view} .ai-step')].map((s) => ({ tool: s.dataset.tool, status: s.dataset.status })))`));
+    const stepWide = asObj(await evalJs(`const s = document.querySelector('${view} .ai-step');
+      const msgs = document.querySelector('${view}');
+      return JSON.stringify({ stepW: s.getBoundingClientRect().width, listW: msgs.getBoundingClientRect().width, right: Math.round(s.getBoundingClientRect().right), left: Math.round(s.getBoundingClientRect().left) })`));
+    check('T95 工具回合:模式选择器显示绑定主机、默认手动;只读工具自动完成,exec 停在蓝色确认卡',
+      !bar.hidden && bar.host.length > 0 && bar.mode === 'manual'
+      && ['host_info', 'tail_file', 'read_terminal'].every((t) => steps.some((s) => s.tool === t && s.status === 'ok'))
+      && steps.some((s) => s.tool === 'exec' && s.status === 'pending'), JSON.stringify({ bar, steps }));
+    check('T95j 步骤行宽度对齐 AI 响应流:不再横跨全宽,与 AI 气泡同一右界',
+      !(stepWide.listW > 0 && stepWide.stepW > 2)
+        || (stepWide.stepW < stepWide.listW * 0.95 && stepWide.left >= Math.round(stepWide.listW * 0.04)), JSON.stringify(stepWide));
+    await clickButton(`${view} .ai-confirm.tier-normal`, '执行');
+    await waitEval(lastBubble, 'STORY-DONE', 30000);
+    const story = await evalJs(lastBubble);
+    const summary = await evalJs(`return document.querySelector('${view} .ai-turn-summary')?.textContent || ''`);
+    check('T95b 确认后 exec 在终端当前目录执行,日志与命令输出回到模型,回合末给出执行记录',
+      story.includes('EXEC-SEEN') && story.includes('LOG-SEEN') && story.includes('CWD-SEEN') && summary.includes('echo NB-EXEC-OK'),
+      JSON.stringify({ story, summary }));
+    const auditFile = path.join(userData, 'session-logs', 'ai-audit.log');
+    const audit = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '';
+    check('T95c AI 执行的命令写入审计日志(含确认方式)', audit.includes('echo NB-EXEC-OK && pwd') && audit.includes('"decision":"confirmed"'), audit.slice(-400));
+
+    // 故事 3:切到自动后,递归删除仍强制确认;跳过理由传回模型,命令不执行。
+    await openModeMenu();
+    await pickMode('auto');
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'auto');
+    await setBase('/tools/danger');
+    await send('清理 victim 目录');
+    await waitEval(`return !!document.querySelector('${view} .ai-confirm.tier-danger')`, 'true', 30000);
+    const red = asObj(await evalJs(`const c = document.querySelector('${view} .ai-confirm.tier-danger');
+      return JSON.stringify({ text: c.textContent, primary: !!c.querySelector('.btn.primary'), preview: c.querySelector('.ai-confirm-preview pre')?.textContent || '' })`));
+    check('T95d 自动模式下递归删除仍弹红卡:无默认按钮,附只读影响预览',
+      red.text.includes('递归删除') && !red.primary && red.preview.includes('victim'), JSON.stringify(red));
+    await clickButton(`${view} .ai-confirm.tier-danger`, '跳过并说明原因');
+    await evalJs(`document.querySelector('${view} .ai-confirm.tier-danger .ai-confirm-input').value = '保留现场'; return 1`);
+    await clickButton(`${view} .ai-confirm.tier-danger`, '确认跳过');
+    await waitEval(lastBubble, 'DANGER-DONE', 30000);
+    const danger = await evalJs(lastBubble);
+    check('T95e 跳过理由回填给模型,命令没有执行', danger.includes('理由：保留现场') && fs.existsSync(sshd.toReal('/home/user/data/victim')), danger);
+
+    // 停止:运行中的远端命令被结束(进程组),迟到的副作用不发生;之后历史仍合法。
+    await waitIdle();
+    await setBase('/tools/stop');
+    await send('跑个长任务');
+    await waitEval(`return [...document.querySelectorAll('${view} .ai-step[data-tool="exec"]')].pop()?.querySelector('.ai-step-state')?.textContent || ''`, '运行中', 30000);
+    await sleep(800);
+    await evalJs(`document.querySelector('#ai-send').click(); return 1`);
+    await waitEval(`return [...document.querySelectorAll('${view} .ai-step[data-tool="exec"]')].pop()?.dataset.status`, 'aborted', 15000);
+    await sleep(2500);
+    const alive = spawnSync('pgrep', ['-f', 'sleep 31.5']).stdout.toString().trim();
+    check('T95f 停止立即结束远端进程组,迟到的副作用不发生',
+      !alive && !fs.existsSync(sshd.toReal('/home/user/data/late-marker')), JSON.stringify({ alive }));
+    await waitIdle();
+    await setBase('/tools/echo');
+    await send('继续');
+    await waitEval(lastBubble, 'PAIRING-OK', 30000);
+    check('T95g 中止后继续提问:工具调用与结果仍成对,请求未被服务端拒绝', true);
+
+    await setBase('/tools/sensitive');
+    await send('看看 ssh 私钥');
+    await waitEval(lastBubble, 'DENIED-SEEN', 30000);
+    check('T95h read_file 拒绝读取 ~/.ssh 下的密钥', true);
+
+    // T-AT11:自动模式会话授权。下载黄卡带「总是允许」→ 同站下载免确认并标「按授权」→
+    // 执行下载产物仍要确认(污点)→ 上传永不可授权;授权在菜单可见、可撤销。
+    const pendingCard = `[...document.querySelectorAll('${view} .ai-confirm')].find((c) => c.querySelector('.btn'))`;
+    const cardInfo = async () => asObj(await evalJs(`const c = ${pendingCard};
+      return JSON.stringify(c ? { text: c.textContent, allow: c.querySelector('.ai-confirm-allow')?.textContent || '', hint: c.querySelector('.ai-confirm-hint')?.textContent || '',
+        targets: [...c.querySelectorAll('.ai-confirm-targets')].map((x) => x.textContent).join(' ') } : null)`));
+    await waitIdle();
+    await setBase('/tools/allow');
+    await send('下载两个文件再处理');
+    await waitEval(`return !!(${pendingCard})?.querySelector('.ai-confirm-allow')`, 'true', 30000);
+    const firstCard = await cardInfo();
+    await evalJs(`(${pendingCard}).querySelector('.ai-confirm-allow').click(); return 1`);
+    await waitEval(`return !!document.querySelector('${view} .ai-step .ai-step-tag')`, 'true', 30000);
+    await waitEval(`return (${pendingCard})?.textContent.includes('执行或安装本会话下载的文件') || false`, 'true', 30000);
+    const taintCard = await cardInfo();
+    await clickButton(`${view} .ai-confirm`, '跳过');
+    await waitEval(`return (${pendingCard})?.textContent.includes('上传数据到外部地址') || false`, 'true', 30000);
+    const uploadCard = await cardInfo();
+    await clickButton(`${view} .ai-confirm`, '跳过');
+    await waitEval(lastBubble, 'ALLOW-DONE', 30000);
+    const tagTitle = await evalJs(`return document.querySelector('${view} .ai-step .ai-step-tag')?.title || ''`);
+    const allowAudit = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '';
+    check('T-AT11 自动模式下载可「本会话总是允许」,同站下载免确认并标注;执行下载产物与上传仍需确认且无授权按钮',
+      firstCard.allow.includes('dl.nebula-e2e.invalid') && tagTitle.includes('dl.nebula-e2e.invalid')
+      && allowAudit.includes('"decision":"whitelisted"') && allowAudit.includes('dl-b.txt')
+      && !taintCard.allow && !uploadCard.allow,
+      JSON.stringify({ firstCard, taintCard, uploadCard, tagTitle }));
+    await openModeMenu();
+    await waitEval(`return !document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
+    const grantsText = await evalJs(`return document.querySelector('#ai-mode-grants').textContent`);
+    await evalJs(`document.querySelector('#ai-mode-grants [data-revoke]').click(); return 1`);
+    const grantsAfter = asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#ai-mode-grants').hidden,
+      menuOpen: !document.querySelector('#ai-mode-menu').classList.contains('hidden') })`));
+    check('T-AT11b 授权在执行模式菜单可见,撤销后列表清空且菜单保持打开',
+      grantsText.includes('dl.nebula-e2e.invalid') && grantsAfter.hidden && grantsAfter.menuOpen, JSON.stringify({ grantsText, grantsAfter }));
+
+    // T-AT12:手动模式不出现授权按钮与说明;清空对话撤销自动模式与「已了解」确认。
+    await pickMode('manual');
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'manual');
+    await setBase('/tools/allow-manual');
+    await send('再下载一个');
+    await waitEval(`return !!(${pendingCard})`, 'true', 30000);
+    const manualCard = await cardInfo();
+    await clickButton(`${view} .ai-confirm`, '跳过');
+    await waitEval(lastBubble, 'MANUAL-DONE', 30000);
+    await openModeMenu();
+    await pickMode('auto');
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'auto');
+    await evalJs(`document.querySelector('#ai-thread-clear').click(); return 1`);
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'manual');
+    await openModeMenu();
+    await pickMode('auto');
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-cancel').click(); return 1`);
+    const modeAfterClear = await evalJs(`return document.querySelector('#ai-mode-trigger').dataset.mode`);
+    check('T-AT12 手动模式卡片无授权按钮/说明;清空对话后回到手动,再切自动需重新确认',
+      !manualCard.allow && !manualCard.hint && modeAfterClear === 'manual', JSON.stringify({ manualCard, modeAfterClear }));
+
+    // T-AT13:第 3 步高危授权(无备份,按目标所在目录的真实路径记账):原地修改授权目录后,
+    // 同目录第二条免确认并标注;写穿符号链接、删除(另一类)、敏感位置仍逐条确认。
+    const appDir = sshd.toReal('/home/user/data/app');
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(path.join(appDir, 'conf.txt'), 'port=80\n');
+    fs.writeFileSync(path.join(appDir, 'other.txt'), 'a=1\n');
+    fs.writeFileSync(sshd.toReal('/home/user/data/outside.txt'), 'keep\n');
+    fs.rmSync(path.join(appDir, 'link.txt'), { force: true });
+    fs.symlinkSync(sshd.toReal('/home/user/data/outside.txt'), path.join(appDir, 'link.txt'));
+    const realApp = fs.realpathSync(appDir) + '/';
+    const readText = (p) => fs.readFileSync(p, 'utf8');
+    const lastTagTitle = `return [...document.querySelectorAll('${view} .ai-step .ai-step-tag')].pop()?.title || ''`;
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await openModeMenu();
+    await pickMode('auto');
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'auto');
+    await setBase('/tools/allow-file');
+    await send('把端口改成 8080');
+    await waitEval(`return !!(${pendingCard})?.querySelector('.ai-confirm-allow')`, 'true', 30000);
+    const fileCard = await cardInfo();
+    await evalJs(`(${pendingCard}).querySelector('.ai-confirm-allow').click(); return 1`);
+    await waitEval(`return (${pendingCard})?.textContent.includes('link.txt') || false`, 'true', 30000);
+    const linkCard = await cardInfo();
+    await clickButton(`${view} .ai-confirm`, '跳过');
+    await waitEval(`return (${pendingCard})?.textContent.includes('other.txt.bak') || false`, 'true', 30000);
+    const delCard = await cardInfo();
+    await clickButton(`${view} .ai-confirm`, '跳过');
+    await waitEval(`return (${pendingCard})?.textContent.includes('/etc/sudoers') || false`, 'true', 30000);
+    const sudoCard = await cardInfo();
+    await clickButton(`${view} .ai-confirm`, '跳过');
+    await waitEval(lastBubble, 'FILE-DONE', 30000);
+    const fileTag = await evalJs(lastTagTitle);
+    const fileAudit = (fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '').split('\n');
+    check('T-AT13 高危授权:原地修改按真实目录授权,同目录第二条免确认并标注;写穿符号链接/删除/敏感位置仍逐条确认',
+      fileCard.allow.includes('修改文件') && fileCard.allow.includes(realApp)
+      && readText(path.join(appDir, 'conf.txt')).includes('port=8080') && readText(path.join(appDir, 'other.txt')).includes('a=2')
+      && fileTag.includes('修改文件') && fileAudit.some((l) => l.includes('other.txt') && l.includes('"decision":"whitelisted"'))
+      && !linkCard.allow && linkCard.hint.includes('符号链接') && readText(sshd.toReal('/home/user/data/outside.txt')) === 'keep\n'
+      && delCard.allow.includes('删除文件') && fs.existsSync(path.join(appDir, 'other.txt.bak'))
+      && !sudoCard.allow,
+      JSON.stringify({ fileCard, linkCard, delCard, sudoCard, fileTag, realApp }));
+
+    // T-AT14:结束进程按进程名授权(按 PID 结束测试自己启动的 sleep,命令在本机真实执行,
+    // 不会波及别的进程;复制改名的系统二进制在 macOS 上会被签名校验当场杀掉,不能用);
+    // PID 1 与无法模拟的卸载(本机没有 apt-get)仍逐条确认。
+    const victims = [spawn('sleep', ['300'], { stdio: 'ignore' }), spawn('sleep', ['300'], { stdio: 'ignore' })];
+    const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    try {
+      ai.vars.pidA = victims[0].pid;
+      ai.vars.pidB = victims[1].pid;
+      await waitIdle();
+      await setBase('/tools/allow-kill');
+      await send('结束两个卡住的进程');
+      await waitEval(`return !!(${pendingCard})?.querySelector('.ai-confirm-allow')`, 'true', 30000);
+      const killCard = await cardInfo();
+      await evalJs(`(${pendingCard}).querySelector('.ai-confirm-allow').click(); return 1`);
+      await waitEval(`return (${pendingCard})?.textContent.includes('kill 1') || false`, 'true', 30000);
+      const pid1Card = await cardInfo();
+      await clickButton(`${view} .ai-confirm`, '跳过');
+      await waitEval(`return (${pendingCard})?.textContent.includes('apt-get remove') || false`, 'true', 30000);
+      const pkgCard = await cardInfo();
+      await clickButton(`${view} .ai-confirm`, '跳过');
+      await waitEval(lastBubble, 'KILL-DONE', 30000);
+      for (let i = 0; i < 30 && victims.some((p) => isAlive(p.pid)); i++) await sleep(100);
+      const killTag = await evalJs(lastTagTitle);
+      check('T-AT14 结束进程按进程名授权:同名第二条免确认并标注;PID 1 与无法模拟的卸载仍逐条确认',
+        killCard.allow.includes('结束进程') && killCard.allow.includes('sleep')
+        && killCard.targets.includes(String(victims[0].pid))
+        && victims.every((p) => !isAlive(p.pid)) && killTag.includes('sleep')
+        && !pid1Card.allow && pid1Card.hint.includes('PID 1')
+        && !pkgCard.allow && !!pkgCard.hint,
+        JSON.stringify({ killCard, pid1Card, pkgCard, killTag, alive: victims.map((p) => isAlive(p.pid)) }));
+    } finally {
+      for (const p of victims) { try { p.kill('SIGKILL'); } catch { /* 已结束 */ } }
+    }
+
+    await setBase('/tools/unsupported');
+    await send('你好');
+    await waitEval(lastBubble, 'PLAIN-OK', 30000);
+    const warn = await evalJs(`return document.querySelector('#ai-mode-trigger').title`);
+    check('T95i 模型不支持工具:自动退回普通对话,模式选择器给出提示', warn.includes('不支持工具'), warn);
+  } finally {
+    await evalJs(`if (document.querySelector('#ai-send')?.title === '停止生成') document.querySelector('#ai-send').click(); return 1`).catch(() => {});
+    await setBase('');
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`).catch(() => {});
+  }
+}
+
 async function cleanup() {
   try { if (proc) proc.kill(); } catch { /* ignore */ }
   try { if (sshd) await sshd.close(); } catch { /* ignore */ }
@@ -830,11 +1128,13 @@ async function cleanup() {
   try { if (userData) fs.rmSync(userData, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
+// 防挂死的总时限：整套正常跑完约 8 分钟，需留余量；单步卡住由各 waitEval 的超时报出位置。
+const WATCHDOG_MS = 600_000;
 const watchdog = setTimeout(() => {
-  console.error(`${FAIL} UI e2e 总体超时(480s)`);
+  console.error(`${FAIL} UI e2e 总体超时(${WATCHDOG_MS / 1000}s)`);
   console.error(appLogs.join('').slice(-1500));
   cleanup().finally(() => process.exit(1));
-}, 480000);
+}, WATCHDOG_MS);
 
 async function main() {
   if (!fs.existsSync(BIN)) throw new Error(`未找到应用二进制: ${BIN}\n请先执行: npm run build:web && cd src-tauri && cargo build`);
@@ -1408,6 +1708,23 @@ async function main() {
     && applied.pickerOpen === false && applied.settingsOpen === true,
     JSON.stringify(applied));
 
+  // 点选默认模型语义:点另一颗 chip → 默认切换;默认 chip 带"默认"徽标
+  await evalJs(`
+    const chips = document.querySelectorAll('#ai-model-chips .model-chip');
+    chips[1].click(); return 1`);
+  const chipDefault = asObj(await evalJs(`return JSON.stringify({
+    value: window.__nbTest.modelPickerValue(),
+    active: window.__nbTest.modelChipActive(),
+    badge: window.__nbTest.modelChipDefaultBadge(),
+  })`));
+  check('T9k2 点 chip 设为默认模型:徽标"默认"同步',
+    chipDefault.value === 'mock-model-3' && chipDefault.active === 'mock-model-3'
+    && chipDefault.badge === '默认',
+    JSON.stringify(chipDefault));
+  // 点回第一颗,后续 T9l/T9b 的"生效模型 = mock-model-2"口径不变
+  await evalJs(`
+    document.querySelectorAll('#ai-model-chips .model-chip')[0].click(); return 1`);
+
   await evalJs(`document.querySelector('#btn-ai-save').click(); return 1`);
   // 保存后"模型切换"菜单(触发钮 + 自定义浮层)只列已启用模型,且选中已保存的生效模型
   await waitEval(`return window.__nbTest.modelSwitchValue()`, 'mock-model-2', 15000);
@@ -1694,6 +2011,7 @@ async function main() {
   await sleep(300);
 
   await aiCommandBlockRegressions();
+  await aiHostToolRegressions();
 
   check('T9 AI 配置 / 模型发现 / 流式对话 / 保存后下拉即时刷新', true);
 
@@ -1720,6 +2038,52 @@ async function main() {
   await evalJs(`document.querySelector('#ai-input').value = 'T9b-ok'; document.querySelector('#ai-send').click(); return 1`);
   await waitEval(`return document.querySelector('#ai-messages').textContent`, 'T9b-ok', 20000);
   check('T9c 测试失败后请求槽位已释放(可继续对话)', true);
+
+  // T9c2:失败消息「重发」——/err 端点发消息得失败气泡 → 悬停出现重发钮 →
+  // 还原 base 后点重发,同一消息以保存配置重发成功,历史不重复。
+  await openAiSettings();
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}/err';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-err';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await sleep(300);
+  await evalJs(`document.querySelector('#ai-input').value = 'T9c2-retry'; document.querySelector('#ai-send').click(); return 1`);
+  await waitEval(`return [...document.querySelectorAll('#ai-messages .ai-thread-view.active .ai-msg')].at(-1)?.dataset.responseState || ''`, 'failed', 20000);
+  const failShape = asObj(await evalJs(`return JSON.stringify((() => {
+    const msgs = document.querySelectorAll('#ai-messages .ai-thread-view.active .ai-msg');
+    const b = msgs[msgs.length - 1];
+    return { state: b?.dataset.responseState, hasRetry: !!b?.querySelector('.ai-retry'),
+      retryHidden: getComputedStyle(b.querySelector('.ai-retry')).opacity === '0',
+      userRaw: b?.previousElementSibling?.textContent || '' };
+  })())`));
+  check('T9c2a 请求失败气泡置 failed 态并携带重发按钮(默认隐藏)',
+    failShape.state === 'failed' && failShape.hasRetry === true && failShape.retryHidden === true,
+    JSON.stringify(failShape));
+  const thHistBefore = asObj(await evalJs(`return JSON.stringify((window.__nbTest.aiThreads()||[]).find(t=>t.active)?.historyLength)`));
+  // 还原 base 后重发:走已保存的正常配置
+  await openAiSettings();
+  await evalJs(`
+    document.querySelector('#ai-baseurl').value = '${ai.base}';
+    document.querySelector('#ai-baseurl').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#ai-apikey').value = 'sk-mock';
+    document.querySelector('#btn-ai-save').click(); return 1`);
+  await sleep(300);
+  await evalJs(`
+    const msgs = document.querySelectorAll('#ai-messages .ai-thread-view.active .ai-msg');
+    msgs[msgs.length - 1].querySelector('.ai-retry').click(); return 1`);
+  await waitEval(`return document.querySelector('#ai-messages').textContent`, 'MOCK-REPLY', 20000);
+  const retryState = asObj(await evalJs(`return JSON.stringify({
+    threads: (window.__nbTest.aiThreads()||[]).find(t=>t.active)?.historyLength,
+    userCount: [...document.querySelectorAll('#ai-messages .ai-thread-view.active .ai-msg.user')]
+      .filter((m) => m.textContent.includes('T9c2-retry')).length,
+    failedGone: ![...document.querySelectorAll('#ai-messages .ai-thread-view.active .ai-msg')]
+      .some((m) => m.dataset.responseState === 'failed'),
+  })`));
+  check('T9c2b 重发后原失败气泡移除、用户消息不重复、回复成功',
+    retryState.userCount === 1 && retryState.failedGone === true
+    && retryState.threads === thHistBefore + 1,
+    JSON.stringify({ thHistBefore, retryState }));
 
   // SFTP 文件分屏:「新增文件分屏」在活动分屏右侧切出文件窗格,
   // 初始目录 = 会话记忆目录 / 探测 cwd(mock exec 探针返回 ~/data)。
