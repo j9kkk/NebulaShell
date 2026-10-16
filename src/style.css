@@ -1264,7 +1264,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 /* 设置窗口:左侧分区导航 + 右侧分区内容。分区高度不同,给内容区定一个
    最小高度,切换分区时卡片不上下跳。 */
 .modal-card.settings-card { width: 680px; }
-.settings-body { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 18px; min-height: 360px; }
+/* 高度锁定:四个页签同高(取 AI 页常态高度为基准),页签切换弹窗不再跳变。
+   小屏收窄到视口;页签内容超高时内页自己滚,底部操作条 sticky 吸底常驻。 */
+.settings-body { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 18px; height: min(520px, calc(100dvh - 120px)); min-height: 0; }
 .settings-nav { display: flex; flex-direction: column; gap: 2px; padding-right: 12px; border-right: 1px solid var(--border); }
 .settings-tab {
   display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
@@ -1275,9 +1277,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .settings-tab:hover { color: var(--text); background: var(--hover-bg); }
 .settings-tab[aria-selected="true"] { color: var(--text); background: var(--active-bg); font-weight: 600; }
 .settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.settings-sec { min-width: 0; display: flex; flex-direction: column; }
+.settings-sec { min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 .settings-sec.hidden { display: none; }
-.settings-sec > .modal-actions { margin-top: auto; padding-top: 18px; }
+.settings-sec > .modal-actions {
+  position: sticky; bottom: 0; margin-top: auto; padding-top: 18px;
+  background: var(--panel); /* 滚动内容从按钮下方穿过时垫底,避免文字与按钮叠影 */
+}
 .keys-wrap { max-height: 272px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .keys-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .keys-table th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--border); }
