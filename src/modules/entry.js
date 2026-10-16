@@ -3,7 +3,7 @@ import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenu
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
-import { clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, renderHosts, saveHostModal, toggleAuthRows, toggleHostSecret, toggleJumpMenu, updateSessionLogHint } from './hosts.js';
+import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
 import { closeModeMenu, hideModeHelp, onModeMenuKeydown, revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu } from './ai-agent-ui.js';
@@ -554,6 +554,62 @@ export function bindEvents() {
 
   $('#host-search').addEventListener('input', renderHosts);
   $('#host-auth').addEventListener('change', toggleAuthRows);
+
+  // 认证方式滑块:点击分段项切换 + 键盘左右箭头支持
+  $('#host-auth-slider')?.addEventListener('click', (e) => {
+    const item = e.target.closest('.segmented-item');
+    if (item && item.dataset.value) {
+      setHostAuthMode(item.dataset.value);
+    }
+  });
+  $('#host-auth-slider')?.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHostAuthMode('password');
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHostAuthMode('key');
+    }
+  });
+
+  // 标签交互:点击容器聚焦输入框并展开候选菜单
+  $('#host-tags-container')?.addEventListener('click', (e) => {
+    if (!e.target.closest('.tag-chip')) {
+      $('#host-tag-input')?.focus();
+      toggleTagMenu(true);
+    }
+  });
+  $('#host-tag-input')?.addEventListener('input', () => {
+    toggleTagMenu(true);
+  });
+  $('#host-tag-input')?.addEventListener('focus', () => {
+    toggleTagMenu(true);
+  });
+  $('#host-tag-input')?.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ',' || e.key === '，') && !e.isComposing) {
+      e.preventDefault();
+      const val = $('#host-tag-input').value.trim().replace(/^[，,]+|[，,]+$/g, '');
+      if (val) {
+        addHostTag(val);
+        $('#host-tag-input').value = '';
+        renderTagMenu('');
+      }
+    } else if (e.key === 'Backspace' && $('#host-tag-input').value === '') {
+      const chips = $('#host-tags-list')?.querySelectorAll('.tag-chip');
+      if (chips && chips.length > 0) {
+        const lastTag = chips[chips.length - 1].dataset.tag;
+        if (lastTag) removeHostTag(lastTag);
+      }
+    } else if (e.key === 'Escape') {
+      toggleTagMenu(false);
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#host-tags-box')) {
+      toggleTagMenu(false);
+    }
+  });
+
   $('#btn-host-save').addEventListener('click', saveHostModal);
   $('#btn-host-cancel').addEventListener('click', () => closeModal('#modal-host'));
   $('#btn-reveal-host-password')?.addEventListener('click', () => toggleHostSecret('password'));

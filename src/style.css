@@ -39,6 +39,10 @@
   --tab-active-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   --tab-inactive-bg: rgba(19, 26, 38, 0.6);
   --radius: 10px;
+  /* 字体规范:UI 界面走 --font-ui(无衬线),终端命令/代码/路径等机器文本一律 --font-mono,
+     各模块不得自行内联等宽栈(历史上有三种写法导致弹窗间字体不一致)。 */
+  --font-ui: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   /* 控件高度刻度:按钮默认 30px,小号/图标 26px(在各自类里覆盖)。
      这里给一个全局默认,让"非按钮但需与按钮等高"的元素
      (模型 chip 容器、模型下拉)也能引用同一把尺子。 */
@@ -95,7 +99,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
-  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
@@ -126,6 +130,11 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 input[type="number"] {
   -moz-appearance: textfield;
+}
+/* 密码输入框:隐藏 Windows/Edge WebView2 及 IE 原生密码眼睛与清除控件(统一走自研 secret-input-wrap + SVG 眼睛) */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
 }
 /* 聚焦指示统一走 :focus-visible 外圈(见上),输入框不再叠加内圈变色 ——
    文本框鼠标点击也命中 :focus-visible,两种指示同时生效会呈现双重边框 */
@@ -276,27 +285,67 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   box-shadow: var(--tab-active-shadow);
 }
 .tab.dragging {
-  color: var(--text) !important;
-  background: linear-gradient(var(--drag-accent), var(--drag-accent)), var(--tab-active-bg) !important;
+  color: var(--muted) !important;
+  background: var(--tab-inactive-bg) !important;
   border: 2px dashed var(--accent) !important;
   border-bottom: none !important;
   outline: none !important;
   padding: 3px 9px 3px;
-  font-weight: 600;
-  z-index: 10;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-weight: normal;
+  opacity: 0.42 !important;
+  box-shadow: none !important;
   cursor: grabbing;
 }
 .tab.dragging .tab-title {
-  color: var(--text) !important;
-  font-weight: 600;
+  color: var(--muted) !important;
+  font-weight: normal;
 }
 .tab.dragging .tab-dot {
-  opacity: 1;
+  opacity: 0.45;
 }
 .tab.dragging .tab-close {
-  opacity: 0;
+  display: none !important;
+}
+.tab.tab-snapping {
+  opacity: 0 !important;
+}
+.tab-ghost {
+  position: fixed;
   pointer-events: none;
+  z-index: 10000;
+  color: var(--text) !important;
+  background: linear-gradient(var(--drag-accent), var(--drag-accent)), var(--tab-active-bg) !important;
+  border: 1px solid var(--accent);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-weight: 600;
+  cursor: grabbing;
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 3px;
+  font-size: 12px;
+  box-sizing: border-box;
+  will-change: transform, left, top;
+}
+.tab-ghost .tab-title {
+  color: var(--text) !important;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-ghost .tab-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none;
+}
+.tab-ghost .tab-dot.connecting { background: var(--warn); }
+.tab-ghost .tab-dot.connected { background: var(--accent2); }
+.tab-ghost .tab-dot.exited, .tab-ghost .tab-dot.error { background: var(--danger); }
+.tab-ghost .tab-close {
+  display: none !important;
 }
 .tab.drag-over-left { box-shadow: -2px 0 0 var(--accent); }
 .tab.drag-over-right { box-shadow: 2px 0 0 var(--accent); }
@@ -833,9 +882,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   margin: 6px 0; padding: 8px 10px; overflow-x: auto;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
 }
-.ai-body pre code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent2); }
+.ai-body pre code { font-family: var(--font-mono); font-size: 12px; color: var(--accent2); }
 .ai-body code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  font-family: var(--font-mono); font-size: 12px;
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px;
 }
 .ai-body pre code { border: none; padding: 0; background: none; }
@@ -949,7 +998,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-step-verb { flex: none; color: var(--muted); }
 .ai-step-detail, .ai-turn-summary code {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 .ai-step-state { flex: none; color: var(--muted); }
 .ai-step-state.ok { color: var(--accent); }
@@ -968,7 +1017,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-step-body[hidden], .ai-step-card:empty { display: none; }
 .ai-step-log, .ai-confirm-cmd, .ai-confirm-preview pre {
   margin: 0; white-space: pre-wrap; word-break: break-all;
-  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text);
+  font: 11.5px/1.45 var(--font-mono); color: var(--text);
 }
 .ai-step-log { max-height: 240px; overflow: auto; padding: 6px 8px; border-top: 1px solid var(--border); }
 .ai-card-done { padding: 2px 8px 6px 28px; color: var(--muted); }
@@ -997,7 +1046,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-confirm-edit, .ai-confirm-input {
   box-sizing: border-box; width: 100%; padding: 5px 8px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);
-  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 12px/1.45 var(--font-mono);
 }
 .ai-confirm-actions .ai-confirm-input, .ai-sudo-row .ai-confirm-input { flex: 1 1 160px; width: auto; }
 .ai-sudo-row { display: flex; align-items: center; gap: 8px; }
@@ -1285,6 +1334,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .modal-snippet-add input#snippet-cmd {
   flex: 1;
   min-width: 0;
+  font-family: var(--font-mono);
 }
 .modal-foot {
   margin-top: 12px;
@@ -1308,10 +1358,17 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .settings-tab:hover { color: var(--text); background: var(--hover-bg); }
 .settings-tab[aria-selected="true"] { color: var(--text); background: var(--active-bg); font-weight: 600; }
 .settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.settings-sec { min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.settings-sec {
+  min-width: 0; display: flex; flex-direction: column; min-height: 0;
+  overflow-y: auto; scrollbar-width: thin;
+  /* 聚焦外圈(outline 2px + offset 2px)画在元素框外 4px 处,留内距防滚动容器边缘裁剪 */
+  padding: 4px 6px 4px 4px;
+}
 .settings-sec.hidden { display: none; }
 .settings-sec > .modal-actions {
   position: sticky; bottom: 0; margin-top: auto; padding-top: 18px;
+  margin-left: -4px; margin-right: -6px; margin-bottom: -4px;
+  padding-left: 4px; padding-right: 6px; padding-bottom: 4px;
   background: var(--panel); /* 滚动内容从按钮下方穿过时垫底,避免文字与按钮叠影 */
 }
 .keys-wrap { max-height: 272px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
@@ -1392,8 +1449,8 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   flex: 1; min-width: 0;
   display: flex; flex-wrap: wrap; gap: 6px;
   align-items: center;
-  min-height: var(--ctl-h);
-  max-height: 96px;
+  min-height: 34px;
+  max-height: 124px;
   padding: 4px 6px;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
   overflow-y: auto; scrollbar-width: thin;
@@ -1410,21 +1467,23 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   background: transparent; border: none; outline: none;
   color: var(--text); font-family: inherit; font-size: 12px;
   padding: 3px 4px; border-radius: 0;
+  line-height: 1.35;
 }
 .model-chips-input:focus-visible { outline: none; }
 .model-chips-input::placeholder { color: var(--muted); }
 .model-chip {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; line-height: 1;
+  font-size: 12px; line-height: 1.35;
   color: var(--muted);
   background: transparent; border: 1px solid var(--border);
-  /* 3px 内距 + 12px 行高 + 1px 描边 = 20px;容器 4px 内距 + 1px 描边后
-     整体恰好 30px,与 .btn 同高(第 4 条:两边不一致) */
-  border-radius: 999px; padding: 3px 5px 3px 9px;
+  border-radius: 999px; padding: 2px 5px 2px 9px;
   cursor: pointer; max-width: 100%;
   transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-.model-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-chip-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 1.35;
+}
 .model-chip:hover { color: var(--text); border-color: var(--accent); }
 .model-chip-del {
   flex: none;
@@ -1446,8 +1505,8 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 .model-chip.active .model-chip-del:hover { background: var(--surface-hover); color: var(--btn-primary-text); }
 .model-chip-default {
-  flex: none; font-size: 10px; line-height: 1;
-  padding: 2px 4px; border-radius: 4px;
+  flex: none; font-size: 10px; line-height: 1.2;
+  padding: 1px 4px; border-radius: 4px;
   /* 实心主色底上的半透明白罩,任意主题的主色都能衬出徽标 */
   background: rgba(255, 255, 255, 0.22);
   pointer-events: none;
@@ -1462,7 +1521,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   display: flex; flex-wrap: wrap; gap: 6px;
   align-items: center;
   min-height: 34px;
-  max-height: 72px;
+  max-height: 100px;
   padding: 3px 6px;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
   overflow-y: auto; scrollbar-width: thin;
@@ -1475,10 +1534,10 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .jump-chips-empty { color: var(--muted); font-size: 13px; padding: 0 4px; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .jump-chip {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; line-height: 1;
+  font-size: 12px; line-height: 1.35;
   color: var(--text);
   background: var(--hover-bg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 3px 6px;
+  border-radius: 6px; padding: 2px 6px;
   cursor: default; max-width: 100%;
 }
 .jump-chip-index {
@@ -1486,7 +1545,10 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   width: 14px; height: 14px; border-radius: 50%;
   background: var(--border); color: var(--muted); font-size: 10px; font-weight: 600;
 }
-.jump-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jump-chip-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 1.35;
+}
 .jump-chip-remove {
   display: inline-flex; align-items: center; justify-content: center;
   background: transparent; border: none; padding: 0; margin-left: 2px;
@@ -1509,6 +1571,128 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 .jump-menu-item:hover { background: var(--surface-hover); color: var(--accent); }
 .jump-menu-empty { padding: 8px 10px; font-size: 12px; color: var(--muted); text-align: center; }
+
+/* 认证方式滑块选择器:高度 34px,与表单控件统一等高 */
+.auth-slider-field { position: relative; width: 100%; min-width: 0; }
+.segmented-slider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 34px;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  user-select: none;
+  cursor: pointer;
+}
+.segmented-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.segmented-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  background: var(--accent);
+  border-radius: 6px;
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.segmented-slider[data-value="key"] .segmented-thumb {
+  transform: translateX(100%);
+}
+.segmented-item {
+  flex: 1;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease;
+  border-radius: 6px;
+  outline: none;
+}
+.segmented-item:hover:not(.active) {
+  color: var(--text);
+}
+.segmented-item.active {
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 标签输入与下拉多选:容器单行 34px 与输入框严格等高,多标签自适应换行 */
+.tag-input-row { position: relative; width: 100%; min-width: 0; }
+.tag-input-container {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  min-height: 34px; max-height: 96px;
+  padding: 3px 6px; box-sizing: border-box;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  overflow-y: auto; scrollbar-width: thin;
+  cursor: text;
+}
+.tag-input-container::-webkit-scrollbar { width: 6px; }
+.tag-input-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.tag-input-container:focus-within { border-color: var(--accent); outline: none; }
+.tag-chips-list { display: contents; }
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; line-height: 1;
+  color: var(--text);
+  background: var(--hover-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 6px;
+  cursor: default; max-width: 100%;
+}
+.tag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-chip-remove {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; padding: 0; margin-left: 2px;
+  color: var(--muted); cursor: pointer; border-radius: 3px; width: 14px; height: 14px;
+}
+.tag-chip-remove:hover { color: var(--danger, #ff6b6b); background: var(--hover-bg); }
+.tag-inner-input {
+  flex: 1 1 80px; min-width: 60px; height: 26px !important; line-height: 1.2 !important;
+  background: transparent !important; border: none !important; outline: none !important;
+  color: var(--text) !important; font-size: 13px !important;
+  padding: 0 4px !important; margin: 0 !important;
+}
+.tag-inner-input::placeholder { color: var(--muted); font-size: 12px; }
+
+/* 标签下拉选择浮层 */
+.tag-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50;
+  max-height: 180px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--menu-shadow); padding: 4px;
+}
+.tag-menu-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; border-radius: 6px; font-size: 13px; color: var(--text);
+  cursor: pointer;
+}
+.tag-menu-item:hover { background: var(--surface-hover); }
+.tag-menu-item.selected { color: var(--accent); background: var(--active-bg); font-weight: 600; }
+.tag-menu-item .tag-check { font-size: 12px; font-weight: bold; margin-left: auto; }
+.tag-menu-add-new {
+  padding: 6px 10px; border-radius: 6px; font-size: 12px; color: var(--accent);
+  background: var(--hover-bg); cursor: pointer; border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+.tag-menu-add-new:hover { background: var(--active-bg); }
+.tag-menu-empty { padding: 8px 10px; font-size: 12px; color: var(--muted); text-align: center; }
 
 /* 会话日志行 */
 .sessionlog-field { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
@@ -1963,7 +2147,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .snippet-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; }
 .snippet-row:hover { background: var(--hover-bg); }
 .snippet-row .s-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; max-width: 45%; overflow: hidden; text-overflow: ellipsis; flex: none; }
-.snippet-row .s-cmd { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.snippet-row .s-cmd { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-family: var(--font-mono); }
 .snippet-row .s-edit, .snippet-row .s-del { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; }
 .snippet-row .s-edit { color: var(--muted); }
 .snippet-row .s-del { color: var(--danger, #ff6b6b); }
@@ -1975,7 +2159,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
    保存/取消在行尾。input 走 flex 槽位,不依赖 UA 默认 width。 */
 .snippet-row.editing { align-items: center; }
 .snippet-row.editing .s-edit-name { flex: 0 1 38%; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; }
-.snippet-row.editing .s-edit-cmd { flex: 1; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; }
+.snippet-row.editing .s-edit-cmd { flex: 1; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px; box-sizing: border-box; font-family: var(--font-mono); }
 .snippet-row.editing .s-save, .snippet-row.editing .s-cancel { flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .snippet-row.editing .s-save { color: var(--accent); }
 .snippet-row.editing .s-cancel { color: var(--muted); }
@@ -1986,7 +2170,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .snippet-add input { flex: 1; min-width: 0; font-size: 12px; }
 .hist-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); }
 .hist-row:hover { background: var(--hover-bg); }
-.hist-row .h-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Menlo, monospace; }
+.hist-row .h-cmd { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
 .hist-row .h-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .hist-row .h-fav { visibility: hidden; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--muted); cursor: pointer; }
 .hist-row .h-fav:hover { background: var(--muted-hover-bg); }
@@ -2060,7 +2244,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .bm-list { display: flex; flex-direction: column; gap: 4px; max-height: min(420px, 60vh); overflow: auto; }
 .bm-row { --ctl-h: 26px; display: flex; align-items: center; gap: 6px; }
 .bm-row .bm-name { flex: 0 0 150px; width: 150px; height: var(--ctl-h); padding: 0 8px; font-size: 12px; }
-.bm-row .bm-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-family: Menlo, monospace; }
+.bm-row .bm-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-family: var(--font-mono); }
 .bm-row .btn.icon { flex: none; }
 .bm-row .bm-del:not(:disabled):hover { color: var(--danger); border-color: var(--danger); }
 /* 窄窗格:低频按钮收进 ⋯,按钮与间距收紧;文件分屏最小宽度 300px(paneMinSize)
@@ -2335,7 +2519,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .batch-hosts.locked label { cursor: default; }
 .batch-hosts.locked label:hover { background: transparent; }
 /* 命令文本域独占共享行,与主机列表同起同止(上下缘对齐) */
-#batch-cmd { grid-area: cmd; resize: none; font-family: Menlo, monospace; }
+#batch-cmd { grid-area: cmd; resize: none; font-family: var(--font-mono); }
 /* 结果区:横跨整卡,不再挤在右列。表格自带滚动区与吸顶表头,
    避免结果增多把标题/表单/操作栏推出视野。 */
 .batch-results-section { margin-top: 16px; }
@@ -2354,7 +2538,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 #batch-results th:nth-child(2) { width: 17%; }
 #batch-results th:nth-child(3) { width: 11%; }
 #batch-results th:nth-child(5) { width: 88px; }
-#batch-results td.out { overflow: hidden; color: var(--muted); font-family: Menlo, monospace; font-size: 11px; }
+#batch-results td.out { overflow: hidden; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
 #batch-results td.out > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #batch-results td.op { white-space: nowrap; overflow: hidden; }
 #batch-results .tag { display: inline-block; font-size: 11px; margin-right: 4px; }
@@ -2379,7 +2563,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .fp-row-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
 .badge-run { color: var(--accent2); }
 .badge-stop { color: var(--muted); }
-.mono { font-family: Menlo, monospace; font-size: 11px; }
+.mono { font-family: var(--font-mono); font-size: 11px; }
 
 /* 分屏容器可滚动:窗格有最小尺寸(.term-pane 的 min-width/min-height),
    分到 6 个以上时总尺寸会超出终端区。若容器裁剪掉溢出部分,超出的窗格就

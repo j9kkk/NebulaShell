@@ -237,8 +237,37 @@ export function bindTabStrip() {
     // 按下不走默认动作:WebKit 会从标题起选区,拖动中把沿途标签标题一并选中且松手后
     // 残留(只在 mousemove 里 preventDefault 拦不住,选区在按下时就开始了)
     e.preventDefault?.();
+    let ghost = null;
+    let grabOffsetX = 0;
     startMouseDrag(e, tabEl, {
       onMove: (ev) => {
+        // 创建跟随光标的悬浮卡片 (Floating Ghost)
+        if (!ghost && typeof tabEl.getBoundingClientRect === 'function' && typeof document?.createElement === 'function' && document?.body) {
+          const tabRect = tabEl.getBoundingClientRect();
+          grabOffsetX = (ev.clientX !== undefined ? ev.clientX : tabRect.left) - tabRect.left;
+          ghost = document.createElement('div');
+          ghost.className = 'tab-ghost';
+          const html = tabEl.innerHTML || '';
+          if (html) {
+            ghost.innerHTML = html;
+          } else if (typeof tabEl.querySelector === 'function') {
+            const dot = document.createElement('span');
+            dot.className = tabEl.querySelector('.tab-dot')?.className || 'tab-dot';
+            const title = document.createElement('span');
+            title.className = 'tab-title';
+            title.textContent = tabEl.querySelector('.tab-title')?.textContent || '';
+            ghost.appendChild(dot);
+            ghost.appendChild(title);
+          }
+          if (tabRect.width) ghost.style.width = tabRect.width + 'px';
+          if (tabRect.height) ghost.style.height = tabRect.height + 'px';
+          ghost.style.left = tabRect.left + 'px';
+          ghost.style.top = tabRect.top + 'px';
+          document.body.appendChild(ghost);
+        }
+        if (ghost && ev.clientX !== undefined) {
+          ghost.style.left = (ev.clientX - grabOffsetX) + 'px';
+        }
         if (strip.scrollWidth > strip.clientWidth && typeof strip.getBoundingClientRect === 'function') {
           const sr = strip.getBoundingClientRect();
           const edge = 28;
@@ -248,30 +277,100 @@ export function bindTabStrip() {
         const others = [...strip.querySelectorAll('.tab')].filter((t) => t !== tabEl);
         let beforeEl = null;
         for (const other of others) {
-          const r = other.getBoundingClientRect();
-          if (ev.clientX < r.left + r.width / 2) {
+          const r = other.getBoundingClientRect?.();
+          if (r && ev.clientX < r.left + r.width / 2) {
             beforeEl = other;
             break;
           }
         }
-        if (beforeEl) {
-          if (typeof strip.insertBefore === 'function') {
-            if (tabEl.nextElementSibling !== beforeEl) strip.insertBefore(tabEl, beforeEl);
+        // 判定占位槽目标位置是否发生变化:变化时采用 FLIP 技术让其他标签平滑滑移避让
+        const targetChanged = beforeEl
+          ? tabEl.nextElementSibling !== beforeEl
+          : strip.children?.[strip.children.length - 1] !== tabEl;
+        if (targetChanged) {
+          // 1. FIRST: 记录各兄弟标签移动前的屏幕坐标
+          const firstPos = new Map();
+          for (const other of others) {
+            if (typeof other.getBoundingClientRect === 'function') {
+              firstPos.set(other, other.getBoundingClientRect().left);
+            }
+          }
+          // 2. LAST: 将占位节点 tabEl 移动到新插槽
+          if (beforeEl) {
+            if (typeof strip.insertBefore === 'function') {
+              strip.insertBefore(tabEl, beforeEl);
+            } else if (Array.isArray(strip.children)) {
+              const fromIdx = strip.children.indexOf(tabEl);
+              if (fromIdx >= 0) strip.children.splice(fromIdx, 1);
+              const toIdx = strip.children.indexOf(beforeEl);
+              strip.children.splice(toIdx >= 0 ? toIdx : strip.children.length, 0, tabEl);
+            }
+          } else if (typeof strip.appendChild === 'function') {
+            strip.appendChild(tabEl);
           } else if (Array.isArray(strip.children)) {
             const fromIdx = strip.children.indexOf(tabEl);
             if (fromIdx >= 0) strip.children.splice(fromIdx, 1);
-            const toIdx = strip.children.indexOf(beforeEl);
-            strip.children.splice(toIdx >= 0 ? toIdx : strip.children.length, 0, tabEl);
+            strip.children.push(tabEl);
           }
-        } else if (strip.children?.[strip.children.length - 1] !== tabEl) {
-          strip.appendChild(tabEl);
+          // 3. INVERT & 4. PLAY: 对发生位移的标签应用反向偏移与平滑过渡
+          for (const other of others) {
+            const oldLeft = firstPos.get(other);
+            if (oldLeft === undefined) continue;
+            const newRect = other.getBoundingClientRect?.();
+            if (!newRect) continue;
+            const dx = oldLeft - newRect.left;
+            if (Math.abs(dx) > 0.5) {
+              other.style.transition = 'none';
+              other.style.transform = `translateX(${dx}px)`;
+              if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                  other.style.transition = 'transform 0.18s cubic-bezier(0.2, 0, 0, 1)';
+                  other.style.transform = '';
+                });
+              } else {
+                other.style.transform = '';
+              }
+            }
+          }
         }
       },
       onEnd: () => {
+        const others = [...strip.querySelectorAll('.tab')].filter((t) => t !== tabEl);
+        const cleanOthers = () => {
+          for (const other of others) {
+            if (other?.style) {
+              other.style.transition = '';
+              other.style.transform = '';
+            }
+          }
+        };
         const orderedIds = [...strip.querySelectorAll('.tab')].map((el) => el.dataset.tab).filter(Boolean);
         reorderTabs(orderedIds);
         if (tabEl.dataset.tab && state.activeTabId !== tabEl.dataset.tab) {
           activateTab(tabEl.dataset.tab);
+        }
+        // 松开拖拽:悬浮卡片吸附 (Magnetic Snap) 到占位槽终点坐标
+        const targetRect = typeof tabEl.getBoundingClientRect === 'function' ? tabEl.getBoundingClientRect() : null;
+        const ghostRect = ghost && typeof ghost.getBoundingClientRect === 'function' ? ghost.getBoundingClientRect() : null;
+        if (ghost && targetRect && ghostRect && typeof window !== 'undefined' && typeof ghost.addEventListener === 'function' && typeof requestAnimationFrame === 'function' && (Math.abs(targetRect.left - ghostRect.left) > 0.5 || Math.abs(targetRect.top - ghostRect.top) > 0.5)) {
+          const dx = targetRect.left - ghostRect.left;
+          const dy = targetRect.top - ghostRect.top;
+          tabEl.classList.add('tab-snapping');
+          ghost.style.transition = 'transform 0.16s cubic-bezier(0.25, 1, 0.5, 1)';
+          ghost.style.transform = `translate(${dx}px, ${dy}px)`;
+          let settled = false;
+          const settle = () => {
+            if (settled) return;
+            settled = true;
+            tabEl.classList.remove('tab-snapping');
+            ghost.remove?.();
+            cleanOthers();
+          };
+          ghost.addEventListener('transitionend', settle, { once: true });
+          setTimeout(settle, 180);
+        } else {
+          ghost?.remove?.();
+          cleanOthers();
         }
       },
     });

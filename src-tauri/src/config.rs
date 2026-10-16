@@ -852,7 +852,7 @@ impl Store {
         Ok(host)
     }
 
-    /// 公开形态(不含明文凭据,带 hasPassword/hasKey)
+    /// 公开形态(不含明文凭据,带 hasPassword/passwordLen 等)
     pub fn public_host(&self, id: &str) -> Option<Value> {
         let data = self.data.lock().unwrap();
         let h = data["hosts"]
@@ -860,15 +860,19 @@ impl Store {
             .iter()
             .find(|h| h["id"] == *id)?
             .clone();
-        let has = |f: &str| {
-            !self
-                .dec(h[format!("{}Enc", f)].as_str().unwrap_or(""))
-                .is_empty()
+        let dec_stat = |f: &str| {
+            let s = self.dec(h[format!("{}Enc", f)].as_str().unwrap_or(""));
+            (!s.is_empty(), s.chars().count())
         };
+        let (has_pw, pw_len) = dec_stat("password");
+        let (has_key, _) = dec_stat("privateKey");
+        let (has_pp, pp_len) = dec_stat("passphrase");
         let mut out = h.clone();
-        out["hasPassword"] = json!(has("password"));
-        out["hasKey"] = json!(has("privateKey"));
-        out["hasPassphrase"] = json!(has("passphrase"));
+        out["hasPassword"] = json!(has_pw);
+        out["passwordLen"] = json!(pw_len);
+        out["hasKey"] = json!(has_key);
+        out["hasPassphrase"] = json!(has_pp);
+        out["passphraseLen"] = json!(pp_len);
         // Never leak either encrypted or legacy plaintext credentials over IPC.
         for f in [
             "password",
@@ -1211,11 +1215,15 @@ impl Store {
     pub fn get_settings(&self) -> Value {
         let data = self.data.lock().unwrap();
         let ai = &data["settings"]["ai"];
+        let api_key = self.dec(ai["apiKeyEnc"].as_str().unwrap_or(""));
+        let api_key_set = !api_key.is_empty();
+        let api_key_len = api_key.chars().count();
         json!({
             "ai": {
                 "provider": ai["provider"], "protocol": ai["protocol"], "baseUrl": ai["baseUrl"],
                 "model": ai["model"], "models": ai["models"], "toolSupport": ai["toolSupport"],
-                "apiKeySet": !self.dec(ai["apiKeyEnc"].as_str().unwrap_or("")).is_empty()
+                "apiKeySet": api_key_set,
+                "apiKeyLen": api_key_len
             },
             "terminal": data["settings"]["terminal"].clone(),
             "openTempDir": data["settings"]["openTempDir"].clone(),

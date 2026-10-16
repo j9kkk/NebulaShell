@@ -1709,3 +1709,26 @@ test('retry is rejected while thread is busy', async () => {
   ai.aiFinishHolder({ requestId: state.aiReq.id });
   await req;
 });
+
+test('apiKey mask length reflects actual key length and reveal/hide preserves it', async () => {
+  const { ai, $, state } = await setup(async (channel) => {
+    if (channel === 'ai:revealApiKey') return { apiKey: 'sk-proj-12345678901234567890' }; // 28 chars
+    return { ok: true };
+  });
+  state.settings.ai.apiKeySet = true;
+  state.settings.ai.apiKeyLen = 28;
+  ai.openAiSettings();
+  const input = $('#ai-apikey');
+  assert.equal(input.value, '•'.repeat(28), '初始掩码应与真实 API Key 长度 28 一致');
+  assert.equal(input.type, 'password');
+
+  // 查看明文
+  await ai.toggleAiApiKeyVisibility();
+  assert.equal(input.value, 'sk-proj-12345678901234567890');
+  assert.equal(input.type, 'text');
+
+  // 隐藏明文
+  await ai.toggleAiApiKeyVisibility();
+  assert.equal(input.type, 'password');
+  assert.equal(input.value.length, 28, '隐藏后长度依然为 28 字符');
+});

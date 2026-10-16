@@ -4,6 +4,17 @@ import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
 
 export const MASKED_SECRET = '••••••••';
+export function secretMask(len = 8) {
+  return '•'.repeat(Math.max(1, len || 8));
+}
+let aiKeySecretState = {
+  has: false,
+  len: 0,
+  mask: '',
+  plain: null,
+  revealed: false,
+  endpoint: '',
+};
 import { popupPosition } from './interaction.js';
 import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
 import { renderMarkdown } from '../shared/markdown.js';
@@ -66,8 +77,18 @@ export function onAiEndpointChange() {
   const keyInput = $('#ai-apikey');
   const revealBtn = $('#btn-reveal-ai-apikey');
   if (usableSavedKey) {
-    if (!keyInput.value || keyInput.value === MASKED_SECRET) {
-      keyInput.value = MASKED_SECRET;
+    const len = savedAi().apiKeyLen || 8;
+    const mask = secretMask(len);
+    aiKeySecretState = {
+      has: true,
+      len,
+      mask,
+      plain: aiKeySecretState.endpoint === endpoint ? aiKeySecretState.plain : null,
+      revealed: false,
+      endpoint,
+    };
+    if (!keyInput.value || keyInput.value === MASKED_SECRET || keyInput.value === mask) {
+      keyInput.value = mask;
       keyInput.type = 'password';
     }
     if (revealBtn) {
@@ -76,10 +97,11 @@ export function onAiEndpointChange() {
       revealBtn.innerHTML = icon('eyeOff');
     }
   } else {
-    if (keyInput.value === MASKED_SECRET) {
+    if (keyInput.value === MASKED_SECRET || keyInput.value === aiKeySecretState.mask) {
       keyInput.value = '';
       keyInput.type = 'password';
     }
+    aiKeySecretState = { has: false, len: 0, mask: '', plain: null, revealed: false, endpoint };
     keyInput.placeholder = '密钥（此端点没有已保存密钥）';
     if (revealBtn) revealBtn.classList.toggle('hidden', !keyInput.value);
   }
@@ -91,21 +113,26 @@ export async function toggleAiApiKeyVisibility() {
   const input = $('#ai-apikey');
   const btn = $('#btn-reveal-ai-apikey');
   if (!input || !btn) return;
-  if (input.type === 'password') {
-    if (input.value === MASKED_SECRET) {
+  if (!aiKeySecretState.revealed) {
+    if (aiKeySecretState.has && aiKeySecretState.plain === null && (input.value === aiKeySecretState.mask || input.value === MASKED_SECRET)) {
       try {
         const res = await api('ai:revealApiKey');
-        input.value = res?.apiKey || '';
+        aiKeySecretState.plain = res?.apiKey || '';
+        aiKeySecretState.len = aiKeySecretState.plain.length;
+        aiKeySecretState.mask = secretMask(aiKeySecretState.len);
+        input.value = aiKeySecretState.plain;
       } catch (e) {
         toast('获取 API Key 明文失败：' + e.message, 'error');
         return;
       }
     }
     input.type = 'text';
+    aiKeySecretState.revealed = true;
     btn.title = '隐藏密钥';
     btn.innerHTML = icon('eye');
   } else {
     input.type = 'password';
+    aiKeySecretState.revealed = false;
     btn.title = '显示密钥';
     btn.innerHTML = icon('eyeOff');
   }
@@ -134,11 +161,14 @@ export function readAiDraft() {
   let apiKey = '';
   let useSavedApiKey = false;
 
+  const isMask = rawKey === aiKeySecretState.mask || rawKey === MASKED_SECRET;
+  const isPlain = aiKeySecretState.plain !== null && rawKey === aiKeySecretState.plain;
+
   if (hadSavedKey && rawKey === '') {
     clearApiKey = true;
-  } else if (rawKey !== '' && rawKey !== MASKED_SECRET) {
+  } else if (rawKey !== '' && !isMask && !isPlain) {
     apiKey = rawKey;
-  } else if (rawKey === MASKED_SECRET && hadSavedKey) {
+  } else if ((isMask || isPlain) && hadSavedKey) {
     useSavedApiKey = true;
   }
 

@@ -17,6 +17,7 @@ fn save_and_list_host() {
         .unwrap();
     assert!(!saved["id"].as_str().unwrap().is_empty());
     assert_eq!(saved["hasPassword"], json!(true));
+    assert_eq!(saved["passwordLen"], json!(2));
     let list = store.list_hosts();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0]["name"], json!("web-1"));
@@ -75,13 +76,15 @@ fn settings_roundtrip_and_clamp() {
     let s = store
         .save_settings(&json!({
             "terminal": { "fontSize": 99, "theme": "light", "scrollback": 1 },
-            "ai": { "baseUrl": "http://x/v1", "model": "m1" }
+            "ai": { "baseUrl": "http://x/v1", "model": "m1", "apiKey": "secret-token-1234" }
         }))
         .unwrap();
     assert_eq!(s["terminal"]["fontSize"], json!(20.0), "字号上限 20");
     assert_eq!(s["terminal"]["scrollback"], json!(1000.0), "回滚下限 1000");
     assert_eq!(s["terminal"]["theme"], json!("light"));
     assert_eq!(s["ai"]["baseUrl"], json!("http://x/v1"));
+    assert_eq!(s["ai"]["apiKeySet"], json!(true));
+    assert_eq!(s["ai"]["apiKeyLen"], json!(17));
 }
 
 #[test]

@@ -220,11 +220,18 @@
         <label>主机地址</label><input id="host-host" type="text" placeholder="IP 或域名" />
         <label>端口</label><input id="host-port" type="number" value="22" />
         <label>用户名</label><input id="host-username" type="text" value="root" />
-        <label>认证方式</label>
-        <select id="host-auth">
-          <option value="password">密码</option>
-          <option value="key">私钥</option>
-        </select>
+        <label for="host-auth-slider">认证方式</label>
+        <div class="auth-slider-field">
+          <div id="host-auth-slider" class="segmented-slider" data-value="password" role="radiogroup" aria-label="认证方式" tabindex="0">
+            <div class="segmented-thumb"></div>
+            <button type="button" class="segmented-item active" data-value="password" role="radio" aria-checked="true" tabindex="-1">密码</button>
+            <button type="button" class="segmented-item" data-value="key" role="radio" aria-checked="false" tabindex="-1">私钥</button>
+          </div>
+          <select id="host-auth" class="hidden">
+            <option value="password">密码</option>
+            <option value="key">私钥</option>
+          </select>
+        </div>
         <div id="row-password" class="form-row">
           <label for="host-password">密码</label>
           <div class="secret-input-wrap">
@@ -272,7 +279,15 @@
           <option value="deny">禁止 AI 访问</option>
         </select>
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />
-        <label for="host-tags">标签</label><input id="host-tags" type="text" placeholder="多个标签以逗号分隔" />
+        <label for="host-tag-input">标签</label>
+        <div id="host-tags-box" class="tag-input-row">
+          <div id="host-tags-container" class="tag-input-container" tabindex="0">
+            <span id="host-tags-list" class="tag-chips-list"></span>
+            <input id="host-tag-input" class="tag-inner-input" type="text" placeholder="输入标签按回车，或下拉选择…" autocomplete="off" />
+          </div>
+          <div id="host-tags-menu" class="tag-menu hidden"></div>
+          <input id="host-tags" type="hidden" />
+        </div>
       </div>
       <div class="modal-actions">
         <button id="btn-host-cancel" class="btn">取消</button>

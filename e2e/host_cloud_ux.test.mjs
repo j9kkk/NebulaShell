@@ -16,6 +16,9 @@ class Element {
   disabled = false;
   className = '';
   classList = { add() {}, remove() {}, toggle() {} };
+  setAttribute(k, v) { this[k] = v; }
+  getAttribute(k) { return this[k]; }
+  removeAttribute(k) { delete this[k]; }
   get options() { return this.children; }
   get selectedOptions() { return this.children.filter((c) => c.selected); }
   set innerHTML(html) {
@@ -161,9 +164,9 @@ test('fingerprint modal exposes and copies the full fingerprint accessibly', asy
 
 test('host modal displays masked password for existing credentials and clears secrets when emptied', async () => {
   const f = await fixture();
-  f.hosts.openHostModal({ id: 'host', name: 'edited', host: 'server.test', username: 'root', port: 22, authType: 'password', hasPassword: true, hasPassphrase: true, tags: ['ops'] });
-  assert.equal(f.$('#host-password').value, '••••••••');
-  assert.equal(f.$('#host-passphrase').value, '••••••••');
+  f.hosts.openHostModal({ id: 'host', name: 'edited', host: 'server.test', username: 'root', port: 22, authType: 'password', hasPassword: true, passwordLen: 12, hasPassphrase: true, passphraseLen: 6, tags: ['ops'] });
+  assert.equal(f.$('#host-password').value, '••••••••••••');
+  assert.equal(f.$('#host-passphrase').value, '••••••');
   // 手动清空密码框与口令框
   f.$('#host-password').value = '';
   f.$('#host-passphrase').value = '';
@@ -173,4 +176,53 @@ test('host modal displays masked password for existing credentials and clears se
   assert.deepEqual(Array.from(payload.clearSecrets), ['password', 'passphrase']);
   assert.deepEqual(Array.from(payload.tags), ['ops', 'team']);
   assert.equal(payload.password, undefined);
+});
+
+test('host modal auth segmented slider switches between password and key mode', async () => {
+  const f = await fixture();
+  f.hosts.openHostModal({ id: 'h1', name: 'demo', host: 'demo.test', authType: 'password' });
+  assert.equal(f.$('#host-auth-slider').dataset.value, 'password');
+  assert.equal(f.$('#host-auth').value, 'password');
+
+  // 切换为私钥模式
+  f.hosts.setHostAuthMode('key');
+  assert.equal(f.$('#host-auth-slider').dataset.value, 'key');
+  assert.equal(f.$('#host-auth').value, 'key');
+
+  // 切回密码模式
+  f.hosts.setHostAuthMode('password');
+  assert.equal(f.$('#host-auth-slider').dataset.value, 'password');
+  assert.equal(f.$('#host-auth').value, 'password');
+});
+
+test('host modal tags support chips, adding new tags, removing tags and collecting existing tags', async () => {
+  const f = await fixture();
+  f.state.hosts = [
+    { id: 'h1', tags: ['生产', 'web'] },
+    { id: 'h2', tags: ['生产', 'db'] },
+  ];
+  // 校验已有标签汇总
+  const allTags = f.hosts.getAllHostTags();
+  assert.ok(allTags.includes('生产'));
+  assert.ok(allTags.includes('web'));
+  assert.ok(allTags.includes('db'));
+
+  // 打开新主机
+  f.hosts.openHostModal(null);
+  f.$('#host-host').value = '10.0.0.1';
+
+  // 添加标签
+  f.hosts.addHostTag('网关');
+  f.hosts.addHostTag('测试');
+  assert.equal(f.$('#host-tags').value, '网关, 测试');
+
+  // 移除标签
+  f.hosts.removeHostTag('网关');
+  assert.equal(f.$('#host-tags').value, '测试');
+
+  // 行内输入框残留未按回车文本，保存时自动合并
+  f.$('#host-tag-input').value = '待确认';
+  await f.hosts.saveHostModal();
+  const payload = f.calls.find((call) => call.channel === 'hosts:save').payload;
+  assert.deepEqual(Array.from(payload.tags), ['测试', '待确认']);
 });

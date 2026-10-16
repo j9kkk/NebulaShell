@@ -468,8 +468,10 @@ test('pointer drag on tab header and workspace tile header reorders tabs only af
   tabA.dispatchEvent({ type: 'mousedown', button: 0, clientX: 20, clientY: 15, target: tabA });
   h.document.dispatchEvent({ type: 'mousemove', clientX: 180, clientY: 15 });
   assert.equal(tabA.classList.contains('dragging'), true);
+  assert.equal(Boolean(h.document.querySelector('.tab-ghost')), true);
   h.document.dispatchEvent({ type: 'mouseup', clientX: 180, clientY: 15 });
   assert.equal(tabA.classList.contains('dragging'), false);
+  assert.equal(Boolean(h.document.querySelector('.tab-ghost')), false);
   assert.deepEqual([...h.state.tabs.keys()], [b.tabId, a.tabId]);
 
   // After drag, clicking another tab switches immediately on the very first click
@@ -525,6 +527,7 @@ test('tab and tile header presses cancel the default action; a drag whose mouseu
   h.document.dispatchEvent({ type: 'mousemove', clientX: 60, clientY: 15, buttons: 0 });
   assert.equal(tabA.classList.contains('dragging'), false);
   assert.equal(h.document.body.classList.contains('tab-dragging'), false);
+  assert.equal(Boolean(h.document.querySelector('.tab-ghost')), false);
   assert.deepEqual([...h.state.tabs.keys()], [b.tabId, a.tabId]);
   // Later moves no longer drag the tab around
   h.document.dispatchEvent({ type: 'mousemove', clientX: 400, clientY: 15 });

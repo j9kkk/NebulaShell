@@ -112,14 +112,180 @@ export function escapeHtml(s) {
 /* ---------------- 主机编辑弹窗 ---------------- */
 
 export const MASKED_SECRET = '••••••••';
+export function secretMask(len = 8) {
+  return '•'.repeat(Math.max(1, len || 8));
+}
 
 let hostSecretState = {
-  password: { has: false, plain: null, revealed: false },
-  passphrase: { has: false, plain: null, revealed: false },
+  password: { has: false, len: 0, mask: '', plain: null, revealed: false },
+  passphrase: { has: false, len: 0, mask: '', plain: null, revealed: false },
   clearPrivateKey: false,
 };
 
 let currentJumpIds = [];
+let currentHostTags = [];
+
+export function syncAuthSliderUI(val) {
+  const slider = $('#host-auth-slider');
+  if (!slider) return;
+  const current = val || $('#host-auth')?.value || 'password';
+  slider.dataset.value = current;
+  slider.querySelectorAll('.segmented-item').forEach((btn) => {
+    const isAct = btn.dataset.value === current;
+    btn.classList.toggle('active', isAct);
+    btn.setAttribute?.('aria-checked', String(isAct));
+  });
+}
+
+export function setHostAuthMode(val) {
+  const sel = $('#host-auth');
+  if (sel) {
+    sel.value = val;
+    if (typeof Event !== 'undefined' && typeof sel.dispatchEvent === 'function') {
+      sel.dispatchEvent(new Event('change'));
+    } else {
+      syncAuthSliderUI(val);
+      toggleAuthRows();
+    }
+  } else {
+    syncAuthSliderUI(val);
+    toggleAuthRows();
+  }
+}
+
+export function getAllHostTags() {
+  const set = new Set();
+  for (const h of state.hosts || []) {
+    for (const t of h.tags || []) {
+      if (t && typeof t === 'string' && t.trim()) set.add(t.trim());
+    }
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+}
+
+export function renderHostTagChips() {
+  const listEl = $('#host-tags-list');
+  const inputEl = $('#host-tag-input');
+  const hiddenInput = $('#host-tags');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+
+  currentHostTags.forEach((tag) => {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    chip.dataset.tag = tag;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'tag-chip-name';
+    nameSpan.textContent = tag;
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'tag-chip-remove';
+    delBtn.title = `移除标签 ${tag}`;
+    delBtn.setAttribute?.('aria-label', `移除标签 ${tag}`);
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeHostTag(tag);
+    });
+
+    chip.appendChild(nameSpan);
+    chip.appendChild(delBtn);
+    listEl.appendChild(chip);
+  });
+
+  if (hiddenInput) {
+    hiddenInput.value = currentHostTags.join(', ');
+  }
+  if (inputEl) {
+    inputEl.placeholder = currentHostTags.length > 0 ? '继续输入…' : '输入标签按回车，或下拉选择…';
+  }
+}
+
+export function addHostTag(rawTag) {
+  if (!rawTag) return;
+  const tag = String(rawTag).trim().replace(/^,+|,+$/g, '');
+  if (!tag) return;
+  if (!currentHostTags.includes(tag)) {
+    currentHostTags.push(tag);
+    renderHostTagChips();
+  }
+}
+
+export function removeHostTag(tag) {
+  currentHostTags = currentHostTags.filter((t) => t !== tag);
+  renderHostTagChips();
+  renderTagMenu($('#host-tag-input')?.value || '');
+}
+
+export function renderTagMenu(query = '') {
+  const menu = $('#host-tags-menu');
+  if (!menu) return;
+  const kw = (query || '').trim().toLowerCase();
+  const allTags = getAllHostTags();
+  const filtered = allTags.filter((t) => !kw || t.toLowerCase().includes(kw));
+
+  menu.innerHTML = '';
+  if (filtered.length === 0 && !kw) {
+    const empty = document.createElement('div');
+    empty.className = 'tag-menu-empty';
+    empty.textContent = '暂无历史标签，可输入新标签按回车创建';
+    menu.appendChild(empty);
+  } else {
+    for (const t of filtered) {
+      const isSelected = currentHostTags.includes(t);
+      const item = document.createElement('div');
+      item.className = 'tag-menu-item' + (isSelected ? ' selected' : '');
+      item.dataset.tag = t;
+      item.innerHTML = `<span>${escapeHtml(t)}</span>${isSelected ? '<span class="tag-check">✓</span>' : ''}`;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isSelected) {
+          removeHostTag(t);
+        } else {
+          addHostTag(t);
+        }
+        const inp = $('#host-tag-input');
+        if (inp) {
+          inp.value = '';
+          inp.focus();
+        }
+        renderTagMenu('');
+      });
+      menu.appendChild(item);
+    }
+    if (kw && !allTags.some((t) => t.toLowerCase() === kw) && !currentHostTags.some((t) => t.toLowerCase() === kw)) {
+      const addRow = document.createElement('div');
+      addRow.className = 'tag-menu-add-new';
+      addRow.textContent = `按回车新增标签 "${query.trim()}"`;
+      addRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addHostTag(query);
+        const inp = $('#host-tag-input');
+        if (inp) {
+          inp.value = '';
+          inp.focus();
+        }
+        renderTagMenu('');
+      });
+      menu.appendChild(addRow);
+    }
+  }
+}
+
+export function toggleTagMenu(open) {
+  const menu = $('#host-tags-menu');
+  if (!menu) return;
+  const shouldOpen = open !== undefined ? open : menu.classList.contains('hidden');
+  if (!shouldOpen) {
+    menu.classList.add('hidden');
+    return;
+  }
+  const currentQuery = $('#host-tag-input')?.value || '';
+  renderTagMenu(currentQuery);
+  menu.classList.remove('hidden');
+}
 
 export function updateSessionLogHint() {
   const sel = $('#host-sessionlog');
@@ -140,10 +306,12 @@ export async function toggleHostSecret(field) {
   const btn = $(`#btn-reveal-host-${field}`);
   const hostId = $('#host-id').value;
   if (!st.revealed) {
-    if (st.has && st.plain === null && input.value === MASKED_SECRET && hostId) {
+    if (st.has && st.plain === null && (input.value === st.mask || input.value === MASKED_SECRET) && hostId) {
       try {
         const res = await api('hosts:revealSecret', { id: hostId, field });
         st.plain = res?.value || '';
+        st.len = st.plain.length;
+        st.mask = secretMask(st.len);
         input.value = st.plain;
       } catch (e) {
         toast('获取明文失败：' + e.message, 'error');
@@ -288,9 +456,17 @@ export function toggleJumpMenu(open) {
 
 export function openHostModal(host) {
   state.pickedKey = null;
+  const pwHas = !!(host && host.hasPassword);
+  const pwLen = (host && host.passwordLen) || 8;
+  const pwMask = secretMask(pwLen);
+
+  const ppHas = !!(host && host.hasPassphrase);
+  const ppLen = (host && host.passphraseLen) || 8;
+  const ppMask = secretMask(ppLen);
+
   hostSecretState = {
-    password: { has: !!(host && host.hasPassword), plain: null, revealed: false },
-    passphrase: { has: !!(host && host.hasPassphrase), plain: null, revealed: false },
+    password: { has: pwHas, len: pwLen, mask: pwMask, plain: null, revealed: false },
+    passphrase: { has: ppHas, len: ppLen, mask: ppMask, plain: null, revealed: false },
     clearPrivateKey: false,
   };
 
@@ -300,14 +476,16 @@ export function openHostModal(host) {
   $('#host-host').value = host ? host.host : '';
   $('#host-port').value = host ? host.port : 22;
   $('#host-username').value = host ? host.username : 'root';
-  $('#host-auth').value = host ? host.authType : 'password';
+  const authMode = host ? host.authType : 'password';
+  if ($('#host-auth')) $('#host-auth').value = authMode;
+  syncAuthSliderUI(authMode);
 
   // 密码初始化
   const pwInput = $('#host-password');
   const pwRevealBtn = $('#btn-reveal-host-password');
   pwInput.type = 'password';
-  if (host && host.hasPassword) {
-    pwInput.value = MASKED_SECRET;
+  if (pwHas) {
+    pwInput.value = pwMask;
     if (pwRevealBtn) {
       pwRevealBtn.classList.remove('hidden');
       pwRevealBtn.title = '显示密码';
@@ -322,8 +500,8 @@ export function openHostModal(host) {
   const ppInput = $('#host-passphrase');
   const ppRevealBtn = $('#btn-reveal-host-passphrase');
   ppInput.type = 'password';
-  if (host && host.hasPassphrase) {
-    ppInput.value = MASKED_SECRET;
+  if (ppHas) {
+    ppInput.value = ppMask;
     if (ppRevealBtn) {
       ppRevealBtn.classList.remove('hidden');
       ppRevealBtn.title = '显示口令';
@@ -342,7 +520,11 @@ export function openHostModal(host) {
   }
 
   $('#host-group').value = host ? groupOf(host) : '';
-  if ($('#host-tags')) $('#host-tags').value = (host?.tags || []).join(', ');
+  const initialTags = (host && Array.isArray(host.tags)) ? [...host.tags] : (host?.tags || []);
+  currentHostTags = [...initialTags];
+  if ($('#host-tag-input')) $('#host-tag-input').value = '';
+  renderHostTagChips();
+  toggleTagMenu(false);
 
   // 跳板机初始化
   currentJumpIds = (host && Array.isArray(host.jumpIds)) ? [...host.jumpIds] : [];
@@ -360,9 +542,11 @@ export function openHostModal(host) {
 }
 
 export function toggleAuthRows() {
-  const isKey = $('#host-auth').value === 'key';
-  $('#row-password').classList.toggle('hidden', isKey);
-  $('#row-key').classList.toggle('hidden', !isKey);
+  const current = $('#host-auth')?.value || 'password';
+  const isKey = current === 'key';
+  $('#row-password')?.classList.toggle('hidden', isKey);
+  $('#row-key')?.classList.toggle('hidden', !isKey);
+  syncAuthSliderUI(current);
 }
 
 export async function saveHostModal() {
@@ -383,19 +567,25 @@ export async function saveHostModal() {
 
   const clearSecrets = [];
 
-  // 密码处理: 手动清空已有密码视为删除; 非空且非占位掩码视为新密码; 占位掩码保持不变
+  // 密码处理: 手动清空已有密码视为删除; 非空且非占位掩码且非原明文视为新密码; 占位掩码保持不变
   const pwVal = $('#host-password').value;
-  if (hostSecretState.password.has && pwVal === '') {
+  const pwSt = hostSecretState.password;
+  const pwIsMask = pwVal === pwSt.mask || pwVal === MASKED_SECRET;
+  const pwIsPlain = pwSt.plain !== null && pwVal === pwSt.plain;
+  if (pwSt.has && pwVal === '') {
     clearSecrets.push('password');
-  } else if (pwVal !== '' && pwVal !== MASKED_SECRET) {
+  } else if (pwVal !== '' && !pwIsMask && !pwIsPlain) {
     payload.password = pwVal;
   }
 
   // 私钥口令处理
   const ppVal = $('#host-passphrase').value;
-  if (hostSecretState.passphrase.has && ppVal === '') {
+  const ppSt = hostSecretState.passphrase;
+  const ppIsMask = ppVal === ppSt.mask || ppVal === MASKED_SECRET;
+  const ppIsPlain = ppSt.plain !== null && ppVal === ppSt.plain;
+  if (ppSt.has && ppVal === '') {
     clearSecrets.push('passphrase');
-  } else if (ppVal !== '' && ppVal !== MASKED_SECRET) {
+  } else if (ppVal !== '' && !ppIsMask && !ppIsPlain) {
     payload.passphrase = ppVal;
   }
 
@@ -408,7 +598,22 @@ export async function saveHostModal() {
     payload.clearSecrets = clearSecrets;
   }
 
-  if ($('#host-tags')) payload.tags = $('#host-tags').value.split(',').map((tag) => tag.trim()).filter(Boolean);
+  // 标签保存前处理:若行内输入框中尚有未按回车提交的非空文字,先自动追加
+  const pendingTag = $('#host-tag-input')?.value.trim();
+  if (pendingTag) {
+    addHostTag(pendingTag);
+    if ($('#host-tag-input')) $('#host-tag-input').value = '';
+  }
+  if ($('#host-tags')) {
+    const explicitVal = $('#host-tags').value.trim();
+    if (explicitVal) {
+      payload.tags = explicitVal.split(',').map((tag) => tag.trim()).filter(Boolean);
+    } else {
+      payload.tags = [...currentHostTags];
+    }
+  } else {
+    payload.tags = [...currentHostTags];
+  }
 
   if (!payload.host) return toast('请填写主机地址', 'error');
   if (payload.authType === 'key') {
