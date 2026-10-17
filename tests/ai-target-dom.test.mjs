@@ -237,6 +237,10 @@ test('TargetMenu 顶层模式为 Radio 单选卡片交互，且就地更新保�
   assert.equal(chatRow.getAttribute('aria-checked'), 'false');
   assert.ok(!chatRow.classList.contains('is-on'));
 
+  // 检查非多主机模式下绝对不能出现多余分割线和多主机页脚
+  assert.equal(root.querySelectorAll('.ai-target-menu-sep').length, 0, '非多主机模式下禁止出现分割线');
+  assert.equal(root.querySelectorAll('.ai-target-menu-foot').length, 0, '非多主机模式下禁止出现页脚');
+
   // 记录节点引用，用于测试就地 patch 保留节点身份
   const followNodeBefore = followRow;
 
@@ -276,4 +280,10 @@ test('TargetMenu 顶层模式为 Radio 单选卡片交互，且就地更新保�
   const hostRows = root.querySelectorAll('.ai-target-host');
   assert.equal(hostRows.length, 2, '多主机列表展开 2 台主机');
   assert.ok(hostRows[0].querySelector('.switch'), '主机项必须使用 Switch 开关');
+
+  // 5. 再次切回 follow 模式: 分割线与页脚必须被彻底清除，不留任何残留
+  ui.renderTargetMenu(data1, handlers);
+  assert.equal(root.querySelectorAll('.ai-target-hosts').length, 0, '切回跟随模式后主机列表已清除');
+  assert.equal(root.querySelectorAll('.ai-target-menu-sep').length, 0, '切回跟随模式后分割线必须被彻底清除');
+  assert.equal(root.querySelectorAll('.ai-target-menu-foot').length, 0, '切回跟随模式后页脚必须被彻底清除');
 });

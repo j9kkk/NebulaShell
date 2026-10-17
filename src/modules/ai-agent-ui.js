@@ -816,9 +816,8 @@ export function renderTargetMenu(menuData, handlers = {}, { focusMode, focusHost
 
   if (data.multi?.showHosts) {
     list.append(renderHostList(data, handlers));
+    renderTargetFooter(list, data, handlers);
   }
-
-  renderTargetFooter(list, data, handlers);
 
   // 重绘后把焦点放回刚操作过的那一项,键盘/鼠标连续操作不丢位置。
   if (focusHostId) {
@@ -852,10 +851,18 @@ function insertHostBlock(list, data) {
   for (const node of footNodes) list.insertBefore(node, after);
 }
 
+/// 清单块移除(切出多主机模式):彻底清掉清单、分割线与页脚,模式行原样保留。
+function removeHostBlock(list) {
+  list.querySelector('.ai-target-hosts')?.remove();
+  for (const node of [...list.querySelectorAll('.ai-target-menu-sep')]) node.remove();
+  for (const node of [...list.querySelectorAll('.ai-target-menu-foot')]) node.remove();
+}
+
 /// 清单块重建(主机增删/搜索过滤):整块替换清单与页脚,模式行仍保留。
 function rebuildHostBlock(list, data) {
   list.querySelector('.ai-target-hosts')?.remove();
-  for (const node of [...list.querySelectorAll('.ai-target-menu-sep, .ai-target-menu-foot')]) node.remove();
+  for (const node of [...list.querySelectorAll('.ai-target-menu-sep')]) node.remove();
+  for (const node of [...list.querySelectorAll('.ai-target-menu-foot')]) node.remove();
   const rows = [...list.querySelectorAll('.ai-target-mode')];
   const anchor = rows[rows.length - 1];
   const after = anchor ? anchor.nextSibling : null;
@@ -919,7 +926,7 @@ function patchTargetMenu(list, data) {
   } else if (wantHosts !== wasHosts) {
     // 多主机开/关:只增删清单 + 页脚,模式行原样保留(动画不丢)。
     if (wantHosts) insertHostBlock(list, data);
-    else { hostWrap?.remove(); foot?.remove(); }
+    else removeHostBlock(list);
     syncModeRows();
     return true;
   }
