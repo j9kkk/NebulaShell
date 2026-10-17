@@ -366,8 +366,10 @@ function runPrompt(message, opts) {
     password = true,
     placeholder = '',
     value = '',
+    defaultValue = '',
     validate = null,
   } = opts;
+  const initialValue = value || defaultValue || '';
   return new Promise((resolve) => {
     const modal = $('#modal-prompt');
     const input = $('#prompt-input');
@@ -379,7 +381,7 @@ function runPrompt(message, opts) {
     hintEl.textContent = hint || '';
     hintEl.style.display = hint ? 'block' : 'none';
     input.type = password ? 'password' : 'text';
-    input.value = value;
+    input.value = initialValue;
     input.placeholder = placeholder;
     okBtn.textContent = okText;
     okBtn.disabled = false;
@@ -413,7 +415,7 @@ function runPrompt(message, opts) {
     setModalDismissHandler(modal, onCancel);
     openModal(modal);
     input.focus();
-    if (value) input.select();
+    if (initialValue) input.select();
   });
 }
 

@@ -762,17 +762,21 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-target-menu-note { padding: 6px 8px 4px; font-size: 11px; line-height: 1.5; color: var(--muted); }
 .ai-target-menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
 
-/* 模式行:图标 + 名称/描述 + 右侧 switch(三种模式互斥,不再用勾选符号)。
-   整行可点 = 切到这个模式;非当前模式的 switch 为关且禁用。 */
+/* 模式行:单选卡片样式 (Radio 单选指示器 + 图标 + 名称/描述)
+   三种互斥模式严格 N 选 1，任意时刻必须生效其中一种，整行可点切换；
+   已激活模式再次点击保持激活（单选标准行为），彻底杜绝 Switch 误导用户「可以全部关闭」。 */
 .ai-target-mode {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+  display: flex; align-items: center; gap: 9px; width: 100%;
   padding: 7px 8px; border: none; border-radius: 6px; background: none;
   color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 .ai-target-mode:hover, .ai-target-mode:focus-visible { background: var(--surface-hover); outline: none; }
+.ai-target-mode.is-on { background: var(--surface-hover); }
+[data-theme="light"] .ai-target-mode.is-on { background: rgba(0, 0, 0, 0.04); }
 .ai-target-mode[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
-/* 未启用的一行整体压暗,但保持可点(否则用户被锁在某个模式里)
-   开关本身禁用,所以只改文字与图标,不挡掉整行的指针事件。 */
+
+/* 未启用的模式文字和图标自然压暗 */
 .ai-target-mode:not(.is-on) .ai-target-mode-name { color: var(--muted); font-weight: 500; }
 .ai-target-mode:not(.is-on) .mi { opacity: 0.6; }
 .ai-target-mode .mi { flex: none; display: inline-flex; color: var(--muted); }
@@ -781,23 +785,32 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-target-mode-name { font-weight: 600; }
 .ai-target-mode.is-on .ai-target-mode-name { color: var(--accent); }
 .ai-target-mode-desc { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-target-mode .switch { flex: none; }
-/* 未启用模式的开关控件不接收指针事件:点击穿透到整行 = 切到这个模式。
-   视觉上仍是关闭态,语义上「另一个启用时自动禁用」。 */
-.ai-target-mode:not(.is-on) .switch { pointer-events: none; }
-.ai-target-mode:not(.is-on) .switch input:disabled + .switch-slider { opacity: 0.6; }
-/* 菜单里的 switch 比设置页的默认尺寸略小,和 12px 文字行高更协调 */
-.ai-target-mode .switch, .ai-target-host .switch { min-height: 20px; }
-.ai-target-mode .switch-slider, .ai-target-host .switch-slider { width: 34px; height: 20px; border-radius: 10px; }
-.ai-target-mode .switch-slider::after, .ai-target-host .switch-slider::after {
-  width: 14px; height: 14px;
+
+/* 优雅的 Radio 单选圆环指示器与果冻弹性缩放微动效 */
+.ai-target-mode-radio {
+  flex: none; width: 16px; height: 16px; border-radius: 50%;
+  border: 1.5px solid var(--border); box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.2s ease;
 }
-.ai-target-mode .switch input:checked + .switch-slider::after,
+.ai-target-mode:hover .ai-target-mode-radio { border-color: var(--accent); }
+.ai-target-mode.is-on .ai-target-mode-radio { border-color: var(--accent); }
+.ai-target-mode-radio::after {
+  content: ''; display: block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  transform: scale(0);
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.ai-target-mode.is-on .ai-target-mode-radio::after {
+  transform: scale(1);
+}
+
+/* 菜单内主机 switch 比设置页默认尺寸略小,和 12px 文字行高更协调 */
+.ai-target-host .switch { min-height: 20px; flex: none; }
+.ai-target-host .switch-slider { width: 34px; height: 20px; border-radius: 10px; }
+.ai-target-host .switch-slider::after { width: 14px; height: 14px; }
 .ai-target-host .switch input:checked + .switch-slider::after { transform: translateX(14px); }
-/* 小号 switch 的果冻拉伸量按比例收一点(16px 轨道用 17px) */
-.ai-target-mode .switch:active .switch-slider::after,
 .ai-target-host .switch:active .switch-slider::after,
-.ai-target-mode .switch input:checked:active + .switch-slider::after,
 .ai-target-host .switch input:checked:active + .switch-slider::after { width: 17px; }
 
 /* 多主机清单:搜索 + 计数 + 可滚动列表(100 台也不撑破菜单) */

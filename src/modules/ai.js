@@ -771,10 +771,13 @@ export function renderAiDrawer(kw = '') {
     const renameBtn = card.querySelector('.ai-drawer-btn-rename');
     renameBtn?.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const newName = await askPrompt('重命名对话', {
+      const currentTitle = th.title || '新对话';
+      const newName = await askPrompt('请输入新的对话标题', {
         title: '重命名对话',
-        defaultValue: th.title || '新对话',
-        placeholder: '输入新的对话标题'
+        value: currentTitle,
+        password: false,
+        placeholder: '输入新的对话标题',
+        okText: '确定',
       });
       if (newName != null && newName.trim()) {
         renameAiThread(th.id, newName.trim());

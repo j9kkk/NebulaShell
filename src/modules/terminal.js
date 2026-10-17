@@ -432,6 +432,9 @@ export function activatePane(tabId, paneId, focus = false) {
   syncTabChrome();
   updateStatusbar(null);
   renderMonitorBar();
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('nb:active-session'));
+  }
 }
 
 /// 文件分屏获得焦点:标记 .focused + 记为标签活动窗格,其余一概不动。
@@ -478,6 +481,9 @@ export async function closeTab(tabId) {
     state.workspace = { mode: 'single', layout: null, fits: true };
     updateStatusbar(null);
     renderMonitorBar();
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('nb:active-session'));
+    }
   } else if (wasActive) {
     state.activeId = null;
     setActiveTabId([...state.tabs.keys()][0]);
@@ -1695,6 +1701,12 @@ function closeSessionNow(sessionId) {
   }
   refreshBroadcast();
   updateWelcome();
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('nb:session-status', { detail: { sessionId, status: 'closed' } }));
+    if (wasActive && !state.activeId) {
+      window.dispatchEvent(new CustomEvent('nb:active-session'));
+    }
+  }
 }
 
 /// 会话状态变化后刷新标签外观(标题与状态点取自该标签的主会话)
@@ -1862,6 +1874,9 @@ export async function disconnectSession(sessionId) {
     updateTab(s);
     if (state.activeId === sessionId) updateStatusbar(s);
     refreshBroadcast();
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('nb:session-status', { detail: { sessionId, status: 'disconnected' } }));
+    }
   }
   try { await api('ssh:disconnect', { sessionId }); return true; } catch { return false; }
 }

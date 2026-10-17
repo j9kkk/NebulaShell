@@ -765,8 +765,9 @@ export function renderTargetMenu(menuData, handlers = {}, { focusMode, focusHost
 
   const modeOn = (id) => !!data[id]?.checked;
 
-  // 三种模式互斥:一律是 switch。当前模式的开关为开、可点(再点=无操作);
-  // 另两个开关为关且禁用(「一个启用后另外二个自动禁用」)。切换目标是点那一行。
+  // 三种模式互斥:优雅的单选卡片交互(Radio 单选指示器)。
+  // 顶层三模式 N 选 1,任意时刻必须且只能选择其中一种,整行点击即切换;
+  // 已激活的模式再次点击保持激活(单选规范),彻底解决 Switch 误导「可以全部关闭」的认知矛盾。
   const modeRow = (modeId, iconName, label, desc) => {
     const on = modeOn(modeId);
     const row = el('div', 'ai-target-mode' + (on ? ' is-on' : ''));
@@ -780,22 +781,10 @@ export function renderTargetMenu(menuData, handlers = {}, { focusMode, focusHost
     const body = el('span', 'ai-target-mode-body');
     body.append(el('span', 'ai-target-mode-name', label), el('span', 'ai-target-mode-desc', desc));
     row.append(ic, body);
-    row.append(makeSwitch({
-      checked: on,
-      // 非当前模式的开关禁用:互斥模式下它只能是关,点它没有意义。
-      disabled: !!data.disabled || !on,
-      label,
-      // 开关自己处理 change;阻止冒泡到整行,避免同一次点击被处理两次。
-      onClick: (e) => e.stopPropagation(),
-      // 同样读实时状态:就地更新后不能依赖创建时的 on 快照。
-      onChange: (next) => {
-        if (next && row.getAttribute('aria-checked') !== 'true') targetHandlers.onSelectMode?.(modeId);
-      },
-    }));
-    // 整行可点 = 切到这个模式(当前模式点自己无操作)。开关禁用的那两行也能点,
-    // 否则用户被锁死在一个模式里。
-    // 判断读实时 DOM 状态而不是创建时捕获的 on:菜单会就地更新(不重建),
-    // 闭包里的 on 会过期,导致已切到该模式后仍被当成"未启用"重复触发。
+    const radio = el('span', 'ai-target-mode-radio');
+    row.append(radio);
+
+    // 整行可点 = 单选切到这个模式(已是当前模式点击保持原状,不取消)。
     const isOnNow = () => row.getAttribute('aria-checked') === 'true';
     const isDisabledNow = () => row.getAttribute('aria-disabled') === 'true';
     row.addEventListener('click', () => {
@@ -885,7 +874,6 @@ function patchTargetMenu(list, data) {
       const on = !!data[modeId]?.checked;
       row.classList.toggle('is-on', on);
       row.setAttribute('aria-checked', on ? 'true' : 'false');
-      syncSwitch(row, on, !!data.disabled || !on);
       const desc = row.querySelector('.ai-target-mode-desc');
       const text = modeId === 'follow'
         ? (data.follow?.hostLabel ? `已链接 ${data.follow.hostLabel}` : '跟随当前命令窗口的主机')
