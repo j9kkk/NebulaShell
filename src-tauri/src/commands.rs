@@ -251,9 +251,15 @@ pub fn host_meta_of(host: &serde_json::Value) -> HostMeta {
     }
 }
 
+/// 内部会话(批量执行、AI 多主机链接)不参与会话日志/监控/转发:它们没有终端,
+/// 只是 AI 的执行通道。前缀判定集中在这里,新增用途直接加前缀即可。
+fn is_internal_session(sid: &str) -> bool {
+    sid.starts_with("batch-") || sid.starts_with("ailink-")
+}
+
 /// 是否自动记录:批量执行等内部连接不参与;主机单独设置优先于全局开关。
 fn should_auto_log(store: &Store, host: &serde_json::Value, sid: &str) -> bool {
-    if sid.starts_with("batch-") {
+    if is_internal_session(sid) {
         return false;
     }
     match host["sessionLog"].as_str() {
@@ -644,8 +650,8 @@ pub async fn nebula_invoke(
                     }) else {
                         return ok(json!({ "sessionId": session_id, "cancelled": true }));
                     };
-                    // 监控任务随连接启动(批量会话除外)
-                    if !session_id.starts_with("batch-") {
+                    // 监控任务随连接启动(内部会话除外:它们没有终端,不采指标)
+                    if !is_internal_session(&session_id) {
                         state.start_monitor(&app, &session_id);
                         // 清理台账:该主机上可能还挂着上次传输任务的临时文件
                         state
@@ -1765,18 +1771,28 @@ pub async fn nebula_invoke(
                 None => ok(json!(null)),
             }
         }
-        // 选择目录(文件夹下载/批量下载的目标根目录)
+        // 选择目录(文件夹下载/批量下载的目标根目录/设置目录等)
         "dialog:pickDirectory" => {
             if state.test_mode {
                 if let Ok(p) = std::env::var("NEBULA_TEST_PICK_DIR") {
                     return ok(json!(p));
                 }
             }
-            match rfd::AsyncFileDialog::new()
-                .set_title("选择下载目标文件夹")
-                .pick_folder()
-                .await
+            let mut dialog = rfd::AsyncFileDialog::new().set_title("选择目标文件夹");
+            if let Some(default_dir) = payload["defaultPath"]
+                .as_str()
+                .or_else(|| payload["path"].as_str())
             {
+                let p = std::path::Path::new(default_dir.trim());
+                if p.is_dir() {
+                    dialog = dialog.set_directory(p);
+                } else if let Some(parent) = p.parent() {
+                    if parent.is_dir() {
+                        dialog = dialog.set_directory(parent);
+                    }
+                }
+            }
+            match dialog.pick_folder().await {
                 Some(f) => ok(json!(f.path().to_string_lossy().to_string())),
                 None => ok(json!(null)),
             }

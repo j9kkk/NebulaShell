@@ -1057,7 +1057,7 @@ export function chooseUploadConflict(name, target) {
     const sheet = document.createElement('dialog');
     sheet.id = 'upload-conflict-dialog';
     sheet.className = 'upload-conflict';
-    sheet.innerHTML = '<h3>上传同名文件</h3><p></p><label><input type="checkbox" id="upload-conflict-all"> 对此队列的后续冲突使用相同策略</label><div class="modal-foot"></div>';
+    sheet.innerHTML = '<h3>上传同名文件</h3><p></p><label class="switch"><input type="checkbox" id="upload-conflict-all"><span class="switch-slider"></span><span class="switch-label">对此队列的后续冲突使用相同策略</span></label><div class="modal-foot"></div>';
     const session = state.sessions.get(target.sessionId);
     const host = session?.host;
     const label = host ? `${host.username}@${host.host}:${host.port}` : target.sessionId;

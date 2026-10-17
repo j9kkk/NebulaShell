@@ -1,9 +1,10 @@
 // 统一配色主题系统:单一事实源、DOM 与终端协同切换、状态驱动
 import { state } from './core.js';
 
+// appearance:原生窗口外观,决定 macOS 红绿灯画深色款还是浅色款(须与 --titlebar-bg 深浅一致)
 export const THEMES = [
-  { id: 'nebula', label: '星云暗（默认）' },
-  { id: 'light', label: '日蚀亮' },
+  { id: 'nebula', label: '星云暗（默认）', appearance: 'dark' },
+  { id: 'light', label: '日蚀亮', appearance: 'light' },
 ];
 
 export const v = (n, f) => (typeof document !== 'undefined' && document.documentElement ? (getComputedStyle(document.documentElement).getPropertyValue(n) || '').trim() || f : f);
@@ -56,7 +57,18 @@ export function termTheme(themeKey, stateRef = state) {
   return (TERM_THEMES[key] || TERM_THEMES.nebula)();
 }
 
-/// 一键切换主题:同步更新 DOM 根节点 data-theme 属性与所有活动终端实例的渲染主题
+/// 原生窗口外观跟随主题(Tauri 下经 nebula-shim 的 setAppearance;浏览器 / 单测无此通道则跳过)。
+/// 推迟到微任务并吞掉异常:原生侧失败不能打断 DOM 与终端的换肤。
+function syncNativeAppearance(themeId) {
+  const setAppearance = typeof window !== 'undefined' ? window.nebula?.setAppearance : undefined;
+  if (typeof setAppearance !== 'function') return;
+  const appearance = THEMES.find((t) => t.id === themeId)?.appearance || 'dark';
+  Promise.resolve()
+    .then(() => setAppearance(appearance))
+    .catch((error) => console.warn('[theme] 同步窗口外观失败:', error));
+}
+
+/// 一键切换主题:同步更新 DOM 根节点 data-theme 属性、所有活动终端实例的渲染主题与原生窗口外观
 export function applyTheme(themeKey, stateRef = state) {
   const target = themeKey || (stateRef && stateRef.settings && stateRef.settings.terminal && stateRef.settings.terminal.theme) || 'nebula';
   const resolved = TERM_THEMES[target] ? target : 'nebula';
@@ -74,5 +86,6 @@ export function applyTheme(themeKey, stateRef = state) {
       } catch { /* ignore */ }
     }
   }
+  syncNativeAppearance(resolved);
   return resolved;
 }

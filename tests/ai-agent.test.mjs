@@ -67,6 +67,31 @@ test('buildHostSystemPrompt：主机、模式与不可信边界说明齐全', ()
   assert.match(buildHostSystemPrompt({}), /先调用 host_info/);
 });
 
+test('buildHostSystemPrompt：多主机列出目标并要求所有主机工具用 host 参数指名', () => {
+  const p = buildHostSystemPrompt({ hostName: 'web-1', os: 'Ubuntu 22.04', execMode: 'manual', linkedHosts: ['web-1', 'db-02', 'cache-03'] });
+  for (const s of ['3 台主机', 'web-1', 'db-02', 'cache-03', 'host 参数', '逐台取结果再汇总']) assert.ok(p.includes(s), s);
+  // 只读工具也要带 host(此前提示词让模型改走 exec,是多主机"只看到一台"的原因之一)
+  assert.match(p, /只读工具.*接受 host 参数/s);
+  assert.ok(!/只读工具.*作用于默认主机[；;]/.test(p), '不能再说只读工具只能作用于默认主机');
+  // 单主机提示词不出现多主机措辞
+  assert.ok(!buildHostSystemPrompt({ hostName: 'web-1' }).includes('台主机'));
+});
+
+test('AI_AGENT_TOOLS_MULTI：每个主机工具都带可选 host,且不下发 read_terminal', async () => {
+  const { AI_AGENT_TOOLS, AI_AGENT_TOOLS_MULTI } = await import('../src/shared/ai-tools-schema.js');
+  const names = AI_AGENT_TOOLS_MULTI.map((t) => t.name);
+  assert.ok(names.length > 1);
+  for (const t of AI_AGENT_TOOLS_MULTI) {
+    assert.ok(t.parameters?.properties?.host, `${t.name} 必须带 host 参数`);
+    assert.ok(!(t.parameters.required || []).includes('host'), `${t.name} 的 host 应为可选`);
+  }
+  assert.ok(!names.includes('read_terminal'), '多主机不下发 read_terminal');
+  // 单主机工具集里没有任何工具带 host
+  for (const t of AI_AGENT_TOOLS) {
+    assert.ok(!t.parameters?.properties?.host, `${t.name} 单主机版不该有 host`);
+  }
+});
+
 test('truncateHistory：整回合截断、旧工具输出压缩、当前回合永不丢', () => {
   const big = 'x'.repeat(5000);
   const h = [];

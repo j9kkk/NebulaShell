@@ -5,7 +5,8 @@
 //! 位置,按钮离底边的距离沿用系统按默认标题栏高度(macOS 27 是 32pt)算出的值,
 //! 结果随系统版本漂移;0.3.0 设 y=11 时按钮中心实际落在 9pt。
 //! AppKit 在窗口缩放、进出全屏、切换前后台时会重新布局标题栏,这些窗口事件后
-//! 都要重新摆放(lib.rs 的 on_window_event)。
+//! 都要重新摆放(lib.rs 的 on_window_event);应用主动切外观时标题栏容器被同步
+//! 重置回系统高度,且不产生窗口事件,由 lib.rs 的 nebula_set_appearance 自己重摆。
 
 use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
 use objc2_foundation::NSPoint;

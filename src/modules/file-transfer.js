@@ -405,7 +405,7 @@ function openConflictDialog(task, conflict) {
   const mismatch = conflict.srcKind !== conflict.dstKind;
   const sheet = document.createElement('dialog');
   sheet.className = 'upload-conflict';
-  sheet.innerHTML = '<h3>复制冲突</h3><p></p><label><input type="checkbox" checked> 对此任务的后续同类冲突使用相同策略</label><div class="modal-foot"></div>';
+  sheet.innerHTML = '<h3>复制冲突</h3><p></p><label class="switch"><input type="checkbox" checked><span class="switch-slider"></span><span class="switch-label">对此任务的后续同类冲突使用相同策略</span></label><div class="modal-foot"></div>';
   sheet.querySelector('p').textContent =
     `目标 ${conflict.dstLabel || task.dstLabel} 的 ${task.dstDir} 中已存在「${conflict.name}」` +
     (mismatch ? `(类型不一致:源${conflict.srcKind === 'dir' ? '目录' : '文件'}/目标${conflict.dstKind === 'dir' ? '目录' : '文件'})` : '') +

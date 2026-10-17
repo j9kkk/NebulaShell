@@ -821,6 +821,22 @@ async function aiCommandBlockRegressions() {
 
 // AI 主机工具:真实 SSE 工具调用 → 真实 IPC → mock sshd 的真实本地 shell。
 // 场景脚本见 helpers/mock-servers.mjs toolScenario;断言只看渲染结果与副作用。
+// AI 顶栏主机菜单的通用操作(两个回归函数共用,故放模块级)。
+  // 顶栏主机菜单:开菜单(幂等:已开则不点,避免 toggle 关掉)、点某模式行、读主机钮文案。
+  const openTargetMenu = () => evalJs(`const m = document.querySelector('#ai-target-menu');
+    if (m.classList.contains('hidden')) document.querySelector('#ai-target-trigger').click();
+    return 1`);
+  const pickTargetMode = (mode) => evalJs(`const row = document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="${mode}"]');
+    if (!row) throw new Error('模式行不存在: ${mode}');
+    if (row.getAttribute('aria-disabled') === 'true') throw new Error('模式行被禁用: ${mode}');
+    row.click(); return 1`);
+  // 三种模式互斥:点另一行即切过去(不再用「关掉跟随开关回对话」的路径)。
+  const switchModeBySwitch = (mode) => evalJs(`const sw = document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="${mode}"] .switch input');
+    if (!sw) throw new Error('模式开关不存在: ${mode}');
+    if (sw.disabled) throw new Error('模式开关被禁用: ${mode}');
+    sw.checked = true; sw.dispatchEvent(new Event('change', { bubbles: true })); return 1`);
+  const targetName = () => evalJs(`return document.querySelector('#ai-target-name')?.textContent || ''`);
+
 async function aiHostToolRegressions() {
   const state = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
   const active = state.sessions.find((s) => s.id === state.activeId);
@@ -853,10 +869,10 @@ async function aiHostToolRegressions() {
     if (item.disabled) throw new Error('模式项被禁用: ${mode}');
     item.click(); return 1`);
   const modeState = async () => asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#ai-mode-trigger').hidden,
-    host: document.querySelector('#ai-mode-host').textContent, mode: document.querySelector('#ai-mode-trigger').dataset.mode })`));
+    host: document.querySelector('#ai-target-name')?.textContent || '', mode: document.querySelector('#ai-mode-trigger').dataset.mode })`));
   const modeMenuCtx = () => evalJs(`return document.querySelector('#ai-mode-menu-ctx').textContent`);
   try {
-    // T-AT10a:模式菜单开合、顶部安全上下文、「?」帮助 title。
+    // T-AT10a:模式菜单开合、头部安全上下文、「?」帮助 title。
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
     await openModeMenu();
     await waitEval(`return !document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
@@ -869,21 +885,37 @@ async function aiHostToolRegressions() {
       const r = { shown: !p.classList.contains('hidden'), title: b.title, text: p.textContent, rows: p.querySelectorAll('.mh-row').length };
       b.dispatchEvent(new MouseEvent('mouseleave'));
       return JSON.stringify(r)`));
-    check('T-AT10 模式选择器:菜单含三档,默认「手动确认」,头部「主机 · 名称」,「?」立即展开结构化帮助并强调主机安全',
-      modeItems.length === 3 && modeItems.find((m) => m.mode === 'manual')?.active
+    check('T-AT10 执行模式菜单:常驻两档,默认「手动确认」,头部左对齐显示主机摘要,「?」立即展开结构化帮助并强调主机安全',
+      modeItems.length === 2 && modeItems.find((m) => m.mode === 'manual')?.active
       && !modeItems.find((m) => m.mode === 'manual')?.disabled
-      && ctx.startsWith('主机 · ') && help.shown && !help.title && help.rows === 6
+      && ctx.length > 0 && help.shown && !help.title && help.rows === 5
       && help.text.includes('主机安全') && help.text.includes('不会发送给 AI'),
       JSON.stringify({ modeItems, ctx, help: { ...help, text: help.text.length } }));
     // 键盘:Esc 关菜单并还焦点给触发钮。
     await evalJs(`document.querySelector('#ai-mode-menu-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
     await waitEval(`return document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
-    await openModeMenu();
-    await pickMode('chat');
-    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'chat');
-    const chatState = await modeState();
-    check('T-AT9a 切「对话模式」:档位为 chat;未发送前 hostLabel 预览活动标签将绑定的主机',
-      chatState.mode === 'chat' && !chatState.hidden, JSON.stringify(chatState));
+
+    // T-TM2:三种模式行都在;跟随模式是 switch(打开后其他模式置灰)。
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
+    const modeRows = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({ mode: r.dataset.mode, checked: r.getAttribute('aria-checked'), hasSwitch: !!r.querySelector('.switch') })))`));
+    check('T-TM2 主机菜单三种模式齐备:对话模式 / 跟随命令窗口 / 多主机模式,三者各带一个 switch',
+      ['chat', 'follow', 'multi'].every((m) => modeRows.some((r) => r.mode === m && r.hasSwitch === true)),
+      JSON.stringify(modeRows));
+
+    // T-AT9a:点「对话模式」那一行(三模式互斥,不用先关跟随)→ 主机钮「未链接主机」,执行模式钮仍常驻。
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
+    await pickTargetMode('chat');
+    await waitEval(`return document.querySelector('#ai-target-name')?.textContent`, '未链接主机');
+    const chatTargetState = asObj(await evalJs(`return JSON.stringify({
+      targetName: document.querySelector('#ai-target-name')?.textContent,
+      modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
+      modeName: document.querySelector('#ai-mode-name')?.textContent,
+    })`));
+    check('T-AT9a 切到「对话模式」:主机钮显示「未链接主机」,执行模式钮常驻「手动确认」',
+      chatTargetState.targetName === '未链接主机' && chatTargetState.modeHidden === false && chatTargetState.modeName === '手动确认',
+      JSON.stringify(chatTargetState));
     await setBase('/tools/story');
     await send('你好,介绍一下自己');
     await waitIdle();
@@ -891,10 +923,15 @@ async function aiHostToolRegressions() {
     const chatReqHasTools = (ai.calls.toolRequests || []).length > 0
       && (ai.calls.toolRequests.at(-1).tools?.length ?? 0) > 0;
     check('T-AT9b 对话模式发送:请求不带 tools,走普通对话路径', !chatReqHasTools && !!chatBubble, JSON.stringify({ hasTools: chatReqHasTools, bubble: chatBubble.slice(0, 80) }));
-    // 切回手动,工具路径恢复(下一故事 T95 验证)。
-    await openModeMenu();
-    await pickMode('manual');
-    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'manual');
+
+    // 重新打开跟随开关,恢复手动档
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
+    await pickTargetMode('follow');
+    await waitEval(`return document.querySelector('#ai-mode-trigger')?.dataset?.mode`, 'manual');
+    check('T-TM3 重新打开跟随模式:主机钮显示「已链接 <当前主机>」,档位回手动',
+      (await targetName()).startsWith('已链接 '),
+      await targetName());
 
     // 故事 1:手动模式 —— 只读工具自动执行,exec 停在蓝卡,确认后输出回到模型。
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
@@ -906,8 +943,8 @@ async function aiHostToolRegressions() {
     const stepWide = asObj(await evalJs(`const s = document.querySelector('${view} .ai-step');
       const msgs = document.querySelector('${view}');
       return JSON.stringify({ stepW: s.getBoundingClientRect().width, listW: msgs.getBoundingClientRect().width, right: Math.round(s.getBoundingClientRect().right), left: Math.round(s.getBoundingClientRect().left) })`));
-    check('T95 工具回合:模式选择器显示绑定主机、默认手动;只读工具自动完成,exec 停在蓝色确认卡',
-      !bar.hidden && bar.host.length > 0 && bar.mode === 'manual'
+    check('T95 工具回合:顶栏主机钮显示已链接主机、档位默认手动;只读工具自动完成,exec 停在蓝色确认卡',
+      !bar.hidden && bar.host.startsWith('已链接 ') && bar.mode === 'manual'
       && ['host_info', 'tail_file', 'read_terminal'].every((t) => steps.some((s) => s.tool === t && s.status === 'ok'))
       && steps.some((s) => s.tool === 'exec' && s.status === 'pending'), JSON.stringify({ bar, steps }));
     check('T95j 步骤行宽度对齐 AI 响应流:不再横跨全宽,与 AI 气泡同一右界',
@@ -1113,6 +1150,119 @@ async function aiHostToolRegressions() {
   } finally {
     await evalJs(`if (document.querySelector('#ai-send')?.title === '停止生成') document.querySelector('#ai-send').click(); return 1`).catch(() => {});
     await setBase('');
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`).catch(() => {});
+  }
+}
+
+async function aiTargetRegressions() {
+  const state = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
+  const active = state.sessions.find((s) => s.id === state.activeId);
+  if (!active || active.status !== 'connected') {
+    check('T-TG 目标作用域回归 — SKIP(没有已连接会话)', true, JSON.stringify(state.sessions));
+    return;
+  }
+  try {
+    // T-TG1: 新对话 + 已连接标签 → 顶栏主机钮显示「已链接 <主机>」; 单行顶栏无第二行目标栏; 档位常驻手动
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await sleep(200);
+    const tg1 = asObj(await evalJs(`return JSON.stringify({
+      name: document.querySelector('#ai-target-name')?.textContent,
+      inHeader: !!document.querySelector('.ai-header #ai-target-trigger'),
+      legacyBar: !!document.querySelector('#ai-target-bar'),
+      modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
+      modeName: document.querySelector('#ai-mode-name')?.textContent,
+    })`));
+    check('T-TG1 顶栏单行:主机钮在 .ai-header 内且旧 #ai-target-bar 已移除; 显示「已链接 <主机>」; 档位常驻',
+      tg1.name.startsWith('已链接 ') && tg1.inHeader && !tg1.legacyBar && !tg1.modeHidden && tg1.modeName === '手动确认',
+      JSON.stringify(tg1));
+
+    // T-TG2: 关掉跟随开关 → 回到「对话模式」,主机钮「未链接主机」,档位仍常驻
+    // T-TG2: 点「对话模式」行 → 主机钮「未链接主机」,档位仍常驻
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
+    await pickTargetMode('chat');
+    await waitEval(`return document.querySelector('#ai-target-name')?.textContent`, '未链接主机');
+    const tg2 = asObj(await evalJs(`return JSON.stringify({
+      name: document.querySelector('#ai-target-name')?.textContent,
+      modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
+    })`));
+    check('T-TG2 切到对话模式: 主机钮「未链接主机」, 档位仍常驻',
+      tg2.name === '未链接主机' && tg2.modeHidden === false,
+      JSON.stringify(tg2));
+
+    // T-TG3: 点回跟随 → 恢复手动档;菜单只有一处 aria-checked="true"
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
+    const menuChecks = asObj(await evalJs(`return JSON.stringify(
+      [...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')]
+        .filter(b => b.getAttribute('aria-checked') === 'true')
+        .map(b => b.dataset.mode)
+    )`));
+    await pickTargetMode('follow');
+    await waitEval(`return document.querySelector('#ai-mode-trigger')?.dataset?.mode`, 'manual');
+    const tg3ModeHidden = await evalJs(`return document.querySelector('#ai-mode-trigger')?.hidden`);
+    check('T-TG3 切回跟随: 恢复手动档, 主机菜单严格只有一处单选勾',
+      menuChecks.length === 1 && menuChecks[0] === 'chat' && tg3ModeHidden === false,
+      JSON.stringify({ menuChecks, tg3ModeHidden }));
+
+    // T-TG7: 新对话处于默认「跟随」模式、手动档、授权为空
+    const curTh = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiThreads().find(t => t.active))`));
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await sleep(150);
+    const newTh = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiThreads().find(t => t.active))`));
+    check('T-TG7 新对话默认跟随窗口、手动档且授权为空',
+      newTh.linkMode === 'follow' && newTh.execMode === 'manual' && newTh.allowlistLength === 0,
+      JSON.stringify({ curTh, newTh }));
+
+    // T-TM4: 多主机模式 — 菜单出现主机清单与 switch;每台一个开关。
+    // 三模式互斥:直接点「多主机模式」行即可(不需要先关跟随);点完菜单不收起。
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
+    await pickTargetMode('multi');
+    await sleep(200);
+    const multiMenu = asObj(await evalJs(`return JSON.stringify({
+      menuStillOpen: !document.querySelector('#ai-target-menu').classList.contains('hidden'),
+      multiChecked: document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="multi"]')?.getAttribute('aria-checked'),
+      hostRows: document.querySelectorAll('#ai-target-menu-list .ai-target-host').length,
+      switches: document.querySelectorAll('#ai-target-menu-list .ai-target-host .switch').length,
+      search: !!document.querySelector('#ai-target-menu-list .ai-target-hosts-search .inp'),
+    })`));
+    check('T-TM4 多主机模式: 切换后菜单不收起; 清单每台一个 switch + 搜索框',
+      multiMenu.menuStillOpen && multiMenu.multiChecked === 'true'
+      && multiMenu.hostRows > 0 && multiMenu.switches === multiMenu.hostRows && multiMenu.search,
+      JSON.stringify(multiMenu));
+
+    // T-TM5: 互斥语义 —— 当前模式的开关为开且可点,另两个为关且禁用。
+    const modeSwitches = asObj(await evalJs(`return JSON.stringify(
+      [...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({
+        mode: r.dataset.mode,
+        checked: r.getAttribute('aria-checked'),
+        swChecked: r.querySelector('.switch input')?.checked ?? null,
+        swDisabled: r.querySelector('.switch input')?.disabled ?? null,
+      })))`));
+    const cur = modeSwitches.find((m) => m.mode === 'multi');
+    const others = modeSwitches.filter((m) => m.mode !== 'multi');
+    check('T-TM5 三模式互斥: 当前模式开关开且可点,另外两个开关关且禁用',
+      cur?.swChecked === true && cur?.swDisabled === false
+      && others.every((m) => m.swChecked === false && m.swDisabled === true),
+      JSON.stringify(modeSwitches));
+
+    // 切回收跟随(点行),验证互斥切换与菜单仍开着
+    await pickTargetMode('follow');
+    await sleep(200);
+    const backToFollow = asObj(await evalJs(`return JSON.stringify({
+      menuStillOpen: !document.querySelector('#ai-target-menu').classList.contains('hidden'),
+      followChecked: document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="follow"]')?.getAttribute('aria-checked'),
+      multiRows: document.querySelectorAll('#ai-target-menu-list .ai-target-host').length,
+    })`));
+    check('T-TM6 切回跟随: 菜单保持打开, 多主机清单随之收起',
+      backToFollow.menuStillOpen && backToFollow.followChecked === 'true' && backToFollow.multiRows === 0,
+      JSON.stringify(backToFollow));
+
+    // 退出菜单,避免影响后续
+    await evalJs(`const m = document.querySelector('#ai-target-menu'); if (!m.classList.contains('hidden')) document.querySelector('#ai-target-trigger').click(); return 1`);
+    await sleep(120);
+  } finally {
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`).catch(() => {});
   }
 }
@@ -1533,23 +1683,19 @@ async function main() {
           timestamps: document.querySelector('#setlog-timestamps').checked,
           screen: document.querySelector('#setlog-screen').checked,
           format: document.querySelector('input[name="setlog-format"]:checked')?.value,
-          dirHint: document.querySelector('#setlog-dir-hint').textContent,
-          dirPlaceholder: document.querySelector('#setlog-dir').placeholder,
+          dirValue: document.querySelector('#setlog-dir').value,
           dirInput: rectOf(document.querySelector('#setlog-dir')),
           dirPick: rectOf(document.querySelector('#setlog-pick')),
-          dirOpen: rectOf(document.querySelector('#setlog-open')),
         };
       })())`));
-      // 布局规范:目录输入框与「选择…」「打开」同一行(垂直中心对齐,与密钥行同款:
-      // 高输入框 + 矮按钮居中),按钮依次在右侧且不拉伸成整行。语义同 GEOM_SNIPPET
-      // 的 inlineRow,但快照 IIFE 已闭合,这里只能对量到的坐标重算
+      // 布局规范:目录输入框与框内图标按钮(选择)同行等高,按钮窄于 140px
+      // 且贴在输入框右缘内侧。同缓存目录字段的 dir-field 统一方案。
       const sameRow = (a, b) => Math.abs(a[1] + a[3] / 2 - (b[1] + b[3] / 2)) <= 2;
-      const inline = sameRow(snap.dirInput, snap.dirPick) && sameRow(snap.dirPick, snap.dirOpen)
-        && snap.dirPick[0] >= snap.dirInput[0] + snap.dirInput[2] - 2 && snap.dirPick[2] < 140
-        && snap.dirOpen[0] >= snap.dirPick[0] + snap.dirPick[2] - 2 && snap.dirOpen[2] < 140;
-      check('T87h 设置分区:默认值、默认目录提示正确,目录输入框与按钮同行等高',
+      const inline = sameRow(snap.dirInput, snap.dirPick)
+        && snap.dirPick[0] >= snap.dirInput[0] + snap.dirInput[2] - 40 && snap.dirPick[2] < 140;
+      check('T87h 设置分区:默认值正确,目录输入框与框内图标按钮同行等高,初始值含默认目录',
         snap.auto === false && snap.timestamps === true && snap.screen === true && snap.format === 'text'
-          && snap.dirHint.includes('NebulaShell-logs') && snap.dirPlaceholder.includes('留空') && inline,
+          && snap.dirValue.includes('NebulaShell-logs') && inline,
         JSON.stringify(snap));
       await evalJs(`document.querySelector('#setlog-auto').checked = true;
         document.querySelector('#setlog-timestamps').checked = false;
@@ -2012,6 +2158,7 @@ async function main() {
 
   await aiCommandBlockRegressions();
   await aiHostToolRegressions();
+  await aiTargetRegressions();
 
   check('T9 AI 配置 / 模型发现 / 流式对话 / 保存后下拉即时刷新', true);
 
@@ -3278,14 +3425,14 @@ async function main() {
     const addName = modal.querySelector('#snippet-name');
     const addCmd = modal.querySelector('#snippet-cmd');
     const btnAdd = modal.querySelector('#btn-snippet-add');
-    const btnDone = modal.querySelector('#btn-snippet-done');
+    const btnClose = modal.querySelector('#btn-snippet-close');
     const card = modal.querySelector('.modal-card');
     return {
       open: !isHidden,
       hasList: !!list,
       hasSearch: !!search,
       hasAddForm: !!(addName && addCmd && btnAdd),
-      hasDone: !!btnDone,
+      hasClose: !!btnClose,
       isWide: card?.classList.contains('wide'),
       cmdLabel: window.__nbTest.commandState('tools.snippets').label,
       aliasLabel: window.__nbTest.commandState('panel.snippets').label,
@@ -3300,22 +3447,24 @@ async function main() {
     const list = modal.querySelector('#hist-list');
     const search = modal.querySelector('#hist-search');
     const clear = modal.querySelector('#hist-clear');
-    const btnDone = modal.querySelector('#btn-hist-done');
+    const btnClose = modal.querySelector('#btn-hist-close');
+    const searchClear = modal.querySelector('#hist-search-clear');
     const card = modal.querySelector('.modal-card');
     return {
       open: !isHidden,
       hasList: !!list,
       hasSearch: !!search,
       hasClear: !!clear,
-      hasDone: !!btnDone,
+      hasSearchClear: !!searchClear,
+      hasClose: !!btnClose,
       isWide: card?.classList.contains('wide'),
       cmdLabel: window.__nbTest.commandState('session.history').label,
       aliasLabel: window.__nbTest.commandState('panel.history').label,
     };
   })())`));
 
-  // 关闭历史弹窗与常用命令弹窗
-  await evalJs(`document.querySelector('#btn-hist-done').click(); document.querySelector('#btn-snippet-done').click(); return 1`);
+  // 关闭历史弹窗与常用命令弹窗(使用右上角快捷关闭)
+  await evalJs(`document.querySelector('#btn-hist-close').click(); document.querySelector('#btn-snippet-close').click(); return 1`);
   await sleep(150);
   const modalsClosed = asObj(await evalJs(`return JSON.stringify({
     hist: document.querySelector('#modal-history').classList.contains('hidden'),
@@ -3323,8 +3472,8 @@ async function main() {
   })`));
 
   check('T43 常用命令与命令历史迁移为独立管理弹窗:居中展示、宽屏无遮挡、具备完整管理控件',
-    snipModal.open && snipModal.hasList && snipModal.hasSearch && snipModal.hasAddForm && snipModal.isWide
-      && histModal.open && histModal.hasList && histModal.hasSearch && histModal.hasClear && histModal.isWide
+    snipModal.open && snipModal.hasList && snipModal.hasSearch && snipModal.hasAddForm && snipModal.isWide && snipModal.hasClose
+      && histModal.open && histModal.hasList && histModal.hasSearch && histModal.hasClear && histModal.hasSearchClear && histModal.isWide && histModal.hasClose
       && modalsClosed.hist && modalsClosed.snippets,
     JSON.stringify({ snipModal, histModal, modalsClosed }));
 
@@ -3445,24 +3594,33 @@ async function main() {
     escDrawer.prevented && drawerClosedOnEsc && escAi.prevented && aiTermFocus && aiOpenOnEsc && histClosedOnEsc,
     JSON.stringify({ escDrawer, drawerClosedOnEsc, escAi, aiTermFocus, aiOpenOnEsc, histClosedOnEsc }));
 
-  // 命令历史弹窗工具行:过滤框与清空按钮等高
+  // 命令历史弹窗:搜索框内嵌清空与底部清空按钮结构正确
   await runCmd('session.history');
   const histFix = asObj(await evalJs(`return JSON.stringify((() => {
-    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
-    const search = r('#hist-search'), clear = r('#hist-clear');
-    return { searchH: search.height, clearH: clear.height };
+    const search = document.querySelector('#hist-search');
+    const searchClear = document.querySelector('#hist-search-clear');
+    const clear = document.querySelector('#hist-clear');
+    const searchH = search ? search.getBoundingClientRect().height : 0;
+    const hasIcon = !!clear?.querySelector('[data-icon="trash"], svg');
+    const hasText = !!clear?.textContent.includes('清空历史');
+    return { searchH, hasSearchClear: !!searchClear, hasClear: !!clear, hasIcon, hasText };
   })())`));
   await evalJs(`document.querySelector('#btn-hist-close').click(); return 1`);
   await sleep(100);
-  check('T45b 命令历史工具行:过滤框与清空按钮等高', Math.abs(histFix.searchH - histFix.clearH) < 0.5, JSON.stringify(histFix));
+  check('T45b 命令历史工具行与底部操作栏:内嵌清除与底部清空历史图文按钮完整就绪',
+    histFix.searchH > 0 && histFix.hasSearchClear && histFix.hasClear && histFix.hasIcon && histFix.hasText,
+    JSON.stringify(histFix));
 
-  // 常用命令弹窗:工具行与添加行完整可用,命令名与命令描述正确
+  // 常用命令弹窗:内嵌清空按钮、添加行完整可用,命令名与命令描述正确
   await runCmd('tools.snippets');
   const snipFix = asObj(await evalJs(`return JSON.stringify((() => {
-    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
-    const search = r('#snippet-search'), clear = r('#snippet-clear'), add = r('.modal-snippet-add');
+    const r = (sel) => document.querySelector(sel)?.getBoundingClientRect();
+    const search = document.querySelector('#snippet-search');
+    const clear = document.querySelector('#snippet-clear');
+    const add = document.querySelector('.modal-snippet-add');
     return {
-      searchH: search.height, clearH: clear.height,
+      searchH: search ? search.getBoundingClientRect().height : 0,
+      hasClear: !!clear,
       hasAdd: !!add,
       cmdLabel: window.__nbTest.commandState('tools.snippets').label,
       histCmdLabel: window.__nbTest.commandState('session.history').label,
@@ -3470,8 +3628,8 @@ async function main() {
   })())`));
   await evalJs(`document.querySelector('#btn-snippet-close').click(); return 1`);
   await sleep(100);
-  check('T46e 常用命令弹窗:工具行等高,添加行完整,命令名为"常用命令…"',
-    Math.abs(snipFix.searchH - snipFix.clearH) < 0.5 && snipFix.hasAdd
+  check('T46e 常用命令弹窗:内嵌清空、添加行完整,命令名为"常用命令…"',
+    snipFix.searchH > 0 && snipFix.hasClear && snipFix.hasAdd
       && snipFix.cmdLabel === '常用命令…' && snipFix.histCmdLabel === '命令历史…',
     JSON.stringify(snipFix));
 

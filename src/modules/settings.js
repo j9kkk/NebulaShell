@@ -3,7 +3,6 @@
 // 终端分区含文件双击打开的临时缓存目录;会话日志分区含目录/格式/时间戳/自动记录。
 import { $, accel, api, closeModal, state, toast } from './core.js';
 import { closeAiSettings, openAiSettings } from './ai.js';
-import { openLogFolder } from './terminal.js';
 import { DEFAULT_KEYMAP, invalidateKeymapCache, specsOf } from './keymap.js';
 import { applyTheme, fitAllVisible, scheduleResizeSync, visibleSessions } from './terminal.js';
 
@@ -32,21 +31,25 @@ function fillTermSettings() {
   $('#term-fontsize').value = t.fontSize || 13;
   $('#term-theme').value = t.theme || 'nebula';
   $('#term-scrollback').value = t.scrollback || 2000;
-  $('#term-open-tempdir').value = (state.settings && state.settings.openTempDir) || '';
+  const tempdir = $('#term-open-tempdir');
+  // 真实可选可改可复制的路径直接显示;未配置时初始展示默认路径
+  const def = state.settings && state.settings.openTempDirDefaultDir;
+  tempdir.value = (state.settings && state.settings.openTempDir) || def || '';
+  tempdir.placeholder = '';
 }
 
 function fillLogSettings() {
   const sl = (state.settings && state.settings.sessionLog) || {};
   $('#setlog-auto').checked = !!sl.auto;
-  $('#setlog-dir').value = sl.dir || '';
+  const dir = $('#setlog-dir');
+  // 同缓存目录:真实可选可改可复制的路径直接显示;未配置时初始展示默认路径
+  const def = state.settings && state.settings.sessionLogDefaultDir;
+  dir.value = sl.dir || def || '';
+  dir.placeholder = '';
   const format = sl.format === 'raw' ? 'raw' : 'text';
   document.querySelector(`input[name="setlog-format"][value="${format}"]`).checked = true;
   $('#setlog-timestamps').checked = sl.timestamps !== false;
   $('#setlog-screen').checked = sl.includeScreen !== false;
-  // 默认目录提示由后端解析(Windows 上不是 ~ 形态),拿不到时退回通用文案
-  const hint = $('#setlog-dir-hint');
-  const def = state.settings && state.settings.sessionLogDefaultDir;
-  hint.textContent = def ? `留空 = ${def}（默认）` : '留空 = 默认目录';
 }
 
 /// 快捷键一览:当前平台生效的键位(自定义优先),没有键位的动作不列。
@@ -111,11 +114,19 @@ export function bindSettings() {
   $('#btn-log-save').addEventListener('click', saveLogSettings);
   $('#setlog-pick').addEventListener('click', async () => {
     try {
-      const picked = await api('dialog:pickDirectory', {});
+      const current = $('#setlog-dir').value.trim();
+      const picked = await api('dialog:pickDirectory', { defaultPath: current });
       if (picked) $('#setlog-dir').value = picked;
     } catch { /* 取消选择不提示 */ }
   });
-  $('#setlog-open').addEventListener('click', openLogFolder);
+  // 缓存目录:框内文件夹图标 = 选择目录并覆盖输入值,默认定位到当前路径
+  $('#btn-term-tempdir-pick').addEventListener('click', async () => {
+    try {
+      const current = $('#term-open-tempdir').value.trim();
+      const picked = await api('dialog:pickDirectory', { defaultPath: current });
+      if (picked) $('#term-open-tempdir').value = picked;
+    } catch { /* 取消选择不提示 */ }
+  });
   $('#btn-keys-close').addEventListener('click', () => {
     dismissSettings();
     closeModal('#modal-settings');

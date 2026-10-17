@@ -11,6 +11,7 @@
   --accent2: #3ddc97;
   --danger: #ff6b6b;
   --warn: #ffc24b;
+  --warn-text: #ffc24b;
   --titlebar-bg: #0a0e15;
   --color-scheme: dark;
   --select-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%238b96a8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -33,6 +34,7 @@
   --drag-accent: rgba(91, 140, 255, 0.15);
   --danger-hover-bg: rgba(255, 107, 107, 0.12);
   --muted-hover-bg: rgba(139, 150, 168, 0.15);
+  --switch-off-bg: rgba(255, 255, 255, 0.14);
   --tab-active-bg: #162032;
   --tab-active-border: #3b5278;
   --tab-active-indicator: #5b8cff;
@@ -67,6 +69,7 @@
   --accent2: #1a7f37;
   --danger: #cf222e;
   --warn: #9a6700;
+  --warn-text: #7d5400;
   --titlebar-bg: #eaeef2;
   --color-scheme: light;
   --select-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%23656d76' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -89,6 +92,7 @@
   --drag-accent: rgba(9, 105, 218, 0.12);
   --danger-hover-bg: rgba(207, 34, 46, 0.12);
   --muted-hover-bg: rgba(101, 109, 118, 0.15);
+  --switch-off-bg: rgba(0, 0, 0, 0.12);
   --tab-active-bg: #ffffff;
   --tab-active-border: #c0c8d2;
   --tab-active-indicator: #0969da;
@@ -130,6 +134,10 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 input[type="number"] {
   -moz-appearance: textfield;
+}
+input[type="checkbox"], input[type="radio"] {
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 /* 密码输入框:隐藏 Windows/Edge WebView2 及 IE 原生密码眼睛与清除控件(统一走自研 secret-input-wrap + SVG 眼睛) */
 input[type="password"]::-ms-reveal,
@@ -580,6 +588,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-drawer-card.active .ai-drawer-card-title {
   color: var(--accent); font-weight: 600;
 }
+.ai-drawer-badges {
+  display: flex; align-items: center; gap: 4px; flex: none;
+}
 .ai-drawer-badge {
   font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; flex: none;
 }
@@ -591,6 +602,11 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .ai-drawer-badge.host {
   background: var(--hover-bg); color: var(--muted); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; gap: 3px; max-width: 140px; overflow: hidden; text-overflow: ellipsis;
+}
+.ai-drawer-badge.host svg { flex: none; }
+.ai-drawer-badge.chat {
+  background: var(--surface-hover); color: var(--muted);
 }
 .ai-drawer-card-meta {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
@@ -692,6 +708,130 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .ai-thread-menu-row.active .ai-thread-menu-item,
 .ai-thread-menu-item[aria-checked="true"] { color: var(--accent); }
+
+/* 主机链接触发钮:与「切换对话」同排在顶栏,是"本对话作用于谁"的唯一常驻位置。
+   没有独立的一行,因此不再产生第二条常驻分割线。 */
+.ai-target-trigger {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto;
+  height: 26px; padding: 0 8px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font: inherit; font-size: 12px;
+  white-space: nowrap; cursor: pointer;
+}
+.ai-target-trigger:hover, .ai-target-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.ai-target-trigger:disabled { opacity: 0.6; cursor: not-allowed; }
+.ai-target-trigger[data-connected="false"] { color: var(--muted); }
+.ai-target-lead { flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
+.ai-target-lead svg { width: 12px; height: 12px; }
+.ai-target-lead .dot { width: 7px; height: 7px; }
+.ai-target-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ai-target-trigger[data-connected="true"] .ai-target-name { font-weight: 600; }
+.ai-target-caret { flex: none; display: inline-flex; color: var(--muted); }
+.ai-target-caret svg { width: 12px; height: 12px; }
+.ai-header .spacer { flex: 1 1 0; min-width: 0; }
+.ai-target-action { flex: none; }
+/* 窄面板:主机链接钮退化为"点 + 名称省略",与会话钮一起让位 */
+@container (max-width: 380px) {
+  .ai-target-trigger { padding: 0 6px; }
+  .ai-target-trigger .ai-target-name { max-width: 84px; }
+}
+
+/* 横条:只在「跨标签」和「发送被拦截」两种情况下出现,动作按钮复用 .btn */
+.ai-context-banner {
+  flex: none; display: flex; align-items: flex-start; gap: 8px;
+  margin: 8px 10px 0; padding: 8px 6px 8px 10px;
+  background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--warn);
+  border-radius: 8px; color: var(--text); font-size: 12px; line-height: 1.5;
+}
+.ai-context-banner.hidden { display: none; }
+.ai-context-banner-icon { flex: none; display: inline-flex; margin-top: 2px; color: var(--warn); }
+.ai-context-banner-icon svg { width: 14px; height: 14px; }
+.ai-context-banner-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.ai-context-banner-text { word-break: break-word; }
+/* 主机名不在连字符处折断:整体换行,过长时省略 */
+.ai-context-banner-text b {
+  font-weight: 600; display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-context-banner-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-context-banner-close { flex: none; margin-top: -3px; }
+
+/* 主机链接菜单:挂 body + fixed,锚定顶栏主机钮下方。
+   结构 = 三行互斥模式(对话 / 跟随命令窗口 / 多主机,各带 switch)+ 多主机清单(搜索 + 可滚动列表)。 */
+.ai-target-menu { min-width: 268px; max-width: min(360px, calc(100vw - 16px)); padding: 4px; }
+.ai-target-menu-note { padding: 6px 8px 4px; font-size: 11px; line-height: 1.5; color: var(--muted); }
+.ai-target-menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+/* 模式行:图标 + 名称/描述 + 右侧 switch(三种模式互斥,不再用勾选符号)。
+   整行可点 = 切到这个模式;非当前模式的 switch 为关且禁用。 */
+.ai-target-mode {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 8px; border: none; border-radius: 6px; background: none;
+  color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.ai-target-mode:hover, .ai-target-mode:focus-visible { background: var(--surface-hover); outline: none; }
+.ai-target-mode[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+/* 未启用的一行整体压暗,但保持可点(否则用户被锁在某个模式里)
+   开关本身禁用,所以只改文字与图标,不挡掉整行的指针事件。 */
+.ai-target-mode:not(.is-on) .ai-target-mode-name { color: var(--muted); font-weight: 500; }
+.ai-target-mode:not(.is-on) .mi { opacity: 0.6; }
+.ai-target-mode .mi { flex: none; display: inline-flex; color: var(--muted); }
+.ai-target-mode.is-on .mi { color: var(--accent); }
+.ai-target-mode-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ai-target-mode-name { font-weight: 600; }
+.ai-target-mode.is-on .ai-target-mode-name { color: var(--accent); }
+.ai-target-mode-desc { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-target-mode .switch { flex: none; }
+/* 未启用模式的开关控件不接收指针事件:点击穿透到整行 = 切到这个模式。
+   视觉上仍是关闭态,语义上「另一个启用时自动禁用」。 */
+.ai-target-mode:not(.is-on) .switch { pointer-events: none; }
+.ai-target-mode:not(.is-on) .switch input:disabled + .switch-slider { opacity: 0.6; }
+/* 菜单里的 switch 比设置页的默认尺寸略小,和 12px 文字行高更协调 */
+.ai-target-mode .switch, .ai-target-host .switch { min-height: 20px; }
+.ai-target-mode .switch-slider, .ai-target-host .switch-slider { width: 34px; height: 20px; border-radius: 10px; }
+.ai-target-mode .switch-slider::after, .ai-target-host .switch-slider::after {
+  width: 14px; height: 14px;
+}
+.ai-target-mode .switch input:checked + .switch-slider::after,
+.ai-target-host .switch input:checked + .switch-slider::after { transform: translateX(14px); }
+/* 小号 switch 的果冻拉伸量按比例收一点(16px 轨道用 17px) */
+.ai-target-mode .switch:active .switch-slider::after,
+.ai-target-host .switch:active .switch-slider::after,
+.ai-target-mode .switch input:checked:active + .switch-slider::after,
+.ai-target-host .switch input:checked:active + .switch-slider::after { width: 17px; }
+
+/* 多主机清单:搜索 + 计数 + 可滚动列表(100 台也不撑破菜单) */
+.ai-target-hosts { padding: 2px 0 0; }
+.ai-target-hosts-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px 2px;
+  font-size: 11px; color: var(--muted);
+}
+.ai-target-hosts-head .ai-target-hosts-count { flex: none; }
+.ai-target-hosts-head .spacer { flex: 1 1 0; }
+.ai-target-hosts-search { padding: 2px 8px 4px; }
+.ai-target-hosts-search .inp { width: 100%; box-sizing: border-box; font-size: 12px; }
+.ai-target-hosts-list { max-height: min(50vh, 340px); overflow-y: auto; padding: 0 2px 2px; }
+.ai-target-hosts-empty { padding: 10px 8px; font-size: 12px; color: var(--muted); text-align: center; }
+.ai-target-host {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 6px; border-radius: 6px;
+}
+.ai-target-host:is(:hover, :focus-within) { background: var(--surface-hover); }
+.ai-target-host-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.ai-target-host-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.ai-target-host-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+.ai-target-host.is-on .ai-target-host-name { font-weight: 600; }
+.ai-target-host-error .ai-target-host-meta { color: var(--warn-text); }
+/* 连接中…/断开中…:行整体压暗一点并让说明文字用强调色,与"已完成"区分 */
+.ai-target-host.is-pending { opacity: 0.85; }
+.ai-target-host.is-pending .ai-target-host-meta { color: var(--accent); }
+.ai-target-host .switch { flex: none; }
+
+/* 会话抽屉:主机徽标带连接点,文字单独截断(inline-flex 上的 ellipsis 不生效) */
+.ai-drawer-badge.host { display: inline-flex; align-items: center; gap: 4px; max-width: 140px; }
+.ai-drawer-badge.host .dot { flex: none; width: 6px; height: 6px; }
+.ai-drawer-badge.host .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ai-drawer-badge.chat { background: var(--surface-hover); color: var(--muted); }
 .ai-thread-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ai-thread-menu-check {
   flex: none; width: 14px; text-align: center; visibility: hidden;
@@ -1050,7 +1190,8 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .ai-confirm-actions .ai-confirm-input, .ai-sudo-row .ai-confirm-input { flex: 1 1 160px; width: auto; }
 .ai-sudo-row { display: flex; align-items: center; gap: 8px; }
-.ai-sudo-remember { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--muted); }
+.ai-sudo-remember { white-space: nowrap; }
+.ai-sudo-remember .switch-label { font-size: 12px; color: var(--muted); }
 .ai-sudo-error { color: var(--danger); }
 .ai-sudo-hint { font-size: 11px; color: var(--muted); }
 /* 「总是允许」按钮的站点可能很长：允许换行，不撑破确认卡 */
@@ -1243,6 +1384,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .fp-input-row, .snippet-add { --ctl-h: 26px; }
 /* 图标按钮:正方形,仅靠内距控制 */
 .btn.icon { --ctl-h: 26px; width: var(--ctl-h); padding: 0; font-size: 13px; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { color: var(--text); border-color: var(--border); }
+/* .btn.danger(2885 行,实心红底)优先级虽低但在文件后部,会盖掉 ghost 的透明背景,
+   与 ghost.danger 的红字叠加成"红底红字";此处显式压回 ghost 形态 */
+.btn.ghost.danger { background: transparent; border-color: transparent; color: var(--danger); }
+.btn.ghost.danger:hover { background: var(--danger-hover-bg); border-color: rgba(255, 107, 107, 0.35); color: var(--danger); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 弹窗 */
@@ -1274,6 +1421,55 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .modal-toolbar .btn { height: var(--ctl-h); box-sizing: border-box; }
 /* 图标按钮自带 --ctl-h: 26px,会把同一行的过滤框(28px)比下去 —— 按本行刻度还原 */
 .modal-toolbar .btn.icon { --ctl-h: 28px; }
+
+/* 搜索框内嵌清除按钮容器:全宽,内部右侧嵌入半透明圆形清空钮 */
+.search-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.search-field .inp {
+  width: 100%;
+  padding-right: 28px !important;
+}
+.search-clear-btn {
+  position: absolute;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(139, 150, 168, 0.22);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.search-clear-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.search-clear-btn .mi {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+}
+.search-clear-btn .mi svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.4;
+}
+/* 无输入内容时自动隐藏清除按钮 */
+.search-field input:placeholder-shown + .search-clear-btn {
+  display: none;
+}
 
 /* 命令历史与常用命令管理独立弹窗 */
 .modal-card.modal-history-card,
@@ -1371,7 +1567,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   padding-left: 4px; padding-right: 6px; padding-bottom: 4px;
   background: var(--panel); /* 滚动内容从按钮下方穿过时垫底,避免文字与按钮叠影 */
 }
-.keys-wrap { max-height: 272px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.keys-wrap { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .keys-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .keys-table th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--border); }
 .keys-table td { padding: 6px 10px; border-bottom: 1px solid var(--table-divider); }
@@ -1385,7 +1581,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   height: 34px; line-height: 1.2;
 }
 .form-grid input:is([type="checkbox"], [type="radio"]) { justify-self: start; accent-color: var(--accent); }
-.form-grid label { color: var(--muted); font-size: 13px; }
+.form-grid label { color: var(--muted); font-size: 13px; line-height: 20px; }
 .form-row { display: contents; }
 .key-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .key-row > .btn { flex: none; }
@@ -1408,10 +1604,77 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .secret-control > input:is([type="checkbox"], [type="radio"]) { flex: none; }
 .secret-control > .btn { flex: none; }
 /* 设置页会话日志分区:两个单选行纵向排列 */
-.setlog-radios { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.setlog-radios { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 4px 0; }
+.form-radio {
+  display: inline-flex; align-items: center; gap: 8px;
+  cursor: pointer; user-select: none; font-size: 13px; line-height: 20px; color: var(--text);
+}
+.form-radio input[type="radio"] {
+  flex: none; width: 15px; height: 15px; margin: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
+
+/* ==================== Switch 开关组件 ====================
+   滑块用「果冻」过渡:位移带轻微过冲回弹(spring 曲线),按下时短暂拉伸成椭圆,
+   松手回正。纯 CSS,不依赖 JS 计时;prefers-reduced-motion 下退化为普通淡入。 */
+.switch {
+  display: inline-flex; align-items: center; gap: 10px;
+  cursor: pointer; user-select: none; min-height: 24px;
+}
+.switch input[type="checkbox"] {
+  position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;
+}
+.switch-slider {
+  position: relative; flex: none; width: 38px; height: 22px;
+  border-radius: 11px; background: var(--switch-off-bg, rgba(120, 130, 145, 0.28));
+  border: 1px solid var(--border); box-sizing: border-box;
+  transition: background-color 0.24s ease, border-color 0.24s ease;
+}
+/* 果冻位移:先冲过头约 6%,再回弹到位 */
+.switch-slider::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%; background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition:
+    transform 0.36s cubic-bezier(0.34, 1.56, 0.64, 1),
+    width 0.16s ease-out;
+  will-change: transform;
+}
+.switch input[type="checkbox"]:checked + .switch-slider {
+  background: var(--accent); border-color: var(--accent);
+}
+.switch input[type="checkbox"]:checked + .switch-slider::after {
+  transform: translateX(16px);
+}
+/* 按下瞬间把滑块压扁一点(果冻的"被挤"感),松手由上面的回弹曲线复位 */
+.switch:active .switch-slider::after { width: 19px; }
+.switch input[type="checkbox"]:checked:active + .switch-slider::after { width: 19px; }
+.switch input[type="checkbox"]:focus-visible + .switch-slider {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.switch:hover .switch-slider { border-color: var(--border-hover); }
+.switch-label { font-size: 13px; line-height: 20px; color: var(--text); }
+.switch input[type="checkbox"]:disabled + .switch-slider { opacity: 0.5; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .switch-slider, .switch-slider::after { transition-duration: 0.01s; }
+  .switch:active .switch-slider::after,
+  .switch input[type="checkbox"]:checked:active + .switch-slider::after { width: 16px; }
+}
 .key-status { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .key-status:empty { display: none; }
 .key-path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 目录字段(缓存目录/日志目录统一方案):等宽地址输入框,框内右侧内嵌文件夹图标按钮
+   点击后选择新目录覆盖。路径是机器文本,按字体规范走 --font-mono */
+.dir-field { position: relative; display: flex; align-items: center; width: 100%; min-width: 0; }
+.dir-field .dir-path { width: 100%; padding-right: 34px; font-family: var(--font-mono); font-size: 12px; }
+.dir-field .dir-pick {
+  position: absolute; right: 4px; width: 26px; height: 26px; border: none;
+  background: transparent; color: var(--muted); cursor: pointer; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+}
+.dir-field .dir-pick:hover { color: var(--text); background: var(--hover-bg); }
+.dir-field .dir-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 18px; align-items: center; }
 .modal-actions > .btn { flex: none; }
 /* 原生 <dialog> 冲突框(上传与跨主机复制共用 .upload-conflict):
@@ -1432,11 +1695,7 @@ dialog.upload-conflict {
 dialog.upload-conflict::backdrop { background: var(--modal-backdrop); }
 dialog.upload-conflict h3 { margin-bottom: 14px; }
 dialog.upload-conflict p { margin-bottom: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-dialog.upload-conflict label {
-  display: flex; align-items: center; gap: 6px;
-  color: var(--muted); font-size: 13px;
-}
-dialog.upload-conflict label input { accent-color: var(--accent); }
+dialog.upload-conflict .switch { margin: 12px 0 6px; }
 dialog.upload-conflict .modal-foot {
   display: flex; flex-wrap: wrap; justify-content: flex-end;
   gap: 10px; margin-top: 18px;
@@ -1461,28 +1720,29 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .model-chips:focus-within { border-color: var(--accent); }
 /* chip 与输入框都渲染进这层,display:contents 让它们直接参与容器的 flex 排版 */
 .model-chips-list { display: contents; }
-.model-chips-empty { color: var(--muted); font-size: 12px; padding: 0 2px; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .model-chips-input {
   flex: 1 1 80px; min-width: 80px;
-  background: transparent; border: none; outline: none;
+  height: 24px !important; line-height: 24px !important;
+  background: transparent !important; border: none !important; outline: none !important;
   color: var(--text); font-family: inherit; font-size: 12px;
-  padding: 3px 4px; border-radius: 0;
-  line-height: 1.35;
+  padding: 0 4px !important; margin: 0 !important;
+  box-sizing: border-box !important;
 }
 .model-chips-input:focus-visible { outline: none; }
 .model-chips-input::placeholder { color: var(--muted); }
 .model-chip {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; line-height: 1.35;
+  height: 24px; box-sizing: border-box;
+  font-size: 12px; line-height: 1;
   color: var(--muted);
   background: transparent; border: 1px solid var(--border);
-  border-radius: 999px; padding: 2px 5px 2px 9px;
+  border-radius: 999px; padding: 0 5px 0 9px;
   cursor: pointer; max-width: 100%;
   transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .model-chip-name {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  line-height: 1.35;
+  line-height: 22px;
 }
 .model-chip:hover { color: var(--text); border-color: var(--accent); }
 .model-chip-del {
@@ -1491,7 +1751,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   color: inherit; background: transparent; border: none;
   /* 默认淡显,hover/focus 才全显:与"点 chip=设默认"区分,降低误删率 */
   padding: 0 2px; border-radius: 999px;
-  min-width: 16px; min-height: 16px;
+  width: 16px; height: 16px; min-width: 16px; min-height: 16px;
   display: inline-flex; align-items: center; justify-content: center;
   cursor: pointer; opacity: 0.35;
   transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -1505,8 +1765,9 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 .model-chip.active .model-chip-del:hover { background: var(--surface-hover); color: var(--btn-primary-text); }
 .model-chip-default {
-  flex: none; font-size: 10px; line-height: 1.2;
-  padding: 1px 4px; border-radius: 4px;
+  flex: none; font-size: 10px; line-height: 1;
+  height: 16px; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 4px; border-radius: 4px;
   /* 实心主色底上的半透明白罩,任意主题的主色都能衬出徽标 */
   background: rgba(255, 255, 255, 0.22);
   pointer-events: none;
@@ -1534,10 +1795,11 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .jump-chips-empty { color: var(--muted); font-size: 13px; padding: 0 4px; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .jump-chip {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; line-height: 1.35;
+  height: 24px; box-sizing: border-box;
+  font-size: 12px; line-height: 1;
   color: var(--text);
   background: var(--hover-bg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 2px 6px;
+  border-radius: 6px; padding: 0 6px;
   cursor: default; max-width: 100%;
 }
 .jump-chip-index {
@@ -1547,7 +1809,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 .jump-chip-name {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  line-height: 1.35;
+  line-height: 22px;
 }
 .jump-chip-remove {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1650,13 +1912,17 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .tag-chips-list { display: contents; }
 .tag-chip {
   display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; box-sizing: border-box;
   font-size: 12px; line-height: 1;
   color: var(--text);
   background: var(--hover-bg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 3px 6px;
+  border-radius: 6px; padding: 0 6px;
   cursor: default; max-width: 100%;
 }
-.tag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-chip-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 22px;
+}
 .tag-chip-remove {
   display: inline-flex; align-items: center; justify-content: center;
   background: transparent; border: none; padding: 0; margin-left: 2px;
@@ -1664,10 +1930,12 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 .tag-chip-remove:hover { color: var(--danger, #ff6b6b); background: var(--hover-bg); }
 .tag-inner-input {
-  flex: 1 1 80px; min-width: 60px; height: 26px !important; line-height: 1.2 !important;
+  flex: 1 1 80px; min-width: 60px;
+  height: 24px !important; line-height: 24px !important;
   background: transparent !important; border: none !important; outline: none !important;
   color: var(--text) !important; font-size: 13px !important;
   padding: 0 4px !important; margin: 0 !important;
+  box-sizing: border-box !important;
 }
 .tag-inner-input::placeholder { color: var(--muted); font-size: 12px; }
 
@@ -1698,7 +1966,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .sessionlog-field { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
 .sessionlog-hint { font-size: 11px; line-height: 1.3; color: var(--muted); padding-left: 2px; }
 
-.small-note { margin-top: 12px; line-height: 1.5; }
+.small-note { margin-top: 12px; font-size: 12px; line-height: 1.6; color: var(--muted); }
 
 /* 模型选择弹框:叠在 AI 设置之上,所以抬高 z-index(普通弹窗是 50) */
 .modal.modal-stack { z-index: 60; background: var(--modal-backdrop-stack); }

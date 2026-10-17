@@ -141,14 +141,24 @@
          都留在原处(见 right-panel.js)。 -->
     <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手宽度"></div>
     <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="AI 助手">
-      <!-- 单层高集成度 AI 顶栏(高度 36px,与左侧标签栏严格对齐):切换会话、新建会话、历史抽屉、清空 -->
+      <!-- 单层高集成度 AI 顶栏(高度 36px,与左侧标签栏严格对齐):主机链接、切换会话、新建会话、历史抽屉、清空 -->
       <div class="ai-header">
+        <!-- 主机链接:顶栏最左侧。「这个对话作用于哪些主机」比「这是哪个对话」更常被确认,
+             所以放在会话钮前面。文案由 ai-agent-ui.js 写(未链接主机/已链接 X/已链接 N 台主机) -->
+        <button id="ai-target-trigger" class="ai-target-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-target-menu" title="选择这个对话作用于哪些主机">
+          <span class="ai-target-lead" id="ai-target-lead"><span class="dot idle"></span></span>
+          <span id="ai-target-name" class="ai-target-name">未链接主机</span>
+          <span class="ai-target-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+        </button>
+        <!-- 目标离线时的一键重连/连接:不进菜单,少一次点击。
+             放在会话钮之后,让「主机模式 → 会话」两个下拉保持相邻。 -->
         <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
           <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
           <span id="ai-thread-title" class="ai-thread-title">新对话</span>
           <span class="ai-thread-dot" aria-hidden="true"></span>
           <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
         </button>
+        <button id="ai-target-action" class="btn small primary ai-target-action hidden" type="button"></button>
         <span class="spacer"></span>
         <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建对话" data-title="新建对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
         <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
@@ -169,6 +179,16 @@
         <div id="ai-drawer-list" class="ai-drawer-list" role="list"></div>
       </div>
 
+      <!-- 横条:只在「跨标签」和「发送被拦截」两种情况下出现 -->
+      <div id="ai-context-banner" class="ai-context-banner hidden" role="status" aria-live="polite">
+        <span class="ai-context-banner-icon mi" data-icon="alert" aria-hidden="true"></span>
+        <div class="ai-context-banner-body">
+          <div id="ai-context-banner-text" class="ai-context-banner-text"></div>
+          <div id="ai-context-banner-actions" class="ai-context-banner-actions"></div>
+        </div>
+        <button id="ai-context-banner-close" class="btn icon ghost small ai-context-banner-close" type="button" title="忽略" aria-label="忽略"><span class="mi" data-icon="x" aria-hidden="true"></span></button>
+      </div>
+
       <div class="ai-messages-wrap">
         <div id="ai-messages"></div>
         <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
@@ -184,11 +204,10 @@
         <div class="ai-composer">
           <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
           <div class="ai-composer-tools">
-            <!-- 执行模式:与模型选择同行。主机名 flex-shrink 可截断,模式名永不截断 -->
-            <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu" hidden>
+            <!-- 执行模式:常驻显示,与模型选择同行。触发钮只显示档位名称(手动确认/自动执行),
+                 本对话作用于哪些主机由顶栏主机下拉承担,不再重复 -->
+            <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu">
               <span class="ai-mode-icon mi" data-icon="lock" aria-hidden="true"></span>
-              <span class="ai-mode-host-wrap"><span id="ai-mode-host" class="ai-mode-host"></span></span>
-              <span class="ai-mode-sep" aria-hidden="true">·</span>
               <span id="ai-mode-name" class="ai-mode-name">手动确认</span>
               <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
             </button>
@@ -375,9 +394,13 @@
               <option value="light">日蚀亮</option>
             </select>
             <label for="term-scrollback">回滚行数</label><input id="term-scrollback" type="number" min="1000" max="20000" step="1000" value="2000" />
-            <label for="term-open-tempdir">双击打开缓存目录</label><input id="term-open-tempdir" type="text" placeholder="留空 = 系统临时目录（默认）" style="width:100%;" spellcheck="false" autocomplete="off" />
+            <label for="term-open-tempdir">缓存目录</label>
+            <div class="dir-field">
+              <input id="term-open-tempdir" type="text" class="dir-path" placeholder="" spellcheck="false" autocomplete="off" />
+              <button id="btn-term-tempdir-pick" class="btn icon dir-pick" type="button" title="选择目录" aria-label="选择缓存目录"><span class="mi" data-icon="folder"></span></button>
+            </div>
           </div>
-          <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。「双击打开缓存目录」是文件管理双击打开文件时临时副本的存放位置，留空用系统临时目录。</p>
+          <p class="muted small-note">全部即时生效（回滚行数会重建现有会话的缓冲区）。「缓存目录」是文件管理双击打开文件时临时副本的存放位置，留空用系统临时目录。</p>
           <div class="modal-actions">
             <button id="btn-term-cancel" class="btn">取消</button>
             <button id="btn-term-save" class="btn primary">保存</button>
@@ -424,23 +447,33 @@
         <section id="settings-sec-log" class="settings-sec hidden" role="tabpanel" data-section="log" aria-labelledby="settings-tab-log">
           <div class="form-grid">
             <label for="setlog-auto">自动记录</label>
-            <label class="secret-control" for="setlog-auto"><input id="setlog-auto" type="checkbox" /> 连接主机时自动开始记录</label>
+            <label class="switch" for="setlog-auto">
+              <input id="setlog-auto" type="checkbox" />
+              <span class="switch-slider"></span>
+              <span class="switch-label">连接主机时自动开始记录</span>
+            </label>
             <label for="setlog-dir">日志目录</label>
-            <div class="key-row">
-              <input id="setlog-dir" type="text" class="key-path" placeholder="留空 = 默认目录" spellcheck="false" autocomplete="off" />
-              <button id="setlog-pick" class="btn small" type="button">选择…</button>
-              <button id="setlog-open" class="btn small" type="button">打开</button>
+            <div class="dir-field">
+              <input id="setlog-dir" type="text" class="dir-path" placeholder="" spellcheck="false" autocomplete="off" />
+              <button id="setlog-pick" class="btn icon dir-pick" type="button" title="选择目录" aria-label="选择日志目录"><span class="mi" data-icon="folder"></span></button>
             </div>
-            <label></label><span class="muted small-note" id="setlog-dir-hint">留空 = 默认目录</span>
             <label>内容格式</label>
             <span class="setlog-radios">
-              <label class="secret-control" for="setlog-format-text"><input id="setlog-format-text" type="radio" name="setlog-format" value="text" checked /> 纯文本（推荐，可直接阅读和搜索）</label>
-              <label class="secret-control" for="setlog-format-raw"><input id="setlog-format-raw" type="radio" name="setlog-format" value="raw" /> 原始终端流（保留颜色，可用 cat / less -R 回放）</label>
+              <label class="form-radio" for="setlog-format-text"><input id="setlog-format-text" type="radio" name="setlog-format" value="text" checked /> <span>纯文本（推荐，可直接阅读和搜索）</span></label>
+              <label class="form-radio" for="setlog-format-raw"><input id="setlog-format-raw" type="radio" name="setlog-format" value="raw" /> <span>原始终端流（保留颜色，可用 cat / less -R 回放）</span></label>
             </span>
             <label for="setlog-timestamps">时间戳</label>
-            <label class="secret-control" for="setlog-timestamps"><input id="setlog-timestamps" type="checkbox" checked /> 每行前加时间（仅纯文本）</label>
+            <label class="switch" for="setlog-timestamps">
+              <input id="setlog-timestamps" type="checkbox" checked />
+              <span class="switch-slider"></span>
+              <span class="switch-label">每行前加时间（仅纯文本）</span>
+            </label>
             <label for="setlog-screen">已有内容</label>
-            <label class="secret-control" for="setlog-screen"><input id="setlog-screen" type="checkbox" checked /> 手动开始记录时，先写入屏幕上已有的内容</label>
+            <label class="switch" for="setlog-screen">
+              <input id="setlog-screen" type="checkbox" checked />
+              <span class="switch-slider"></span>
+              <span class="switch-label">手动开始记录时，先写入屏幕上已有的内容</span>
+            </label>
           </div>
           <p class="muted small-note">日志记录屏幕上显示的内容，包括输入后回显出来的命令；密码等不回显的输入不会被记录。单台主机可在「编辑主机」里单独设置自动记录。修改对之后开始的日志生效。</p>
           <div class="modal-actions">
@@ -627,7 +660,12 @@
         <label>经由主机</label><select id="fw-host"></select>
         <label>绑定</label><input id="fw-bind" type="text" placeholder="127.0.0.1:8080" />
         <label>目标</label><input id="fw-dest" type="text" placeholder="10.0.0.11:6379(动态类型留空)" />
-        <label>自动建立</label><input id="fw-auto" type="checkbox" title="对应主机连接时自动建立" />
+        <label for="fw-auto">自动建立</label>
+        <label class="switch" for="fw-auto">
+          <input id="fw-auto" type="checkbox" title="对应主机连接时自动建立" />
+          <span class="switch-slider"></span>
+          <span class="switch-label">对应主机连接时自动建立</span>
+        </label>
       </div>
       <div class="modal-actions">
         <span id="fw-status" class="muted"></span>
@@ -644,17 +682,19 @@
       <div class="modal-head">
         <h3>命令历史</h3>
         <span class="spacer"></span>
-        <button id="btn-hist-close" class="btn icon" type="button" title="关闭" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+        <button id="btn-hist-close" class="btn icon" type="button" title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
       </div>
       <div class="modal-toolbar">
-        <input id="hist-search" class="inp" type="text" placeholder="过滤命令历史（模糊匹配命令内容与主机名）…" aria-label="过滤命令历史" autocomplete="off" spellcheck="false" />
-        <button id="hist-clear" class="btn icon" type="button" title="清空全部历史" aria-label="清空历史"><span class="mi" data-icon="trash"></span></button>
+        <div class="search-field">
+          <input id="hist-search" class="inp" type="text" placeholder="过滤命令历史（模糊匹配命令内容与主机名）…" aria-label="过滤命令历史" autocomplete="off" spellcheck="false" />
+          <button id="hist-search-clear" class="search-clear-btn" type="button" title="清空过滤词" aria-label="清空过滤词"><span class="mi" data-icon="x"></span></button>
+        </div>
       </div>
       <div id="hist-list" class="rp-list modal-hist-list"></div>
       <div class="modal-actions modal-foot">
-        <span class="muted small-note">提示：点击行将命令填入当前活动终端（不回车执行） · 点击 ★ 收藏为常用命令</span>
+        <span class="muted small-note">提示：点击行将命令填入当前活动终端（不回车执行） · 点击 ★ 收藏为常用命令 · Esc 关闭</span>
         <span class="spacer"></span>
-        <button id="btn-hist-done" class="btn primary">完成</button>
+        <button id="hist-clear" class="btn small ghost danger" type="button" title="清空全部命令历史" aria-label="清空全部命令历史"><span class="mi" data-icon="trash"></span><span>清空历史</span></button>
       </div>
     </div>
   </div>
@@ -665,11 +705,13 @@
       <div class="modal-head">
         <h3>常用命令</h3>
         <span class="spacer"></span>
-        <button id="btn-snippet-close" class="btn icon" type="button" title="关闭" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+        <button id="btn-snippet-close" class="btn icon" type="button" title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
       </div>
       <div class="modal-toolbar">
-        <input id="snippet-search" class="inp" type="text" placeholder="过滤名称/命令内容…" aria-label="过滤常用命令" autocomplete="off" spellcheck="false" />
-        <button id="snippet-clear" class="btn icon" type="button" title="清空过滤" aria-label="清空过滤"><span class="mi" data-icon="x"></span></button>
+        <div class="search-field">
+          <input id="snippet-search" class="inp" type="text" placeholder="过滤名称/命令内容…" aria-label="过滤常用命令" autocomplete="off" spellcheck="false" />
+          <button id="snippet-clear" class="search-clear-btn" type="button" title="清空过滤词" aria-label="清空过滤词"><span class="mi" data-icon="x"></span></button>
+        </div>
       </div>
       <div id="snippet-list" class="rp-list modal-snippet-list"></div>
       <div class="modal-snippet-add">
@@ -678,9 +720,8 @@
         <button id="btn-snippet-add" class="btn small primary" type="button">＋ 添加</button>
       </div>
       <div class="modal-actions modal-foot">
-        <span class="muted small-note">提示：点击 ▶ 在当前终端直接执行 · 点击 ✏ 编辑名称或命令</span>
+        <span class="muted small-note">提示：点击 ▶ 在当前终端直接执行 · 点击 ✏ 编辑名称或命令 · Esc 关闭</span>
         <span class="spacer"></span>
-        <button id="btn-snippet-done" class="btn primary">完成</button>
       </div>
     </div>
   </div>
@@ -733,9 +774,14 @@
   <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" aria-label="切换对话">
     <div id="ai-thread-menu-list" role="menu"></div>
   </div>
+  <!-- 主机链接菜单浮层:挂 body + fixed 锚定在顶栏 #ai-target-trigger 下方。
+       三种模式(对话/跟随命令窗口/多主机)+ 多主机清单;条目由 ai-agent-ui.js renderTargetMenu 生成 -->
+  <div id="ai-target-menu" class="ai-model-menu ai-target-menu hidden" aria-label="选择作用主机">
+    <div id="ai-target-menu-list" role="menu"></div>
+  </div>
   <!-- 执行模式菜单浮层:与模型菜单同机制(挂 body + fixed 锚定触发钮上方)。
-       顶部「主机 · 名称」(未绑定时「未链接主机」),右上角「?」悬停/聚焦立即展开帮助浮层。
-       条目由 ai-agent-ui.js renderModeMenu 生成。 -->
+       第一行左对齐显示本对话的主机摘要(未链接主机 / 已链接 X / 已链接 N 台主机),
+       右上角「?」悬停/聚焦立即展开帮助浮层。条目由 ai-agent-ui.js renderModeMenu 生成。 -->
   <div id="ai-mode-menu" class="ai-model-menu ai-mode-menu hidden" role="menu" aria-label="选择执行模式">
     <div class="ai-mode-menu-head">
       <span id="ai-mode-menu-ctx" class="ai-mode-menu-ctx"></span>

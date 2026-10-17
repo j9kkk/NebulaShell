@@ -116,7 +116,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             nebula_invoke,
             nebula_test_result,
-            nebula_test_pin_window
+            nebula_test_pin_window,
+            nebula_set_appearance
         ])
         // 关窗即退出(应用只有一个窗口):有已建立的会话或未完成的传输时拦截,
         // emit 询问事件,由前端确认底座决定(app:exit 置 force_exit 后放行)。
@@ -290,6 +291,28 @@ fn nebula_test_pin_window(
     let _ = win.show();
     let _ = win.unminimize();
     let _ = win.set_focus();
+    Ok(())
+}
+
+/// 原生外观跟随应用主题(theme.js 的 applyTheme 调用)。macOS 红绿灯由系统按应用外观
+/// (Aqua / DarkAqua)绘制,不看网页标题栏的颜色:系统暗色下切到日蚀亮仍画深色款,
+/// 它上下边缘的浅色光晕融进浅色标题栏,按钮看起来被压扁。
+/// 切外观时 AppKit 同步把标题栏容器重置回系统高度,而 set_theme 不触发 ThemeChanged
+/// (tao 只转发系统级外观通知),所以紧接着重摆红绿灯。
+#[tauri::command]
+fn nebula_set_appearance(window: tauri::WebviewWindow, theme: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let theme = if theme == "light" {
+            tauri::Theme::Light
+        } else {
+            tauri::Theme::Dark
+        };
+        window.set_theme(Some(theme)).map_err(|e| e.to_string())?;
+        traffic_lights::place(&window);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, theme);
     Ok(())
 }
 

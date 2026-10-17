@@ -63,6 +63,37 @@ test('applyTheme 同步更新 document.dataset.theme 与所有活跃会话', () 
   delete globalThis.document;
 });
 
+test('applyTheme 把原生窗口外观同步为主题的深浅色(macOS 红绿灯按它绘制深/浅款)', async () => {
+  for (const t of THEMES) assert.ok(['dark', 'light'].includes(t.appearance), `主题 ${t.id} 缺 appearance`);
+
+  const calls = [];
+  globalThis.document = { documentElement: { dataset: {}, style: {} } };
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
+  globalThis.window = { nebula: { setAppearance: async (appearance) => { calls.push(appearance); } } };
+  const mockState = { sessions: new Map(), settings: { terminal: { theme: 'nebula' } } };
+
+  applyTheme('light', mockState);
+  applyTheme('nebula', mockState);
+  applyTheme('non-existent', mockState); // 未知主题回退 nebula → 深色
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(calls, ['light', 'dark', 'dark']);
+
+  // 原生侧失败不影响 DOM 换肤
+  globalThis.window = { nebula: { setAppearance: () => { throw new Error('boom'); } } };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(applyTheme('light', mockState), 'light');
+    assert.equal(globalThis.document.documentElement.dataset.theme, 'light');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    console.warn = warn;
+    delete globalThis.window;
+    delete globalThis.getComputedStyle;
+    delete globalThis.document;
+  }
+});
+
 test('style.css 包含完整的两套主题定义与核心语义变量', async () => {
   const { readFile } = await import('node:fs/promises');
   const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');

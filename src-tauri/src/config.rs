@@ -1227,6 +1227,8 @@ impl Store {
             },
             "terminal": data["settings"]["terminal"].clone(),
             "openTempDir": data["settings"]["openTempDir"].clone(),
+            // 设置页默认目录提示用(空 = 系统临时目录,与 open_temp_dir 的兜底一致)
+            "openTempDirDefaultDir": std::env::temp_dir().to_string_lossy().to_string(),
             "sessionLog": data["settings"]["sessionLog"].clone(),
             // 设置页默认目录提示用(实际取目录走 commands 的 default_log_dir,
             // 那里还要考虑测试模式隔离)

@@ -471,13 +471,20 @@ export function openHistoryModal() {
 /// 命令历史管理弹窗(亦可在历史页内使用);绑定控件与关闭逻辑。
 export function bindHistoryPage() {
   $('#hist-search')?.addEventListener('input', (e) => renderHistory(e.target.value));
+  $('#hist-search-clear')?.addEventListener('click', () => {
+    const q = $('#hist-search');
+    if (q) {
+      q.value = '';
+      renderHistory('');
+      q.focus();
+    }
+  });
   $('#hist-clear')?.addEventListener('click', async () => {
     if (!(await askConfirm('清空全部命令历史?', { title: '清空历史', okText: '清空' }))) return;
     await api('history:clear');
     renderHistory($('#hist-search')?.value || '');
   });
   $('#btn-hist-close')?.addEventListener('click', () => closeModal('#modal-history'));
-  $('#btn-hist-done')?.addEventListener('click', () => closeModal('#modal-history'));
 }
 
 /// 重新拉取并渲染。keepScroll:切回页签或重搜时刷新数据但保持阅读位置。

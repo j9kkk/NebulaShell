@@ -21,7 +21,11 @@ import { renderMarkdown } from '../shared/markdown.js';
 import { stripTerminalNoise } from '../shared/term-text.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
+import { hostKeyOf, hostLabelOf, rebindThread, resolveAiTarget, threadLinkMode } from '../shared/ai-target-state.js';
 import { agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend } from './ai-agent-run.js';
+import { clearThreadLinks, linksForThread } from './ai-links.js';
+
+export { hostKeyOf, hostLabelOf };
 
 export const AI_HISTORY_LIMIT = 20;
 export const AI_THREAD_LIMIT = 20;
@@ -91,6 +95,7 @@ export function onAiEndpointChange() {
       keyInput.value = mask;
       keyInput.type = 'password';
     }
+    keyInput.placeholder = '密钥';
     if (revealBtn) {
       revealBtn.classList.remove('hidden');
       revealBtn.title = '显示密钥';
@@ -102,11 +107,11 @@ export function onAiEndpointChange() {
       keyInput.type = 'password';
     }
     aiKeySecretState = { has: false, len: 0, mask: '', plain: null, revealed: false, endpoint };
-    keyInput.placeholder = '密钥（此端点没有已保存密钥）';
+    keyInput.placeholder = '新端点需填写密钥（本地服务可留空）';
     if (revealBtn) revealBtn.classList.toggle('hidden', !keyInput.value);
   }
   const status = $('#ai-key-status');
-  if (status) status.textContent = usableSavedKey ? '' : '新端点需填写密钥（本地服务可留空）';
+  if (status) status.textContent = '';
 }
 
 export async function toggleAiApiKeyVisibility() {
@@ -340,6 +345,9 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
     req: null,
     // 默认「手动确认」:AI 可走工具循环,但每条命令先确认;要全自动再切自动档。
     execMode: 'manual',
+    // 默认「跟随命令窗口」:对话作用于当前命令窗口的主机(与旧 bindNow 行为一致)。
+    linkMode: 'follow',
+    linkedHostIds: [],
     scroll: { top: 0, pinned: true },
     draft: '',
     unread: false,
@@ -448,6 +456,8 @@ export function clearCurrentAiThread() {
     setAiBusy(false);
   }
   thread.agentRun?.ctrl.abort();
+  // 清空即开始新任务:断开本对话的无头链接(继续保留旧内容属于另一台主机的语义已不成立)。
+  clearThreadLinks(thread);
   thread.history = [];
   if (thread.containerEl) {
     thread.containerEl.innerHTML = '';
@@ -480,6 +490,8 @@ export function deleteAiThread(threadId) {
     thread.req = null;
   }
   thread.agentRun?.ctrl.abort();
+  // 删除对话要连带断开它自己的无头链接;别人引着的池条目由引用计数保留。
+  clearThreadLinks(thread);
   if (thread.containerEl) {
     thread.containerEl.remove();
   }
@@ -571,10 +583,7 @@ export function renderAiThreadBar() {
     return;
   }
   const baseTitle = thread.title || '新对话';
-  const disp = thread.hostName && !baseTitle.startsWith(thread.hostName)
-    ? `[${thread.hostName}] ${baseTitle}`
-    : baseTitle;
-  titleEl.textContent = disp;
+  titleEl.textContent = baseTitle;
 
   const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!threadBusy(th));
   const nonActiveUnread = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.unread);
@@ -583,7 +592,7 @@ export function renderAiThreadBar() {
 
   const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!threadBusy(th)).length;
   const unreadCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.unread).length;
-  let tip = `当前对话：${disp}（点击切换或管理历史会话）`;
+  let tip = `当前对话：${baseTitle}（点击切换或管理历史会话）`;
   const extras = [];
   if (busyCount > 0) extras.push(`另有 ${busyCount} 个对话正在生成`);
   if (unreadCount > 0) extras.push(`另有 ${unreadCount} 个对话有新回复`);
@@ -710,19 +719,29 @@ export function renderAiDrawer(kw = '') {
     card.setAttribute('role', 'button');
     card.title = `${th.title || '新对话'}\n点击切换到此对话`;
 
-    let badgeHtml = '';
-    if (isBusy) {
-      badgeHtml = '<span class="ai-drawer-badge busy">生成中…</span>';
-    } else if (isUnread) {
-      badgeHtml = '<span class="ai-drawer-badge unread">新回复</span>';
+    let badges = [];
+    const linkMode = threadLinkMode(th);
+    if (linkMode === 'chat') {
+      badges.push('<span class="ai-drawer-badge chat" title="对话模式：不操作主机">对话模式</span>');
+    } else if (linkMode === 'multi') {
+      const n = (th.linkedHostIds || []).length;
+      if (n) badges.push(`<span class="ai-drawer-badge host" title="多主机模式"><span class="dot connected"></span><span class="t">${n} 台主机</span></span>`);
     } else if (th.hostName) {
-      badgeHtml = `<span class="ai-drawer-badge host">${escapeHtml(th.hostName)}</span>`;
+      const isHostConnected = [...(state.sessions?.values?.() || [])].some((s) => s?.status === 'connected' && hostKeyOf(s.host) === th.hostId);
+      const dotClass = isHostConnected ? 'connected' : 'idle';
+      badges.push(`<span class="ai-drawer-badge host" title="主机: ${escapeHtml(th.hostName)}"><span class="dot ${dotClass}"></span><span class="t">${escapeHtml(th.hostName)}</span></span>`);
     }
+    if (isBusy) {
+      badges.push('<span class="ai-drawer-badge busy">生成中…</span>');
+    } else if (isUnread) {
+      badges.push('<span class="ai-drawer-badge unread">新回复</span>');
+    }
+    const badgeHtml = badges.join('');
 
     card.innerHTML = `
       <div class="ai-drawer-card-top">
         <span class="ai-drawer-card-title">${safeTitle}</span>
-        ${badgeHtml}
+        <span class="ai-drawer-badges">${badgeHtml}</span>
       </div>
       <div class="ai-drawer-card-meta">
         <span class="ai-drawer-card-info">${msgCount} 条对话 · ${timeStr}</span>
@@ -931,20 +950,6 @@ export function toggleThreadMenu() {
   else closeThreadMenu();
 }
 
-export function hostKeyOf(host) {
-  if (!host) return null;
-  if (host.id && !host.quick) return host.id;
-  const username = host.username || host.user || '';
-  const hostname = host.host || host.ip || '';
-  const port = host.port || 22;
-  return `${username}@${hostname}:${port}`;
-}
-
-export function hostLabelOf(host) {
-  if (!host) return null;
-  return host.name || host.host || host.ip || null;
-}
-
 /// 终端触发 AI 操作(如选区解释、右键报错诊断)时,智能匹配或分流到对应主机的会话,
 /// 避免把主机 B 的报错塞进主机 A 的正在进行的排障上下文中。
 export function ensureThreadForSession(session) {
@@ -957,17 +962,7 @@ export function ensureThreadForSession(session) {
 
   // 1. 当前会话为空且空闲 → (重新)绑定到该主机并复用
   if (cur && cur.history.length === 0 && !threadBusy(cur)) {
-    // 换主机即撤销自动执行与会话授权、下载污点：这些都是对某一台主机的授权。
-    // 对话模式不操作主机,换主机无安全含义,保留用户的档位选择。
-    if (cur.hostId !== hostId) {
-      if (cur.execMode !== 'chat') cur.execMode = 'manual';
-      cur.autoAcked = false;
-      cur.allowlist = [];
-      cur.taint = [];
-    }
-    cur.hostId = hostId;
-    cur.hostName = hostName;
-    cur.sessionId = sessionId;
+    rebindThread(cur, { hostKey: hostId, hostLabel: hostName, sessionId });
     renderAiThreadBar();
     return cur;
   }
@@ -993,9 +988,7 @@ export function ensureThreadForSession(session) {
     .filter((th) => th.history.length === 0 && !threadBusy(th) && !th.hostId)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
   if (unbindEmpty) {
-    unbindEmpty.hostId = hostId;
-    unbindEmpty.hostName = hostName;
-    unbindEmpty.sessionId = sessionId;
+    rebindThread(unbindEmpty, { hostKey: hostId, hostLabel: hostName, sessionId });
     switchAiThread(unbindEmpty.id);
     return unbindEmpty;
   }
@@ -1735,6 +1728,30 @@ export async function aiSend(rawText, mode, opts) {
   if (!text) text = ($('#ai-input')?.value || '').trim();
   if (!text) return;
 
+  const targetView = resolveAiTarget({
+    thread,
+    sessions: state.sessions,
+    activeId: state.activeId,
+    hosts: state.hosts,
+    settings: state.settings,
+    busy: threadBusy(thread),
+    links: linksForThread(thread),
+  });
+
+  if (!opts?.session && !opts?.noTools && targetView.kind === 'offline' && !targetView.blocked) {
+    if (!isFromInput) {
+      const input = $('#ai-input');
+      if (input) input.value = text;
+    }
+    if (thread) {
+      thread.draft = text;
+      thread.sendBlocked = { text, at: Date.now() };
+    }
+    refreshAgentHostBar();
+    return;
+  }
+  if (thread) thread.sendBlocked = null;
+
   if (isFromInput) {
     const input = $('#ai-input');
     if (input) input.value = '';
@@ -1863,6 +1880,7 @@ export async function fetchAiModels() {
   const btn = $('#btn-ai-fetch-models');
   const config = readAiDraft();
   if (!config.baseUrl) return toast('请先填写 Base URL', 'error');
+  if (!config.apiKey && !config.useSavedApiKey) return toast('请先填写 API Key，再拉取模型列表', 'error');
   const draft = aiDraft;
   const endpoint = aiEndpointIdentity(config);
   const seq = ++modelsFetchSeq;
@@ -2078,13 +2096,7 @@ export function applySelectedModels(list) {
 export function renderModelChips() {
   const list = $('#ai-model-chips-list') || $('#ai-model-chips');
   list.innerHTML = '';
-  if (!state.aiSelected.length) {
-    const em = document.createElement('span');
-    em.className = 'model-chips-empty';
-    em.textContent = '未选择模型 — 在右侧框输入 ID 回车，或点右侧 + 按钮拉取勾选';
-    list.appendChild(em);
-    return;
-  }
+  if (!state.aiSelected.length) return;
   const active = $('#ai-model').value;
   for (const m of state.aiSelected) {
     const chip = document.createElement('span');

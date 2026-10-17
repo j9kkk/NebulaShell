@@ -266,6 +266,7 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
   }, { context });
   const icons = await load('../src/shared/icons.js');
   const termText = await load('../src/shared/term-text.js');
+  const targetState = await load('../src/shared/ai-target-state.js');
   const interaction = new vm.SyntheticModule(['popupPosition'], function () {
     this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
   }, { context });
@@ -276,8 +277,20 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
     this.setExport('refreshAgentHostBar', () => {});
     this.setExport('runAgentSend', async () => {});
   }, { context });
+  const aiLinks = new vm.SyntheticModule(['clearThreadLinks', 'linksForThread'], function () {
+    // 桩:与真实模块同语义地读 state.aiLinks(测试直接往 state.aiLinks 里塞条目)。
+    this.setExport('clearThreadLinks', (thread) => {
+      if (thread) thread.linkedHostIds = [];
+      return 0;
+    });
+    this.setExport('linksForThread', (thread) => {
+      const pool = state.aiLinks;
+      if (!pool || !thread?.linkedHostIds) return [];
+      return thread.linkedHostIds.map((id) => pool.get(id)).filter(Boolean);
+    });
+  }, { context });
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();
@@ -565,6 +578,7 @@ test('model discovery response from a previous endpoint cannot overwrite new dra
   const first = ai.fetchAiModels();
   $('#ai-baseurl').value = 'https://other.example/v1';
   ai.onAiEndpointChange();
+  $('#ai-apikey').value = 'fresh-key';
   assert.equal($('#btn-ai-fetch-models').disabled, false);
   const second = ai.fetchAiModels();
   old.resolve([{ id: 'stale-model' }]); await first;
@@ -922,7 +936,7 @@ test('multi-thread lifecycle: create, derive title, switch, clear and delete', a
 
   const t2 = ai.createAiThread({ title: 'MySQL 慢查询', hostId: 'h2', hostName: 'db-prod' });
   assert.equal(state.activeThreadId, t2.id);
-  assert.equal($('#ai-thread-title').textContent, '[db-prod] MySQL 慢查询');
+  assert.equal($('#ai-thread-title').textContent, 'MySQL 慢查询');
   assert.equal(t2.history.length, 0);
 
   ai.switchAiThread(t1.id);
@@ -1231,6 +1245,7 @@ test('title generation: explain prefix, diagnose opts.title, explicit title rete
   await p3;
 
   // Host-bound thread clears and re-generates title on next message
+  state.sessions.set('s4', { sessionId: 's4', status: 'connected', host: { id: 'h4', name: 'web' } });
   const th4 = ai.createAiThread({ title: '主机对话', hostId: 'h4', hostName: 'web' });
   th4.history.push({ role: 'user', content: 'previous' });
   ai.switchAiThread(th4.id);
@@ -1731,4 +1746,88 @@ test('apiKey mask length reflects actual key length and reveal/hide preserves it
   await ai.toggleAiApiKeyVisibility();
   assert.equal(input.type, 'password');
   assert.equal(input.value.length, 28, '隐藏后长度依然为 28 字符');
+});
+
+test('multi mode with all links down intercepts aiSend: no ai:chat request, input preserved', async () => {
+  const { ai, $, state, calls } = await setup();
+  const th = ai.createAiThread({ title: '多主机离线', hostId: 'h-down', hostName: 'my-server' });
+  th.linkMode = 'multi';
+  th.linkedHostIds = ['h-down'];
+  state.aiLinks = new Map([['h-down', {
+    hostId: 'h-down', hostKey: 'h-down', hostName: 'my-server',
+    sessionId: 'ailink-x', status: 'error', headless: true, error: 'auth failed', refs: 1,
+  }]]);
+  ai.switchAiThread(th.id);
+
+  $('#ai-input').value = 'systemctl status nginx';
+  const n0 = calls.filter((c) => c.channel === 'ai:chat').length;
+
+  await ai.aiSend();
+
+  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n0, '全部主机未连接时不发 ai:chat 请求');
+  assert.equal($('#ai-input').value, 'systemctl status nginx', '输入框文字必须保留');
+  assert.ok(th.sendBlocked, 'thread.sendBlocked 必须置位');
+  assert.equal(th.sendBlocked.text, 'systemctl status nginx');
+
+  // 程序发起的发送（如重发）也会被写回输入框与草稿
+  $('#ai-input').value = '';
+  await ai.aiSend('free -m');
+  assert.equal($('#ai-input').value, 'free -m', '程序发起的文本也写回输入框');
+  assert.equal(th.sendBlocked.text, 'free -m');
+  assert.equal(th.draft, 'free -m');
+});
+
+test('follow mode without a connected window sends as plain chat without tools', async () => {
+  const { ai, $, state, calls } = await setup();
+  const th = ai.createAiThread({ title: '未链接对话' });
+  ai.switchAiThread(th.id);
+  assert.equal(th.linkMode, 'follow');
+  assert.equal(state.sessions.size, 0);
+
+  const n0 = calls.filter((c) => c.channel === 'ai:chat').length;
+  $('#ai-input').value = '写个排序算法';
+  const p = ai.aiSend();
+
+  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n0 + 1, '窗口无主机时走普通对话');
+  assert.equal($('#ai-input').value, '', '已成功发出的输入框已清空');
+  assert.equal(th.sendBlocked, null);
+  ai.aiFinishHolder({ requestId: th.req.id, finishReason: 'stop' });
+  await p;
+});
+
+test('ai drawer badges: follow thread hides host badge; chat shows dialog mode; multi shows count', async () => {
+  const { ai, $, state } = await setup();
+
+  // 1. 未链接的跟随对话 -> 不显示任何主机徽标
+  const thFollow = ai.createAiThread({ title: '跟随' });
+
+  // 2. chat 对话 -> 显示「对话模式」
+  const thChat = ai.createAiThread({ title: '对话模式会话' });
+  thChat.linkMode = 'chat';
+
+  // 3. 多主机对话 + 生成中 -> 「N 台主机」与 busy 并列
+  const thMulti = ai.createAiThread({ title: '多主机', hostId: 'h-busy', hostName: 'prod-api' });
+  thMulti.linkMode = 'multi';
+  thMulti.linkedHostIds = ['h1', 'h2', 'h3'];
+  thMulti.req = { id: 'req-busy' };
+
+  ai.openAiDrawer();
+  const list = $('#ai-drawer-list');
+
+  const cardFollow = list.children.find((c) => c.dataset?.threadId === thFollow.id);
+  assert.ok(cardFollow);
+  assert.doesNotMatch(cardFollow.innerHTML, /ai-drawer-badge host/, '跟随对话未链接主机时不显示主机徽标');
+  assert.doesNotMatch(cardFollow.innerHTML, /ai-drawer-badge chat/, '跟随模式不显示对话模式徽标');
+
+  const cardChat = list.children.find((c) => c.dataset?.threadId === thChat.id);
+  assert.ok(cardChat);
+  assert.match(cardChat.innerHTML, /ai-drawer-badge chat/, 'chat 对话显示对话模式徽标');
+  assert.match(cardChat.innerHTML, /对话模式/);
+
+  const cardMulti = list.children.find((c) => c.dataset?.threadId === thMulti.id);
+  assert.ok(cardMulti);
+  assert.match(cardMulti.innerHTML, /ai-drawer-badge host/, '多主机对话显示主机徽标');
+  assert.match(cardMulti.innerHTML, /ai-drawer-badge busy/, 'busy 对话显示生成中徽标');
+  assert.match(cardMulti.innerHTML, /3 台主机/);
+  assert.match(cardMulti.innerHTML, /生成中/);
 });

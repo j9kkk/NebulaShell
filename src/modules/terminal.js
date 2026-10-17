@@ -2311,6 +2311,9 @@ export function handleSessionStatus({ sessionId, state: status, error, reason, c
   if (state.activeId === sessionId) updateStatusbar(s, error);
   refreshBroadcast();
   renderMonitorBar();
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('nb:session-status', { detail: { sessionId, status } }));
+  }
   return true;
 }
 

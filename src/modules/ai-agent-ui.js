@@ -3,6 +3,8 @@
 // 模态层级、「模态打开时终端拒写」的规则互相干扰。
 import { icon } from '../shared/icons.js';
 import { $, api } from './core.js';
+import { escapeHtml } from './hosts.js';
+import { threadBusy } from './ai.js';
 
 const TOOL_ICONS = {
   exec: 'terminal', read_terminal: 'terminal', read_file: 'file', tail_file: 'file', search_file: 'zoom',
@@ -316,10 +318,12 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
         input.type = 'password';
         input.autocomplete = 'off';
         input.placeholder = '输入 sudo 密码，回车确认';
-        const rememberLabel = el('label', 'ai-sudo-remember');
+        const rememberLabel = el('label', 'switch ai-sudo-remember');
         const remember = el('input');
         remember.type = 'checkbox';
-        rememberLabel.append(remember, document.createTextNode('本会话记住（仅内存）'));
+        const slider = el('span', 'switch-slider');
+        const label = el('span', 'switch-label', '本会话记住（仅内存）');
+        rememberLabel.append(remember, slider, label);
         row.append(input, rememberLabel);
         const actions = el('div', 'ai-confirm-actions');
         const ok = btn('确定', 'btn primary');
@@ -393,24 +397,23 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
   };
 }
 
-/// 执行模式选择器（原主机条已并入）：触发钮显示「主机名 · 模式」，菜单展开时
-/// 顶部标明「主机 · 名称」（未绑定时「未链接主机」）。对话模式不绑定主机，触发钮只显「对话模式」。
+/// 执行模式选择器:触发钮只显示档位名称(「手动确认」或「自动执行」),常驻显示。
+/// 「不操作主机 / 作用于哪些主机」归顶栏主机下拉,这里不再重复。
 const MODES = [
-  { id: 'chat', icon: 'messageSquare', title: '对话模式', desc: '不操作主机，命令仅展示供你自己执行' },
   { id: 'manual', icon: 'lock', title: '手动确认', desc: '执行命令前先向你确认' },
   { id: 'auto', icon: 'zap', title: '自动执行', desc: '普通命令自动执行，高危和外联仍会确认' },
 ];
 const MODE_TITLES = Object.fromEntries(MODES.map((m) => [m.id, m.title]));
-// 「?」帮助浮层的内容：三档沿用菜单图标；主机安全逐条配图标，会外发数据的那条用警示色。
+// 「?」帮助浮层的内容：两档沿用菜单图标；主机安全逐条配图标，会外发数据的那条用警示色。
 const MODE_HELP = {
   modes: {
-    chat: 'AI 只回复文字，命令由你自己决定是否执行。',
     manual: '每条命令先展示给你，确认后才执行。',
     auto: '普通命令直接执行；高危、外联、覆盖文件的命令仍会停下来确认。',
   },
-  grant: '下载、修改或删除文件、结束进程、卸载软件包可在确认卡上「本会话总是允许」（按站点、目录、进程名或包名）。之后同类操作直接执行、无法撤销；授权可在本菜单撤销。',
+  footnote: '这个对话作用于哪些主机，请在顶栏的主机下拉里选择（对话模式 / 跟随命令窗口 / 多主机）。',
+  grant: '下载、修改或删除文件、结束进程、卸载软件包可在确认卡上「本会话总是允许」（按站点、目录、进程名或包名）。之后同类操作直接执行、无法撤销；授权可在本菜单撤销。多主机模式下不提供「总是允许」，每条命令都单独确认。',
   security: [
-    { icon: 'terminal', text: '命令只在当前会话绑定的主机上执行。' },
+    { icon: 'terminal', text: '命令只会发送到本对话已链接的主机（服务端二次校验，模型无法指定其他会话）。' },
     { icon: 'key', text: 'sudo 密码与 SSH 登录凭据不会发送给 AI。' },
     { icon: 'alert', warn: true, text: '命令输出和读取的文件内容会发送给 AI 模型。发送前自动脱敏常见的密钥、令牌与密码格式，但无法保证识别所有敏感信息。' },
   ],
@@ -437,6 +440,13 @@ function renderModeHelp(pop) {
     const row = el('div', `mh-row mh-mode-${m.id}`);
     row.append(iconBox('mh-icon', m.icon, 13), body);
     modes.append(row);
+  }
+  if (MODE_HELP.footnote) {
+    const fn = el('div', 'mh-desc', MODE_HELP.footnote);
+    fn.style.padding = '4px 8px';
+    fn.style.color = 'var(--muted)';
+    fn.style.fontSize = '11px';
+    modes.append(fn);
   }
   const section = el('div', 'mh-section');
   section.append(iconBox('mh-section-icon', 'lock', 12), el('span', null, '主机安全'));
@@ -509,33 +519,26 @@ export function updateModePicker(info, { onSelectMode, onRevoke } = {}) {
     lastPickerInfo = info;
     if (onSelectMode) pickerHandlers = { onSelectMode, onRevoke };
   }
-  const visible = !!info?.visible;
-  trigger.hidden = !visible;
-  if (!visible) {
-    closeModeMenu();
-    return;
-  }
-  const mode = info.mode || 'manual';
+  // 常驻显示:档位与"作用于哪台主机"解耦后,任何时候都能看到/切换执行模式。
+  const mode = info?.mode || 'manual';
+  trigger.hidden = false;
   trigger.dataset.mode = mode;
-  trigger.dataset.locked = info.modeLocked ? 'true' : 'false';
-  trigger.dataset.degraded = info.warn ? 'true' : 'false';
+  trigger.dataset.locked = info?.modeLocked ? 'true' : 'false';
+  trigger.dataset.degraded = info?.warn ? 'true' : 'false';
   $('#ai-mode-name').textContent = MODE_TITLES[mode] || mode;
-  const hostEl = $('#ai-mode-host');
-  const sepEl = trigger.querySelector('.ai-mode-sep');
-  const host = info.hostLabel || '';
-  hostEl.textContent = host;
-  hostEl.parentElement.hidden = !host;
-  sepEl.hidden = !host;
+
   const iconWrap = trigger.querySelector('.ai-mode-icon');
-  iconWrap.innerHTML = icon(MODES.find((m) => m.id === mode)?.icon || 'lock', { size: 13 });
-  const grants = info.grants?.length ? `\n本会话已授权 ${info.grants.length} 项（点击查看或撤销）` : '';
-  trigger.title = info.warn
+  if (iconWrap) iconWrap.innerHTML = icon(MODES.find((m) => m.id === mode)?.icon || 'lock', { size: 13 });
+
+  const grants = info?.grants?.length ? `\n本会话已授权 ${info.grants.length} 项（点击查看或撤销）` : '';
+  const host = info?.hostSummary ? `\n作用于：${info.hostSummary}` : '';
+  trigger.title = info?.warn
     ? info.warn
-    : info.modeLocked
+    : info?.modeLocked
       ? `执行模式：${MODE_TITLES[mode]}（该主机设置为只允许手动确认）\n点击查看/切换执行模式`
-      : `执行模式：${MODE_TITLES[mode]}${host ? ` · ${host}` : ''}\n点击切换执行模式${grants}`;
-  trigger.disabled = !!info.disabled;
-  // 开合绑定在 entry.js(addEventListener 一次);这里只管状态,避免双绑定开又关。
+      : `执行模式：${MODE_TITLES[mode]}${host}\n点击切换执行模式${grants}`;
+  trigger.disabled = !!info?.disabled;
+
   // 菜单若开着，同步刷新（线程/绑定变化时）
   if (!$('#ai-mode-menu').classList.contains('hidden')) renderModeMenu(lastPickerInfo);
 }
@@ -566,10 +569,12 @@ function renderGrants(info) {
 export function renderModeMenu(info) {
   const list = $('#ai-mode-menu-list');
   if (!list) return;
-  $('#ai-mode-menu-ctx').innerHTML = '';
-  $('#ai-mode-menu-ctx').textContent = info.ctxLabel || '';
-  if (info.isRoot) {
-    $('#ai-mode-menu-ctx').append(Object.assign(document.createElement('span'), { className: 'ai-root-badge', textContent: 'root' }));
+  // 第一行左对齐显示本对话的主机摘要(未链接主机 / 已链接 X / 已链接 N 台主机)。
+  const ctx = $('#ai-mode-menu-ctx');
+  ctx.innerHTML = '';
+  ctx.textContent = info?.hostSummary || '未链接主机';
+  if (info?.isRoot) {
+    ctx.append(Object.assign(document.createElement('span'), { className: 'ai-root-badge', textContent: 'root' }));
   }
   list.innerHTML = '';
   for (const m of MODES) {
@@ -600,22 +605,62 @@ export function renderModeMenu(info) {
   renderGrants(info);
 }
 
+function anchorMenu(menu, trigger, { placement = 'bottom', width = 260, height = 240, gap = 4 } = {}) {
+  if (!menu || !trigger) return;
+  const tr = trigger.getBoundingClientRect();
+  const w = menu.offsetWidth || width;
+  const h = menu.offsetHeight || height;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const left = Math.max(8, Math.min(tr.left, vw - w - 8));
+  let top = placement === 'top'
+    ? Math.max(8, tr.top - h - gap)
+    : Math.min(vh - h - 8, tr.bottom + gap);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+
+function menuKeydown(e, menu, itemSelector, { onClose } = {}) {
+  if (!e || !menu || menu.classList.contains('hidden')) return;
+  const key = e.key;
+  if (key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    onClose?.({ focusTrigger: true });
+    return;
+  }
+  if (key === 'Tab') {
+    onClose?.();
+    return;
+  }
+  const items = Array.from(menu.querySelectorAll(itemSelector));
+  if (!items.length) return;
+  const activeEl = document.activeElement;
+  const currentIndex = items.indexOf(activeEl);
+  if (key === 'ArrowDown' || key === 'Down') {
+    e.preventDefault();
+    items[(currentIndex + 1) % items.length]?.focus();
+  } else if (key === 'ArrowUp' || key === 'Up') {
+    e.preventDefault();
+    items[(currentIndex - 1 + items.length) % items.length]?.focus();
+  } else if ((key === 'Enter' || key === ' ') && items.includes(activeEl)) {
+    e.preventDefault();
+    activeEl.click();
+  }
+}
+
 export function openModeMenu(info = lastPickerInfo) {
   const menu = $('#ai-mode-menu');
   const trigger = $('#ai-mode-trigger');
   if (!menu || !trigger || trigger.disabled) return;
   $('#ai-model-menu')?.classList.add('hidden');
   $('#ai-thread-menu')?.classList.add('hidden');
+  $('#ai-target-menu')?.classList.add('hidden');
   if (info) lastPickerInfo = info;
   renderModeMenu(lastPickerInfo);
   menu.classList.remove('hidden');
   trigger.setAttribute('aria-expanded', 'true');
-  // 锚定触发钮上方（输入区在面板底部，向下没有空间），左缘对齐触发钮
-  const tr = trigger.getBoundingClientRect();
-  const size = { width: menu.offsetWidth || 240, height: menu.offsetHeight || 220 };
-  const left = Math.max(8, Math.min(tr.left, window.innerWidth - size.width - 8));
-  menu.style.left = left + 'px';
-  menu.style.top = Math.max(8, tr.top - size.height - 6) + 'px';
+  anchorMenu(menu, trigger, { placement: 'top', width: 240, height: 220 });
   const active = menu.querySelector('.ai-mode-menu-item.active');
   if (active) active.focus();
 }
@@ -639,32 +684,494 @@ export function toggleModeMenu() {
 }
 
 export function onModeMenuKeydown(e) {
-  if (!e) return;
   const menu = $('#ai-mode-menu');
-  if (!menu || menu.classList.contains('hidden')) return;
-  const key = e.key;
-  if (key === 'Escape') {
-    e.preventDefault();
-    e.stopPropagation();
-    closeModeMenu({ focusTrigger: true });
+  menuKeydown(e, menu, '.ai-mode-menu-item:not(:disabled)', { onClose: closeModeMenu });
+}
+
+// -------------------------------------------------------------
+// Ops Target Bar 目标作用域看板、跨标签智能感知横条与目标选择菜单
+// -------------------------------------------------------------
+
+let targetHandlers = {};
+
+/// 顶栏主机链接钮:文案 = hostSummary(未链接主机 / 已链接 X / 已链接 N 台主机),
+/// 前导为状态点,右侧语境动作(连接/重连)。点击开合菜单由 entry.js 绑定。
+export function updateTargetBar(view, handlers = {}) {
+  const trigger = $('#ai-target-trigger');
+  if (!trigger) return;
+  if (!view) {
+    trigger.disabled = true;
     return;
   }
-  if (key === 'Tab') {
-    closeModeMenu();
+  trigger.disabled = false;
+  trigger.dataset.tone = view.tone || 'idle';
+  trigger.dataset.connected = (view.kind === 'bound' || view.kind === 'multi') ? 'true' : 'false';
+  trigger.title = `${view.ariaLabel || 'AI 操作目标'}\n点击选择作用主机`;
+  trigger.setAttribute('aria-label', view.ariaLabel || 'AI 操作目标');
+
+  const lead = $('#ai-target-lead');
+  if (lead) {
+    if (view.linkMode === 'chat') lead.innerHTML = icon('messageSquare', { size: 12 });
+    else lead.innerHTML = `<span class="dot ${view.tone || 'idle'}"></span>`;
+  }
+
+  const name = $('#ai-target-name');
+  if (name) name.textContent = view.hostSummary || '未链接主机';
+
+  const actionBtn = $('#ai-target-action');
+  if (actionBtn) {
+    if (view.actionText) {
+      actionBtn.textContent = view.actionText;
+      actionBtn.classList.remove('hidden');
+      actionBtn.onclick = (e) => { e.stopPropagation(); handlers.onAction?.(); };
+    } else {
+      actionBtn.classList.add('hidden');
+      actionBtn.onclick = null;
+    }
+  }
+}
+
+/// 顶栏主机菜单:三种互斥模式(各带 switch) + 多主机清单。
+///   menuData = {
+///     notice?, linkMode, disabled,
+///     chat: {checked}, follow: {checked, hostLabel}, multi: {checked, showHosts},
+///     hosts: [{ hostId, name, address, linked, status, error, disabled }],
+///     query, linkCount,
+///   }
+/// 选择模式/切换开关都回调 handlers(onSelectMode / onToggleHost / onClearHosts / onSearch)。
+///
+/// 菜单内的任何点击都不收起菜单:调模式、开主机开关后原地重绘,用户可以连续操作。
+/// 收起只发生在:点菜单外、Esc、再点一次触发钮。
+export function renderTargetMenu(menuData, handlers = {}, { focusMode, focusHostId } = {}) {
+  const list = $('#ai-target-menu-list');
+  if (!list) return;
+  if (handlers && Object.keys(handlers).length) targetHandlers = { ...targetHandlers, ...handlers };
+
+  const data = menuData || {};
+  // 结构没变时只更新状态,不重建 DOM —— 否则 switch 的轨道/滑块换成了全新节点,
+  // 刚点下去的那次过渡就丢了(表现为"第一次点没有果冻,第二次才有")。
+  if (patchTargetMenu(list, data)) {
+    if (focusHostId) {
+      list.querySelector(`.ai-target-host[data-host-id="${CSS.escape(focusHostId)}"] input`)?.focus();
+    } else if (focusMode) {
+      list.querySelector(`.ai-target-mode[data-mode="${focusMode}"]`)?.focus();
+    }
     return;
   }
-  const items = Array.from(menu.querySelectorAll('.ai-mode-menu-item:not(:disabled)'));
-  if (!items.length) return;
-  const activeEl = document.activeElement;
-  const currentIndex = items.indexOf(activeEl);
-  if (key === 'ArrowDown' || key === 'Down') {
-    e.preventDefault();
-    items[(currentIndex + 1) % items.length]?.focus();
-  } else if (key === 'ArrowUp' || key === 'Up') {
-    e.preventDefault();
-    items[(currentIndex - 1 + items.length) % items.length]?.focus();
-  } else if ((key === 'Enter' || key === ' ') && items.includes(activeEl)) {
-    e.preventDefault();
-    activeEl.click();
+
+  list.replaceChildren();
+
+  if (data.notice) list.append(el('div', 'ai-target-menu-note', data.notice));
+
+  const modeOn = (id) => !!data[id]?.checked;
+
+  // 三种模式互斥:一律是 switch。当前模式的开关为开、可点(再点=无操作);
+  // 另两个开关为关且禁用(「一个启用后另外二个自动禁用」)。切换目标是点那一行。
+  const modeRow = (modeId, iconName, label, desc) => {
+    const on = modeOn(modeId);
+    const row = el('div', 'ai-target-mode' + (on ? ' is-on' : ''));
+    row.dataset.mode = modeId;
+    row.setAttribute('role', 'menuitemradio');
+    row.setAttribute('aria-checked', on ? 'true' : 'false');
+    row.tabIndex = -1;
+    if (data.disabled) row.setAttribute('aria-disabled', 'true');
+    const ic = el('span', 'mi');
+    ic.innerHTML = icon(iconName, { size: 14 });
+    const body = el('span', 'ai-target-mode-body');
+    body.append(el('span', 'ai-target-mode-name', label), el('span', 'ai-target-mode-desc', desc));
+    row.append(ic, body);
+    row.append(makeSwitch({
+      checked: on,
+      // 非当前模式的开关禁用:互斥模式下它只能是关,点它没有意义。
+      disabled: !!data.disabled || !on,
+      label,
+      // 开关自己处理 change;阻止冒泡到整行,避免同一次点击被处理两次。
+      onClick: (e) => e.stopPropagation(),
+      // 同样读实时状态:就地更新后不能依赖创建时的 on 快照。
+      onChange: (next) => {
+        if (next && row.getAttribute('aria-checked') !== 'true') targetHandlers.onSelectMode?.(modeId);
+      },
+    }));
+    // 整行可点 = 切到这个模式(当前模式点自己无操作)。开关禁用的那两行也能点,
+    // 否则用户被锁死在一个模式里。
+    // 判断读实时 DOM 状态而不是创建时捕获的 on:菜单会就地更新(不重建),
+    // 闭包里的 on 会过期,导致已切到该模式后仍被当成"未启用"重复触发。
+    const isOnNow = () => row.getAttribute('aria-checked') === 'true';
+    const isDisabledNow = () => row.getAttribute('aria-disabled') === 'true';
+    row.addEventListener('click', () => {
+      if (isDisabledNow() || isOnNow()) return;
+      targetHandlers.onSelectMode?.(modeId);
+    });
+    row.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      row.click();
+    });
+    return row;
+  };
+
+  // 1. 对话模式
+  list.append(modeRow('chat', 'messageSquare', '对话模式', '不链接任何主机，只回答不操作'));
+
+  // 2. 跟随命令窗口(描述实时显示跟随到哪台主机)
+  const followDesc = data.follow?.hostLabel
+    ? `已链接 ${data.follow.hostLabel}`
+    : '跟随当前命令窗口的主机';
+  list.append(modeRow('follow', 'terminal', '跟随命令窗口', followDesc));
+
+  // 3. 多主机模式(启用后才展开清单)
+  list.append(modeRow(
+    'multi', 'plug', '多主机模式',
+    data.linkCount > 0 ? `已链接 ${data.linkCount} 台主机` : '批量链接多台主机统一管理',
+  ));
+
+  if (data.multi?.showHosts) {
+    list.append(renderHostList(data, handlers));
   }
+
+  renderTargetFooter(list, data, handlers);
+
+  // 重绘后把焦点放回刚操作过的那一项,键盘/鼠标连续操作不丢位置。
+  if (focusHostId) {
+    const sw = list.querySelector(`.ai-target-host[data-host-id="${CSS.escape(focusHostId)}"] input`);
+    sw?.focus();
+  } else if (focusMode) {
+    list.querySelector(`.ai-target-mode[data-mode="${focusMode}"]`)?.focus();
+  }
+}
+
+/// 把已存在行上的 switch 更新成目标状态,而不是重建 DOM。
+/// 重建会让轨道/滑块变成全新节点,浏览器没有"旧值 → 新值"可插值,
+/// 果冻过渡在首次点击时就播不出来(第二次才正常,因为节点换成了刚建好的那批)。
+/// 返回 true 表示成功就地更新(结构未变)。
+function syncSwitch(row, checked, disabled) {
+  const input = row?.querySelector?.('.switch input');
+  if (!input) return false;
+  if (input.checked !== checked) input.checked = checked;
+  if (input.disabled !== disabled) input.disabled = disabled;
+  return true;
+}
+
+/// 在多主机模式开启时把清单+页脚插到模式行之后(不重建模式行,保住 switch 动画)。
+function insertHostBlock(list, data) {
+  const rows = [...list.querySelectorAll('.ai-target-mode')];
+  const anchor = rows[rows.length - 1];
+  const hostEl = renderHostList(data, {});
+  const footNodes = buildTargetFooter(data, {});
+  const after = anchor ? anchor.nextSibling : null;
+  list.insertBefore(hostEl, after);
+  for (const node of footNodes) list.insertBefore(node, after);
+}
+
+/// 清单块重建(主机增删/搜索过滤):整块替换清单与页脚,模式行仍保留。
+function rebuildHostBlock(list, data) {
+  list.querySelector('.ai-target-hosts')?.remove();
+  for (const node of [...list.querySelectorAll('.ai-target-menu-sep, .ai-target-menu-foot')]) node.remove();
+  const rows = [...list.querySelectorAll('.ai-target-mode')];
+  const anchor = rows[rows.length - 1];
+  const after = anchor ? anchor.nextSibling : null;
+  list.insertBefore(renderHostList(data, {}), after);
+  for (const node of buildTargetFooter(data, {})) list.insertBefore(node, after);
+}
+function patchTargetMenu(list, data) {
+  const modeRows = [...list.querySelectorAll('.ai-target-mode')];
+  if (modeRows.length !== 3) return false;
+
+  // 模式行状态同步(勾选态/描述/开关可用性)。就地改写,不换节点。
+  const syncModeRows = () => {
+    for (const modeId of ['chat', 'follow', 'multi']) {
+      const row = modeRows.find((r) => r.dataset.mode === modeId);
+      if (!row) continue;
+      const on = !!data[modeId]?.checked;
+      row.classList.toggle('is-on', on);
+      row.setAttribute('aria-checked', on ? 'true' : 'false');
+      syncSwitch(row, on, !!data.disabled || !on);
+      const desc = row.querySelector('.ai-target-mode-desc');
+      const text = modeId === 'follow'
+        ? (data.follow?.hostLabel ? `已链接 ${data.follow.hostLabel}` : '跟随当前命令窗口的主机')
+        : modeId === 'multi'
+          ? (data.linkCount > 0 ? `已链接 ${data.linkCount} 台主机` : '批量链接多台主机统一管理')
+          : '';
+      if (desc && text && desc.textContent !== text) desc.textContent = text;
+    }
+  };
+
+  // ---- 模式行 ----
+  // 勾选态变化不重建:模式 switch 的果冻动画依赖"同一个 DOM 节点"。
+  const disabledAttr = !!data.disabled;
+  for (const modeId of ['chat', 'follow', 'multi']) {
+    const row = modeRows.find((r) => r.dataset.mode === modeId);
+    if (!row) return false;
+    if (disabledAttr !== (row.getAttribute('aria-disabled') === 'true')) return false;
+  }
+
+  // ---- 主机清单 ----
+  // 清单的出现/消失只增删它自己那一块,不重建整张菜单 —— 否则切到多主机那一下
+  // 连模式 switch 都被换成新节点,果冻动画同样丢失。
+  const hostWrap = list.querySelector('.ai-target-hosts');
+  const foot = list.querySelector('.ai-target-menu-foot');
+  const wantHosts = !!data.multi?.showHosts;
+  const wasHosts = !!hostWrap;
+
+  let hostRows = [];
+  if (wantHosts && wasHosts) {
+    hostRows = [...list.querySelectorAll('.ai-target-host')];
+    const hosts = data.hosts || [];
+    // 主机数量变化(增删/搜索过滤):只重建清单块,模式行保留(动画不丢)。
+    if (hostRows.length !== hosts.length) {
+      rebuildHostBlock(list, data);
+      return true;
+    }
+    for (let i = 0; i < hosts.length; i++) {
+      if (hostRows[i].dataset.hostId !== hosts[i].hostId) {
+        rebuildHostBlock(list, data);
+        return true;
+      }
+    }
+  } else if (wantHosts !== wasHosts) {
+    // 多主机开/关:只增删清单 + 页脚,模式行原样保留(动画不丢)。
+    if (wantHosts) insertHostBlock(list, data);
+    else { hostWrap?.remove(); foot?.remove(); }
+    syncModeRows();
+    return true;
+  }
+
+  // ===== 到这里确认结构一致,只更新内容 =====
+  syncModeRows();
+
+  if (wantHosts) {
+    const hosts = data.hosts || [];
+    hostRows.forEach((row, i) => {
+      const h = hosts[i];
+      const pending = h.status === 'connecting' || h.status === 'disconnecting';
+      row.classList.toggle('is-on', !!h.linked);
+      row.classList.toggle('ai-target-host-error', !!h.error);
+      row.classList.toggle('is-pending', pending);
+      const meta = row.querySelector('.ai-target-host-meta');
+      const next = h.status === 'connecting' ? '连接中…'
+        : h.status === 'disconnecting' ? '断开中…'
+          : h.error ? h.error
+            : h.linked ? '已链接'
+              : (h.address || '');
+      if (meta && meta.textContent !== next) meta.textContent = next;
+      syncSwitch(row, !!h.linked, !!data.disabled || pending);
+    });
+    const count = list.querySelector('.ai-target-hosts-count');
+    const countText = `已链接 ${data.linkCount || 0} / 共 ${(data.hosts || []).length}`;
+    if (count && count.textContent !== countText) count.textContent = countText;
+  }
+
+  const footEl = list.querySelector('.ai-target-menu-foot');
+  if (footEl) {
+    const text = data.linkCount > 0 ? `已链接 ${data.linkCount} 台主机` : '未链接主机';
+    const label = footEl.querySelector('.ai-target-menu-foot-text');
+    if (label && label.textContent !== text) label.textContent = text;
+  }
+  return true;
+}
+
+/// 多主机清单:搜索 + 计数 + 可滚动列表(每台一个 switch)。100 台也只是一段滚动区。
+function renderHostList(data, handlers) {
+  const wrap = el('div', 'ai-target-hosts');
+  const head = el('div', 'ai-target-hosts-head');
+  head.append(el('span', 'ai-target-hosts-count', `已链接 ${data.linkCount || 0} / 共 ${(data.hosts || []).length}`));
+  head.append(el('span', 'spacer'));
+  const allOn = data.linkCount > 0 && data.linkCount >= (data.hosts || []).length;
+  const clearBtn = btn(allOn ? '全部关闭' : '全部开启', 'btn small ghost');
+  clearBtn.addEventListener('click', () => {
+    targetHandlers.onToggleAll?.(!allOn);
+  });
+  head.append(clearBtn);
+  wrap.append(head);
+
+  const searchRow = el('div', 'ai-target-hosts-search');
+  const search = document.createElement('input');
+  search.className = 'inp';
+  search.type = 'text';
+  search.placeholder = '搜索主机…';
+  search.setAttribute('aria-label', '搜索主机');
+  search.autocomplete = 'off';
+  search.value = data.query || '';
+  let searchTimer = null;
+  search.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => targetHandlers.onSearch?.(search.value), 120);
+  });
+  // 搜索框里回车/空格不该触发菜单项的键盘选择
+  search.addEventListener('keydown', (e) => { if (e.key !== 'Escape') e.stopPropagation(); });
+  searchRow.append(search);
+  wrap.append(searchRow);
+
+  const listEl = el('div', 'ai-target-hosts-list');
+  const hosts = data.hosts || [];
+  if (!hosts.length) {
+    listEl.append(el('div', 'ai-target-hosts-empty', data.query ? '没有匹配的主机' : '还没有配置主机'));
+  }
+  for (const h of hosts) {
+    const pending = h.status === 'connecting' || h.status === 'disconnecting';
+    const row = el('div', 'ai-target-host'
+      + (h.linked ? ' is-on' : '')
+      + (h.error ? ' ai-target-host-error' : '')
+      + (pending ? ' is-pending' : ''));
+    row.dataset.hostId = h.hostId;
+    const body = el('div', 'ai-target-host-body');
+    const nameEl = el('span', 'ai-target-host-name', h.name || h.hostId);
+    nameEl.title = h.name || h.hostId;
+    // 三段可见状态:连接中… / 断开中… → 已链接 / 失败原因 → 地址
+    const meta = h.status === 'connecting' ? '连接中…'
+      : h.status === 'disconnecting' ? '断开中…'
+        : h.error ? h.error
+          : h.linked ? '已链接'
+            : (h.address || '');
+    body.append(nameEl, el('span', 'ai-target-host-meta', meta));
+    const sw = makeSwitch({
+      checked: !!h.linked,
+      // 操作进行中禁用,避免连点把状态机打乱
+      disabled: !!data.disabled || pending,
+      label: `链接 ${h.name || h.hostId}`,
+      onChange: (on) => { targetHandlers.onToggleHost?.(h.hostId, on); },
+    });
+    row.append(body, sw);
+    listEl.append(row);
+  }
+  wrap.append(listEl);
+  return wrap;
+}
+
+/// 页脚节点(分隔线 + 「已链接 N 台主机」+「断开全部」)。返回节点数组,便于整块增删。
+function buildTargetFooter(data, handlers) {
+  if (!data.hosts?.length) return [];
+  const sep = el('div', 'ai-target-menu-sep');
+  const foot = el('div', 'ai-target-hosts-head ai-target-menu-foot');
+  const label = el('span', 'ai-target-menu-foot-text', data.linkCount > 0 ? `已链接 ${data.linkCount} 台主机` : '未链接主机');
+  foot.append(label);
+  foot.append(el('span', 'spacer'));
+  if (data.linkCount > 0) {
+    const off = btn('断开全部', 'btn small ghost');
+    off.addEventListener('click', () => targetHandlers.onClearHosts?.());
+    foot.append(off);
+  }
+  return [sep, foot];
+}
+
+function renderTargetFooter(list, data, handlers) {
+  for (const node of buildTargetFooter(data, handlers)) list.append(node);
+}
+
+
+/// 复用 .switch 组件的复选框(与设置页同款滑块样式)。
+function makeSwitch({ checked, disabled, label, onChange, onClick } = {}) {
+  const wrap = el('label', 'switch');
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = !!checked;
+  input.disabled = !!disabled;
+  input.setAttribute('aria-label', label || '开关');
+  const slider = el('span', 'switch-slider');
+  if (onClick) wrap.addEventListener('click', onClick);
+  input.addEventListener('change', () => onChange?.(input.checked));
+  wrap.append(input, slider);
+  return wrap;
+}
+
+export function openTargetMenu(menuData, handlers) {
+  const menu = $('#ai-target-menu');
+  const trigger = $('#ai-target-trigger');
+  if (!menu || !trigger || trigger.disabled) return;
+  $('#ai-model-menu')?.classList.add('hidden');
+  $('#ai-thread-menu')?.classList.add('hidden');
+  $('#ai-mode-menu')?.classList.add('hidden');
+
+  if (menuData) renderTargetMenu(menuData, handlers);
+  menu.classList.remove('hidden');
+  trigger.setAttribute('aria-expanded', 'true');
+  anchorMenu(menu, trigger, { placement: 'bottom', width: 300, height: 320 });
+
+  const activeItem = menu.querySelector('.ai-target-mode[aria-checked="true"]');
+  if (activeItem) activeItem.focus();
+}
+
+export function closeTargetMenu({ focusTrigger = false } = {}) {
+  const menu = $('#ai-target-menu');
+  const trigger = $('#ai-target-trigger');
+  if (menu) menu.classList.add('hidden');
+  if (trigger) {
+    trigger.setAttribute('aria-expanded', 'false');
+    if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+  }
+}
+
+export function toggleTargetMenu(menuData, handlers) {
+  const menu = $('#ai-target-menu');
+  if (!menu) return;
+  if (menu.classList.contains('hidden')) openTargetMenu(menuData, handlers);
+  else closeTargetMenu();
+}
+
+/// 这次点击是否来自指定菜单/触发钮内部。
+///
+/// 不能用 e.target.closest():菜单内的原地重绘(切模式、拨开关后刷新清单)会把被点中
+/// 的那一行从文档里摘掉,事件继续冒泡到 document 时 closest 已经是 null,于是被误判成
+/// "点了菜单外",表现为切个模式/拨个开关菜单就自己收起。composedPath 在事件派发时就
+/// 已算好,元素脱离文档也不影响,能稳定认出"这次点击来自菜单内部"。
+export function clickFromMenu(event, ids) {
+  const path = typeof event?.composedPath === 'function' ? event.composedPath() : [];
+  if (path.some((node) => node && ids.includes(node.id))) return true;
+  return ids.some((id) => !!event?.target?.closest?.(`#${id}`));
+}
+
+export function onTargetMenuKeydown(e) {
+  const menu = $('#ai-target-menu');
+  // 模式行现在是 div(不是 button),可用性由 aria-disabled 表达;主机开关单独可聚焦。
+  menuKeydown(e, menu, '.ai-target-mode:not([aria-disabled="true"])', { onClose: closeTargetMenu });
+}
+
+export function updateContextBanner(view, thread, handlers = {}) {
+  const banner = $('#ai-context-banner');
+  if (!banner) return;
+
+  if (!view || !thread) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  const textEl = $('#ai-context-banner-text');
+  const actionsEl = $('#ai-context-banner-actions');
+  const closeBtn = $('#ai-context-banner-close');
+
+  // 变体 1: 消息未发送 (发送拦截)
+  if (thread.sendBlocked && view.kind === 'offline') {
+    banner.classList.remove('hidden');
+    if (textEl) {
+      const safeHost = escapeHtml(view.hostLabel || '目标主机');
+      textEl.innerHTML = `<b>消息未发送</b>：${safeHost} 未连接，AI 无法在它上面执行命令。`;
+    }
+    if (actionsEl) {
+      actionsEl.replaceChildren();
+      if (view.connectable) {
+        const connBtn = btn(`${view.actionText || '连接'} ${view.hostLabel || ''}`, 'btn small primary');
+        connBtn.addEventListener('click', () => handlers.onConnect?.());
+        actionsEl.append(connBtn);
+      }
+      if (view.active?.session) {
+        const switchBtn = btn(`改在 ${view.active.hostLabel} 上发送`, 'btn small');
+        switchBtn.addEventListener('click', () => handlers.onSendOnActive?.());
+        actionsEl.append(switchBtn);
+      }
+      const chatBtn = btn('改为对话模式发送', 'btn small ghost');
+      chatBtn.addEventListener('click', () => handlers.onSendAsChat?.());
+      actionsEl.append(chatBtn);
+    }
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        banner.classList.add('hidden');
+        handlers.onDismissBlocked?.();
+      };
+    }
+    return;
+  }
+
+  // 跟随模式下目标恒等于当前窗口,不存在「跨标签指向另一台主机」的情形,
+  // 因此跨标签横条已随本轮重构移除(第二行目标栏的职责并入顶栏主机下拉)。
+  banner.classList.add('hidden');
 }

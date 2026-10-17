@@ -156,8 +156,22 @@ fn ai_access(state: &AppState, host: &Value) -> String {
         .to_string()
 }
 
+/// 会话白名单校验:前端把本轮所有已链接会话一并带来,不在其中的一律拒绝。
+/// 防「模型在参数里编一个 sessionId」把命令落到另一台已打开标签的主机上 ——
+/// 边界判定放在后端,前端解析出错也拦得住。未提供 linkedSessions 时不做限制
+/// (旧客户端/旧代码块路径不传该字段)。
+fn session_allowed(p: &Value, sid: &str) -> bool {
+    let Some(list) = p["linkedSessions"].as_array() else {
+        return true;
+    };
+    list.iter().any(|x| x.as_str() == Some(sid))
+}
+
 pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> Value {
     let sid = p["sessionId"].as_str().unwrap_or("").to_string();
+    if !session_allowed(p, &sid) {
+        return err("host_not_linked", "该主机不在本对话已链接的主机内");
+    }
     let session = state.ssh.sessions.lock().await.get(&sid).cloned();
     let Some(session) = session.filter(|s| s.alive.load(Ordering::Relaxed)) else {
         return err("session_gone", "主机未连接（会话已断开），请先重新连接");

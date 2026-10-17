@@ -3,6 +3,19 @@ use super::run::{clean_output, finalize, split_pgid, take_complete_utf8, wrap, H
 use super::*;
 
 #[test]
+fn linked_sessions_whitelist_rejects_unlisted_sessions() {
+    // 未带白名单(旧路径):不限制。
+    assert!(session_allowed(&json!({ "sessionId": "s1" }), "s1"));
+    // 带白名单:只放行列表内。
+    let p = json!({ "sessionId": "s2", "linkedSessions": ["s1", "s2"] });
+    assert!(session_allowed(&p, "s1"));
+    assert!(session_allowed(&p, "s2"));
+    assert!(!session_allowed(&p, "s3"), "不在白名单的会话必须被拒");
+    // 空数组=一台都没链接,一律拒绝。
+    assert!(!session_allowed(&json!({ "linkedSessions": [] }), "s1"));
+}
+
+#[test]
 fn head_tail_keeps_both_ends() {
     let mut h = HeadTail::new(4, 4);
     h.push(b"abc");

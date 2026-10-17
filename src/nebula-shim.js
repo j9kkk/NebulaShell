@@ -14,6 +14,8 @@
       }),
     // 仅测试模式:主窗口跟随所有 Space 并聚焦(e2e 可见性预检用)
     testPinWindow: () => tauri.core.invoke('nebula_test_pin_window'),
+    // 原生窗口外观('light' | 'dark')跟随主题,macOS 红绿灯按它绘制深/浅款
+    setAppearance: (theme) => tauri.core.invoke('nebula_set_appearance', { theme }),
     on: (channel, cb) => {
       let un = null;
       tauri.event.listen(map(channel), (e) => cb(e.payload)).then((u) => { un = u; });

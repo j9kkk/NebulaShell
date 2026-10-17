@@ -128,8 +128,56 @@ export const AI_READ_TERMINAL_TOOL = {
   },
 };
 
+// 多主机版 exec：多一个可选 host（按主机名指定在哪台上执行）。
+// 主机名由前端严格解析到「本对话已链接」的会话;解析不到直接报错,不猜、不回落首台。
+const MULTI_HOST_PARAM = { type: 'string', description: '目标主机名（本对话已链接的主机之一）；省略则在默认主机上执行' };
+
+const AI_EXEC_TOOL_MULTI = {
+  ...AI_TOOLS_SCHEMA.find((t) => t.name === 'exec'),
+  description: '在指定的已链接主机上执行一条 Shell 命令并返回输出（已脱敏、头尾截断）。' +
+    'host 用主机名指定目标主机（必须是本对话已链接的主机之一）；省略时在默认主机上执行。' +
+    '重要限制：每次 exec 都是一个全新 Shell，cd / export 等不会延续到下一次调用，需要持久状态的命令要写成单条组合命令（如 cd /var/log && tail -n 50 app.log）。' +
+    '需要用户 Shell 环境（nvm、conda、rbenv 等初始化脚本）或交互式输入的命令无法在此执行，应给出代码块让用户在自己的终端里运行。' +
+    '手动模式下每条命令都会先请求用户确认，用户可能直接跳过或改写命令；高危与外联（上传/下载、curl/wget 管道执行等）命令无论何种模式都会停下来等待用户确认。' +
+    '多主机模式下不提供「本会话总是允许」，每条命令都单独确认。' +
+    '不要把多条无关命令用 ; 或 && 拼在一起，便于用户逐条判断。',
+  parameters: {
+    type: 'object',
+    properties: {
+      cmd: { type: 'string', description: '要执行的命令（单条，不带提示符）' },
+      host: MULTI_HOST_PARAM,
+      cwd: { type: 'string', description: '工作目录，默认为终端当前目录' },
+      idleTimeout: { type: 'integer', description: '空闲（无输出）超时秒数，上限 600' },
+    },
+    required: ['cmd'],
+    additionalProperties: false,
+  },
+};
+
+// 多主机版的只读工具:同样接受可选 host。
+// 少了这个,模型只能用 exec 逐台查;而「看服务状态/读日志」这类活它天然会用
+// tail_file/read_file/list_dir —— 那些工具此前一律落到默认主机,表现就是
+// 「明明链接了两台,AI 只看到一台」。
+function withHostParam(tool) {
+  return {
+    ...tool,
+    parameters: {
+      ...tool.parameters,
+      properties: { ...tool.parameters.properties, host: MULTI_HOST_PARAM },
+      required: tool.parameters.required || [],
+    },
+  };
+}
+
 // 实际随 ai:chat 下发的完整工具集（§3 全部，含前端执行的 read_terminal）
 export const AI_AGENT_TOOLS = [...AI_TOOLS_SCHEMA, AI_READ_TERMINAL_TOOL];
+// 多主机工具集:所有主机工具都带可选 host,且不下发 read_terminal(无头主机没有终端语义)。
+export const AI_AGENT_TOOLS_MULTI = [
+  ...AI_TOOLS_SCHEMA
+    .filter((t) => t.name !== 'exec')
+    .map(withHostParam),
+  AI_EXEC_TOOL_MULTI,
+];
 
 // exec 工具名（循环层据此区分确认流程与只读流程）
 export const AI_EXEC_TOOL = 'exec';
