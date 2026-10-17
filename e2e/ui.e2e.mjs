@@ -830,11 +830,8 @@ async function aiCommandBlockRegressions() {
     if (!row) throw new Error('模式行不存在: ${mode}');
     if (row.getAttribute('aria-disabled') === 'true') throw new Error('模式行被禁用: ${mode}');
     row.click(); return 1`);
-  // 三种模式互斥:点另一行即切过去(不再用「关掉跟随开关回对话」的路径)。
-  const switchModeBySwitch = (mode) => evalJs(`const sw = document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="${mode}"] .switch input');
-    if (!sw) throw new Error('模式开关不存在: ${mode}');
-    if (sw.disabled) throw new Error('模式开关被禁用: ${mode}');
-    sw.checked = true; sw.dispatchEvent(new Event('change', { bubbles: true })); return 1`);
+  // 三种模式互斥且必须恒选其一:顶层用单选(Radio)卡片,整行点击即切换,
+  // 已激活项再点保持激活 —— 不再有「把模式关掉」的 switch 语义。
   const targetName = () => evalJs(`return document.querySelector('#ai-target-name')?.textContent || ''`);
 
 async function aiHostToolRegressions() {
@@ -895,12 +892,13 @@ async function aiHostToolRegressions() {
     await evalJs(`document.querySelector('#ai-mode-menu-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
     await waitEval(`return document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
 
-    // T-TM2:三种模式行都在;跟随模式是 switch(打开后其他模式置灰)。
+    // T-TM2:三种模式行都在,且都是单选(Radio)语义 —— 顶层模式恒选其一,没有开关。
     await openTargetMenu();
     await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    const modeRows = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({ mode: r.dataset.mode, checked: r.getAttribute('aria-checked'), hasSwitch: !!r.querySelector('.switch') })))`));
-    check('T-TM2 主机菜单三种模式齐备:对话模式 / 跟随命令窗口 / 多主机模式,三者各带一个 switch',
-      ['chat', 'follow', 'multi'].every((m) => modeRows.some((r) => r.mode === m && r.hasSwitch === true)),
+    const modeRows = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({ mode: r.dataset.mode, checked: r.getAttribute('aria-checked'), role: r.getAttribute('role'), hasRadio: !!r.querySelector('.ai-target-mode-radio'), hasSwitch: !!r.querySelector('.switch') })))`));
+    check('T-TM2 主机菜单三种模式齐备:单选卡片(无开关),且只有一处 aria-checked',
+      ['chat', 'follow', 'multi'].every((m) => modeRows.some((r) => r.mode === m && r.hasRadio === true && r.hasSwitch === false && r.role === 'menuitemradio'))
+      && modeRows.filter((r) => r.checked === 'true').length === 1,
       JSON.stringify(modeRows));
 
     // T-AT9a:点「对话模式」那一行(三模式互斥,不用先关跟随)→ 主机钮「未链接主机」,执行模式钮仍常驻。
@@ -1232,20 +1230,23 @@ async function aiTargetRegressions() {
       && multiMenu.hostRows > 0 && multiMenu.switches === multiMenu.hostRows && multiMenu.search,
       JSON.stringify(multiMenu));
 
-    // T-TM5: 互斥语义 —— 当前模式的开关为开且可点,另两个为关且禁用。
-    const modeSwitches = asObj(await evalJs(`return JSON.stringify(
+    // T-TM5: 单选语义 —— 多主机是唯一勾选处,点击已激活项保持激活(不会变成"全不选")。
+    const modeChecks = asObj(await evalJs(`return JSON.stringify(
       [...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({
         mode: r.dataset.mode,
         checked: r.getAttribute('aria-checked'),
-        swChecked: r.querySelector('.switch input')?.checked ?? null,
-        swDisabled: r.querySelector('.switch input')?.disabled ?? null,
+        hasSwitch: !!r.querySelector('.switch'),
       })))`));
-    const cur = modeSwitches.find((m) => m.mode === 'multi');
-    const others = modeSwitches.filter((m) => m.mode !== 'multi');
-    check('T-TM5 三模式互斥: 当前模式开关开且可点,另外两个开关关且禁用',
-      cur?.swChecked === true && cur?.swDisabled === false
-      && others.every((m) => m.swChecked === false && m.swDisabled === true),
-      JSON.stringify(modeSwitches));
+    await pickTargetMode('multi');
+    await sleep(150);
+    const stillMulti = await evalJs(`return document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="multi"]')?.getAttribute('aria-checked')`);
+    const checkedNow = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.dataset.mode))`));
+    check('T-TM5 单选语义: 多主机是唯一勾选处;再次点击保持选中,不存在"全部取消"',
+      modeChecks.filter((m) => m.checked === 'true').length === 1
+      && modeChecks.find((m) => m.mode === 'multi')?.checked === 'true'
+      && modeChecks.every((m) => m.hasSwitch === false)
+      && stillMulti === 'true' && checkedNow.length === 1 && checkedNow[0] === 'multi',
+      JSON.stringify({ modeChecks, stillMulti, checkedNow }));
 
     // 切回收跟随(点行),验证互斥切换与菜单仍开着
     await pickTargetMode('follow');
@@ -1254,9 +1255,12 @@ async function aiTargetRegressions() {
       menuStillOpen: !document.querySelector('#ai-target-menu').classList.contains('hidden'),
       followChecked: document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="follow"]')?.getAttribute('aria-checked'),
       multiRows: document.querySelectorAll('#ai-target-menu-list .ai-target-host').length,
+      seps: document.querySelectorAll('#ai-target-menu-list .ai-target-menu-sep').length,
+      foot: document.querySelectorAll('#ai-target-menu-list .ai-target-menu-foot').length,
     })`));
-    check('T-TM6 切回跟随: 菜单保持打开, 多主机清单随之收起',
-      backToFollow.menuStillOpen && backToFollow.followChecked === 'true' && backToFollow.multiRows === 0,
+    check('T-TM6 切回跟随: 菜单保持打开, 多主机清单收起且分割线/页脚不残留',
+      backToFollow.menuStillOpen && backToFollow.followChecked === 'true' && backToFollow.multiRows === 0
+      && backToFollow.seps === 0 && backToFollow.foot === 0,
       JSON.stringify(backToFollow));
 
     // 退出菜单,避免影响后续
