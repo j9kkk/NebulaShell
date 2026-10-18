@@ -51,8 +51,8 @@ async function makeItem(api, entry) {
     return submenu;
   }
   const info = commandState(entry.cmd) || { label: entry.cmd, enabled: false };
-  const accelerator = entry.accelerator === false ? '' : toAccelerator(specOf(entry.cmd));
-  const record = { entry, item: null, applied: { enabled: info.enabled, checked: info.checked, text: textOf(entry, info) } };
+  const accelerator = accelFor(entry);
+  const record = { entry, item: null, applied: { enabled: info.enabled, checked: info.checked, accel: accelerator, text: textOf(entry, info) } };
   const options = {
     id: `cmd:${entry.cmd}${entry.alias ? ':' + entry.alias : ''}`,
     text: record.applied.text,
@@ -67,10 +67,15 @@ async function makeItem(api, entry) {
   return record.item;
 }
 
+/// 菜单项当前应有的加速键(自定义键位生效;accelerator:false 表示刻意不显示)。
+const accelFor = (entry) => (entry.accelerator === false ? '' : toAccelerator(specOf(entry.cmd)));
+
 // 窗口隐藏时 requestAnimationFrame 不触发,而菜单栏仍然可见
 const nextFrame = (fn) => (document.hidden ? setTimeout(fn, 0) : requestAnimationFrame(fn));
 
-/// 只对变化的项调用 setEnabled / setChecked / setText,合并到下一帧。
+/// 只对变化的项调用 setEnabled / setChecked / setText / setAccelerator,合并到下一帧。
+/// 加速键也要同步:自定义键位在运行时改动后,菜单上的提示和真正生效的
+/// 快捷键必须一起变,否则菜单显示旧键位而按键已按新键位触发。
 export function scheduleSync() {
   if (!built || syncQueued) return;
   syncQueued = true;
@@ -80,6 +85,7 @@ export function scheduleSync() {
       const info = commandState(record.entry.cmd);
       if (!info) continue;
       const text = textOf(record.entry, info);
+      const accel = accelFor(record.entry);
       const { applied, item } = record;
       if (applied.enabled !== info.enabled) { applied.enabled = info.enabled; item.setEnabled(info.enabled).catch(() => {}); }
       if (info.checked !== undefined && applied.checked !== info.checked && item.setChecked) {
@@ -87,6 +93,10 @@ export function scheduleSync() {
         item.setChecked(info.checked).catch(() => {});
       }
       if (applied.text !== text) { applied.text = text; item.setText(text).catch(() => {}); }
+      if (applied.accel !== accel && item.setAccelerator) {
+        applied.accel = accel;
+        item.setAccelerator(accel || null).catch(() => {});
+      }
     }
   });
 }
@@ -118,6 +128,6 @@ export function nativeMenuSnapshot() {
     commandIds: menuCommandIds(MAC_SPEC),
     submenus: MAC_SPEC.map((entry) => entry.submenu),
     items: tracked.map(({ entry, applied }) => ({ cmd: entry.cmd, alias: entry.alias || '', ...applied,
-      accelerator: entry.accelerator === false ? '' : toAccelerator(specOf(entry.cmd)) })),
+      accelerator: accelFor(entry) })),
   };
 }

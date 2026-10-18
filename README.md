@@ -26,7 +26,7 @@
 - **终端能力**：xterm.js 渲染、Cmd/Ctrl+F 搜索、链接可点击、只读模式、清屏、命令历史采集与回填（只记录在提示符后回显过的命令，密码等不回显的输入不会进历史）
 - **标题栏与菜单栏**：顶层标题栏放主机侧栏开关、一级菜单（Windows / Linux 在标题栏内，macOS 用系统菜单栏，两边同一份定义）、右侧工具栏开关和窗口按钮；标签行、侧栏、右侧工具栏都在其下，只有标题栏能拖动窗口
 - **右侧工具栏**：标题栏右侧的面板按钮（`⌥⌘B` / `Ctrl+Shift+Alt+B`）打开，「AI 助手 / 命令历史 / 常用命令」三个页签，不遮挡终端，切换页签各页状态保留
-- **设置**：`⌘,` / `Ctrl+,` 打开，终端、AI、快捷键三个分区集中在一个窗口
+- **设置**：`⌘,` / `Ctrl+,` 打开，终端、AI、会话日志、快捷键四个分区集中在一个窗口
 - **命令面板**：`⌘⇧P` / `Ctrl+Shift+P` 打开，全部命令、已打开的标签和主机都能检索（中文名、英文别名、拼音首字母），输入 `user@host:port` 直接快速连接；菜单栏同样列出全部命令
 
 ### 连接与认证
@@ -138,8 +138,25 @@ Windows / Linux 的应用快捷键统一为 `Ctrl+Shift+字母`，`Ctrl+字母` 
 | 清屏 | `⌘K` | — | — |
 | 关闭窗口 | `⌘⇧W` | 窗口 ✕ / `Alt+F4` | 窗口 ✕ |
 | 退出 | `⌘Q` | 窗口 ✕ | 窗口 ✕ |
+| 新建主机 | `⌘⇧N` | `Ctrl+Shift+Alt+N` | `Ctrl+Shift+Alt+N` |
+| 新建 AI 对话 | `⌘N` | `Ctrl+Shift+N` | `Ctrl+Shift+N` |
+| 重命名标签 | `F2` | `F2` | `F2` |
+| 新增文件分屏 | `⌘⇧E` | `Ctrl+Shift+E` | `Ctrl+Shift+E` |
+| 全部标签 | `⌥⌘L` | `Ctrl+Shift+Alt+L` | `Ctrl+Shift+Alt+L` |
+| 标签平铺 | `⌥⌘T` | `Ctrl+Shift+Alt+T` | `Ctrl+Shift+Alt+T` |
+| 整理当前标签分屏 | `⌥⌘R` | `Ctrl+Shift+Alt+R` | `Ctrl+Shift+Alt+R` |
+| 重连当前会话 | `⌘⇧R` | `Ctrl+Shift+R` | `Ctrl+Shift+R` |
+| 只读模式 | `⌘⇧L` | `Ctrl+Shift+L` | `Ctrl+Shift+L` |
+| 记录会话日志 | `⌘⇧J` | `Ctrl+Shift+J` | `Ctrl+Shift+J` |
+| AI 诊断报错 | `⌥⌘D` | `Ctrl+Shift+Alt+D` | `Ctrl+Shift+Alt+D` |
+| 广播输入 | `⌘⇧G` | `Ctrl+Shift+G` | `Ctrl+Shift+G` |
+| 端口转发 | `⌥⌘F` | `Ctrl+Shift+Alt+F` | `Ctrl+Shift+Alt+F` |
+| 命令历史 | `⌘⇧H` | `Ctrl+Shift+H` | `Ctrl+Shift+H` |
+| 常用命令 | `⌘⇧S` | `Ctrl+Shift+S` | `Ctrl+Shift+S` |
 
 macOS 上 `Ctrl+C` 始终发送中断信号（SIGINT），不会复制选区。
+
+**以上键位都可以改**：设置 › 快捷键里点某一行的键位开始录制，按下新组合即生效；`Esc` 取消、`Backspace` 恢复默认。与其它操作冲突时该行会标红并禁止保存。自定义值存在配置文件里（只存与默认不同的项），按钮提示、命令面板和两种菜单栏会同步更新。
 
 命令面板里：`↑` / `↓` 选择，`↵` 执行（主机为连接，已连接的直接切过去），`⌘↵` / `Ctrl+↵` 在新标签连接主机，`Esc` 关闭。不可用的命令会显示原因。
 
@@ -189,7 +206,7 @@ macOS 上 `Ctrl+C` 始终发送中断信号（SIGINT），不会复制选区。
 | `monitor.js` | 资源监控:指标采集与监控条;常用命令 |
 | `sftp.js` | SFTP 文件面板:列目录、上传下载、权限、书签 |
 | `file-transfer.js` | 传输任务中心、跨主机复制、内部拖拽、冲突决策 |
-| `settings.js` | 设置窗口:终端 / AI / 快捷键分区,终端设置的保存与应用 |
+| `settings.js` | 设置窗口:终端 / AI / 会话日志 / 快捷键四个分区;终端与日志设置的保存应用,快捷键的录制、冲突校验与保存 |
 | `right-panel.js` | 右侧工具栏:AI / 命令历史 / 常用命令页签的开关与切换 |
 | `menubar.js` | Windows / Linux 标题栏里的一级菜单栏(macOS 用 `native-menu.js` 生成系统菜单栏) |
 | `window-controls.js` | Windows / Linux 窗口按钮、全屏切换 |

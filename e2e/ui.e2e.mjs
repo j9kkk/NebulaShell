@@ -3752,6 +3752,53 @@ async function main() {
   check('T46d Esc 关闭设置并把焦点还给终端;模型菜单「管理模型」直接打开 AI 分区',
     !afterEsc.open && afterEsc.terminal && manageOpen.section === 'ai' && manageOpen.focus === 'settings-tab-ai' && !(await evalJs(`return window.__nbTest.settingsOpen()`)),
     JSON.stringify({ afterEsc, manageOpen }));
+
+  // 自定义快捷键:录制 → 冲突拦截 → 恢复默认 → 保存 → 落盘
+  await evalJs(`window.__nbTest.runCommand('settings.open'); return 1`); await sleep(250);
+  await evalJs(`document.querySelector('#settings-tab-keys').click(); return 1`); await sleep(250);
+  const kbd = (spec) => `document.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify(spec)})); return 1`;
+  const recSpec = isMac
+    ? { key: 'Y', code: 'KeyY', metaKey: true, shiftKey: true, bubbles: true }
+    : { key: 'Y', code: 'KeyY', ctrlKey: true, shiftKey: true, bubbles: true };
+  const cellSel = '#settings-keys-tbody td.keys-accel[data-action="tab.rename"]';
+  const recBase = asObj(await evalJs(`return JSON.stringify({
+    accel: document.querySelector('${cellSel}').textContent,
+    saveDisabled: document.querySelector('#btn-keys-save').disabled,
+    hasSearch: !!document.querySelector('#keys-search'), hasResetAll: !!document.querySelector('#btn-keys-reset-all'),
+    rowCount: document.querySelectorAll('#settings-keys-tbody tr').length })`));
+  await evalJs(`document.querySelector('${cellSel}').click(); return 1`); await sleep(120);
+  await evalJs(kbd(recSpec)); await sleep(180);
+  const recorded = asObj(await evalJs(`return JSON.stringify({
+    accel: document.querySelector('${cellSel}').textContent,
+    saveDisabled: document.querySelector('#btn-keys-save').disabled,
+    conflict: document.querySelector('#keys-conflict').textContent })`));
+  // 与「新建标签」同键:保存被禁用、冲突说明与单元格标红
+  await evalJs(`document.querySelector('${cellSel}').click(); return 1`); await sleep(120);
+  await evalJs(kbd(isMac ? { key: 'T', code: 'KeyT', metaKey: true, bubbles: true }
+    : { key: 'T', code: 'KeyT', ctrlKey: true, shiftKey: true, bubbles: true })); await sleep(180);
+  const clash = asObj(await evalJs(`return JSON.stringify({
+    saveDisabled: document.querySelector('#btn-keys-save').disabled,
+    conflict: document.querySelector('#keys-conflict').textContent,
+    cells: [...document.querySelectorAll('#settings-keys-tbody td.keys-accel.keys-conflict-cell')].map((c) => c.dataset.action) })`));
+  // 恢复默认(↺)后重录并保存
+  await evalJs(`document.querySelector('[data-reset-action="tab.rename"]').click(); return 1`); await sleep(150);
+  await evalJs(`document.querySelector('${cellSel}').click(); return 1`); await sleep(120);
+  await evalJs(kbd(recSpec)); await sleep(180);
+  await evalJs(`document.querySelector('#btn-keys-save').click(); return 1`); await sleep(600);
+  const savedKeys = asObj(await evalJs(`return JSON.stringify({
+    open: window.__nbTest.settingsOpen(), stored: window.__nbTest.keybindings() })`));
+  const wantAccel = isMac ? '⌘⇧Y' : 'Ctrl+Shift+Y';
+  const wantSpec = isMac ? 'cmd+shift+y' : 'ctrl+shift+y';
+  check('T46e 快捷键录制:点键位格进入录制、冲突键位禁用保存并标红、↺ 恢复默认、保存后落盘并关闭窗口',
+    recBase.accel === 'F2' && recBase.saveDisabled && recBase.hasSearch && recBase.hasResetAll && recBase.rowCount >= 10
+      && recorded.accel.startsWith(wantAccel) && !recorded.saveDisabled && recorded.conflict === ''
+      && clash.saveDisabled && /已被「新建标签」占用/.test(clash.conflict) && clash.cells.includes('tab.rename')
+      && !savedKeys.open && (savedKeys.stored?.['tab.rename']?.[0] || '') === wantSpec,
+    JSON.stringify({ recBase, recorded, clash, savedKeys }));
+  // 清理:清回默认,避免影响后续用例
+  await evalJs(`return (async () => { await window.nebula.invoke('settings:save', { keybindings: { 'tab.rename': null } }); return 1; })()`);
+  await sleep(200);
+
   await evalJs(`document.querySelector('#btn-ai-toggle').click(); return 1`);
 
   // 交互动效:下拉菜单有入场动画,且带 prefers-reduced-motion 兜底(无障碍)
@@ -3839,7 +3886,9 @@ async function main() {
         over.overflow && over.scrollbar === 0 && over.button && Number(over.count) === over.tabs && over.activeInView && over.wheelMoved
           && newInView === 'true' && list.open && list.items.length === picked.tabs && list.items.filter((i) => i.checked === 'true').length === 1
           && picked.active === firstTab && picked.inView,
-        JSON.stringify({ over, newInView, items: list.items.length, picked }));
+        JSON.stringify({ over, newInView, items: list.items.length, picked, firstTab,
+          checked: list.items.filter((i) => i.checked === 'true').length,
+          labels: list.items.slice(0, 3).map((i) => i.label) }));
     } finally {
       await evalJs(`const baseline = new Set(${JSON.stringify(base.tabs)});
         for (const tab of window.__nbTest.workspaceState().tabs) if (!baseline.has(tab.id)) document.querySelector('.tab[data-tab="' + tab.id + '"] .tab-close')?.click();

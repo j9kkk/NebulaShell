@@ -482,15 +482,21 @@
           </div>
         </section>
         <section id="settings-sec-keys" class="settings-sec hidden" role="tabpanel" data-section="keys" aria-labelledby="settings-tab-keys">
+          <div class="keys-toolbar">
+            <input id="keys-search" class="keys-search" type="search" placeholder="搜索操作名或命令" autocomplete="off" spellcheck="false" aria-label="搜索快捷键" />
+            <span id="keys-conflict" class="keys-conflict" role="status" aria-live="polite"></span>
+          </div>
           <div class="keys-wrap">
             <table id="settings-keys-table" class="keys-table">
-              <thead><tr><th>操作</th><th>快捷键</th></tr></thead>
+              <thead><tr><th>操作</th><th>快捷键</th><th class="keys-col-reset" aria-label="恢复默认"></th></tr></thead>
               <tbody id="settings-keys-tbody"></tbody>
             </table>
           </div>
-          <p class="muted small-note">当前平台的默认键位(只读)。其余命令可用命令面板执行。</p>
+          <p class="muted small-note">点「快捷键」一列开始录制，按下新组合即绑定；<kbd>Esc</kbd> 取消本次录制，<kbd>Backspace</kbd> 恢复该项默认。冲突的键位不会被保存。</p>
           <div class="modal-actions">
+            <button id="btn-keys-reset-all" class="btn ghost" type="button">恢复全部默认</button>
             <button id="btn-keys-close" class="btn">关闭</button>
+            <button id="btn-keys-save" class="btn primary" type="button" disabled>保存</button>
           </div>
         </section>
       </div>

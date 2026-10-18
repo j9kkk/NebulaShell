@@ -1,9 +1,10 @@
 // 设置窗口(#modal-settings):终端 / AI / 会话日志 / 快捷键 四个分区。
-// 终端、AI、会话日志三个分区各自保存、各自取消,保存后关闭窗口;快捷键分区只读。
+// 四个分区各自保存、各自取消(保存后关闭窗口);快捷键分区支持录制与自定义。
 // 终端分区含文件双击打开的临时缓存目录;会话日志分区含目录/格式/时间戳/自动记录。
-import { $, accel, api, closeModal, state, toast } from './core.js';
+import { $, accel, api, applyAccelTitles, closeModal, state, toast } from './core.js';
 import { closeAiSettings, openAiSettings } from './ai.js';
-import { DEFAULT_KEYMAP, invalidateKeymapCache, specsOf } from './keymap.js';
+import { listCommands } from './commands.js';
+import { DEFAULT_KEYMAP, bindingSignature, defaultSpecsOf, findKeyConflicts, invalidateKeymapCache, keybindingsPatchOf, specOfEvent, specsOf } from './keymap.js';
 import { applyTheme, fitAllVisible, scheduleResizeSync, visibleSessions } from './terminal.js';
 
 export const SETTINGS_SECTIONS = ['terminal', 'ai', 'log', 'keys'];
@@ -52,23 +53,232 @@ function fillLogSettings() {
   $('#setlog-screen').checked = sl.includeScreen !== false;
 }
 
-/// 快捷键一览:当前平台生效的键位(自定义优先),没有键位的动作不列。
+/// 快捷键一览:列出全部可配键位的动作 —— 有内置键位的,以及所有注册命令
+/// (没有默认键位的显示「未设置」,同样可以录一个)。已自定义但未注册的动作
+/// 也保留,避免孤儿覆盖项无处清除。
+/// 每行:操作名 / 当前键位(点击录制) / 单行恢复默认按钮。
 export function renderKeymapTable() {
   const body = $('#settings-keys-tbody');
   body.innerHTML = '';
-  for (const [id, def] of Object.entries(DEFAULT_KEYMAP)) {
+  const custom = (state.settings && state.settings.keybindings) || {};
+  const labels = new Map(listCommands().map((c) => [c.id, c.label]));
+  // 先按 DEFAULT_KEYMAP 的顺序,再补注册命令,最后补只在自定义里出现的孤儿动作
+  const ids = [...Object.keys(DEFAULT_KEYMAP), ...labels.keys(), ...Object.keys(custom)];
+  for (const id of [...new Set(ids)]) {
     const specs = specsOf(id);
-    if (!specs.length) continue;
+    const defaults = defaultSpecsOf(id);
+    const label = labels.get(id) || DEFAULT_KEYMAP[id]?.label || id;
+    const overridden = !!custom[id] && !sameBindingSet(
+      Array.isArray(custom[id]) && custom[id].length ? custom[id] : specs, defaults);
     const row = document.createElement('tr');
     row.dataset.action = id;
+    if (overridden) row.classList.add('keys-custom');
+
     const name = document.createElement('td');
-    name.textContent = id.startsWith('term.') ? `终端内${def.label}` : def.label || id;
+    name.className = 'keys-name';
+    name.textContent = id.startsWith('term.') ? `终端内${label}` : label;
+
     const keys = document.createElement('td');
     keys.className = 'keys-accel';
-    keys.textContent = specs.map((spec) => accel(spec).replace('1..9', '1–9')).join(' / ');
-    row.append(name, keys);
+    keys.dataset.action = id;
+    // 按钮语义:可聚焦、可点击进入录制
+    keys.setAttribute('role', 'button');
+    keys.tabIndex = 0;
+    keys.setAttribute('aria-label', `${label}的快捷键，${specs.length ? accel(specs[0]) : '未设置'}，回车开始录制`);
+    renderAccelCell(keys, id);
+
+    const reset = document.createElement('td');
+    reset.className = 'keys-col-reset';
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'keys-row-reset';
+    resetBtn.dataset.resetAction = id;
+    resetBtn.title = '恢复默认';
+    resetBtn.setAttribute('aria-label', `恢复「${label}」的默认快捷键`);
+    resetBtn.disabled = !defaults.length && !specs.length;
+    resetBtn.textContent = '↺';
+    reset.append(resetBtn);
+
+    row.append(name, keys, reset);
     body.appendChild(row);
   }
+  updateKeysDirty();
+}
+
+/// 键位单元格内容:当前生效键位 + (被改过时)灰色的默认键位提示。
+function renderAccelCell(cell, id) {
+  cell.classList.remove('keys-recording', 'keys-conflict-cell');
+  const specs = specsOf(id);
+  const defaults = defaultSpecsOf(id);
+  const show = specs.length ? specs : defaults;
+  cell.textContent = show.length
+    ? show.map((spec) => accel(spec).replace('1..9', '1–9')).join(' / ')
+    : '未设置';
+  if (!specs.length) cell.classList.add('keys-accel-empty');
+  const custom = (state.settings && state.settings.keybindings) || {};
+  const changed = custom[id] || (defaults.length && !specs.length);
+  if (changed && defaults.length && !sameBindingSet(specs, defaults)) {
+    const hint = document.createElement('span');
+    hint.className = 'keys-default';
+    hint.textContent = `默认 ${defaults.map((s) => accel(s).replace('1..9', '1–9')).join(' / ')}`;
+    cell.appendChild(hint);
+  }
+}
+
+/// 两组键位是否等价(忽略大小写与修饰键顺序),用于判断"是否被改过"。
+function sameBindingSet(a, b) {
+  const norm = (list) => list.map((s) => bindingSignature(s)).sort().join('\u0000');
+  return norm(a) === norm(b);
+}
+
+// —— 快捷键录制 ——
+// 录制态由模块内的 pending 描述,渲染只用 settings.keybindings 作为事实源,
+// 这样"录制中改的键位"和"已保存的键位"不会互相污染。
+let pending = null;      // { id, value } value 为 spec 数组
+let recordingId = '';
+const conflictState = { message: '' };
+
+/// 打开快捷键分区时调用:草稿归零(下次进入按已保存值重新编辑)。
+function resetKeyDraft() {
+  pending = null;
+  recordingId = '';
+  conflictState.message = '';
+  const search = $('#keys-search');
+  if (search) search.value = '';
+  const hint = $('#keys-conflict');
+  if (hint) hint.textContent = '';
+}
+
+/// 正在编辑的完整覆盖表:已保存的 keybindings 叠加本次录制结果。
+function draftKeybindings() {
+  return { ...((state.settings && state.settings.keybindings) || {}), ...(pending || {}) };
+}
+
+/// 把草稿应用成"当前生效键位",让表格能读到录制结果(不写 settings)。
+function withDraft(fn) {
+  const saved = state.settings && state.settings.keybindings;
+  if (state.settings) state.settings.keybindings = draftKeybindings();
+  invalidateKeymapCache();
+  try { return fn(); }
+  finally {
+    if (state.settings) state.settings.keybindings = saved;
+    invalidateKeymapCache();
+  }
+}
+
+/// 校验草稿:同一键位绑两个动作时,appShortcutOf 只认第一个命中的,
+/// 后者永远不触发 —— 必须拦住。草稿里空数组表示"恢复默认",按默认键位
+/// 参与校验(不能当成"没有键")。校验逻辑在 keymap.js,与单测共用。
+function findConflicts(draft) {
+  return findKeyConflicts(draft);
+}
+
+/// 重新校验并更新"冲突 / 未保存"两处状态。
+function updateKeysDirty() {
+  const draft = draftKeybindings();
+  withDraft(() => renderAllAccels());
+  const issues = findConflicts(draft);
+  const labels = new Map(listCommands().map((c) => [c.id, c.label]));
+  const labelOf = (id) => labels.get(id) || DEFAULT_KEYMAP[id]?.label || id;
+  conflictState.message = issues.length
+    ? `${issues.map((i) => `${accel(i.spec)} 已被「${labelOf(i.conflictWith)}」占用`)[0]}${issues.length > 1 ? ` 等 ${issues.length} 处冲突` : ''}`
+    : '';
+  const hint = $('#keys-conflict');
+  if (hint) hint.textContent = conflictState.message;
+  // 冲突单元格标红
+  const conflictIds = new Set(issues.map((i) => i.id));
+  for (const cell of document.querySelectorAll('#settings-keys-tbody td.keys-accel')) {
+    cell.classList.toggle('keys-conflict-cell', conflictIds.has(cell.dataset.action));
+  }
+  const dirty = Object.keys(pending || {}).length > 0;
+  const save = $('#btn-keys-save');
+  if (save) save.disabled = !dirty || issues.length > 0;
+  return { issues, dirty };
+}
+
+/// 只重画键位单元格(不重建行,保留滚动位置与焦点)。
+function renderAllAccels() {
+  for (const cell of document.querySelectorAll('#settings-keys-tbody td.keys-accel')) {
+    if (cell.dataset.action === recordingId) continue; // 录制中的单元格保持提示文字
+    renderAccelCell(cell, cell.dataset.action);
+  }
+}
+
+function startRecording(cell) {
+  const id = cell.dataset.action;
+  if (recordingId && recordingId !== id) stopRecording();
+  recordingId = id;
+  cell.classList.add('keys-recording');
+  cell.textContent = '按下新的快捷键…（Esc 取消）';
+}
+
+function stopRecording(redraw = true) {
+  const id = recordingId;
+  recordingId = '';
+  if (!redraw || !id) return;
+  const cell = document.querySelector(`#settings-keys-tbody td.keys-accel[data-action="${CSS.escape(id)}"]`);
+  if (cell) { cell.classList.remove('keys-recording'); renderAccelCell(cell, id); }
+}
+
+/// 录制器:在捕获阶段吞掉所有按键,避免 ⌘W / F11 / Ctrl+Shift+T 等
+/// 真的触发应用行为或原生菜单。Esc 取消、Backspace 恢复该项默认。
+function onRecordKeydown(event) {
+  if (!recordingId) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const id = recordingId;
+  const raw = String(event.key || '');
+  if (raw === 'Escape') { stopRecording(); return; }
+  if (raw === 'Backspace' || raw === 'Delete') {
+    pending = { ...(pending || {}), [id]: [] };
+    stopRecording(false);
+    updateKeysDirty();
+    return;
+  }
+  const spec = specOfEvent(event);
+  if (!spec) return; // 只按了修饰键:继续等主键
+  pending = { ...(pending || {}), [id]: [spec] };
+  stopRecording(false);
+  updateKeysDirty();
+  // 重画后补上读屏提示(视觉文字已由 updateKeysDirty 更新)
+  const cell = document.querySelector(`#settings-keys-tbody td.keys-accel[data-action="${CSS.escape(id)}"]`);
+  if (cell) cell.setAttribute('aria-label', `已录制 ${accel(spec)}，回车重新录制`);
+}
+
+/// 把草稿转成保存用的补丁:有改动的项写键位数组,恢复默认的项写 null
+/// (后端按项合并,null 表示删掉覆盖项)。
+function keybindingsPatch() {
+  return keybindingsPatchOf((state.settings && state.settings.keybindings) || {}, pending || {});
+}
+
+export async function saveKeybindings() {
+  const { issues } = updateKeysDirty();
+  if (issues.length) { toast(conflictState.message || '快捷键冲突，无法保存', 'error'); return false; }
+  const patch = keybindingsPatch();
+  if (!Object.keys(patch).length) { dismissKeysSection(); return true; }
+  try {
+    state.settings = await api('settings:save', { keybindings: patch });
+  } catch (e) {
+    toast(e?.message || '保存失败', 'error');
+    return false;
+  }
+  // 生效链:解析缓存 → 全部弹窗/按钮提示 → 菜单与命令面板 → macOS 原生菜单
+  // 加速键(后者监听 commands-refreshed 后按新的 specOf 重设加速键)
+  invalidateKeymapCache();
+  applyAccelTitles();
+  resetKeyDraft();
+  renderKeymapTable();
+  document.dispatchEvent(new Event('nebula:commands-refreshed'));
+  dismissKeysSection();
+  toast('快捷键已保存', 'success');
+  return true;
+}
+
+/// 关闭/取消:未保存的录制草稿直接丢弃,不影响已保存键位。
+function dismissKeysSection() {
+  resetKeyDraft();
+  dismissSettings();
+  closeModal('#modal-settings');
 }
 
 function showSection(section, { focus = false } = {}) {
@@ -80,7 +290,11 @@ function showSection(section, { focus = false } = {}) {
     if (on && focus) tab.focus();
   }
   for (const sec of document.querySelectorAll('#modal-settings .settings-sec')) sec.classList.toggle('hidden', sec.dataset.section !== target);
-  if (target === 'keys') renderKeymapTable();
+  if (target === 'keys') {
+    // 每次进入按已保存值重建(丢弃上次未保存的录制草稿)
+    resetKeyDraft();
+    renderKeymapTable();
+  }
 }
 
 /// 打开设置窗口并切到指定分区;已打开时只切分区(表单里未保存的内容保留)。
@@ -127,10 +341,58 @@ export function bindSettings() {
       if (picked) $('#term-open-tempdir').value = picked;
     } catch { /* 取消选择不提示 */ }
   });
-  $('#btn-keys-close').addEventListener('click', () => {
-    dismissSettings();
-    closeModal('#modal-settings');
+  $('#btn-keys-close').addEventListener('click', dismissKeysSection);
+  $('#btn-keys-save').addEventListener('click', () => { saveKeybindings(); });
+  $('#btn-keys-reset-all').addEventListener('click', () => {
+    const ids = new Set([...Object.keys(DEFAULT_KEYMAP), ...Object.keys(state.settings?.keybindings || {})]);
+    pending = {};
+    for (const id of ids) if (defaultSpecsOf(id).length) pending[id] = [];
+    updateKeysDirty();
   });
+  // 录制:捕获阶段吞键,避免真的触发应用快捷键或原生菜单
+  document.addEventListener('keydown', onRecordKeydown, true);
+  // 点键位单元格 / 回车进入录制
+  const tbody = $('#settings-keys-tbody');
+  tbody.addEventListener('click', (event) => {
+    const resetBtn = event.target.closest('[data-reset-action]');
+    if (resetBtn) {
+      const id = resetBtn.dataset.resetAction;
+      pending = { ...(pending || {}), [id]: [] };
+      updateKeysDirty();
+      return;
+    }
+    const cell = event.target.closest('td.keys-accel');
+    if (cell) startRecording(cell);
+  });
+  tbody.addEventListener('keydown', (event) => {
+    const cell = event.target.closest?.('td.keys-accel');
+    if (!cell) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      startRecording(cell);
+    } else if (event.key === 'Backspace' || event.key === 'Delete') {
+      event.preventDefault();
+      pending = { ...(pending || {}), [cell.dataset.action]: [] };
+      updateKeysDirty();
+    }
+  });
+  // 搜索过滤:按操作名与动作 id 匹配
+  $('#keys-search').addEventListener('input', filterKeyRows);
+  // 离开快捷键分区或关闭窗口:丢弃未保存的草稿(与其它分区取消语义一致)
+  document.addEventListener('nebula:modal-scope', () => {
+    if (!settingsOpen()) resetKeyDraft();
+  });
+}
+
+/// 过滤快捷键表:隐藏不匹配的行(不重建,保留录制态)。
+function filterKeyRows() {
+  const q = ($('#keys-search').value || '').trim().toLowerCase();
+  for (const row of document.querySelectorAll('#settings-keys-tbody tr')) {
+    if (!q) { row.classList.remove('keys-hidden'); continue; }
+    const name = (row.querySelector('.keys-name')?.textContent || '').toLowerCase();
+    const id = (row.dataset.action || '').toLowerCase();
+    row.classList.toggle('keys-hidden', !(name.includes(q) || id.includes(q)));
+  }
 }
 
 export async function saveTermSettings() {

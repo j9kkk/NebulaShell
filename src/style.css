@@ -1585,6 +1585,30 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .keys-table th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--border); }
 .keys-table td { padding: 6px 10px; border-bottom: 1px solid var(--table-divider); }
 .keys-table td.keys-accel { white-space: nowrap; color: var(--text); letter-spacing: 0.5px; }
+/* 快捷键编辑:工具条、可录制的键位单元格 */
+.keys-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; min-width: 0; }
+.keys-search { flex: 1; min-width: 0; height: 30px; padding: 0 10px; font-size: 12px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
+.keys-search:focus { outline: none; border-color: var(--accent); }
+.keys-conflict { flex: none; font-size: 12px; color: var(--danger); }
+.keys-conflict:empty { display: none; }
+.keys-col-reset { width: 34px; }
+.keys-table tr.keys-hidden { display: none; }
+.keys-table td.keys-accel { cursor: pointer; border-radius: 4px; }
+.keys-table td.keys-accel:hover { background: var(--hover-bg, rgba(127, 127, 127, 0.09)); }
+.keys-table td.keys-accel.keys-recording { color: var(--accent); font-style: italic; }
+.keys-table td.keys-accel.keys-conflict-cell { color: var(--danger); }
+.keys-table td.keys-accel.keys-accel-empty { color: var(--muted); }
+.keys-table tr.keys-custom td.keys-accel { color: var(--accent); }
+.keys-table tr.keys-custom td.keys-accel.keys-conflict-cell { color: var(--danger); }
+.keys-default { color: var(--muted); font-size: 11px; letter-spacing: 0.3px; margin-left: 8px; }
+.keys-default::before { content: '· '; }
+.keys-row-reset { width: 26px; height: 26px; padding: 0; font-size: 12px; line-height: 1;
+  background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--muted); cursor: pointer; }
+.keys-row-reset:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
+.keys-row-reset:disabled { opacity: 0.3; cursor: default; }
+.keys-table kbd, .settings-sec kbd { padding: 1px 5px; font-family: var(--font-mono); font-size: 11px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
 .form-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 12px; align-items: center; }
 .form-grid > *, .form-row > * { min-width: 0; }
 .form-grid :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea) {

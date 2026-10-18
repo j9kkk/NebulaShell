@@ -683,3 +683,96 @@ fn host_session_log_override_is_normalized() {
     let exported = store.export_hosts(None).unwrap();
     assert_eq!(exported["hosts"][0]["sessionLog"], json!("default"));
 }
+
+#[test]
+fn keybindings_roundtrip_and_sanitize() {
+    let store = tmp_store("keybindings");
+    // 未设置时为空对象:前端据此判断"全部走默认"
+    let s = store.save_settings(&json!({})).unwrap();
+    assert_eq!(s["keybindings"], json!({}));
+
+    let s = store
+        .save_settings(&json!({ "keybindings": {
+            "tab.new": "cmd+shift+Y",
+            "pane.split": ["ctrl+alt+D", "ctrl+shift+E"],
+            // 非法动作名:大写、含空格、超长一律丢弃
+            "Bad.Action": "cmd+1",
+            "with space": "cmd+2",
+            // 非法键位:空串、超长、非白名单字符丢弃;合法项保留
+            "tab.close": ["", "   ", "a".repeat(41), "cmd+\u{4e2d}"],
+            "session.log": "cmd+shift+J",
+            // 重复项去重
+            "pane.zoom": ["cmd+Z", "cmd+z"]
+        } }))
+        .unwrap();
+    assert_eq!(
+        s["keybindings"]["tab.new"],
+        json!(["cmd+shift+y"]),
+        "单值归并为数组并小写"
+    );
+    assert_eq!(
+        s["keybindings"]["pane.split"],
+        json!(["ctrl+alt+d", "ctrl+shift+e"])
+    );
+    assert!(s["keybindings"]["Bad.Action"].is_null(), "非法动作名不落盘");
+    assert!(s["keybindings"]["with space"].is_null());
+    assert!(
+        s["keybindings"]["tab.close"].is_null(),
+        "全是非法键位时不留空数组"
+    );
+    assert_eq!(
+        s["keybindings"]["pane.zoom"],
+        json!(["cmd+z"]),
+        "重复键位去重"
+    );
+
+    // 空对象补丁 = 没提及任何动作,已有覆盖项保持(恢复默认要逐项传 null,
+    // 设置页的「恢复全部默认」就是把每一项都写成 null)
+    let s = store.save_settings(&json!({ "keybindings": {} })).unwrap();
+    assert_eq!(s["keybindings"]["tab.new"], json!(["cmd+shift+y"]));
+
+    // 不含该分区的补丁不应该清掉已存的自定义键位
+    store
+        .save_settings(&json!({ "keybindings": { "tab.new": "cmd+shift+Y" } }))
+        .unwrap();
+    let s = store
+        .save_settings(&json!({ "terminal": { "fontSize": 15 } }))
+        .unwrap();
+    assert_eq!(s["keybindings"]["tab.new"], json!(["cmd+shift+y"]));
+    assert_eq!(s["terminal"]["fontSize"], json!(15.0));
+
+    // 落盘后重新加载仍在(验证真的写进配置文件,不只是内存)
+    let reloaded = Store::load_plain(store.dir.clone());
+    assert_eq!(
+        reloaded.get_settings()["keybindings"]["tab.new"],
+        json!(["cmd+shift+y"])
+    );
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+#[test]
+fn keybindings_null_value_removes_override() {
+    let store = tmp_store("keybindings-null");
+    store
+        .save_settings(
+            &json!({ "keybindings": { "tab.new": "cmd+shift+Y", "pane.split": "cmd+D" } }),
+        )
+        .unwrap();
+    let s = store
+        .save_settings(&json!({ "keybindings": { "tab.new": null } }))
+        .unwrap();
+    assert_eq!(
+        s["keybindings"]["pane.split"],
+        json!(["cmd+d"]),
+        "未提及的覆盖项保留"
+    );
+    assert!(
+        s["keybindings"]
+            .as_object()
+            .unwrap()
+            .get("tab.new")
+            .is_none(),
+        "null = 删除该项覆盖"
+    );
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

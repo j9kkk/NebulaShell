@@ -30,6 +30,9 @@ fn defaults() -> Value {
             "sessionLog": { "auto": false, "dir": "", "format": "text", "timestamps": true, "includeScreen": true },
             // 文件「双击打开」临时副本的缓存根目录;空 = 默认(系统临时目录/NebulaShell-open)
             "openTempDir": "",
+            // 自定义键位:动作名 → 键位 spec 数组;空对象 = 全部走内置默认。
+            // 只存"覆盖项",设置页保存时整块替换。
+            "keybindings": {},
             "clouds": {
                 "tencent": { "key": "", "secret": "", "endpoint": "" },
                 "aliyun": { "key": "", "secret": "", "endpoint": "" }
@@ -1230,6 +1233,8 @@ impl Store {
             // 设置页默认目录提示用(空 = 系统临时目录,与 open_temp_dir 的兜底一致)
             "openTempDirDefaultDir": std::env::temp_dir().to_string_lossy().to_string(),
             "sessionLog": data["settings"]["sessionLog"].clone(),
+            // 自定义键位(动作名 → 键位数组);空对象 = 全部走内置默认
+            "keybindings": data["settings"]["keybindings"].clone(),
             // 设置页默认目录提示用(实际取目录走 commands 的 default_log_dir,
             // 那里还要考虑测试模式隔离)
             "sessionLogDefaultDir": dirs::home_dir()
@@ -1392,8 +1397,56 @@ impl Store {
         Ok(json!(out))
     }
 
+    /// 校验并规范化 keybindings 补丁:动作名 → 键位 spec(单个字符串或数组)。
+    /// 按项合并:有合法键位的项写入覆盖,null / 空数组 / 全是非法键位表示
+    /// 恢复该项默认(从存储里删掉)。未提及的动作保持原样,避免其它调用方
+    /// 传局部补丁时误清数据。
+    /// 这里只做字符与长度层面的白名单——动作名是否有效、键位是否冲突属于
+    /// 前端的语义校验(后端不认识命令注册表),只保证坏数据进不了磁盘。
+    /// 返回 None 表示补丁里没有该分区。
+    fn sanitize_keybindings_patch(patch: &Value) -> Option<Vec<(String, Option<Value>)>> {
+        let kb = patch.get("keybindings")?.as_object()?;
+        let mut out: Vec<(String, Option<Value>)> = Vec::new();
+        for (action, raw) in kb.iter().take(200) {
+            // 动作名形如 'tab.new' / 'session.log.folder'
+            let valid_id = action.len() <= 64
+                && action.starts_with(|c: char| c.is_ascii_lowercase())
+                && action
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
+            if !valid_id {
+                continue;
+            }
+            let list: Vec<&Value> = match raw {
+                Value::Array(a) => a.iter().collect(),
+                Value::Null => vec![],
+                other => vec![other],
+            };
+            let mut specs: Vec<String> = Vec::new();
+            for item in list {
+                let Some(text) = item.as_str() else { continue };
+                let spec = text.trim().to_lowercase();
+                let ok = !spec.is_empty()
+                    && spec.len() <= 40
+                    && spec.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || "+-.,;'[]/=\\` ".contains(c)
+                    });
+                if ok && !specs.contains(&spec) {
+                    specs.push(spec);
+                }
+                if specs.len() == 3 {
+                    break;
+                }
+            }
+            // 空结果 = 恢复默认(删除该覆盖项)
+            out.push((action.clone(), (!specs.is_empty()).then(|| json!(specs))));
+        }
+        Some(out)
+    }
+
     pub fn save_settings(&self, patch: &Value) -> Result<Value, String> {
         let session_log = Self::sanitize_session_log_patch(patch)?;
+        let keybindings = Self::sanitize_keybindings_patch(patch);
         let mut data = self.data.lock().unwrap();
         if let Some(snips) = patch["snippets"].as_array() {
             let cleaned: Vec<Value> = snips
@@ -1434,6 +1487,19 @@ impl Store {
         if !session_log.is_null() {
             for (key, value) in session_log.as_object().unwrap() {
                 data["settings"]["sessionLog"][key] = value.clone();
+            }
+        }
+        // 自定义键位:按项合并,null/空 = 恢复该项默认(删掉覆盖项)。
+        if let Some(kb) = keybindings {
+            for (action, value) in kb {
+                match value {
+                    Some(specs) => data["settings"]["keybindings"][&action] = specs,
+                    None => {
+                        if let Some(map) = data["settings"]["keybindings"].as_object_mut() {
+                            map.remove(&action);
+                        }
+                    }
+                }
             }
         }
         if let Some(ai) = patch["ai"].as_object() {

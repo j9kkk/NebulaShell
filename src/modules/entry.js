@@ -21,7 +21,7 @@ import { bindTransferUi, confirmTransferInterrupt, lastDownloadLocation, revealL
 import { bindSettings, dismissSettings, openSettings, settingsOpen, settingsSection } from './settings.js';
 import { bindRightPanel, rightPanelOpen, rightPanelTab, rightTabShown, setRightPanel, toggleRightPanel, toggleRightTab } from './right-panel.js';
 import { bindBatchUi, bindHistoryPage, openBatchModal, openForwardModal, openHistoryModal, saveForwardRule } from './tools.js';
-import { accelOf, accelSpec, appShortcutOf, digitOf, matchAction } from './keymap.js';
+import { accelOf, accelSpec, appShortcutOf, digitOf, invalidateKeymapCache, matchAction } from './keymap.js';
 import { bindPalette, isPaletteOpen, openPalette, paletteInput, paletteSnapshot } from './palette.js';
 import { buildNativeMenu, nativeMenuSnapshot } from './native-menu.js';
 import { bindWindowControls, toggleFullscreen } from './window-controls.js';
@@ -1198,6 +1198,7 @@ export async function boot() {
     return aiSend(text, mode, opts);
   };
   // 快捷键提示必须在渲染前按平台重写:HTML 里不带写死的 ⌘,全靠这一步填入。
+  // 先按内置默认填一遍(设置尚未到达),拿到 settings 后按自定义键位再填一遍。
   applyAccelTitles();
   // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
   hydrateIcons(document);
@@ -1217,10 +1218,14 @@ export async function boot() {
   setAiBusy(false);
   // 启动时同步一次收起按钮的状态(侧栏默认展开):此后由 toggleSidebar 维护
   syncSidebarToggle($('#sidebar').classList.contains('collapsed'));
+  // 设置就位后才能确定生效键位:清掉 keymap 的解析缓存,重写全部 data-accel
+  // 提示,再生成 macOS 菜单栏(加速键取自 specOf,带自定义覆盖)。
+  state.settings = await api('settings:get');
+  invalidateKeymapCache();
+  applyAccelTitles();
   // macOS 菜单栏在命令注册之后生成;生成前仍是 Tauri 默认菜单(其 ⌘W 已由
   // 全局 keydown 的 preventDefault 挡住)
   buildNativeMenu();
-  state.settings = await api('settings:get');
   applyTheme(state.settings?.terminal?.theme || 'nebula');
   await refreshHosts();
   await refreshAiModels();
@@ -1348,6 +1353,8 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     aiSettingsOpen: () => settingsOpen() && settingsSection() === 'ai',
     settingsOpen: () => settingsOpen(),
     settingsSection: () => settingsSection(),
+    // 已保存的自定义键位(动作名 → 键位数组);空对象 = 全部默认
+    keybindings: () => ({ ...((state.settings && state.settings.keybindings) || {}) }),
     // 右侧工具栏:是否打开、当前页签、焦点是否在面板内
     rightPanel: () => ({ open: rightPanelOpen(), tab: rightPanelTab(), focusInside: $('#ai-panel').contains(document.activeElement) }),
     // 温度设置是否已移除

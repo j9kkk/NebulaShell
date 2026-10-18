@@ -119,7 +119,9 @@ test('修饰键精确匹配:多按 Shift/Alt 不命中', async () => {
   const win = await setup('windows');
   assert.equal(win.keymap.matchAction('pane.zoom', evt('Enter', { ctrlKey: true, shiftKey: true })), true);
   assert.equal(win.keymap.appShortcutOf(evt('Enter', { ctrlKey: true, shiftKey: true })), 'pane.zoom');
-  assert.equal(win.keymap.appShortcutOf(evt('t', { ctrlKey: true, shiftKey: true, altKey: true })), '');
+  // 用一个没有绑定的键验证"多按修饰键不命中"(Ctrl+Shift+Alt+T 现属「标签平铺」)
+  assert.equal(win.keymap.appShortcutOf(evt('y', { ctrlKey: true, shiftKey: true, altKey: true })), '');
+  assert.equal(win.keymap.appShortcutOf(evt('t', { ctrlKey: true, shiftKey: true, altKey: true })), 'workspace.tile');
 });
 
 test('切换标签:⌘1..9 / Ctrl+1..9,按物理键位取序号', async () => {
@@ -289,7 +291,7 @@ test('keymap spec 转 Tauri 菜单加速键', async () => {
   assert.equal(keymap.toAccelerator(keymap.specOf('window.close')), 'CmdOrCtrl+Shift+W');
 });
 
-test('0.5.5 AI 助手新建对话:⌘N / Ctrl+Shift+N 命中,Ctrl+N 不命中,不进 APP_ACTIONS', async () => {
+test('新建 AI 对话 ⌘N / Ctrl+Shift+N 命中,Ctrl+N 不命中,不进 APP_ACTIONS', async () => {
   const { keymap: mac } = await setup('darwin');
   assert.equal(mac.APP_ACTIONS.includes('ai.newThread'), false, 'ai.newThread 不在 APP_ACTIONS');
   assert.equal(mac.matchAction('ai.newThread', evt('n', { metaKey: true, code: 'KeyN' })), true, 'mac ⌘N 命中');
@@ -306,6 +308,59 @@ test('0.5.5 AI 助手新建对话:⌘N / Ctrl+Shift+N 命中,Ctrl+N 不命中,�
     assert.equal(km.appShortcutOf(evt('N', { ctrlKey: true, shiftKey: true, code: 'KeyN' })), '', `${platform} 不进全局 appShortcutOf`);
     assert.equal(km.accelOf('ai.newThread'), 'Ctrl+Shift+N');
   }
+  // 新建主机:macOS ⇧⌘N / Win Linux Ctrl+Shift+Alt+N,且由全局分发(进 APP_ACTIONS)
+  assert.equal((await setup('darwin')).keymap.appShortcutOf(evt('N', { metaKey: true, shiftKey: true, code: 'KeyN' })), 'host.new');
+  for (const platform of ['windows', 'linux']) {
+    const km = (await setup(platform)).keymap;
+    assert.equal(km.appShortcutOf(evt('N', { ctrlKey: true, shiftKey: true, altKey: true, code: 'KeyN' })), 'host.new', platform);
+    assert.equal(km.appShortcutOf(evt('n', { ctrlKey: true, code: 'KeyN' })), '', `${platform} Ctrl+N 留给 shell`);
+  }
+});
+
+test('防回归:同一平台内默认键位不得重复(重复会让后者静默失效)', async () => {
+  // appShortcutOf 取第一个命中的动作,重复键位不会报错,只会让后一个动作
+  // 永远不触发 —— 只能在表层面拦住。
+  for (const platform of ['darwin', 'windows', 'linux']) {
+    process.env.NB_TEST_PLATFORM = platform;
+    const { keymap } = await setup(platform);
+    const seen = new Map();
+    for (const id of keymap.APP_ACTIONS) {
+      for (const spec of keymap.specsOf(id)) {
+        const sig = keymap.bindingSignature(spec);
+        assert.ok(!seen.has(sig), `${platform} 键位重复:${spec}（${seen.get(sig)} 与 ${id}）`);
+        seen.set(sig, id);
+      }
+    }
+  }
+});
+
+test('bindingSignature 与 specOfEvent:修饰键顺序无关,按物理键位归一', async () => {
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.bindingSignature('shift+cmd+T'), keymap.bindingSignature('cmd+shift+t'));
+  assert.notEqual(keymap.bindingSignature('cmd+t'), keymap.bindingSignature('shift+cmd+t'));
+  assert.equal(keymap.bindingSignature('ctrl+shift+t'), keymap.bindingSignature('shift+ctrl+t'));
+  assert.equal(keymap.bindingSignature('cmd+1..9'), 'cmd+1..9', '范围写法保留原样');
+  // 录制:⌥⌘B 在 macOS 上 event.key 是变音字符,仍按 code 取 b
+  assert.equal(keymap.specOfEvent(evt('∫', { metaKey: true, altKey: true, code: 'KeyB' })), 'cmd+alt+b');
+  assert.equal(keymap.specOfEvent(evt('T', { metaKey: true, shiftKey: true, code: 'KeyT' })), 'cmd+shift+t');
+  assert.equal(keymap.specOfEvent(evt('F2', { code: 'F2' })), 'f2');
+  assert.equal(keymap.specOfEvent(evt('Shift', { shiftKey: true, code: 'ShiftLeft' })), '', '纯修饰键不产生键位');
+  // 归一后能与键位表对上
+  assert.equal(keymap.bindingSignature(keymap.specOfEvent(evt('Enter', { metaKey: true, shiftKey: true, code: 'Enter' }))),
+    keymap.bindingSignature('cmd+shift+Enter'));
+});
+
+test('toAccelerator 支持功能键,且新建主机在 macOS 菜单栏有加速键', async () => {
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.toAccelerator('F2'), 'F2');
+  assert.equal(keymap.toAccelerator('f12'), 'F12');
+  assert.equal(keymap.toAccelerator('cmd+F2'), 'CmdOrCtrl+F2');
+  assert.equal(keymap.toAccelerator('alt+cmd+L'), 'Alt+CmdOrCtrl+L');
+  assert.equal(keymap.toAccelerator('cmd+up'), 'CmdOrCtrl+Up');
+  assert.equal(keymap.toAccelerator('f25'), '', '超出 muda 支持范围');
+  assert.equal(keymap.toAccelerator(keymap.specOf('host.new')), 'CmdOrCtrl+Shift+N');
+  assert.equal(keymap.toAccelerator(keymap.specOf('ai.newThread')), 'CmdOrCtrl+N');
+  assert.equal(keymap.toAccelerator(keymap.specOf('tab.rename')), 'F2');
 });
 
 test('命令历史与常用命令快捷键:⌘⇧H / Ctrl+Shift+H; ⌘⇧S / Ctrl+Shift+S; 进 APP_ACTIONS', async () => {
@@ -326,3 +381,50 @@ test('命令历史与常用命令快捷键:⌘⇧H / Ctrl+Shift+H; ⌘⇧S / Ctr
   }
 });
 
+
+test('findKeyConflicts:同一键位被两个动作占用时报冲突,修饰键顺序无关', async () => {
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.findKeyConflicts({}).length, 0, '默认表自身无冲突');
+  // 把新建主机绑到新建标签的 ⌘T 上
+  const issues = keymap.findKeyConflicts({ 'host.new': ['cmd+t'] });
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].id, 'host.new');
+  assert.equal(issues[0].conflictWith, 'tab.new');
+  assert.equal(issues[0].spec, 'cmd+t');
+  // 修饰键顺序不同也算冲突(与「命令历史」同为全局作用域)
+  assert.equal(keymap.findKeyConflicts({ 'host.new': ['shift+cmd+H'] })[0]?.conflictWith, 'session.history');
+  // 跨作用域不算冲突:把新建主机绑到面板内的 ⇧⌘N 不冲突
+  assert.equal(keymap.bindingScope('ai.newThread'), 'panel');
+  assert.equal(keymap.findKeyConflicts({ 'host.new': ['cmd+shift+N'] }).length, 0,
+    '面板作用域的键位与全局作用域互不遮挡');
+  // 空数组 = 恢复默认,按默认键位参与校验
+  assert.equal(keymap.findKeyConflicts({ 'host.new': [] }).length, 0);
+  // 多个动作撞同一个键位时逐个报出
+  const many = keymap.findKeyConflicts({ 'host.new': ['cmd+t'], 'tools.batch': ['cmd+t'] });
+  assert.equal(many.length, 2);
+  // 作用域:终端内 ⌘A 与文件分屏 ⌘A 共存;同一作用域内撞键仍报冲突
+  assert.equal(keymap.bindingScope('term.selectAll'), 'terminal');
+  assert.equal(keymap.bindingScope('files.selectAll'), 'files');
+  const termClash = keymap.findKeyConflicts({ 'term.copy': ['cmd+A'] });
+  assert.equal(termClash.length, 1, '终端作用域内的 ⌘A 冲突应被报出');
+  assert.deepEqual([termClash[0].id, termClash[0].conflictWith].sort(), ['term.copy', 'term.selectAll']);
+});
+
+test('keybindingsPatchOf:改成非默认写值,改回默认写 null,并清理与默认相同的历史项', async () => {
+  const { keymap } = await setup('darwin');
+  const saved = { 'tab.new': ['cmd+t'], 'pane.split': ['cmd+d'] }; // 第二条与默认相同(大小写不同)
+  const patch = keymap.keybindingsPatchOf(saved, { 'tab.new': ['cmd+shift+y'], 'pane.split': [] });
+  assert.equal(patch['tab.new'][0], 'cmd+shift+y', '非默认值写入');
+  assert.equal(patch['pane.split'], null, '改回默认写 null 删掉覆盖项');
+  // 已保存且与默认等价(忽略大小写与顺序)的项顺手清理
+  assert.equal(keymap.keybindingsPatchOf({ 'tab.new': ['cmd+T'] }, {})['tab.new'], null);
+  // 没改任何项时不产生补丁
+  assert.equal(Object.keys(keymap.keybindingsPatchOf({}, {})).length, 0);
+});
+
+test('hasCustomBindings:只有真正偏离默认的覆盖项才算自定义', async () => {
+  const { keymap } = await setup('darwin');
+  assert.equal(keymap.hasCustomBindings({}), false);
+  assert.equal(keymap.hasCustomBindings({ 'tab.new': ['cmd+t'] }), false, '与默认相同不算自定义');
+  assert.equal(keymap.hasCustomBindings({ 'tab.new': ['cmd+shift+y'] }), true);
+});
