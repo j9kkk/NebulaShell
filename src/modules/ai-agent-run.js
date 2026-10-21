@@ -15,8 +15,8 @@ import {
   setLinksChangeHandler, unlinkHost,
 } from './ai-links.js';
 import {
-  activeAiThread, aiRequest, aiSend, aiStickScroll, appendToThreadView, clearBubbleState,
-  ensureThreadForSession, markBubblePending, refreshThreadUi, renderAiMessage, setAiBusy,
+  activeAiThread, aiRequest, aiSend, aiStickScroll, appendToThreadView, beginAiTurn, clearBubbleState,
+  endAiTurn, ensureThreadForSession, markBubblePending, refreshThreadUi, renderAiMessage, setAiBusy,
   threadBusy, trimAiHistory,
 } from './ai.js';
 
@@ -551,6 +551,10 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
     return { sessionId: session?.sessionId || links.find((l) => l.status === 'connected')?.sessionId };
   };
 
+  // 回合起点：本轮挂进消息区的节点都打上这个 token，收口据此只认本轮的节点。
+  // 放在 try 之前、runAgentTurn 之前——第一次挂载前就必须有 token。
+  const turnToken = beginAiTurn(thread);
+
   try {
     // 请求失败由流式气泡自己展示（⚠️ 错误），这里不重复提示。
     await runAgentTurn({
@@ -602,6 +606,8 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
       uuid: () => crypto.randomUUID(),
     });
   } finally {
+    // 先收口再清忙碌态：折叠改变了节点层级与高度，贴底一次性完成。
+    endAiTurn(thread, turnToken);
     thread.agentRun = null;
     thread.pendingConfirm = false;
     thread.updatedAt = Date.now();

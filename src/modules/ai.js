@@ -257,9 +257,98 @@ export function trimAiHistory(targetThread) {
 /// 工具步骤、确认卡等非气泡元素挂到指定线程的消息列表（后台线程也挂到自己那里）。
 export function appendToThreadView(thread, el) {
   const container = ensureThreadContainer(thread) || $('#ai-messages');
+  markTurnNode(thread, el);
   container.appendChild(el);
   while (container.children.length > AI_DOM_LIMIT) container.removeChild(container.firstChild);
   if (thread?.id === state.activeThreadId) aiStickScroll();
+}
+
+// 本轮 DOM 归属标记：回合开始时换一个新 token，回合内挂进来的节点都带上它，
+// 收口时按 token 收集。比"锚点节点 + 遍历兄弟"稳——DOM 上限裁剪掉旧节点时
+// 锚点可能先被裁掉，token 标记则只影响被裁掉的那些节点。
+function markTurnNode(thread, el) {
+  if (thread?.turnToken && el) el.__turn = thread.turnToken;
+}
+
+/// 工具回合开始：换新 token 并返回它（endAiTurn 用它认本轮节点）。
+export function beginAiTurn(thread) {
+  const token = {};
+  if (thread) thread.turnToken = token;
+  return token;
+}
+
+/// 回合结束收口：本轮的最后一条助手正文（结论）留在原位，其余中间过程——
+/// 步骤行、确认卡、只调用工具的中间气泡、末尾的「执行记录」命令清单——
+/// 一起收进默认收起的「执行过程」折叠块。一轮跑几十条命令时，信息流只剩
+/// 结论与一行摘要，需要回溯再展开。
+export function endAiTurn(thread, token) {
+  if (thread && thread.turnToken === token) thread.turnToken = null;
+  const container = thread?.containerEl || $('#ai-messages');
+  if (!container || !token) return;
+  const nodes = [...container.children].filter((n) => n.__turn === token);
+  // 结论 = 最后一条有正文的助手气泡。没有结论（被中止且无输出）时保留原样：
+  // 全收起来会让这一轮看起来凭空消失。
+  let keep = null;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i];
+    if (!n.classList.contains('ai-msg') || n.dataset.role !== 'assistant') continue;
+    if ((n.querySelector('.ai-body')?.textContent || '').trim()) { keep = n; break; }
+  }
+  if (!keep) return;
+  // 失败的一轮保持原样：错误气泡的「重发」要靠相邻用户气泡定位，收进折叠
+  // 会让它找不到来源；失败现场也应当直接可见。
+  if (keep.dataset.responseState === 'failed') return;
+  // 没有真正的结论（只剩「已停止生成」这类占位）时也不折叠：把执行过程一起
+  // 收起来，这一轮就只剩一句提示，用户看不出到底跑到哪一步。
+  const conclusion = (keep.querySelector('.ai-body')?.textContent || '').trim();
+  if (/^（(已停止生成|AI 未返回内容)）$/.test(conclusion)) return;
+  const others = nodes.filter((n) => n !== keep);
+  const countIn = (sel) => others.reduce((n, x) => n + (x.matches(sel) ? 1 : x.querySelectorAll(sel).length), 0);
+  const stepCount = countIn('.ai-step');
+  // 没有工具步骤（模型直接作答）不折叠：一轮只有一条回复时，折叠块只是噪音。
+  if (!stepCount) return;
+  const execCount = countIn('.ai-step[data-tool="exec"]');
+  const fold = document.createElement('div');
+  fold.className = 'ai-turn-fold';
+  const head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'ai-turn-fold-head';
+  head.setAttribute('aria-expanded', 'false');
+  head.innerHTML = icon('chevronDown', { size: 12 });
+  const label = document.createElement('span');
+  label.textContent = `执行过程 · ${stepCount} 步${execCount ? `，${execCount} 条命令` : ''}`;
+  head.appendChild(label);
+  const body = document.createElement('div');
+  body.className = 'ai-turn-fold-body';
+  body.hidden = true;
+  head.addEventListener('click', () => {
+    body.hidden = !body.hidden;
+    head.setAttribute('aria-expanded', String(!body.hidden));
+    if (thread?.id === state.activeThreadId) aiStickScroll();
+  });
+  fold.appendChild(head);
+  fold.appendChild(body);
+  // 收起会从信息流里抽掉一截高度。用户正往上翻阅读时，被抽掉的若是视口上方
+  // 的内容，就得按实际高度补偿 scrollTop，否则正在读的段落会整体跳走。
+  const box = $('#ai-messages');
+  const active = thread?.id === state.activeThreadId;
+  let shrinkAbove = 0;
+  if (active && box && !aiPinned) {
+    const viewTop = box.getBoundingClientRect().top;
+    for (const n of others) {
+      const r = n.getBoundingClientRect?.();
+      if (r && r.bottom <= viewTop) shrinkAbove += r.height;
+    }
+  }
+  // 折叠块落在第一个被收起的节点处，保持「过程在上、结论在下」的时间顺序。
+  container.insertBefore(fold, others[0]);
+  for (const n of others) body.append(n);
+  if (active) {
+    if (shrinkAbove && box) {
+      box.scrollTop = Math.max(0, box.scrollTop - shrinkAbove);
+    }
+    aiStickScroll();
+  }
 }
 
 function ensureThreadContainer(thread) {
@@ -1390,6 +1479,7 @@ export function renderAiMessage(role, text, opts) {
   col.appendChild(retry);
   setAiBody(el, text, opts);
   const container = ensureThreadContainer(thread) || $('#ai-messages');
+  markTurnNode(thread, el);
   container.appendChild(el);
   const box = $('#ai-messages');
   // DOM 上限:裁掉最旧的气泡。用户在上方阅读(未贴底)时,裁剪会让内容整体

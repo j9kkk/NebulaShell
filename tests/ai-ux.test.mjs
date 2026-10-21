@@ -59,6 +59,17 @@ class Element {
     }
     return child;
   }
+  append(...nodes) {
+    for (const n of nodes) {
+      if (typeof n === 'string') {
+        const span = new Element();
+        span.textContent = n;
+        this.appendChild(span);
+      } else if (n) {
+        this.appendChild(n);
+      }
+    }
+  }
   insertBefore(newNode, refNode) {
     if (!newNode) return newNode;
     if (newNode.parentNode) {
@@ -1831,4 +1842,68 @@ test('ai drawer badges: follow thread hides host badge; chat shows dialog mode; 
   assert.match(cardMulti.innerHTML, /ai-drawer-badge busy/, 'busy 对话显示生成中徽标');
   assert.match(cardMulti.innerHTML, /3 台主机/);
   assert.match(cardMulti.innerHTML, /生成中/);
+});
+
+test('工具回合收口:中间步骤与本轮命令清单收进默认收起的折叠块,最终结论留在信息流', async () => {
+  const { ai, state } = await setup();
+  const th = ai.createAiThread({ title: '折叠' });
+  state.activeThreadId = th.id;
+
+  const token = ai.beginAiTurn(th);
+  const doc = ai.renderAiMessage('user', '网站 502 了，帮我查下').ownerDocument;
+  const step = () => {
+    const node = doc.createElement('div');
+    node.className = 'ai-step';
+    node.dataset.tool = 'exec';
+    ai.appendToThreadView(th, node);
+    return node;
+  };
+  const skeleton = doc.createElement('div');
+  skeleton.className = 'ai-turn-card ai-turn-summary';
+  ai.appendToThreadView(th, skeleton);
+  step();
+  step();
+  // 中间轮次只调用工具：气泡没有正文
+  ai.renderAiMessage('assistant', '', { thread: th });
+  const conclusion = ai.renderAiMessage('assistant', '根因：容器内 Caddy 的站点地址填的是服务器 IP', { thread: th });
+
+  ai.endAiTurn(th, token);
+
+  const folds = th.containerEl.children.filter((c) => c.className === 'ai-turn-fold');
+  assert.equal(folds.length, 1, '一轮只生成一个折叠块');
+  const fold = folds[0];
+  assert.equal(fold.querySelector('.ai-turn-fold-head').getAttribute('aria-expanded'), 'false');
+  assert.equal(fold.querySelector('.ai-turn-fold-body').hidden, true, '默认收起');
+  assert.equal(fold.querySelectorAll('.ai-step').length, 2, '步骤行收进折叠块');
+  assert.ok(fold.querySelector('.ai-turn-summary'), '执行记录命令清单收进折叠块');
+  assert.ok(!fold.contains(conclusion), '最终结论留在信息流');
+  assert.ok(th.containerEl.children.includes(conclusion), '结论仍是消息列表的直接子节点');
+  assert.equal(th.containerEl.children.filter((c) => c.className === 'ai-step').length, 0, '步骤行不再散落在信息流里');
+  // 折叠块在结论之前（过程在上、结论在下）
+  assert.ok(th.containerEl.children.indexOf(fold) < th.containerEl.children.indexOf(conclusion));
+});
+
+test('工具回合收口:模型直接作答（无步骤行）与失败轮都不折叠', async () => {
+  const { ai, state } = await setup();
+  const th = ai.createAiThread({ title: '不折叠' });
+  state.activeThreadId = th.id;
+
+  // 1) 一轮只有一条回复：没有可折叠的过程
+  const plain = ai.beginAiTurn(th);
+  ai.renderAiMessage('assistant', '直接给结论', { thread: th });
+  ai.endAiTurn(th, plain);
+  assert.equal(th.containerEl.children.filter((c) => c.className === 'ai-turn-fold').length, 0);
+
+  // 2) 失败轮：错误气泡的「重发」靠相邻用户气泡定位，收进折叠会找不到来源
+  const failedTurn = ai.beginAiTurn(th);
+  const doc = ai.renderAiMessage('user', '再试一次').ownerDocument;
+  const step = doc.createElement('div');
+  step.className = 'ai-step';
+  ai.appendToThreadView(th, step);
+  const failed = ai.renderAiMessage('assistant', '⚠️ 连接超时', { thread: th });
+  failed.dataset.responseState = 'failed';
+  ai.endAiTurn(th, failedTurn);
+  assert.equal(th.containerEl.children.filter((c) => c.className === 'ai-turn-fold').length, 0);
+  assert.ok(th.containerEl.children.includes(failed));
+  assert.ok(th.containerEl.children.includes(step));
 });

@@ -955,6 +955,36 @@ async function aiHostToolRegressions() {
     check('T95b 确认后 exec 在终端当前目录执行,日志与命令输出回到模型,回合末给出执行记录',
       story.includes('EXEC-SEEN') && story.includes('LOG-SEEN') && story.includes('CWD-SEEN') && summary.includes('echo NB-EXEC-OK'),
       JSON.stringify({ story, summary }));
+
+    // T95k:回合收口后中间过程收进默认收起的「执行过程」折叠块,信息流只剩结论。
+    const folded = asObj(await evalJs(`const f = [...document.querySelectorAll('${view} .ai-turn-fold')].pop();
+      const head = f?.querySelector('.ai-turn-fold-head');
+      const body = f?.querySelector('.ai-turn-fold-body');
+      const last = [...document.querySelectorAll('${view} .ai-msg.assistant')].pop();
+      const directSteps = [...document.querySelectorAll('${view} > .ai-step')].length;
+      return JSON.stringify({
+        hasFold: !!f, expanded: head?.getAttribute('aria-expanded'), hidden: body?.hidden,
+        steps: body?.querySelectorAll('.ai-step').length || 0,
+        summary: !!body?.querySelector('.ai-turn-summary'),
+        directSteps,
+        lastInFold: !!(f && last && f.contains(last)),
+        foldBeforeConclusion: !!(f && last && (f.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0),
+      })`));
+    check('T95k 回合结束:中间步骤与执行记录收进默认收起的「执行过程」折叠块,最终结论留在信息流',
+      folded.hasFold && folded.expanded === 'false' && folded.hidden === true
+      && folded.steps >= 3 && folded.summary === true
+      && folded.directSteps === 0 && !folded.lastInFold && folded.foldBeforeConclusion === true,
+      JSON.stringify(folded));
+    // 展开后仍能看到本轮全部命令清单与各步骤行(可回溯)。
+    await evalJs(`[...document.querySelectorAll('${view} .ai-turn-fold-head')].pop().click(); return 1`);
+    const reopened = asObj(await evalJs(`const f = [...document.querySelectorAll('${view} .ai-turn-fold')].pop();
+      return JSON.stringify({ hidden: f?.querySelector('.ai-turn-fold-body')?.hidden,
+        expanded: f?.querySelector('.ai-turn-fold-head')?.getAttribute('aria-expanded'),
+        steps: f?.querySelectorAll('.ai-step').length || 0,
+        text: !!f?.textContent.includes('echo NB-EXEC-OK') })`));
+    check('T95l 展开折叠块:步骤行与本轮命令清单完整可回溯',
+      reopened.hidden === false && reopened.expanded === 'true' && reopened.steps >= 3 && reopened.text,
+      JSON.stringify(reopened));
     const auditFile = path.join(userData, 'session-logs', 'ai-audit.log');
     const audit = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '';
     check('T95c AI 执行的命令写入审计日志(含确认方式)', audit.includes('echo NB-EXEC-OK && pwd') && audit.includes('"decision":"confirmed"'), audit.slice(-400));

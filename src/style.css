@@ -1219,6 +1219,33 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-turn-summary li code { flex: 1 1 auto; }
 .ai-turn-summary li span { flex: none; color: var(--muted); }
 .ai-turn-summary li[data-state="warn"] span { color: var(--warn); }
+
+/* 一轮工具回合的折叠块:中间步骤(步骤行/确认卡/中间气泡)与本轮命令清单收在这里,
+   只留最终结论在信息流里。头部与步骤行同左缘:图标落在步骤行图标的同一竖线上。 */
+.ai-turn-fold { flex-shrink: 0; align-self: flex-start; max-width: calc(92% - 32px); margin-left: 32px; }
+.ai-turn-fold-head {
+  display: flex; align-items: center; gap: 5px;
+  /* 与 .ai-step-head 的 1px 描边 + 8px 内距等值:图标和文字都跟着步骤行对齐 */
+  padding: 2px 8px 2px 9px;
+  background: none; border: 0; border-radius: 6px;
+  color: var(--muted); font-family: inherit; font-size: 12px; line-height: 1.6;
+  cursor: pointer; user-select: none;
+}
+.ai-turn-fold-head:hover { background: var(--hover-bg); color: var(--text); }
+.ai-turn-fold-head svg { flex: none; transition: transform var(--dur-fast) var(--ease); }
+.ai-turn-fold-head[aria-expanded="true"] svg { transform: rotate(180deg); }
+/* 折叠内容直接铺在折叠块里,不再加第二级缩进:步骤行本身就是有边框的卡片,
+   层级靠缩进表达会让右缘比结论气泡缩进两级。 */
+.ai-turn-fold-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.ai-turn-fold-body[hidden] { display: none; }
+/* 折叠内部已经缩进过:步骤行/回合卡不再重复 32px,宽度交给折叠块本身。
+   否则展开后每层各减一次,右缘比结论气泡缩进两级。这些元素原本靠
+   align-self:flex-start 收缩,在折叠块里改成 stretch 才铺满折叠宽度。 */
+.ai-turn-fold-body .ai-step,
+.ai-turn-fold-body .ai-turn-card { margin-left: 0; max-width: none; align-self: stretch; }
+.ai-turn-fold-body .ai-msg { max-width: none; align-self: stretch; }
+.ai-turn-fold-body .ai-msg.assistant .ai-row { padding-left: 0; }
+.ai-turn-fold-body .ai-msg.user .ai-row { padding-right: 0; }
 /* 模型触发钮:无边框纯文字样式(当前模型名 + 下箭头),与参考稿一致 */
 .ai-model-trigger {
   display: inline-flex; align-items: center; gap: 6px;
