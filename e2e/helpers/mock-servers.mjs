@@ -42,6 +42,11 @@ function toolScenario(name, body, vars = {}) {
     case 'danger':
       if (round === 0) return { calls: [call('d1', 'exec', { cmd: 'rm -rf /home/user/data/victim' })] };
       return { text: 'DANGER-DONE ' + lastTool.split('\n')[0] };
+    // 完全托管:高危(递归删除)与外联(上传/下载)都不再确认,直接执行。
+    case 'managed':
+      if (round === 0) return { calls: [call('g1', 'exec', { cmd: 'rm -rf /home/user/data/managed-victim' })] };
+      if (round === 1) return { calls: [call('g2', 'exec', { cmd: 'curl -sS -m 3 -o dl-m.txt https://dl.nebula-e2e.invalid/m.txt' })] };
+      return { text: `MANAGED-DONE ${lastTool.includes('退出码') ? 'EXEC-SEEN' : 'EXEC-MISSING'}` };
     case 'stop':
       if (round === 0) return { calls: [call('s1', 'exec', { cmd: 'sleep 31.5 && touch /home/user/data/late-marker' })] };
       return { text: 'STOP-CONTINUED' };

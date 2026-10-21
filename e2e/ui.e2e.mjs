@@ -882,11 +882,13 @@ async function aiHostToolRegressions() {
       const r = { shown: !p.classList.contains('hidden'), title: b.title, text: p.textContent, rows: p.querySelectorAll('.mh-row').length };
       b.dispatchEvent(new MouseEvent('mouseleave'));
       return JSON.stringify(r)`));
-    check('T-AT10 执行模式菜单:常驻两档,默认「手动确认」,头部左对齐显示主机摘要,「?」立即展开结构化帮助并强调主机安全',
-      modeItems.length === 2 && modeItems.find((m) => m.mode === 'manual')?.active
+    check('T-AT10 执行模式菜单:常驻三档(手动/自动/托管),默认「手动确认」,头部左对齐显示主机摘要,「?」立即展开结构化帮助并强调主机安全',
+      modeItems.length === 3 && modeItems.find((m) => m.mode === 'manual')?.active
       && !modeItems.find((m) => m.mode === 'manual')?.disabled
-      && ctx.length > 0 && help.shown && !help.title && help.rows === 5
-      && help.text.includes('主机安全') && help.text.includes('不会发送给 AI'),
+      && modeItems.find((m) => m.mode === 'full')?.disabled === false
+      && ctx.length > 0 && help.shown && !help.title && help.rows === 6
+      && help.text.includes('主机安全') && help.text.includes('不会发送给 AI')
+      && help.text.includes('没有确认卡'),
       JSON.stringify({ modeItems, ctx, help: { ...help, text: help.text.length } }));
     // 键盘:Esc 关菜单并还焦点给触发钮。
     await evalJs(`document.querySelector('#ai-mode-menu-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
@@ -1169,6 +1171,67 @@ async function aiHostToolRegressions() {
     } finally {
       for (const p of victims) { try { p.kill('SIGKILL'); } catch { /* 已结束 */ } }
     }
+
+    // T-AT15:完全托管档 —— 高危(递归删除)与外联(下载)都不再停下来确认;
+    // 切档本身要过危险确认,取消则档位不变。审计按 managed/full 记录,步骤行标「托管执行」。
+    await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
+    await openModeMenu();
+    await pickMode('full');
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    const fullConfirm = asObj(await evalJs(`return JSON.stringify({
+      title: document.querySelector('#confirm-title').textContent,
+      message: document.querySelector('#confirm-message').textContent,
+      danger: document.querySelector('#btn-confirm-ok').classList.contains('danger'),
+    })`));
+    await evalJs(`document.querySelector('#btn-confirm-cancel').click(); return 1`);
+    await sleep(150);
+    const modeAfterCancel = await evalJs(`return document.querySelector('#ai-mode-trigger').dataset.mode`);
+    check('T-AT15a 切「完全托管」必须过危险确认(红色按钮、写明不再逐条确认),取消则档位不变',
+      fullConfirm.title.includes('完全托管') && fullConfirm.message.includes('不再逐条确认') && fullConfirm.danger
+      && modeAfterCancel === 'manual',
+      JSON.stringify({ fullConfirm, modeAfterCancel }));
+
+    await openModeMenu();
+    await pickMode('full');
+    await waitEval(`return !document.querySelector('#modal-confirm').classList.contains('hidden')`, 'true');
+    await evalJs(`document.querySelector('#btn-confirm-ok').click(); return 1`);
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'full');
+    const fullTrigger = asObj(await evalJs(`return JSON.stringify({
+      name: document.querySelector('#ai-mode-name').textContent,
+      title: document.querySelector('#ai-mode-trigger').title,
+    })`));
+    check('T-AT15b 切到完全托管:触发钮显示「完全托管」并在 title 里常驻「不再确认任何命令」警示',
+      fullTrigger.name === '完全托管' && fullTrigger.title.includes('不再确认任何命令'),
+      JSON.stringify(fullTrigger));
+
+    const managedVictim = sshd.toReal('/home/user/data/managed-victim');
+    fs.mkdirSync(managedVictim, { recursive: true });
+    fs.writeFileSync(path.join(managedVictim, 'keep.txt'), 'x\n');
+    const auditBefore = (fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '').length;
+    await waitIdle();
+    await setBase('/tools/managed');
+    await send('清理并同步文件');
+    await waitEval(lastBubble, 'MANAGED-DONE', 30000);
+    const managed = asObj(await evalJs(`return JSON.stringify({
+      confirms: document.querySelectorAll('${view} .ai-confirm').length,
+      steps: [...document.querySelectorAll('${view} .ai-step')].map((s) => ({ tool: s.dataset.tool, status: s.dataset.status })),
+      tags: [...document.querySelectorAll('${view} .ai-step-tag')].map((t) => t.textContent),
+    })`));
+    const managedAudit = (fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '').slice(auditBefore);
+    // 下载那条走的是 .invalid 域名,必失败并带非零退出码,步骤状态是 warn 而非 ok ——
+    // 这里要断言的是「没有被拦下、真的执行了」,不是退出码。
+    const executed = managed.steps.filter((s) => s.tool === 'exec' && ['ok', 'warn'].includes(s.status)).length;
+    check('T-AT15c 完全托管:递归删除与外联下载都不弹确认卡,直接执行并标注「托管执行」',
+      managed.confirms === 0 && executed === 2
+      && !fs.existsSync(managedVictim)
+      && managed.tags.filter((t) => t === '托管执行').length === 2
+      && managedAudit.includes('"mode":"full"') && managedAudit.includes('"decision":"managed"'),
+      JSON.stringify({ managed, managedAudit: managedAudit.slice(-500) }));
+
+    // 切回手动是无确认的即时降档,顺带给后续用例复位。
+    await openModeMenu();
+    await pickMode('manual');
+    await waitEval(`return document.querySelector('#ai-mode-trigger').dataset.mode`, 'manual');
 
     await setBase('/tools/unsupported');
     await send('你好');

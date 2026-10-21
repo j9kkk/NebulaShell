@@ -210,15 +210,25 @@ pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> V
             command_tool(&ctx, p["tool"].as_str().unwrap(), args).await
         }
         "exec" => {
-            let manual = access == "manual" || p["mode"].as_str() != Some("auto");
-            let policy = ExecPolicy::from_request(p, manual);
+            // 主机策略 manual 是硬上限:该主机不允许自动/托管档,前端也据此锁档。
+            let mode = if access == "manual" {
+                ExecMode::Manual
+            } else {
+                ExecMode::from_request(p)
+            };
+            let policy = ExecPolicy::from_request(p, mode);
             // 「使用已保存的登录密码」：明文只在后端会话里，不经前端往返。
-            let password = if p["useSavedPassword"] == true {
+            // 完全托管档没有确认卡可以停下来问，有已保存密码就直接用它,否则仍退回密码卡
+            // (凭据不能被 AI 凭空生成,这里只省掉一次人工输入)。
+            let use_saved = p["useSavedPassword"] == true
+                || (mode == ExecMode::Full && p["sudoPassword"].as_str().is_none_or(str::is_empty));
+            let password = if use_saved {
                 match session.host["password"].as_str().filter(|s| !s.is_empty()) {
                     Some(pw) => Some(pw.to_string()),
-                    None => {
+                    None if p["useSavedPassword"] == true => {
                         return json!({ "status": "needs-sudo-password", "host": ctx.label, "error": "该主机没有保存登录密码" })
                     }
+                    None => None,
                 }
             } else {
                 p["sudoPassword"].as_str().map(str::to_string)
@@ -457,17 +467,57 @@ async fn preview(ctx: &Ctx<'_>, cmd: &str, cwd: &str) -> Value {
     }
 }
 
-/// 前端随请求带来的执行策略：手动/自动、用户已确认的档位、会话授权与下载污点。
+/// 前端随请求带来的执行档位。
+///   manual 逐条确认;auto 普通档直接执行、高危/外联仍确认;
+///   full 完全托管 —— 不产生任何 needs-confirm,连高危与外联也直接执行。
+/// 注意 full 只放大「是否停下来问」,不放宽主机与路径边界:主机策略 manual/deny、
+/// 未链接会话白名单、敏感路径拒绝这些照旧在更前面拦。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecMode {
+    Manual,
+    Auto,
+    Full,
+}
+
+impl ExecMode {
+    fn from_request(p: &Value) -> Self {
+        match p["mode"].as_str() {
+            Some("full") => ExecMode::Full,
+            Some("auto") => ExecMode::Auto,
+            // 缺省/未知一律按 manual(fail-closed:读不懂的档位不给更大权限)。
+            _ => ExecMode::Manual,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ExecMode::Manual => "manual",
+            ExecMode::Auto => "auto",
+            ExecMode::Full => "full",
+        }
+    }
+    /// 这个档位下，这条命令要不要停下来问用户。
+    /// manual 一律要问；auto 只问高危/外联/判断不了的环境；full 从不停下来问。
+    fn needs_confirm(self, verdict: &Verdict) -> bool {
+        match self {
+            ExecMode::Manual => true,
+            ExecMode::Auto => verdict.force_confirm || verdict.tier > Tier::Normal,
+            ExecMode::Full => false,
+        }
+    }
+}
+
+/// 前端随请求带来的执行策略：档位、用户已确认的档位、会话授权与下载污点。
 /// 授权列表只是「用户允许过什么」，命中与否由 guard 在全部补判之后判定。
 struct ExecPolicy {
-    manual: bool,
+    mode: ExecMode,
     confirmed_tier: Option<Tier>,
     allow: Vec<(String, String)>,
     tainted: Vec<String>,
 }
 
 impl ExecPolicy {
-    fn from_request(p: &Value, manual: bool) -> Self {
+    fn from_request(p: &Value, mode: ExecMode) -> Self {
         let confirmed_tier = p["confirmed"]
             .as_bool()
             .unwrap_or(false)
@@ -495,7 +545,7 @@ impl ExecPolicy {
             })
             .unwrap_or_default();
         ExecPolicy {
-            manual,
+            mode,
             confirmed_tier,
             allow,
             tainted,
@@ -527,7 +577,9 @@ async fn exec_tool(
             cwd: &cwd,
         },
     );
-    let auto = !policy.manual;
+    // auto/full 都按「可能被授权」补判覆盖目标：full 虽然从不停下确认，但授权列表仍要
+    // 照常参与判定，否则从 auto 切到 full 时界面上的「本会话已授权」会与实际行为不一致。
+    let auto = policy.mode != ExecMode::Manual;
     let writes = !verdict.redirect_targets.is_empty() || !verdict.copy_dests.is_empty();
     // 已是高危的命令本不必再查覆盖；但自动模式下它可能被授权，覆盖目标必须先补进来。
     if writes && (verdict.tier < Tier::Danger || (auto && grant::candidate(&verdict))) {
@@ -555,7 +607,9 @@ async fn exec_tool(
         .ok()
         .filter(|items| grant::covered(items, &policy.allow))
         .cloned();
-    let needs = policy.manual || verdict.force_confirm || verdict.tier > Tier::Normal;
+    // 完全托管档不产生 needs-confirm：高危、外联、未知系统、连确认过的档位都不需要。
+    // 这里只决定「要不要停下来问用户」;命令分级、授权判定、执行本身都照常走完。
+    let needs = policy.mode.needs_confirm(&verdict);
     let accepted = policy.confirmed_tier.is_some_and(|t| t >= verdict.tier);
     if needs && !accepted && allowed.is_none() {
         let preview = if verdict.tier == Tier::Danger {
@@ -664,10 +718,14 @@ async fn exec_tool(
         },
     )
     .await;
+    // 审计里的 decision 要能区分「自动档放行的普通命令」和「托管档放行的高危命令」——
+    // 后者事后必须能一眼从日志里挑出来。
     let decision = if accepted {
         "confirmed"
     } else if needs {
         "whitelisted"
+    } else if policy.mode == ExecMode::Full {
+        "managed"
     } else {
         "auto"
     };
@@ -682,7 +740,7 @@ async fn exec_tool(
     };
     let mut entry = json!({
         "ts": now_ms(), "host": ctx.label, "user": info.user, "sessionId": ctx.sid,
-        "cmd": cmd, "cwd": cwd, "tier": verdict.tier, "mode": if policy.manual { "manual" } else { "auto" },
+        "cmd": cmd, "cwd": cwd, "tier": verdict.tier, "mode": policy.mode.label(),
         "decision": decision, "allowedBy": allowed, "end": end, "exitCode": r.exit_code, "durationMs": r.duration_ms,
     });
     if !killed.is_empty() {

@@ -3,6 +3,64 @@ use super::run::{clean_output, finalize, split_pgid, take_complete_utf8, wrap, H
 use super::*;
 
 #[test]
+fn exec_mode_parsing_is_fail_closed() {
+    assert_eq!(
+        ExecMode::from_request(&json!({ "mode": "full" })),
+        ExecMode::Full
+    );
+    assert_eq!(
+        ExecMode::from_request(&json!({ "mode": "auto" })),
+        ExecMode::Auto
+    );
+    assert_eq!(
+        ExecMode::from_request(&json!({ "mode": "manual" })),
+        ExecMode::Manual
+    );
+    // 缺省、空串、拼错的档位都不给更大权限。
+    assert_eq!(ExecMode::from_request(&json!({})), ExecMode::Manual);
+    assert_eq!(
+        ExecMode::from_request(&json!({ "mode": "" })),
+        ExecMode::Manual
+    );
+    assert_eq!(
+        ExecMode::from_request(&json!({ "mode": "Full" })),
+        ExecMode::Manual
+    );
+    assert_eq!(ExecMode::from_request(&json!(null)), ExecMode::Manual);
+    assert_eq!(ExecMode::Full.label(), "full");
+}
+
+#[test]
+fn needs_confirm_matches_the_three_tiers() {
+    let with = |tier, force_confirm| {
+        let mut v = Verdict::empty();
+        v.tier = tier;
+        v.force_confirm = force_confirm;
+        v
+    };
+    let normal = with(Tier::Normal, false);
+    let egress = with(Tier::Egress, false);
+    let danger = with(Tier::Danger, false);
+    // 未知 OS：任何 auto 都要问,只有托管放行。
+    let unknown = with(Tier::Normal, true);
+    assert!(
+        ExecMode::Manual.needs_confirm(&normal),
+        "手动档连普通命令都要问"
+    );
+    assert!(ExecMode::Auto.needs_confirm(&danger));
+    assert!(ExecMode::Auto.needs_confirm(&egress));
+    assert!(ExecMode::Auto.needs_confirm(&unknown));
+    assert!(
+        !ExecMode::Auto.needs_confirm(&normal),
+        "自动档的普通命令不该问"
+    );
+    // 完全托管:一条也不再问。
+    for v in [&normal, &egress, &danger, &unknown] {
+        assert!(!ExecMode::Full.needs_confirm(v), "托管档不能产生确认");
+    }
+}
+
+#[test]
 fn linked_sessions_whitelist_rejects_unlisted_sessions() {
     // 未带白名单(旧路径):不限制。
     assert!(session_allowed(&json!({ "sessionId": "s1" }), "s1"));

@@ -13,6 +13,7 @@ import {
   hostSummaryOf,
   setLinkMode,
   clearTargetGrants,
+  isFullExecMode,
 } from '../src/shared/ai-target-state.js';
 
 test('hostKeyOf and hostLabelOf correctly identify hosts', () => {
@@ -69,11 +70,20 @@ test('threadLinkMode: reads linkMode, migrates legacy execMode=chat, defaults to
   assert.equal(threadLinkMode({ linkMode: 'follow', execMode: 'chat' }), 'follow');
 });
 
-test('threadExecMode: only manual/auto, chat collapses to manual', () => {
+test('threadExecMode: reads manual/auto/full, chat and unknown collapse to manual', () => {
   assert.equal(threadExecMode({ execMode: 'auto' }), 'auto');
   assert.equal(threadExecMode({ execMode: 'manual' }), 'manual');
+  assert.equal(threadExecMode({ execMode: 'full' }), 'full');
   assert.equal(threadExecMode({ execMode: 'chat' }), 'manual');
+  assert.equal(threadExecMode({ execMode: 'whatever' }), 'manual', '未知档位必须 fail-safe 到手动');
   assert.equal(threadExecMode(null), 'manual');
+});
+
+test('isFullExecMode: only the full tier reports managed execution', () => {
+  assert.equal(isFullExecMode('full'), true);
+  assert.equal(isFullExecMode('auto'), false);
+  assert.equal(isFullExecMode('manual'), false);
+  assert.equal(isFullExecMode(undefined), false);
 });
 
 test('hostSummaryOf produces the three required copy variants', () => {
@@ -114,6 +124,21 @@ test('setLinkMode: leaving chat restores manual and is a no-op when unchanged', 
   setLinkMode(same, 'multi');
   assert.equal(same.execMode, 'auto', '同模式不变更授权');
   assert.equal(same.allowlist.length, 1);
+});
+
+test('rebindThread: 首次绑定不算换主机，保留已选的自动/托管档', () => {
+  // 新对话的 hostId 为空，第一条消息发送时才 bindNow 落到当前标签 ——
+  // 这不是「换了目标」，不能把用户刚选的档位撤掉（否则托管档永远发不出第一条命令）。
+  for (const mode of ['auto', 'full']) {
+    const thread = { hostId: null, linkMode: 'follow', execMode: mode, allowlist: [], taint: [] };
+    rebindThread(thread, { hostKey: 'host-a', hostLabel: 'Host A', sessionId: 'sess-a' });
+    assert.equal(thread.hostId, 'host-a');
+    assert.equal(thread.execMode, mode, `首次绑定不能降级 ${mode}`);
+  }
+  // 已经绑定过再换主机，仍然必须降回手动。
+  const bound = { hostId: 'host-a', execMode: 'full' };
+  rebindThread(bound, { hostKey: 'host-b', hostLabel: 'Host B', sessionId: 'sess-b' });
+  assert.equal(bound.execMode, 'manual');
 });
 
 test('rebindThread revokes grants and downgrades auto mode when switching hosts', () => {
@@ -164,6 +189,33 @@ test('rebindThread preserves grants and mode when updating on the same host', ()
   assert.equal(thread.allowlist.length, 1);
   assert.equal(thread.taint.length, 1);
   assert.equal(thread.hostOs, 'linux');
+});
+
+test('rebindThread downgrades the full (managed) tier too when the host changes', () => {
+  const thread = {
+    hostId: 'host-a',
+    hostName: 'Host A',
+    sessionId: 'sess-a',
+    execMode: 'full',
+    autoAcked: true,
+    allowlist: [{ rule: 'exec', key: 'ls' }],
+    taint: ['/tmp/secret'],
+    hostOs: 'linux',
+  };
+
+  rebindThread(thread, { hostKey: 'host-b', hostLabel: 'Host B', sessionId: 'sess-b' });
+
+  // 托管权限属于「那台主机」:换一台必须重新确认,不能静默继承。
+  assert.equal(thread.execMode, 'manual', '换主机时托管档必须降为 manual');
+  assert.equal(thread.autoAcked, false);
+  assert.deepEqual(thread.allowlist, []);
+  assert.deepEqual(thread.taint, []);
+});
+
+test('setLinkMode: entering chat drops the managed tier back to manual', () => {
+  const thread = { linkMode: 'follow', execMode: 'full', autoAcked: true, allowlist: [], taint: [] };
+  setLinkMode(thread, 'chat');
+  assert.equal(thread.execMode, 'manual');
 });
 
 test('resolveAiTarget: linkMode chat does not operate any host', () => {

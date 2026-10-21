@@ -191,6 +191,12 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
         tag.title = `按会话授权自动执行：${grantText(whitelisted)}`;
         refs.state.before(tag);
       }
+      // 完全托管下放行的高危命令:没有确认卡,事后唯一能看出「这条本该确认」的就是这个标签。
+      if (res.decision === 'managed' && res.tier && res.tier !== 'normal') {
+        const tag = el('span', 'ai-step-tag danger', '托管执行');
+        tag.title = `完全托管下直接执行（${res.tier === 'danger' ? '高危' : '外联'}命令），未经确认`;
+        refs.state.before(tag);
+      }
       if (!text && !refs.streamed) refs.body.hidden = true;
       else if (status === 'ok') {
         refs.body.hidden = true;
@@ -397,21 +403,34 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
   };
 }
 
-/// 执行模式选择器:触发钮只显示档位名称(「手动确认」或「自动执行」),常驻显示。
+/// 执行模式选择器:触发钮只显示档位名称(「手动确认」/「自动执行」/「完全托管」),常驻显示。
 /// 「不操作主机 / 作用于哪些主机」归顶栏主机下拉,这里不再重复。
 const MODES = [
   { id: 'manual', icon: 'lock', title: '手动确认', desc: '执行命令前先向你确认' },
   { id: 'auto', icon: 'zap', title: '自动执行', desc: '普通命令自动执行，高危和外联仍会确认' },
+  { id: 'full', icon: 'unlock', title: '完全托管', desc: '不再确认任何命令，包括高危与外联' },
 ];
 const MODE_TITLES = Object.fromEntries(MODES.map((m) => [m.id, m.title]));
-// 「?」帮助浮层的内容：两档沿用菜单图标；主机安全逐条配图标，会外发数据的那条用警示色。
+// 「?」帮助浮层的内容：三档沿用菜单图标；主机安全逐条配图标，会外发数据的那条用警示色。
 const MODE_HELP = {
   modes: {
     manual: '每条命令先展示给你，确认后才执行。',
     auto: '普通命令直接执行；高危、外联、覆盖文件的命令仍会停下来确认。',
+    full: '一条也不再确认：高危、外联、删除数据、覆盖文件都直接执行，做错了没有挽回的机会。',
+  },
+  // 每档的补充说明：自动档讲会话授权；托管档只讲风险与适用场景。
+  notes: {
+    auto: {
+      icon: 'checkCircle',
+      text: '下载、修改或删除文件、结束进程、卸载软件包可在确认卡上「本会话总是允许」（按站点、目录、进程名或包名）。之后同类操作直接执行、无法撤销；授权可在本菜单撤销。多主机模式下不提供「总是允许」，每条命令都单独确认。',
+    },
+    full: {
+      icon: 'alert',
+      warn: true,
+      text: '完全托管等于把主机交给 AI 连续操作：没有确认卡，也没有「跳过」的机会，误删数据、改坏配置都会立即生效。仅在你信任这次任务、且这台主机可以重建时使用；换主机或换链接方式会自动退回手动确认。',
+    },
   },
   footnote: '这个对话作用于哪些主机，请在顶栏的主机下拉里选择（对话模式 / 跟随命令窗口 / 多主机）。',
-  grant: '下载、修改或删除文件、结束进程、卸载软件包可在确认卡上「本会话总是允许」（按站点、目录、进程名或包名）。之后同类操作直接执行、无法撤销；授权可在本菜单撤销。多主机模式下不提供「总是允许」，每条命令都单独确认。',
   security: [
     { icon: 'terminal', text: '命令只会发送到本对话已链接的主机（服务端二次校验，模型无法指定其他会话）。' },
     { icon: 'key', text: 'sudo 密码与 SSH 登录凭据不会发送给 AI。' },
@@ -432,9 +451,10 @@ function renderModeHelp(pop) {
   for (const m of MODES) {
     const body = el('div', 'mh-body');
     body.append(el('div', 'mh-name', m.title), el('div', 'mh-desc', MODE_HELP.modes[m.id]));
-    if (m.id === 'auto') {
-      const note = el('div', 'mh-note');
-      note.append(iconBox('mh-note-icon', 'checkCircle', 12), el('span', null, MODE_HELP.grant));
+    if (MODE_HELP.notes[m.id]) {
+      const n = MODE_HELP.notes[m.id];
+      const note = el('div', 'mh-note' + (n.warn ? ' warn' : ''));
+      note.append(iconBox('mh-note-icon', n.icon, 12), el('span', null, n.text));
       body.append(note);
     }
     const row = el('div', `mh-row mh-mode-${m.id}`);
@@ -532,18 +552,21 @@ export function updateModePicker(info, { onSelectMode, onRevoke } = {}) {
 
   const grants = info?.grants?.length ? `\n本会话已授权 ${info.grants.length} 项（点击查看或撤销）` : '';
   const host = info?.hostSummary ? `\n作用于：${info.hostSummary}` : '';
+  // 托管档没有确认卡,触发钮本身就是随时可见的唯一警示:标题里直接写明「不再确认」。
+  const modeHint = mode === 'full' ? '（不再确认任何命令）' : '';
   trigger.title = info?.warn
     ? info.warn
     : info?.modeLocked
       ? `执行模式：${MODE_TITLES[mode]}（该主机设置为只允许手动确认）\n点击查看/切换执行模式`
-      : `执行模式：${MODE_TITLES[mode]}${host}\n点击切换执行模式${grants}`;
+      : `执行模式：${MODE_TITLES[mode]}${modeHint}${host}\n点击切换执行模式${grants}`;
   trigger.disabled = !!info?.disabled;
 
   // 菜单若开着，同步刷新（线程/绑定变化时）
   if (!$('#ai-mode-menu').classList.contains('hidden')) renderModeMenu(lastPickerInfo);
 }
 
-/// 「本会话已授权」：逐项可撤销。授权只在自动模式生效，手动/对话模式下仅作展示。
+/// 「本会话已授权」：逐项可撤销。授权只在自动模式生效；手动/对话/托管下仅作展示
+/// (托管档本来就不确认,授权列表不参与判定,但保留着以便切回自动档继续用)。
 function renderGrants(info) {
   const box = $('#ai-mode-grants');
   if (!box) return;
@@ -551,7 +574,12 @@ function renderGrants(info) {
   box.hidden = !grants.length;
   box.replaceChildren();
   if (!grants.length) return;
-  const head = el('div', 'ai-mode-grants-title', info.mode === 'auto' ? '本会话已授权' : '本会话已授权（切到自动执行后生效）');
+  const title = info.mode === 'auto'
+    ? '本会话已授权'
+    : info.mode === 'full'
+      ? '本会话已授权（完全托管下不再使用）'
+      : '本会话已授权（切到自动执行后生效）';
+  const head = el('div', 'ai-mode-grants-title', title);
   box.append(head);
   grants.forEach((g, i) => {
     const row = el('div', 'ai-mode-grant');
@@ -595,7 +623,8 @@ export function renderModeMenu(info) {
     title.append(Object.assign(document.createElement('span'), { className: 'check', textContent: '✓' }));
     body.append(title);
     body.append(Object.assign(document.createElement('span'), { className: 'mode-item-desc', textContent: m.desc }));
-    if (m.id === 'auto' && info.modeLocked) {
+    // 主机策略「仅手动确认」是硬上限:自动与托管两档一起置灰,而不是只锁自动。
+    if (m.id !== 'manual' && info.modeLocked) {
       item.disabled = true;
       body.append(Object.assign(document.createElement('span'), { className: 'mode-item-lock', textContent: '该主机设置为只允许手动确认' }));
     }

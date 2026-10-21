@@ -77,6 +77,18 @@ test('buildHostSystemPrompt：多主机列出目标并要求所有主机工具�
   assert.ok(!buildHostSystemPrompt({ hostName: 'web-1' }).includes('台主机'));
 });
 
+test('buildHostSystemPrompt：完全托管档说明「不再逐条确认」并加约束', () => {
+  const p = buildHostSystemPrompt({ hostName: 'web-1', os: 'Ubuntu 22.04', execMode: 'full' });
+  assert.match(p, /执行模式：完全托管/);
+  assert.match(p, /不再逐条确认/);
+  // 托管档要给模型明确的自我约束,而不是一句「随便执行」
+  for (const s of ['先确认目标与环境', '不可逆', '含糊时先问清楚']) assert.ok(p.includes(s), s);
+  // 多主机下也一样,且不残留「每条命令都单独确认」的矛盾说明
+  const mp = buildHostSystemPrompt({ hostName: 'web-1', execMode: 'full', linkedHosts: ['a', 'b'] });
+  assert.match(mp, /完全托管/);
+  assert.ok(!mp.includes('每条命令都单独确认'), mp);
+});
+
 test('AI_AGENT_TOOLS_MULTI：每个主机工具都带可选 host,且不下发 read_terminal', async () => {
   const { AI_AGENT_TOOLS, AI_AGENT_TOOLS_MULTI } = await import('../src/shared/ai-tools-schema.js');
   const names = AI_AGENT_TOOLS_MULTI.map((t) => t.name);
@@ -293,6 +305,21 @@ test('软上限：达到步数询问，拒绝则补停止结果', async () => {
   assert.equal(execs.length, AGENT_STEP_SOFT_LIMIT);
   assertPaired(thread.history);
   assert.equal(thread.history.at(-1).content, '用户选择停止继续执行');
+});
+
+test('完全托管档跳过步数软上限询问：不再停下来等「是否继续」', async () => {
+  const many = Array.from({ length: AGENT_STEP_SOFT_LIMIT + 2 }, (_, i) => call('m' + i, 'host_info', {}));
+  let asked = 0;
+  const { ctx, thread, execs } = harness({
+    rounds: [{ toolCalls: many }],
+    mode: () => 'full',
+    adapter: { confirmContinue: async () => { asked++; return true; } },
+  });
+  const r = await runAgentTurn(ctx);
+  assert.equal(r.status, 'done');
+  assert.equal(asked, 0, '托管档不打断');
+  assert.equal(execs.length, AGENT_STEP_SOFT_LIMIT + 2, '全部步骤照常执行');
+  assertPaired(thread.history);
 });
 
 test('非法参数与未知工具：报错回填，循环继续；变更清单只含 exec', async () => {

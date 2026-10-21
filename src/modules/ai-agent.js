@@ -3,6 +3,7 @@
 // 历史只写线程对象本身（thread.history，中立格式），不得写 state.aiHistory/aiReq 视图。
 import { AI_AGENT_TOOLS, AI_EXEC_TOOL } from '../shared/ai-tools-schema.js';
 import { AI_SYSTEM_PROMPT_BASE } from '../shared/ai-presets.js';
+import { isFullExecMode } from '../shared/ai-target-state.js';
 
 // 每执行满这么多次工具询问一次是否继续（软上限，用户可放行）。
 export const AGENT_STEP_SOFT_LIMIT = 12;
@@ -17,7 +18,17 @@ export function wrapUntrusted(text) {
   return UNTRUSTED_HEAD + '\n' + String(text ?? '') + '\n' + UNTRUSTED_TAIL;
 }
 
+// 执行档位说明:三档的文字是 AI 判断「要不要先问用户」的唯一依据,与界面的档位描述保持一致。
+const EXEC_MODE_LINES = {
+  manual: '执行模式：手动。你发起的每条 exec 都会先给用户确认，用户可能执行、改写后执行或跳过。',
+  auto: '执行模式：自动。普通命令直接执行；高危、外联、覆盖已有文件的命令仍会停下来等用户确认。',
+  full: '执行模式：完全托管。用户已授权你连续执行命令：任何级别的命令（含高危、外联、覆盖已有文件、删除数据）都会直接执行，不再逐条确认，也不会有人在你执行前拦一道。' +
+    '动手前务必先确认目标与环境（host_info、pwd、ls 等），能用可回滚的做法就不用不可逆的做法；一次只做一件事，执行后核对结果再继续；' +
+    '路径、主机、目标含糊时先问清楚而不是猜；不要执行会把主机弄到无法登录的命令（改 ssh 配置、改 sudoers、清空系统目录、格式化磁盘）。',
+};
+
 export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMode, linkedHosts } = {}) {
+  const modeLine = EXEC_MODE_LINES[execMode] || EXEC_MODE_LINES.manual;
   // 多主机:目标是一组主机,exec 必须用 host 参数指名;给定该参数即为多主机轮次。
   if (Array.isArray(linkedHosts) && linkedHosts.length) {
     return [
@@ -27,9 +38,7 @@ export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMod
         `所有主机工具（exec 与全部只读工具）都可以用 host 参数指明目标主机；` +
         `host 必须用上面这些名字原文，不能自己编。省略 host 时才落到默认主机。` +
         (os ? `系统：${os}。` : '系统未知：动手前先调用 host_info 确认发行版，再给出匹配的命令。'),
-      execMode === 'auto'
-        ? '执行模式：自动。普通命令直接执行；高危、外联、覆盖已有文件的命令仍会停下来等用户确认。多主机模式下每条命令都单独确认，不能设为总是允许。'
-        : '执行模式：手动。你发起的每条 exec 都会先给用户确认，用户可能执行、改写后执行或跳过。',
+      execMode === 'auto' ? `${modeLine}多主机模式下每条命令都单独确认，不能设为总是允许。` : modeLine,
       '要覆盖所有已链接主机时，对每台主机分别调用工具（带上各自的 host），逐台取结果再汇总；不要只查一台就下结论，也不要用一条命令跨主机执行。',
       '只读工具（host_info、read_file、tail_file、search_file、list_dir、file_size、read_journal）与 exec 一样接受 host 参数，' +
         '查哪台就把 host 设成哪台；省略 host 则作用于默认主机。',
@@ -49,9 +58,7 @@ export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMod
       (os ? `系统：${os}。` : '系统未知：动手前先调用 host_info 确认发行版，再给出匹配的命令。') +
       (cwd ? `终端当前目录：${cwd}（exec 默认在此执行）。` : ''),
     // 对话模式不会进入工具循环（前端不带 tools）；此处兜底按手动描述，防误用。
-    execMode === 'auto'
-      ? '执行模式：自动。普通命令直接执行；高危、外联、覆盖已有文件的命令仍会停下来等用户确认。'
-      : '执行模式：手动。你发起的每条 exec 都会先给用户确认，用户可能执行、改写后执行或跳过。',
+    modeLine,
     '工作方式：先用只读工具（read_file、tail_file、search_file、read_journal、list_dir、read_terminal）调查清楚再动手，不要凭空猜测；' +
       '大文件先用 file_size 看大小，再用 tail_file/search_file 定位，不要整份读取。',
     '每次 exec 都是一个全新的 shell：cd、export 不会延续到下一次，需要时写成一条组合命令或使用 cwd 参数。一次 exec 只做一件事。',
@@ -314,7 +321,9 @@ export async function runAgentTurn(ctx) {
       if (!msg.toolCalls) break;
       for (const call of msg.toolCalls) {
         if (aborted()) break;
-        if (toolCount >= nextAsk) {
+        // 完全托管档的语义就是「不打断」:连「已连续执行 N 步，是否继续」也不再问。
+        // 停止按钮始终可用,所以这里省掉的只是人工放行,不是中止能力。
+        if (toolCount >= nextAsk && !isFullExecMode(getMode())) {
           const go = await untilAbort(adapter.confirmContinue ? adapter.confirmContinue(toolCount) : true, signal);
           if (!go) { status = aborted() ? status : 'stopped'; break; }
           nextAsk += AGENT_STEP_SOFT_LIMIT;

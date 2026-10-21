@@ -1127,6 +1127,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-mode-name { flex: none; color: var(--text); }
 .ai-mode-trigger[data-mode="auto"] .ai-mode-name,
 .ai-mode-trigger[data-mode="auto"] .ai-mode-icon { color: var(--warn); }
+/* 完全托管:没有确认卡兜底,触发钮用危险色常驻提示当前处于托管状态 */
+.ai-mode-trigger[data-mode="full"] .ai-mode-name,
+.ai-mode-trigger[data-mode="full"] .ai-mode-icon { color: var(--danger); }
 /* 锁定态(主机策略只允许手动) */
 .ai-mode-trigger[data-locked="true"] .ai-mode-icon { color: var(--muted); }
 .ai-mode-trigger[data-degraded="true"] { color: var(--warn); }
@@ -1162,6 +1165,8 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   flex: none; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 16px;
   color: var(--warn); border: 1px solid var(--warn); cursor: help;
 }
+/* 完全托管下未经确认的高危命令：同一位置换成危险色，和「按授权」区分开 */
+.ai-step-tag.danger { color: var(--danger); border-color: var(--danger); }
 .ai-step-stop {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; padding: 0; border: 1px solid var(--border); border-radius: 5px;
@@ -1324,6 +1329,7 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-mode-help-pop .mh-mode-manual .mh-icon { color: var(--accent); }
 .ai-mode-help-pop .mh-mode-auto .mh-icon,
 .ai-mode-help-pop .mh-sec.warn .mh-icon { color: var(--warn); }
+.ai-mode-help-pop .mh-mode-full .mh-icon { color: var(--danger); }
 .ai-mode-help-pop .mh-body { flex: 1 1 auto; min-width: 0; }
 .ai-mode-help-pop .mh-name { font-weight: 600; }
 .ai-mode-help-pop .mh-desc { font-size: 11.5px; color: var(--muted); }
@@ -1334,6 +1340,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .ai-mode-help-pop .mh-note-icon { flex: none; display: inline-flex; margin-top: 2px; color: var(--accent2); }
 .ai-mode-help-pop .mh-note-icon svg { width: 12px; height: 12px; }
+/* 托管档的风险说明:整块用危险色,与「和其他档位一样的灰底提示」区分开 */
+.ai-mode-help-pop .mh-note.warn { background: var(--danger-hover-bg); color: var(--text); }
+.ai-mode-help-pop .mh-note.warn .mh-note-icon { color: var(--danger); }
 .ai-mode-help-pop .mh-section {
   display: flex; align-items: center; gap: 6px; margin: 12px 0 10px; padding-top: 10px;
   border-top: 1px solid var(--border); font-size: 12px; font-weight: 600;

@@ -41,6 +41,7 @@ const ICONS = {
   // 会话工具类
   plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>',
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  unlock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/>',
   circleDot: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
   shuffle: '<path d="M2 18h2.5a5 5 0 0 0 4.1-2.1L14 8.1A5 5 0 0 1 18.1 6H21"/><path d="M2 6h2.5a5 5 0 0 1 4.1 2.1l.4.6"/><path d="m18 3 3 3-3 3"/><path d="m18 15 3 3-3 3"/><path d="M14.9 15.3a5 5 0 0 0 3.2 1.7H21"/>',
   megaphone: '<path d="m3 11 15-6v14L3 13z"/><path d="M3 11v2a2 2 0 0 0 2 2h2l3 5a1 1 0 0 0 1.7-1L10 15"/>',

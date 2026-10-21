@@ -3,9 +3,11 @@
 // 两条正交的轴:
 //   linkMode  这个对话作用于谁 —— chat(不操作主机) / follow(跟随当前命令窗口) / multi(多主机)
 //   execMode  命令怎么执行     —— manual(逐条确认) / auto(普通命令直接执行)
+//                                / full(完全托管:后端不产生任何确认)
 // 路由判定、授权清空、文案生成都收在这里,界面层只消费 TargetView。
 
 export const LINK_MODES = ['chat', 'follow', 'multi'];
+export const EXEC_MODES = ['manual', 'auto', 'full'];
 export const CHAT_SUMMARY = '未链接主机';
 
 export function hostKeyOf(host) {
@@ -44,12 +46,21 @@ export function threadLinkMode(thread) {
   return thread.execMode === 'chat' ? 'chat' : 'follow';
 }
 
-/// 线程的执行模式。chat 升格为链接模式后,这里只可能是 manual / auto。
+/// 线程的执行模式。chat 升格为链接模式后,这里只可能是 manual / auto / full;
+/// 未知值一律落回 manual(fail-safe:读不懂的档位不给更大权限)。
 export function threadExecMode(thread) {
-  return thread && thread.execMode === 'auto' ? 'auto' : 'manual';
+  const m = thread && thread.execMode;
+  return EXEC_MODES.includes(m) ? m : 'manual';
+}
+
+/// 完全托管档:任何命令都不再停下来确认,由 Rust 侧把 needs-confirm 一并放开。
+export function isFullExecMode(mode) {
+  return mode === 'full';
 }
 
 /// 撤销线程上的全部授权:自动模式确认、会话授权列表、下载污点。
+/// 换主机/换链接模式后执行档本就会降回手动,托管档不另设「已确认」标记 ——
+/// 它每次切入都要重新确认,不给跨目标静默继承的机会。
 export function clearTargetGrants(thread) {
   if (!thread) return thread;
   thread.autoAcked = false;
@@ -87,7 +98,10 @@ export function rebindThread(thread, target = {}) {
   const nextSessionId = target.sessionId ?? null;
 
   const isSameHost = thread.hostId === nextKey;
-  if (!isSameHost) {
+  // 首次绑定(此前没有目标)不算换主机:新对话第一条消息在发送时才绑到当前标签,
+  // 若按「换目标」处理,用户刚选的自动/托管档会在发出前一刻被静默撤掉。
+  const firstBind = !thread.hostId && !!nextKey;
+  if (!isSameHost && !firstBind) {
     if (thread.execMode !== 'chat') {
       thread.execMode = 'manual';
     }

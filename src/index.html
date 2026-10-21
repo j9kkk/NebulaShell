@@ -204,7 +204,7 @@
         <div class="ai-composer">
           <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
           <div class="ai-composer-tools">
-            <!-- 执行模式:常驻显示,与模型选择同行。触发钮只显示档位名称(手动确认/自动执行),
+            <!-- 执行模式:常驻显示,与模型选择同行。触发钮只显示档位名称(手动确认/自动执行/完全托管),
                  本对话作用于哪些主机由顶栏主机下拉承担,不再重复 -->
             <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu">
               <span class="ai-mode-icon mi" data-icon="lock" aria-hidden="true"></span>
@@ -292,8 +292,8 @@
         </div>
         <label for="host-aiaccess">AI 访问</label>
         <select id="host-aiaccess" title="AI 助手能否读取该主机的文件、执行命令">
-          <option value="default">允许（可切换自动执行）</option>
-          <option value="manual">仅手动确认（禁用自动执行）</option>
+          <option value="default">允许（可切换自动执行 / 完全托管）</option>
+          <option value="manual">仅手动确认（禁用自动与托管）</option>
           <option value="deny">禁止 AI 访问</option>
         </select>
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />

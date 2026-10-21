@@ -149,7 +149,8 @@ export function agentAvailable(thread) {
   return !!(b.session && b.session.host?.aiAccess !== 'deny');
 }
 
-/// 切换执行模式:chat↔manual 无确认;切 auto 首次弹一次性确认(每线程一次)。
+/// 切换执行模式:切回 manual 无确认,manual→auto 首次弹一次性确认(每线程一次),
+/// 切 full 每次都要确认 —— 托管档不再有任何确认卡兜底,误触一次就可能删库。
 async function setExecMode(thread, mode) {
   if (!thread || threadExecMode(thread) === mode) return;
   if (mode === 'auto' && !thread.autoAcked) {
@@ -159,6 +160,14 @@ async function setExecMode(thread, mode) {
     );
     if (!ok) return;
     thread.autoAcked = true;
+  }
+  if (mode === 'full') {
+    const ok = await askConfirm(
+      '完全托管后，AI 会连续在该主机上执行命令，任何命令都不再逐条确认：删除数据、格式化、改配置、上传文件都会直接生效，出错无法撤销。\n'
+      + '仅在你能承受这台主机被改坏、并且随时盯着执行过程时使用。切走或换主机后会自动退回手动确认。',
+      { title: '切换到完全托管', okText: '我了解风险，切到托管', danger: true },
+    );
+    if (!ok) return;
   }
   thread.execMode = mode;
   refreshAgentHostBar();
@@ -579,7 +588,9 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
         // 多主机不携带授权(上面已禁用「总是允许」)。
         const policy = req.tool === 'exec'
           ? {
-            allow: !isMultiTurn && req.mode === 'auto'
+            // 托管档本来就不确认,授权列表不参与判定;但照常带上以备切回自动档,
+            // 且后端在 auto/full 下都会先补判覆盖目标,两边判定保持一致。
+            allow: !isMultiTurn && req.mode !== 'manual'
               ? (thread.allowlist || []).map(({ rule, key }) => ({ rule, key }))
               : [],
             tainted: isMultiTurn ? [] : (thread.taint || []),
