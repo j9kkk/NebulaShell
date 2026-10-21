@@ -130,6 +130,28 @@ fn usage_chains_and_unicode_errors_remain_intact() {
     assert_eq!(error_excerpt(&"中".repeat(400), 200), "中".repeat(200));
 }
 
+#[test]
+fn resolve_request_config_extracts_max_tokens_and_reasoning_params() {
+    let saved = json!({
+        "protocol": "openai",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-4o"
+    });
+    let override_ai = json!({
+        "protocol": "openai",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+        "maxTokens": 8192,
+        "reasoningParams": { "reasoning_effort": "high" }
+    });
+    let cfg = resolve_request_config(&saved, Some(&override_ai), "key123");
+    assert_eq!(cfg.max_tokens, Some(8192));
+    assert_eq!(
+        cfg.reasoning_params,
+        Some(json!({ "reasoning_effort": "high" }))
+    );
+}
+
 fn mock_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
     tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

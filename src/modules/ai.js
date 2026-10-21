@@ -22,10 +22,27 @@ import { stripTerminalNoise } from '../shared/term-text.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
 import { hostKeyOf, hostLabelOf, rebindThread, resolveAiTarget, threadLinkMode } from '../shared/ai-target-state.js';
+import {
+  estimateMessageTokens,
+  inferModelDefaults,
+  normModel,
+  reasoningLevelLabel,
+  resolveReasoningParams,
+  trimMessagesForContext,
+} from '../shared/ai-context-reasoning.js';
 import { agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend } from './ai-agent-run.js';
 import { clearThreadLinks, linksForThread } from './ai-links.js';
 
-export { hostKeyOf, hostLabelOf };
+export {
+  hostKeyOf,
+  hostLabelOf,
+  estimateMessageTokens,
+  inferModelDefaults,
+  normModel,
+  reasoningLevelLabel,
+  resolveReasoningParams,
+  trimMessagesForContext,
+};
 
 export const AI_HISTORY_LIMIT = 20;
 export const AI_THREAD_LIMIT = 20;
@@ -1407,7 +1424,7 @@ export function formatTokenCount(n) {
 /// AI 响应结束后的元信息行:模型、输入/输出 token、耗时。
 /// 传入 null 值的项跳过;整行更新到 .ai-meta-text(时间戳扩展成完整元信息)。
 /// 只改文字节点:.ai-meta 里还有头像,整体重写 textContent 会把它抹掉。
-export function setAiMeta(bubble, { model, usage, elapsedMs } = {}) {
+export function setAiMeta(bubble, { model, effort, usage, elapsedMs, trimmedCount } = {}) {
   if (!bubble) return;
   const meta = bubble.querySelector('.ai-meta-text');
   if (!meta) return;
@@ -1415,6 +1432,8 @@ export function setAiMeta(bubble, { model, usage, elapsedMs } = {}) {
   const t = meta.textContent;
   if (t) parts.push(t);
   if (model) parts.push(model);
+  if (effort && effort !== 'disabled') parts.push(`思考:${reasoningLevelLabel(effort)}`);
+  if (trimmedCount) parts.push(`已裁剪${trimmedCount}条旧消息`);
   if (usage) {
     const tok = [];
     if (usage.promptTokens != null) tok.push(`${formatTokenCount(usage.promptTokens)}入`);
@@ -1593,12 +1612,32 @@ export function aiRequest(messages, bubble, override, { thread = null, detached 
       protocol: s.protocol || 'openai', baseUrl: s.baseUrl || '', model: s.model || '',
       apiKey: '', useSavedApiKey: true,
     };
+    const activeModel = savedModels().find((m) => m.id === config.model);
+    let resolvedEffort = null;
+    let trimmedCount = 0;
+    if (activeModel) {
+      if (activeModel.maxOutput && !config.maxTokens) config.maxTokens = activeModel.maxOutput;
+      const th = thread || activeAiThread();
+      const effort = th?.reasoningEffort || activeModel.reasoning?.default || 'disabled';
+      const rParams = resolveReasoningParams(activeModel, effort);
+      if (rParams && !config.reasoningParams) config.reasoningParams = rParams;
+      if (effort && effort !== 'disabled') {
+        resolvedEffort = effort;
+        config.reasoningEffort = effort;
+      }
+      const ctxLimit = activeModel.contextWindow || activeModel.context;
+      if (ctxLimit) {
+        const trimmed = trimMessagesForContext(messages, ctxLimit);
+        messages = trimmed.messages;
+        trimmedCount = trimmed.trimmedCount;
+      }
+    }
     const snapshot = messages.map((m) => ({ ...m }));
 
     if (detached) {
       const holder = {
         id: requestId, acc: '', bubble: null, resolve, messages: snapshot,
-        model: config.model || '', started: Date.now(), recordHistory: false,
+        model: config.model || '', effort: resolvedEffort, trimmedCount, started: Date.now(), recordHistory: false,
         threadId: null, detached: true,
       };
       detachedRequests.set(requestId, holder);
@@ -1617,7 +1656,7 @@ export function aiRequest(messages, bubble, override, { thread = null, detached 
     }
     const holder = {
       id: requestId, acc: '', bubble, resolve, messages: snapshot,
-      model: config.model || '', started: Date.now(), recordHistory: !!bubble && record,
+      model: config.model || '', effort: resolvedEffort, trimmedCount, started: Date.now(), recordHistory: !!bubble && record,
       threadId: targetThread?.id || null, detached: false,
     };
     if (targetThread) targetThread.req = holder;
@@ -1686,7 +1725,7 @@ export function aiFinishHolder(done) {
     }
     // 响应元信息(模型/token/耗时):有内容才挂,没有就不占视觉
     if (!h.failed && (done && (done.usage || done.elapsedMs != null))) {
-      setAiMeta(h.bubble, { model: h.model, usage: done.usage, elapsedMs: done.elapsedMs });
+      setAiMeta(h.bubble, { model: h.model, effort: h.effort, usage: done.usage, elapsedMs: done.elapsedMs, trimmedCount: h.trimmedCount });
     }
     // 收尾做了全量 DOM 重写(清等待态 + 最终正文),WebKit 滚动锚定可能把
     // 视图拽离底部:补一次贴底判定,这是"回复完成瞬间上跳"的修复点。
@@ -1917,20 +1956,7 @@ export async function fetchAiModels() {
   }
 }
 
-/* ---------------- 模型选择弹框(多选) ---------------- */
-
-/// 后端已归一化,但历史配置里可能残留纯字符串形式(旧版只存 id),统一收敛成对象
-function normModel(m) {
-  if (typeof m === 'string') return { id: m, name: m, ownedBy: '', created: null, context: null, vision: false };
-  return {
-    id: String(m.id || m.name || ''),
-    name: String(m.name || m.id || ''),
-    ownedBy: String(m.ownedBy || ''),
-    created: m.created == null ? null : m.created,
-    context: m.context == null ? null : Number(m.context) || null,
-    vision: !!m.vision,
-  };
-}
+/* ---------------- 模型选择与能力配置 ---------------- */
 
 function modelLabel(m) {
   return m.name && m.name !== m.id ? `${m.name}  ·  ${m.id}` : m.id;
@@ -2139,6 +2165,248 @@ export function renderModelChips() {
     });
     list.appendChild(chip);
   }
+  renderModelTable();
+}
+
+export function renderModelTable() {
+  const table = $('#ai-model-table');
+  const empty = $('#ai-model-table-empty');
+  if (!table) return;
+  table.innerHTML = '';
+  if (!state.aiSelected.length) {
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
+  const active = $('#ai-model').value;
+
+  for (const m of state.aiSelected) {
+    const row = document.createElement('div');
+    const isDefault = m.id === active;
+    row.className = 'model-table-row' + (isDefault ? ' is-default' : '');
+    row.dataset.modelId = m.id;
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'ai-default-model-radio';
+    radio.className = 'model-row-radio';
+    radio.checked = isDefault;
+    radio.title = isDefault ? '当前默认模型' : '点击设为默认模型';
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'model-row-title-wrap';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'model-row-name';
+    nameEl.textContent = m.name || m.id;
+    nameEl.title = `${m.name || m.id} (${m.id})`;
+    titleWrap.appendChild(nameEl);
+
+    if (isDefault) {
+      const defBadge = document.createElement('span');
+      defBadge.className = 'model-badge badge-default';
+      defBadge.textContent = '默认';
+      titleWrap.appendChild(defBadge);
+    }
+
+    const ctx = m.contextWindow || m.context;
+    if (ctx) {
+      const ctxBadge = document.createElement('span');
+      ctxBadge.className = 'model-badge badge-ctx';
+      ctxBadge.textContent = ctx >= 1000 ? `${Math.round(ctx / 1000)}K` : `${ctx}`;
+      ctxBadge.title = `上下文窗口: ${ctx} Tokens`;
+      titleWrap.appendChild(ctxBadge);
+    }
+
+    if (m.vision) {
+      const visBadge = document.createElement('span');
+      visBadge.className = 'model-badge badge-vision';
+      visBadge.textContent = '视觉';
+      titleWrap.appendChild(visBadge);
+    }
+
+    const reasoningLevels = m.reasoning?.levels || [];
+    const validLevels = reasoningLevels.filter((lvl) => lvl !== 'disabled');
+    if (validLevels.length > 0) {
+      const rBadge = document.createElement('span');
+      rBadge.className = 'model-badge badge-reasoning';
+      rBadge.textContent = `${validLevels.length}档思考`;
+      rBadge.title = `支持档位: ${reasoningLevels.join(', ')}`;
+      titleWrap.appendChild(rBadge);
+    }
+
+    const setDefault = () => {
+      $('#ai-model').value = m.id;
+      renderModelChips();
+      renderModelSwitch();
+    };
+    radio.addEventListener('change', setDefault);
+    titleWrap.addEventListener('click', setDefault);
+
+    const actions = document.createElement('div');
+    actions.className = 'model-row-actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'model-row-btn edit';
+    editBtn.title = '编辑能力配置（上下文/最大输出/推理等级）';
+    editBtn.innerHTML = icon('pencil', { size: 14 });
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openModelConfigModal(m.id);
+    });
+    actions.appendChild(editBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'model-row-btn del';
+    delBtn.title = `移除 ${m.id}`;
+    delBtn.innerHTML = icon('trash', { size: 14 });
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applySelectedModels(state.aiSelected.filter((x) => x.id !== m.id));
+    });
+    actions.appendChild(delBtn);
+
+    row.appendChild(radio);
+    row.appendChild(titleWrap);
+    row.appendChild(actions);
+    table.appendChild(row);
+  }
+}
+
+let editingModelId = null;
+let editingReasoningLevels = [];
+
+export function openModelConfigModal(modelId) {
+  const m = state.aiSelected.find((x) => x.id === modelId);
+  if (!m) return;
+  editingModelId = modelId;
+  $('#cfg-auto').checked = m.autoConfig !== false;
+  $('#cfg-model-id').value = m.id;
+  $('#cfg-model-name').value = m.name || m.id;
+  $('#cfg-context-window').value = m.contextWindow || m.context || 128000;
+  $('#cfg-max-output').value = m.maxOutput || 8192;
+
+  editingReasoningLevels = [...(m.reasoning?.levels || ['disabled'])];
+  renderEditingReasoningChips();
+  updateDefaultReasoningSelect(m.reasoning?.default || 'disabled');
+
+  $('#cfg-reasoning-mapping').value = JSON.stringify(m.reasoning?.mapping || {}, null, 2);
+  $('#cfg-mapping-error').textContent = '';
+
+  openModal('#modal-model-config');
+}
+
+export function closeModelConfigModal() {
+  closeModal('#modal-model-config');
+  editingModelId = null;
+}
+
+function renderEditingReasoningChips() {
+  const container = $('#cfg-reasoning-chips');
+  if (!container) return;
+  container.innerHTML = '';
+  for (const lvl of editingReasoningLevels) {
+    const chip = document.createElement('span');
+    chip.className = 'reasoning-chip';
+    chip.textContent = lvl;
+    if (lvl !== 'disabled') {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'chip-del';
+      del.title = `移除档位 ${lvl}`;
+      del.innerHTML = icon('x', { size: 12 });
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        editingReasoningLevels = editingReasoningLevels.filter((x) => x !== lvl);
+        renderEditingReasoningChips();
+        updateDefaultReasoningSelect();
+      });
+      chip.appendChild(del);
+    }
+    container.appendChild(chip);
+  }
+}
+
+function updateDefaultReasoningSelect(selectedVal) {
+  const sel = $('#cfg-reasoning-default');
+  if (!sel) return;
+  const current = selectedVal || sel.value;
+  sel.innerHTML = '';
+  for (const lvl of editingReasoningLevels) {
+    const opt = document.createElement('option');
+    opt.value = lvl;
+    opt.textContent = lvl === 'disabled' ? 'disabled (关闭)' : lvl;
+    sel.appendChild(opt);
+  }
+  if (editingReasoningLevels.includes(current)) {
+    sel.value = current;
+  } else {
+    sel.value = editingReasoningLevels[0] || 'disabled';
+  }
+}
+
+export function addEditingReasoningLevel(level) {
+  const name = String(level || $('#cfg-reasoning-input')?.value || '').trim().toLowerCase();
+  if (!name) return;
+  if (!editingReasoningLevels.includes(name)) {
+    editingReasoningLevels.push(name);
+    renderEditingReasoningChips();
+    updateDefaultReasoningSelect();
+  }
+  const input = $('#cfg-reasoning-input');
+  if (input) input.value = '';
+}
+
+export function saveModelConfigModal() {
+  if (!editingModelId) return;
+  const mappingStr = $('#cfg-reasoning-mapping')?.value.trim();
+  let mapping = {};
+  if (mappingStr) {
+    try {
+      mapping = JSON.parse(mappingStr);
+      if (typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)) {
+        throw new Error('映射必须是一个 JSON 对象');
+      }
+    } catch (e) {
+      $('#cfg-mapping-error').textContent = 'JSON 格式错误：' + e.message;
+      return;
+    }
+  }
+
+  const target = state.aiSelected.find((x) => x.id === editingModelId);
+  if (target) {
+    target.autoConfig = $('#cfg-auto').checked;
+    target.name = $('#cfg-model-name').value.trim() || target.id;
+    target.contextWindow = Number($('#cfg-context-window').value) || 128000;
+    target.maxOutput = Number($('#cfg-max-output').value) || 8192;
+    target.reasoning = {
+      levels: editingReasoningLevels,
+      default: $('#cfg-reasoning-default').value || 'disabled',
+      mapping,
+    };
+    const inAll = state.aiModels.find((x) => x.id === editingModelId);
+    if (inAll) Object.assign(inAll, target);
+  }
+
+  closeModelConfigModal();
+  renderModelChips();
+  renderModelSwitch();
+  toast('模型配置已更新', 'success');
+}
+
+export function resetModelConfigModal() {
+  if (!editingModelId) return;
+  const inferred = inferModelDefaults(editingModelId, null, false);
+  $('#cfg-auto').checked = true;
+  $('#cfg-model-name').value = editingModelId;
+  $('#cfg-context-window').value = inferred.contextWindow;
+  $('#cfg-max-output').value = inferred.maxOutput;
+  editingReasoningLevels = [...inferred.reasoning.levels];
+  renderEditingReasoningChips();
+  updateDefaultReasoningSelect(inferred.reasoning.default);
+  $('#cfg-reasoning-mapping').value = JSON.stringify(inferred.reasoning.mapping || {}, null, 2);
+  $('#cfg-mapping-error').textContent = '';
 }
 
 /* ---------------- 资源监控 ---------------- */
@@ -2179,6 +2447,62 @@ function renderModelMenu() {
       <span>${escapeHtml(m.name || m.id)}</span>
       <span class="check" aria-hidden="true">✓</span>
     </button>`).join('');
+  renderModelReasoning();
+}
+
+export function renderModelReasoning() {
+  const section = $('#ai-model-reasoning');
+  if (!section) return;
+  const current = savedAi().model || '';
+  const models = savedModels();
+  const active = models.find((m) => m.id === current);
+  const levels = active?.reasoning?.levels || [];
+
+  if (levels.length < 2) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+
+  const th = activeAiThread();
+  let currentEffort = th?.reasoningEffort || active.reasoning?.default || levels[0];
+  if (!levels.includes(currentEffort)) {
+    currentEffort = levels[0];
+  }
+
+  const labelEl = $('#ai-reasoning-label');
+  if (labelEl) labelEl.textContent = reasoningLevelLabel(currentEffort);
+
+  const slider = $('#ai-reasoning-slider');
+  if (slider) {
+    slider.min = '0';
+    slider.max = String(levels.length - 1);
+    slider.value = String(levels.indexOf(currentEffort));
+  }
+
+  const ticks = $('#ai-reasoning-ticks');
+  if (ticks) {
+    ticks.innerHTML = levels.map((lvl) => `<span>${reasoningLevelLabel(lvl)}</span>`).join('');
+  }
+}
+
+export function cycleAiReasoningEffort() {
+  const current = savedAi().model || '';
+  const models = savedModels();
+  const active = models.find((m) => m.id === current);
+  const levels = active?.reasoning?.levels || [];
+  if (levels.length < 2) return;
+
+  const th = activeAiThread();
+  if (!th) return;
+  const currentEffort = th.reasoningEffort || active.reasoning?.default || levels[0];
+  let idx = levels.indexOf(currentEffort);
+  if (idx < 0) idx = 0;
+  const nextEffort = levels[(idx + 1) % levels.length];
+  th.reasoningEffort = nextEffort;
+
+  renderModelReasoning();
+  toast(`思考强度：${reasoningLevelLabel(nextEffort)}`, 'info');
 }
 
 export function openModelMenu() {

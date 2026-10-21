@@ -14,6 +14,8 @@ pub struct AiRequestConfig {
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+    pub max_tokens: Option<i64>,
+    pub reasoning_params: Option<Value>,
 }
 
 pub fn same_endpoint(a: &Value, b: &Value) -> bool {
@@ -61,6 +63,15 @@ pub fn resolve_request_config(
     } else {
         String::new()
     };
+    let max_tokens = ov
+        .get("maxTokens")
+        .or_else(|| ov.get("max_tokens"))
+        .and_then(|v| v.as_i64());
+    let reasoning_params = ov
+        .get("reasoningParams")
+        .or_else(|| ov.get("reasoning_params"))
+        .filter(|v| v.is_object())
+        .cloned();
     AiRequestConfig {
         protocol: requested["protocol"]
             .as_str()
@@ -74,6 +85,8 @@ pub fn resolve_request_config(
             .to_string(),
         model: requested["model"].as_str().unwrap_or("").trim().to_string(),
         api_key,
+        max_tokens,
+        reasoning_params,
     }
 }
 
@@ -245,6 +258,8 @@ pub async fn chat_stream<
         model,
         messages,
         Value::Null,
+        None,
+        None,
         abort_flag,
     )
     .await
@@ -265,6 +280,8 @@ pub async fn chat_stream_with_tools<
     model: String,
     messages: Value,
     tools: Value,
+    max_tokens: Option<i64>,
+    reasoning_params: Option<Value>,
     abort_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     let started = Instant::now();
@@ -293,13 +310,21 @@ pub async fn chat_stream_with_tools<
     let (url, body, req) = if protocol == "anthropic" {
         let url = format!("{}/messages", base_url.trim().trim_end_matches('/'));
         let (system, msgs) = crate::ai_wire::to_anthropic(&messages, with_tools);
+        let max_tok = max_tokens.unwrap_or(4096);
         let mut body = json!({
-            "model": model, "max_tokens": 4096,
+            "model": model, "max_tokens": max_tok,
             "system": system,
             "messages": msgs, "stream": true
         });
         if let Some(t) = &wire_tools {
             body["tools"] = t.clone();
+        }
+        if let Some(rp) = &reasoning_params {
+            if let Some(obj) = rp.as_object() {
+                for (k, v) in obj {
+                    body[k] = v.clone();
+                }
+            }
         }
         let r = client
             .post(&url)
@@ -316,6 +341,20 @@ pub async fn chat_stream_with_tools<
             "stream": true,
             "stream_options": { "include_usage": true }
         });
+        if let Some(mt) = max_tokens {
+            body["max_tokens"] = json!(mt);
+        }
+        // 不发 tool_choice:默认即 auto,部分兼容网关对显式 tool_choice 另有开关要求。
+        if let Some(t) = &wire_tools {
+            body["tools"] = t.clone();
+        }
+        if let Some(rp) = &reasoning_params {
+            if let Some(obj) = rp.as_object() {
+                for (k, v) in obj {
+                    body[k] = v.clone();
+                }
+            }
+        }
         // 不发 tool_choice:默认即 auto,部分兼容网关对显式 tool_choice 另有开关要求。
         if let Some(t) = &wire_tools {
             body["tools"] = t.clone();

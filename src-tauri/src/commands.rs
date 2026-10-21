@@ -1681,6 +1681,8 @@ pub async fn nebula_invoke(
                     config.model,
                     payload["messages"].clone(),
                     payload["tools"].clone(),
+                    config.max_tokens,
+                    config.reasoning_params,
                     flag,
                 )
                 .await

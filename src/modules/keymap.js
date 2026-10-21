@@ -46,6 +46,7 @@ export const DEFAULT_KEYMAP = {
   'panel.tools':     { mac: 'alt+cmd+B',       ...pc('ctrl+shift+alt+B'), label: 'AI 助手' },
   // ⌘N 保留给 AI 对话(既有习惯),新建主机用 ⇧⌘N
   'ai.newThread':    { mac: 'cmd+N',           ...pc('ctrl+shift+N'),     label: '新建 AI 对话' },
+  'ai.cycleEffort':  { mac: 'cmd+T',           ...pc('ctrl+T'),           label: '切换思考强度' },
   'session.history': { mac: 'cmd+shift+H',     ...pc('ctrl+shift+H'),     label: '命令历史' },
   'tools.snippets':  { mac: 'cmd+shift+S',     ...pc('ctrl+shift+S'),     label: '常用命令' },
   // F11 全屏(Windows Terminal 惯例);macOS 用系统的「进入全屏」(⌃⌘F)
@@ -84,7 +85,7 @@ export const DEFAULT_KEYMAP = {
 ///     专用分支),菜单项也刻意不带加速键,不在全局分发里抢按键。
 const COMPONENT_ACTIONS = ['term.copy', 'term.paste', 'term.selectAll', 'files.selectAll'];
 const MENU_ONLY_ACTIONS = ['window.close', 'app.quit'];
-const PANEL_SCOPED_ACTIONS = ['ai.newThread'];
+const PANEL_SCOPED_ACTIONS = ['ai.newThread', 'ai.cycleEffort'];
 export const APP_ACTIONS = Object.keys(DEFAULT_KEYMAP)
   .filter((id) => !COMPONENT_ACTIONS.includes(id) && !MENU_ONLY_ACTIONS.includes(id)
     && !PANEL_SCOPED_ACTIONS.includes(id));

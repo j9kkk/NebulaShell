@@ -267,6 +267,7 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
   const icons = await load('../src/shared/icons.js');
   const termText = await load('../src/shared/term-text.js');
   const targetState = await load('../src/shared/ai-target-state.js');
+  const contextReasoning = await load('../src/shared/ai-context-reasoning.js');
   const interaction = new vm.SyntheticModule(['popupPosition'], function () {
     this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
   }, { context });
@@ -290,7 +291,7 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
     });
   }, { context });
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();

@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, savedAiModelId, saveAiSettings, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
 import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
   revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu, toggleTargetMenu,
@@ -448,6 +448,7 @@ function setupWorkspaceCommands() {
   // AI 助手面板:panel.tools 开关面板
   registerCommand('panel.tools', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'tools', 'right panel', 'toolbar', 'ycgjl', 'gongjulan', 'youce', 'zhushou'], checked: () => rightPanelOpen(), run: toggleRightPanel });
   registerCommand('ai.newThread', { label: '新建 AI 对话', category: 'panel', keywords: ['new chat', 'ai', 'xjdh', 'xinjianduihua'], run: () => { setRightPanel(true, 'ai'); newAiThread({ focus: true }); } });
+  registerCommand('ai.cycleEffort', { label: '切换思考强度', category: 'panel', keywords: ['reasoning', 'thinking', 'effort', 'qiehuan', 'sikaoqiangdu'], run: () => cycleAiReasoningEffort() });
 
   // 会话
   registerCommand('session.history', { label: '命令历史', category: 'session', kind: 'dialog', keywords: ['history', 'command history', 'mlls', 'lishi'], run: openHistoryModal });
@@ -687,6 +688,16 @@ export function bindEvents() {
     else if (e.key === ' ') { e.preventDefault(); togglePickerFocus(); }
     else if (e.key === 'Enter') { e.preventDefault(); confirmModelPicker(); }
   });
+
+  // 编辑模型能力配置弹窗
+  $('#btn-model-config-close')?.addEventListener('click', closeModelConfigModal);
+  $('#btn-model-config-cancel')?.addEventListener('click', closeModelConfigModal);
+  $('#btn-model-config-save')?.addEventListener('click', saveModelConfigModal);
+  $('#btn-model-config-reset')?.addEventListener('click', resetModelConfigModal);
+  $('#btn-cfg-add-level')?.addEventListener('click', () => addEditingReasoningLevel());
+  $('#cfg-reasoning-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addEditingReasoningLevel(); }
+  });
   // 模型选择:触发钮开菜单,菜单项切换,「管理模型」进 AI 设置;
   // 面板外点击/Esc/窗口缩放 关闭。菜单定位 fixed,不随面板滚动。
   $('#ai-model-trigger').addEventListener('click', () => {
@@ -712,6 +723,22 @@ export function bindEvents() {
     if (!item) return;
     closeModelMenu();
     switchModel(item.dataset.model).then(renderModelSwitch).catch(() => {});
+  });
+  $('#ai-reasoning-slider')?.addEventListener('input', (e) => {
+    const current = savedAiModelId() || '';
+    const models = state.aiSelected || [];
+    const active = models.find((m) => m.id === current);
+    const levels = active?.reasoning?.levels || [];
+    const val = Number(e.target.value);
+    if (levels[val]) {
+      const th = activeAiThread();
+      if (th) th.reasoningEffort = levels[val];
+      const labelEl = $('#ai-reasoning-label');
+      if (labelEl) labelEl.textContent = reasoningLevelLabel(levels[val]);
+    }
+  });
+  $('#ai-model-reasoning')?.addEventListener('click', (e) => {
+    e.stopPropagation();
   });
   $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openSettings('ai'); });
   document.addEventListener('click', (e) => {
@@ -927,6 +954,12 @@ export function bindEvents() {
       closeThreadMenu();
       closeAiDrawer();
       newAiThread({ focus: true });
+      return;
+    }
+    // 在 AI 面板内或模型菜单打开时按快捷键切换思考强度
+    if (matchAction('ai.cycleEffort', e) && (rightTabShown('ai') && document.activeElement?.closest?.('#ai-panel, #ai-model-menu, #rp-ai') || !$('#ai-model-menu')?.classList.contains('hidden'))) {
+      e.preventDefault();
+      cycleAiReasoningEffort();
       return;
     }
     const terminalInput = !!e.target.closest?.('.term-pane');

@@ -1232,10 +1232,8 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 /* 未配置模型态:文案是"点击配置"引导,用 accent 色暗示可点 */
 .ai-model-trigger.ai-model-unset { color: var(--accent); }
 .ai-model-trigger.ai-model-unset:hover { color: var(--accent); filter: brightness(1.15); }
-.ai-model-trigger.ai-model-unset .ai-model-dot { border-color: var(--accent); }
 #ai-model-name { overflow: hidden; text-overflow: ellipsis; }
-.ai-model-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
-/* 下箭头走 SVG 注册表(chevronDown),flex 容器内与圆圈/文字天然同轴,
+/* 下箭头走 SVG 注册表(chevronDown),flex 容器内与文字天然同轴,
    不再用文字符号 ⌄ + translateY 手工补偿 —— 那在不同字体度量下必然错位。 */
 .ai-model-caret { flex: none; display: inline-flex; }
 .ai-model-caret svg { width: 12px; height: 12px; }
@@ -3103,12 +3101,138 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 }
 #ctx-menu:not(.hidden) { animation: pop-in var(--dur) var(--ease); }
 
-/* 模态框:遮罩淡入 + 卡片轻微放大,把注意力引到卡片上 */
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes card-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
-  to { opacity: 1; transform: none; }
+/* ===== 模型配置与思考强度 (阶段 2/3) ===== */
+.model-config-section {
+  display: flex; flex-direction: column; gap: 8px; width: 100%;
 }
+.model-config-toolbar {
+  display: flex; gap: 8px; align-items: center; width: 100%;
+}
+.model-chips-quick {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 6px; height: 32px;
+}
+.model-chips-quick:focus-within { border-color: var(--accent); }
+.model-table-wrap {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg2); max-height: 240px; overflow-y: auto;
+  scrollbar-width: thin;
+}
+.model-table-empty {
+  padding: 24px 16px; text-align: center; font-size: 12px; color: var(--muted);
+}
+.model-table {
+  display: flex; flex-direction: column;
+}
+.model-table-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  transition: background var(--dur-fast) var(--ease);
+  font-size: 13px;
+}
+.model-table-row:last-child { border-bottom: none; }
+.model-table-row:hover { background: var(--hover-bg); }
+.model-table-row.is-default { background: var(--surface-hover); }
+.model-row-radio {
+  cursor: pointer; margin: 0; flex: none;
+}
+.model-row-title-wrap {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  cursor: pointer;
+}
+.model-row-name {
+  font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.model-badge {
+  font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px;
+  font-weight: 500; flex: none;
+}
+.badge-default { background: var(--accent); color: #fff; }
+.badge-ctx { background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+.badge-vision { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+.badge-reasoning { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+.model-row-actions {
+  display: flex; align-items: center; gap: 4px; flex: none;
+}
+.model-row-btn {
+  background: transparent; border: none; padding: 4px; border-radius: 4px;
+  color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.model-row-btn:hover { background: var(--surface-hover); color: var(--text); }
+.model-row-btn.del:hover { background: var(--danger-hover-bg); color: var(--danger); }
+
+/* 编辑模型能力配置弹窗 */
+.model-config-card {
+  width: 540px; max-width: calc(100vw - 32px);
+}
+.field-with-unit {
+  display: flex; align-items: center; gap: 6px;
+}
+.field-with-unit .inp { flex: 1; min-width: 0; }
+.field-with-unit .unit-text { font-size: 12px; color: var(--muted); }
+.reasoning-levels-wrap {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.reasoning-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; min-height: 28px;
+}
+.reasoning-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px 8px; font-size: 12px;
+  color: var(--text);
+}
+.reasoning-chip .chip-del {
+  cursor: pointer; opacity: 0.5; border: none; background: transparent; padding: 0;
+  display: inline-flex; align-items: center; color: inherit;
+}
+.reasoning-chip .chip-del:hover { opacity: 1; color: var(--danger); }
+.reasoning-add-row {
+  display: flex; gap: 6px; align-items: center;
+}
+.reasoning-add-row .inp { width: 140px; }
+.mapping-editor-wrap {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.mapping-editor-wrap textarea {
+  font-family: var(--font-mono, monospace) !important; font-size: 12px;
+  tab-size: 2; line-height: 1.4;
+}
+.cfg-error { font-size: 11px; color: var(--danger); min-height: 16px; }
+
+/* 底部模型菜单内的思考强度滑块 (阶段 3) */
+.ai-model-reasoning-section {
+  padding: 8px 10px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ai-reasoning-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; color: var(--muted);
+}
+.ai-reasoning-title { font-weight: 500; }
+.ai-reasoning-current { color: var(--text); font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.ai-reasoning-accel { font-size: 10px; padding: 1px 4px; background: var(--bg2); border-radius: 3px; color: var(--muted); }
+.ai-reasoning-slider-wrap {
+  position: relative; display: flex; align-items: center; padding: 2px 0;
+}
+.ai-reasoning-slider {
+  width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
+  background: var(--border); border-radius: 3px; outline: none; cursor: pointer;
+}
+.ai-reasoning-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.ai-reasoning-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+.ai-reasoning-ticks {
+  display: flex; justify-content: space-between; margin-top: 2px;
+  font-size: 10px; color: var(--muted);
+}
+
 .modal:not(.hidden) { animation: fade-in var(--dur-fast) ease-out; }
 .modal:not(.hidden) .modal-card { animation: card-in var(--dur) var(--ease); }
 

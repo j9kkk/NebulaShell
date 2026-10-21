@@ -215,7 +215,6 @@
             <!-- 模型选择:无边框触发钮 + 自定义浮层菜单(列已启用模型 + 管理模型入口)。
                  不用原生 <select>:要展示"管理模型"入口与选中 ✓,原生下拉做不到。 -->
             <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
-              <span class="ai-model-dot" aria-hidden="true"></span>
               <span id="ai-model-name">未启用模型</span>
               <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
             </button>
@@ -417,14 +416,18 @@
         </select>
         <label>Base URL</label><input id="ai-baseurl" type="text" placeholder="https://api.example.com/v1" />
         <label>模型</label>
-        <div class="model-row">
-          <!-- 启用模型列表框:点 chip 设为默认模型(带"默认"徽标),✕ 移除启用;
-               框尾输入模型 ID 回车即添加。列表换行平铺,便于一眼看全已启用模型 -->
-          <div id="ai-model-chips" class="model-chips">
-            <span id="ai-model-chips-list" class="model-chips-list"></span>
-            <input id="ai-model-inline" class="model-chips-input" type="text" placeholder="输入模型 ID，回车添加" title="输入模型 ID 后回车添加" autocomplete="off" spellcheck="false" />
+        <div class="model-config-section">
+          <div class="model-config-toolbar">
+            <div id="ai-model-chips" class="model-chips-quick">
+              <span id="ai-model-chips-list" class="model-chips-list hidden"></span>
+              <input id="ai-model-inline" class="model-chips-input" type="text" placeholder="输入模型 ID 回车添加" title="输入模型 ID 后回车添加" autocomplete="off" spellcheck="false" />
+            </div>
+            <button id="btn-ai-fetch-models" class="btn small" type="button" title="拉取模型列表" aria-label="拉取模型列表"><span class="mi" data-icon="plus"></span><span>拉取模型</span></button>
           </div>
-          <button id="btn-ai-fetch-models" class="btn icon" title="拉取模型列表" aria-label="拉取模型列表"><span class="mi" data-icon="plus"></span></button>
+          <div id="ai-model-table-wrap" class="model-table-wrap">
+            <div id="ai-model-table-empty" class="model-table-empty muted hidden">尚未启用任何模型，可输入 ID 回车添加或点击「拉取模型」</div>
+            <div id="ai-model-table" class="model-table" role="list"></div>
+          </div>
         </div>
         <label for="ai-apikey">API Key</label>
         <div class="secret-field">
@@ -520,6 +523,59 @@
         <span class="spacer"></span>
         <button id="btn-model-picker-cancel" class="btn">取消</button>
         <button id="btn-model-picker-ok" class="btn primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑模型能力配置弹窗(上下文窗口/最大输出/推理等级/参数映射) -->
+  <div id="modal-model-config" class="modal modal-stack hidden" role="dialog" aria-modal="true" aria-labelledby="model-config-title">
+    <div class="modal-card model-config-card">
+      <div class="modal-head">
+        <h3 id="model-config-title">编辑模型配置</h3>
+        <button id="btn-model-config-close" class="btn icon close-btn" type="button" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
+      <div class="model-config-body form-grid">
+        <label for="cfg-auto">智能配置</label>
+        <label class="switch" for="cfg-auto">
+          <input id="cfg-auto" type="checkbox" checked />
+          <span class="switch-slider"></span>
+          <span class="switch-label">按模型 ID 推荐上下文与推理参数</span>
+        </label>
+        <label for="cfg-model-id">模型 ID</label>
+        <input id="cfg-model-id" class="inp" type="text" readonly />
+        <label for="cfg-model-name">显示名称</label>
+        <input id="cfg-model-name" class="inp" type="text" placeholder="留空则与 ID 一致" />
+        <label for="cfg-context-window">上下文窗口</label>
+        <div class="field-with-unit">
+          <input id="cfg-context-window" class="inp" type="number" min="1024" step="1024" placeholder="例如 128000" />
+          <span class="unit-text">Tokens</span>
+        </div>
+        <label for="cfg-max-output">最大输出</label>
+        <div class="field-with-unit">
+          <input id="cfg-max-output" class="inp" type="number" min="256" step="256" placeholder="例如 8192" />
+          <span class="unit-text">Tokens</span>
+        </div>
+        <label for="cfg-reasoning-levels">推理等级</label>
+        <div class="reasoning-levels-wrap">
+          <div id="cfg-reasoning-chips" class="reasoning-chips"></div>
+          <div class="reasoning-add-row">
+            <input id="cfg-reasoning-input" class="inp small" type="text" placeholder="添加档位(如 max)" />
+            <button id="btn-cfg-add-level" class="btn small" type="button">添加</button>
+          </div>
+        </div>
+        <label for="cfg-reasoning-default">默认档位</label>
+        <select id="cfg-reasoning-default" class="inp"></select>
+        <label for="cfg-reasoning-mapping">参数映射 (JSON)</label>
+        <div class="mapping-editor-wrap">
+          <textarea id="cfg-reasoning-mapping" class="inp mono" rows="5" spellcheck="false" placeholder='{\n  "low": {"reasoning_effort": "low"},\n  "high": {"reasoning_effort": "high"}\n}'></textarea>
+          <div id="cfg-mapping-error" class="cfg-error muted"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-model-config-reset" class="btn ghost" type="button">恢复默认推荐</button>
+        <span class="spacer"></span>
+        <button id="btn-model-config-cancel" class="btn" type="button">取消</button>
+        <button id="btn-model-config-save" class="btn primary" type="button">保存</button>
       </div>
     </div>
   </div>
@@ -773,6 +829,19 @@
        fixed 的包含块,菜单定位会整体偏移一个面板宽度。 -->
   <div id="ai-model-menu" class="ai-model-menu hidden" role="menu" aria-label="切换模型">
     <div id="ai-model-menu-list" role="menu"></div>
+    <div id="ai-model-reasoning" class="ai-model-reasoning-section hidden">
+      <div class="ai-reasoning-head">
+        <span class="ai-reasoning-title">思考强度</span>
+        <span class="ai-reasoning-current">
+          <span id="ai-reasoning-label">中</span>
+          <kbd id="ai-reasoning-accel" class="ai-reasoning-accel" data-accel="ai.cycleEffort"></kbd>
+        </span>
+      </div>
+      <div class="ai-reasoning-slider-wrap">
+        <input id="ai-reasoning-slider" class="ai-reasoning-slider" type="range" min="0" max="3" step="1" value="2" />
+      </div>
+      <div id="ai-reasoning-ticks" class="ai-reasoning-ticks"></div>
+    </div>
     <div class="ai-model-menu-sep"></div>
     <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型</button>
   </div>
