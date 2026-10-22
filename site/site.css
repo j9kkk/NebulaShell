@@ -20,7 +20,7 @@
   --radius: 12px;
   --radius-sm: 8px;
   --max: 1200px;
-  --font-ui: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: dark;
 }
@@ -44,8 +44,12 @@ body {
   color: var(--text);
   font-family: var(--font-ui);
   font-size: 15.5px;
-  line-height: 1.65;
+  line-height: 1.75;
+  letter-spacing: 0.016em;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "palt";
   overflow-x: hidden;
 }
 
@@ -54,12 +58,13 @@ body {
 
 code {
   font-family: var(--font-mono);
-  font-size: 0.9em;
-  background: rgba(91, 140, 255, 0.1);
-  border: 1px solid var(--border);
+  font-size: 0.88em;
+  background: rgba(91, 140, 255, 0.12);
+  border: 1px solid rgba(91, 140, 255, 0.22);
   border-radius: 5px;
-  padding: 1px 6px;
-  color: #c9d8f0;
+  padding: 1.5px 6px;
+  color: #d1e2fc;
+  vertical-align: 0.5px;
 }
 
 a { color: var(--accent); text-decoration: none; transition: color 0.15s ease; }
@@ -72,6 +77,10 @@ img { display: block; max-width: 100%; height: auto; }
 .text-accent { color: var(--accent) !important; }
 .text-accent2 { color: var(--accent2) !important; }
 .dim { color: var(--text-muted); font-size: 0.9em; }
+
+p, h1, h2, h3 {
+  overflow-wrap: break-word;
+}
 
 /* 背景环境霓虹光晕与微晶网格底纹 */
 .ambient-glow {
@@ -215,11 +224,13 @@ img { display: block; max-width: 100%; height: auto; }
 }
 
 .hero-desc {
-  max-width: 720px;
-  margin: 0 auto 34px;
-  color: var(--text-muted);
-  font-size: 17.5px;
-  line-height: 1.7;
+  max-width: 660px;
+  margin: 0 auto 36px;
+  color: rgba(226, 235, 248, 0.88);
+  font-size: 16.5px;
+  line-height: 1.84;
+  letter-spacing: 0.024em;
+  font-weight: 450;
 }
 
 .hero-actions {
@@ -367,7 +378,14 @@ img { display: block; max-width: 100%; height: auto; }
   font-weight: 700;
   letter-spacing: -0.5px;
 }
-.section-lede { color: var(--text-muted); font-size: 16.5px; margin: 0; line-height: 1.7; }
+.section-lede {
+  color: rgba(210, 224, 242, 0.82);
+  font-size: 16px;
+  margin: 0 auto;
+  line-height: 1.8;
+  letter-spacing: 0.018em;
+  font-weight: 400;
+}
 
 /* ---------- 2. 交互舞台 Tabs & Panels ---------- */
 .stage-tabs {
@@ -435,7 +453,13 @@ img { display: block; max-width: 100%; height: auto; }
   margin-bottom: 12px;
 }
 .stage-info h3 { margin: 0 0 16px; font-size: 24px; font-weight: 700; letter-spacing: -0.3px; }
-.stage-info p { color: var(--text-muted); font-size: 15px; line-height: 1.7; margin-bottom: 22px; }
+.stage-info p {
+  color: rgba(195, 212, 235, 0.85);
+  font-size: 15px;
+  line-height: 1.78;
+  letter-spacing: 0.018em;
+  margin-bottom: 22px;
+}
 
 .feature-bullets { list-style: none; padding: 0; margin: 0 0 22px; }
 .feature-bullets li { display: flex; align-items: center; gap: 9px; font-size: 14.5px; color: #cfd9ea; margin-bottom: 10px; }
@@ -697,7 +721,14 @@ kbd {
   margin-bottom: 20px;
 }
 .bento-card h3 { margin: 0 0 10px; font-size: 18px; font-weight: 700; }
-.bento-card p { margin: 0 0 20px; color: var(--text-muted); font-size: 14.5px; line-height: 1.65; flex: 1; }
+.bento-card p {
+  margin: 0 0 20px;
+  color: rgba(185, 202, 226, 0.85);
+  font-size: 14.5px;
+  line-height: 1.76;
+  letter-spacing: 0.016em;
+  flex: 1;
+}
 
 /* 微型监控仪表盘 */
 .mini-metrics-board {
@@ -806,7 +837,13 @@ kbd {
 }
 .arch-left { text-align: left; }
 .arch-left h2 { margin: 0 0 16px; font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
-.arch-p { color: var(--text-muted); font-size: 16px; line-height: 1.7; margin-bottom: 26px; }
+.arch-p {
+  color: rgba(205, 220, 240, 0.86);
+  font-size: 16px;
+  line-height: 1.82;
+  letter-spacing: 0.018em;
+  margin-bottom: 26px;
+}
 .arch-traits { display: flex; flex-direction: column; gap: 14px; }
 .trait { display: flex; flex-direction: column; gap: 3px; }
 .trait strong { font-size: 15px; color: var(--text); }
