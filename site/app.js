@@ -200,7 +200,15 @@
       const heroBtnLabel = document.getElementById('hero-dl-label');
 
       if (heroBtnLabel) {
-        heroBtnLabel.textContent = `下载 ${osName}${archName}`;
+        if (os === 'mac') {
+          heroBtnLabel.textContent = `下载 macOS${archName || ' 客户端'}`;
+        } else if (os === 'win') {
+          heroBtnLabel.textContent = '下载 Windows 客户端';
+        } else if (os === 'linux') {
+          heroBtnLabel.textContent = '下载 Linux 客户端';
+        } else {
+          heroBtnLabel.textContent = '下载客户端';
+        }
       }
 
       // 直连对应安装包
