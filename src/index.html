@@ -212,6 +212,13 @@
               <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
             </button>
             <span class="spacer"></span>
+            <!-- 上下文窗口指示器:微型环状仪表 + 已用/上限数值,悬停或点击展开详情 -->
+            <button id="ai-context-trigger" class="ai-context-trigger" type="button" title="查看当前对话上下文窗口" aria-haspopup="dialog" aria-expanded="false" aria-controls="ai-context-popover">
+              <span id="ai-context-ring" class="mon-ring ai-context-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span id="ai-context-label" class="ai-context-label">0 / 128K</span>
+            </button>
             <!-- 模型选择:无边框触发钮 + 自定义浮层菜单(列已启用模型 + 管理模型入口)。
                  不用原生 <select>:要展示"管理模型"入口与选中 ✓,原生下拉做不到。 -->
             <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
@@ -868,6 +875,44 @@
   </div>
   <!-- 执行模式帮助浮层:替代原生 title(悬停约 1 秒才出现),内容由 ai-agent-ui.js renderModeHelp 生成 -->
   <div id="ai-mode-help-pop" class="ai-mode-help-pop hidden" role="tooltip"></div>
+  <!-- 上下文窗口详情卡片:挂在 body + fixed 定位,展开在 #ai-context-trigger 上方 -->
+  <div id="ai-context-popover" class="ai-context-popover hidden" role="dialog" aria-label="上下文窗口详情">
+    <div class="ai-ctx-pop-head">
+      <span class="ai-ctx-pop-title">上下文窗口使用情况</span>
+      <span id="ai-ctx-pop-ratio" class="ai-ctx-pop-ratio">0%</span>
+    </div>
+    <div class="ai-ctx-pop-bar-wrap">
+      <div id="ai-ctx-pop-bar" class="ai-ctx-pop-bar">
+        <div id="ai-ctx-bar-system" class="ai-ctx-bar-seg sys" style="width: 0%"></div>
+        <div id="ai-ctx-bar-history" class="ai-ctx-bar-seg hist" style="width: 0%"></div>
+        <div id="ai-ctx-bar-draft" class="ai-ctx-bar-seg draft" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="ai-ctx-pop-list">
+      <div class="ai-ctx-pop-item">
+        <span class="ai-ctx-pop-dot sys"></span>
+        <span class="ai-ctx-pop-name">系统与环境预设</span>
+        <span id="ai-ctx-val-system" class="ai-ctx-pop-val">0</span>
+      </div>
+      <div class="ai-ctx-pop-item">
+        <span class="ai-ctx-pop-dot hist"></span>
+        <span class="ai-ctx-pop-name">历史消息 (<span id="ai-ctx-count-history">0 轮</span>)</span>
+        <span id="ai-ctx-val-history" class="ai-ctx-pop-val">0</span>
+      </div>
+      <div class="ai-ctx-pop-item">
+        <span class="ai-ctx-pop-dot draft"></span>
+        <span class="ai-ctx-pop-name">当前输入草稿</span>
+        <span id="ai-ctx-val-draft" class="ai-ctx-pop-val">0</span>
+      </div>
+    </div>
+    <div class="ai-ctx-pop-foot">
+      <div class="ai-ctx-pop-total-row">
+        <span>当前模型上限</span>
+        <b id="ai-ctx-val-limit">128K Tokens</b>
+      </div>
+      <div id="ai-ctx-pop-trimmed" class="ai-ctx-pop-trimmed hidden">已自动裁剪最旧消息以维持窗口可用</div>
+    </div>
+  </div>
   <div id="ctx-menu" class="hidden"></div>
   <!-- 任务中心浮层:点击状态栏 ⇅ 向上弹出(见 file-transfer.js renderTaskCenter)。
        必须挂在 body:留在 #statusbar 里会被其 overflow-y:hidden 整体裁掉(开了也看不见) -->

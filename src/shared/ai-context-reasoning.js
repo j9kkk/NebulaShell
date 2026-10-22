@@ -119,6 +119,60 @@ export function estimateMessageTokens(msg) {
   return Math.ceil(chars / 3.5) + 4;
 }
 
+/// token 数量单位换算:>=1M 显示 M,>=1000 显示 K,四舍五入保留 0 位小数。
+export function formatTokenCount(n) {
+  if (n == null || Number.isNaN(Number(n))) return '0';
+  const num = Number(n);
+  if (num >= 1e6) return `${(num / 1e6).toFixed(0)}M`;
+  if (num >= 1e3) return `${(num / 1e3).toFixed(0)}K`;
+  return String(Math.round(num));
+}
+
+/// 计算会话上下文窗口的 Token 占用拆解（系统提示词、历史消息、输入框草稿）与比例
+export function calculateThreadContextTokens({
+  thread = null,
+  systemPrompt = '',
+  inputDraft = '',
+  contextLimit = 128000,
+} = {}) {
+  const limit = Math.max(1, Number(contextLimit) || 128000);
+  const sysTokens = systemPrompt ? estimateMessageTokens({ role: 'system', content: systemPrompt }) : 0;
+
+  let historyTokens = 0;
+  const historyList = thread?.history || [];
+  for (const m of historyList) {
+    historyTokens += estimateMessageTokens(m);
+  }
+
+  const draftTokens = inputDraft && String(inputDraft).trim()
+    ? estimateMessageTokens({ role: 'user', content: String(inputDraft).trim() })
+    : 0;
+
+  const totalTokens = sysTokens + historyTokens + draftTokens;
+  const ratio = Math.max(0, totalTokens / limit);
+  const percent = Math.round(ratio * 100);
+
+  let status = 'normal';
+  if (ratio >= 0.9) {
+    status = 'danger';
+  } else if (ratio >= 0.7) {
+    status = 'warn';
+  }
+
+  return {
+    systemTokens: sysTokens,
+    historyTokens,
+    draftTokens,
+    totalTokens,
+    contextLimit: limit,
+    ratio,
+    percent,
+    status,
+    historyCount: historyList.length,
+    trimmedCount: thread?.trimmedCount || 0,
+  };
+}
+
 export function trimMessagesForContext(messages, windowLimit) {
   if (!windowLimit || windowLimit <= 0 || !Array.isArray(messages) || messages.length <= 2) {
     return { messages, trimmedCount: 0 };

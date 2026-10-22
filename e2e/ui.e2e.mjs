@@ -340,7 +340,8 @@ async function tabTilingRegressions() {
     await evalJs(`document.querySelector('#btn-newtab').click(); return 1`);
     const emptyTab = (await snapshot()).activeTabId;
     await focusSession(sessionB.id);
-    await evalJs(`document.querySelector('.workspace-tile[data-tab="${emptyTab}"] .pane-picker-close').click(); return 1`);
+    // 空窗格只有一个关闭入口:窗格工具条的 ✕(选择器自带的 ✕ 已删,曾与工具条重叠)
+    await evalJs(`document.querySelector('.workspace-tile[data-tab="${emptyTab}"] .pane-close-btn').click(); return 1`);
     const emptyClosed = await snapshot();
     check('T73c 非活动空选择器可关闭其自身标签且不触碰当前会话', !emptyClosed.tabs.some((t) => t.id === emptyTab)
       && emptyClosed.activeId === sessionB.id && sameSessions(prior, emptyClosed), JSON.stringify(emptyClosed));

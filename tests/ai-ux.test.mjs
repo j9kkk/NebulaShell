@@ -1167,6 +1167,30 @@ test('deleting busy background thread resolves promise as aborted, emits ai:abor
   assert.ok(abortCall);
 });
 
+test('updateAiContextIndicator updates trigger label, gauge offset and popover details', async () => {
+  const { ai, state, $ } = await setup();
+  const th = ai.ensureDefaultAiThread();
+  th.history.push({ role: 'user', content: 'hello' });
+  th.history.push({ role: 'assistant', content: 'world' });
+
+  const ctx = ai.updateAiContextIndicator();
+  assert.ok(ctx);
+  assert.ok(ctx.totalTokens > 0);
+  assert.equal(ctx.contextLimit, 128000);
+
+  const label = $('#ai-context-label');
+  assert.match(label.textContent, /\d+ \/ 128K/);
+
+  // open and close popover
+  ai.openContextPopover();
+  assert.equal($('#ai-context-popover').classList.contains('hidden'), false);
+  assert.equal($('#ai-context-trigger').getAttribute('aria-expanded'), 'true');
+
+  ai.closeContextPopover();
+  assert.equal($('#ai-context-popover').classList.contains('hidden'), true);
+  assert.equal($('#ai-context-trigger').getAttribute('aria-expanded'), 'false');
+});
+
 test('draft management: aiSend with text preserves input, switchAiThread restores draft, input send clears draft', async () => {
   const { ai, state, $ } = await setup();
   const th1 = ai.ensureDefaultAiThread();

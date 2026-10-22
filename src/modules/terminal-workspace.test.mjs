@@ -286,6 +286,48 @@ test('inactive owner close/zoom controls never target or steal focus from active
   assert.equal(h.document.querySelector('#welcome').classList.contains('hidden'), false);
 });
 
+test('cancelling a quick connect from the picker restores the picker instead of leaving a blank pane', async () => {
+  const h = await fixture();
+  const tab = h.subject.createTab();
+  const paneId = h.empty(tab);
+  h.subject.activateTab(tab.id);
+  h.subject.renderLayout();
+  const pane = tab.panes.get(paneId);
+  assert.equal(pane.el.querySelectorAll('.pp-sheet').length, 1, 'empty pane renders the picker sheet');
+  // 选择器不再自己画 ✕:关闭入口只有窗格工具条(此前两个 ✕ 叠在同一角)
+  assert.equal(pane.el.querySelectorAll('.pane-picker-close').length, 0);
+  assert.equal(pane.el.querySelectorAll('.pane-close-btn').length, 1);
+
+  const picker = pane.el.querySelector('.pane-picker');
+  const input = picker.querySelector('.inp');
+  input.value = 'root@quick.invalid:2222';
+  input.dispatchEvent({ type: 'keydown', key: 'Enter' });
+  await new Promise(setImmediate);
+  h.document.querySelector('#btn-prompt-cancel').dispatchEvent({ type: 'click' });
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+
+  assert.equal(pane.sessionId, null, 'cancelled quick connect leaves the pane empty');
+  assert.equal(pane.el.querySelectorAll('.pp-sheet').length, 1, 'picker is restored after cancel');
+  assert.equal(tab.panes.size, 1);
+});
+
+test('host list refresh rebuilds open pickers so a newly saved host appears immediately', async () => {
+  const h = await fixture();
+  const tab = h.subject.createTab();
+  const paneId = h.empty(tab);
+  h.subject.activateTab(tab.id);
+  h.subject.renderLayout();
+  // 没有主机时给直达新建的入口,而不是一张空列表
+  assert.equal(tab.panes.get(paneId).el.querySelectorAll('.pp-item').length, 0);
+  assert.equal(tab.panes.get(paneId).el.querySelectorAll('.pp-add').length, 1);
+
+  h.state.hosts.push(h.host('fresh'));
+  h.subject.refreshPickers();
+  assert.equal(tab.panes.get(paneId).el.querySelectorAll('.pp-item').length, 1);
+  assert.equal(tab.panes.get(paneId).el.querySelectorAll('.pp-add').length, 0);
+});
+
 test('owner-specific picker connection and awaited credentials survive focus changes but not target closure', async () => {
   const h = await fixture(), a = h.session(), b = h.session();
   const tab = h.state.tabs.get(a.tabId), paneId = h.empty(tab);

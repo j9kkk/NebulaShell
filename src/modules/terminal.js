@@ -637,7 +637,7 @@ export function makePaneEl(paneId, tabId = state.activeTabId, kind = 'term', pan
   el.dataset.tab = tabId;
   const activate = (event) => {
     // Buttons are owner-scoped operations, not a request to steal focus.
-    if (event.target.closest?.('.pane-toolbar, .pane-picker-close')) return;
+    if (event.target.closest?.('.pane-toolbar')) return;
     activatePane(tabId, paneId, false);
   };
   el.addEventListener('mousedown', activate);
@@ -903,6 +903,9 @@ export function attachDivider(div, node, aEl, bEl, wrap) {
 }
 
 // 空窗格渲染主机选择器(分屏新建时)
+// 关闭入口只有窗格工具条的 ✕:此前选择器自带一个绝对定位的 ✕,与浮在
+// 右上角的工具条 ✕⤢ 叠在同一位置,两个按钮互相压字。空窗格现在让
+// 工具条常显(见 style.css [data-kind="empty"]),选择器本身不再画任何控件。
 export function renderPickers(tab = activeTab()) {
   if (!tab) return;
   const tabId = tab.id;
@@ -911,44 +914,136 @@ export function renderPickers(tab = activeTab()) {
     pane.pickerRendered = true;
     const picker = document.createElement('div');
     picker.className = 'pane-picker';
-    // 空窗格给一个显式关闭按钮:没有会话的窗格此前只能靠菜单/⌘W 关闭,
-    // 连开多个空窗格时毫无办法 —— 现在每格自己带 ✕,即点即关。
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'pane-picker-close';
-    closeBtn.title = '关闭该窗格';
-    closeBtn.innerHTML = icon('x');
-    closeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeActivePane(paneId, tabId);
-    });
-    picker.appendChild(closeBtn);
-    picker.insertAdjacentHTML('beforeend', '<div class="muted">选择要在该窗格连接的主机:</div>');
-    for (const h of state.hosts) {
-      const item = document.createElement('div');
-      item.className = 'pp-item';
-      item.textContent = `${h.name} · ${h.username}@${h.host}:${h.port}`;
-      item.addEventListener('click', () => {
-        pane.pickerRendered = false;
-        picker.remove();
-        activatePane(tab.id, paneId, false);
-        connectHost(h.id, paneId, { force: true, tabId: tab.id });
-      });
-      picker.appendChild(item);
+    // 选择器只是"待连接"的临时外观:真正接上的唯一证据是窗格拿到了会话。
+    // 快速连接/连接已保存主机都可能以取消或失败收场,那时窗格必须回到选择器,
+    // 否则留下一片空白的死格子(此前只有回车取消路径会这样)。
+    const closePicker = () => { pane.pickerRendered = false; picker.remove(); };
+    const restorePicker = () => {
+      if (pane.pickerRendered || pane.sessionId || !pane.el.isConnected) return;
+      renderPickers(tab);
+    };
+    const sheet = document.createElement('div');
+    sheet.className = 'pp-sheet';
+
+    const head = document.createElement('div');
+    head.className = 'pp-head';
+    const headIcon = document.createElement('span');
+    headIcon.className = 'pp-head-ic';
+    headIcon.innerHTML = icon('terminal', { size: 14 });
+    const headText = document.createElement('div');
+    headText.className = 'pp-head-text';
+    const title = document.createElement('div');
+    title.className = 'pp-title';
+    title.textContent = '连接到主机';
+    const sub = document.createElement('div');
+    sub.className = 'pp-sub';
+    sub.textContent = state.hosts.length ? '选择已保存的主机，或在下方直接输入地址' : '还没有保存的主机，先新建一个，或在下方直接输入地址';
+    headText.appendChild(title);
+    headText.appendChild(sub);
+    head.appendChild(headIcon);
+    head.appendChild(headText);
+    sheet.appendChild(head);
+
+    if (!state.hosts.length) {
+      // 空态给一条直达入口:否则用户得先跑去左侧新建,再回到这个空窗格
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'pp-add';
+      add.dataset.command = 'host.new';
+      add.innerHTML = icon('plus', { size: 14 }) + '<span>新建主机连接</span>';
+      bindCommandButton(add);
+      sheet.appendChild(add);
     }
+
+    if (state.hosts.length) {
+      sheet.insertAdjacentHTML('beforeend', '<div class="pp-sec">已保存的主机</div>');
+      const list = document.createElement('div');
+      list.className = 'pp-list';
+      for (const h of state.hosts) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'pp-item';
+        item.title = `${h.name} · ${h.username}@${h.host}:${h.port}`;
+        const main = document.createElement('span');
+        main.className = 'pp-main';
+        const name = document.createElement('span');
+        name.className = 'pp-name';
+        const nameText = document.createElement('span');
+        nameText.className = 'pp-name-text';
+        nameText.textContent = h.name;
+        name.appendChild(nameText);
+        if (!h.hasPassword && !h.hasKey) {
+          const chip = document.createElement('span');
+          chip.className = 'pp-chip';
+          chip.textContent = '待补全凭据';
+          name.appendChild(chip);
+        }
+        const addr = document.createElement('span');
+        addr.className = 'pp-addr';
+        addr.textContent = `${h.username}@${h.host}:${h.port}` + (h.cloud?.region ? ` · ${h.cloud.region}` : '');
+        main.appendChild(name);
+        main.appendChild(addr);
+        const go = document.createElement('span');
+        go.className = 'pp-go';
+        go.innerHTML = icon('arrowRight', { size: 14 });
+        item.appendChild(main);
+        item.appendChild(go);
+        item.addEventListener('click', async () => {
+          closePicker();
+          activatePane(tab.id, paneId, false);
+          if (!(await connectHost(h.id, paneId, { force: true, tabId: tab.id }))) restorePicker();
+        });
+        list.appendChild(item);
+      }
+      sheet.appendChild(list);
+    }
+
+    const quick = document.createElement('div');
+    quick.className = 'pp-quick';
+    const label = document.createElement('div');
+    label.className = 'pp-sec';
+    label.textContent = '快速连接';
     const inp = document.createElement('input');
     inp.className = 'inp';
     inp.placeholder = 'user@host:port 快速连接…';
-    inp.addEventListener('keydown', (e) => {
+    inp.spellcheck = false;
+    inp.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter') return;
       const parsed = parseQuickTarget(inp.value);
       if (!parsed) return toast('格式:user@host:port', 'error');
-      pane.pickerRendered = false;
-      picker.remove();
+      closePicker();
       activatePane(tab.id, paneId, false);
-      quickConnect(parsed, paneId, tab.id);
+      // 取消密码输入不算"已在连接":把选择器还给用户
+      if (!(await quickConnect(parsed, paneId, tab.id))) restorePicker();
     });
-    picker.appendChild(inp);
+    quick.appendChild(label);
+    quick.appendChild(inp);
+    sheet.appendChild(quick);
+
+    picker.appendChild(sheet);
     pane.el.appendChild(picker);
+  }
+}
+
+/// 主机列表变化后重建所有空窗格的选择器:从选择器里的「新建主机连接」进去
+/// 保存一台主机后,面板必须立刻出现这台主机,而不是停在旧列表上。
+/// 重建会丢掉快速连接框里的半截输入,故内容没变时不做无谓重建。
+let lastPickerSignature = null;
+function pickerSignature() {
+  return state.hosts.map((h) => [h.id, h.name, h.username, h.host, h.port, h.cloud?.region || '', h.hasPassword ? 1 : 0, h.hasKey ? 1 : 0].join('\u0001')).join('\u0002');
+}
+
+export function refreshPickers() {
+  const signature = pickerSignature();
+  if (signature === lastPickerSignature) return;
+  lastPickerSignature = signature;
+  for (const tab of state.tabs.values()) {
+    for (const pane of tab.panes.values()) {
+      if (pane.sessionId || pane.kind === 'file' || !pane.pickerRendered) continue;
+      pane.pickerRendered = false;
+      pane.el.querySelector('.pane-picker')?.remove();
+    }
+    renderPickers(tab);
   }
 }
 

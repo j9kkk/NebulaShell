@@ -1251,6 +1251,167 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-turn-fold-body .ai-msg { max-width: none; align-self: stretch; }
 .ai-turn-fold-body .ai-msg.assistant .ai-row { padding-left: 0; }
 .ai-turn-fold-body .ai-msg.user .ai-row { padding-right: 0; }
+/* ---- AI 上下文窗口指示器 (微型环状仪表 + 数值胶囊) ---- */
+.ai-context-trigger {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  height: 24px; padding: 0 7px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: 11px; font-family: inherit;
+  cursor: pointer; white-space: nowrap; user-select: none;
+  transition: all var(--dur-fast) var(--ease);
+}
+.ai-context-trigger:hover {
+  background: var(--surface-hover); color: var(--text);
+  border-color: var(--border-hover, var(--border));
+}
+.ai-context-trigger[data-status="warn"] {
+  border-color: rgba(245, 158, 11, 0.4);
+}
+.ai-context-trigger[data-status="warn"] .ai-context-label {
+  color: var(--warn);
+}
+.ai-context-trigger[data-status="danger"] {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.08);
+}
+.ai-context-trigger[data-status="danger"] .ai-context-label {
+  color: var(--danger);
+  font-weight: 600;
+}
+.ai-context-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+}
+.ai-context-ring {
+  width: 14px; height: 14px; flex: 0 0 14px;
+}
+.ai-context-ring svg {
+  width: 14px; height: 14px;
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+.ai-context-ring .mon-ring-bg {
+  stroke: var(--progress-track, rgba(255, 255, 255, 0.08));
+  stroke-width: 2.4;
+}
+.ai-context-ring .mon-ring-fg {
+  stroke: var(--accent, #38bdf8);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-dasharray: 47.12;
+  stroke-dashoffset: 47.12;
+  transition: stroke-dashoffset 0.3s ease, stroke 0.3s ease;
+}
+.ai-context-trigger[data-status="warn"] .ai-context-ring .mon-ring-fg {
+  stroke: var(--warn, #f59e0b);
+}
+.ai-context-trigger[data-status="danger"] .ai-context-ring .mon-ring-fg {
+  stroke: var(--danger, #ef4444);
+}
+
+/* 上下文窗口详情卡片 (挂在 body, fixed 定位在触发钮上方) */
+.ai-context-popover {
+  position: fixed; z-index: 70;
+  width: 270px;
+  background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--menu-shadow);
+  padding: 12px 14px;
+  font-size: 11.5px;
+  color: var(--text);
+  pointer-events: auto;
+}
+.ai-context-popover.hidden { display: none; }
+.ai-ctx-pop-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.ai-ctx-pop-title {
+  font-weight: 600; font-size: 12px; color: var(--text);
+}
+.ai-ctx-pop-ratio {
+  font-family: var(--font-mono);
+  font-weight: 600; font-size: 12px;
+  color: var(--accent);
+}
+.ai-context-popover[data-status="warn"] .ai-ctx-pop-ratio { color: var(--warn); }
+.ai-context-popover[data-status="danger"] .ai-ctx-pop-ratio { color: var(--danger); }
+
+.ai-ctx-pop-bar-wrap {
+  width: 100%; height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.ai-ctx-pop-bar {
+  display: flex; width: 100%; height: 100%;
+}
+.ai-ctx-bar-seg {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.ai-ctx-bar-seg.sys { background: #38bdf8; }
+.ai-ctx-bar-seg.hist { background: #818cf8; }
+.ai-ctx-bar-seg.draft { background: #34d399; }
+
+.ai-ctx-pop-list {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.ai-ctx-pop-item {
+  display: flex; align-items: center; gap: 6px;
+}
+.ai-ctx-pop-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px;
+}
+.ai-ctx-pop-dot.sys { background: #38bdf8; }
+.ai-ctx-pop-dot.hist { background: #818cf8; }
+.ai-ctx-pop-dot.draft { background: #34d399; }
+.ai-ctx-pop-name {
+  flex: 1 1 auto; min-width: 0; color: var(--muted);
+}
+.ai-ctx-pop-val {
+  flex: 0 0 auto; font-family: var(--font-mono); font-size: 11px;
+}
+
+.ai-ctx-pop-foot {
+  padding-top: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ai-ctx-pop-total-row {
+  display: flex; align-items: center; justify-content: space-between;
+  color: var(--muted); font-size: 11px;
+}
+.ai-ctx-pop-total-row b {
+  color: var(--text); font-family: var(--font-mono);
+}
+.ai-ctx-pop-trimmed {
+  font-size: 10.5px; color: var(--warn);
+  line-height: 1.4; margin-top: 2px;
+}
+.ai-ctx-pop-trimmed.hidden { display: none; }
+
+[data-theme="light"] .ai-context-trigger {
+  background: var(--bg2);
+  border-color: var(--border);
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+[data-theme="light"] .ai-context-ring .mon-ring-bg {
+  stroke: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .ai-ctx-pop-bar-wrap {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .ai-context-popover {
+  background: var(--bg2);
+  border-color: var(--border);
+  box-shadow: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
+}
+
 /* 模型触发钮:无边框纯文字样式(当前模型名 + 下箭头),与参考稿一致 */
 .ai-model-trigger {
   display: inline-flex; align-items: center; gap: 6px;
@@ -2766,15 +2927,68 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .split-node.v > .split-divider { cursor: row-resize; flex: 0 0 5px; width: 100%; }
 .term-pane { position: relative; inset: auto; display: block; flex: 1 1 0; min-width: 320px; min-height: 180px; overflow: hidden; }
 .term-pane.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
-.pane-picker { display: flex; flex-direction: column; padding: 16px; gap: 8px; overflow: auto; min-width: 0; max-width: 100%; position: relative; }
-/* 空窗格自带的关闭按钮(右上角):分屏数量限制收紧后,空窗格必须能随手关掉 */
-.pane-picker .pane-picker-close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; line-height: 1; font-size: 12px; padding: 0; }
-.pane-picker .pane-picker-close:hover { border-color: var(--danger); color: var(--danger); }
-/* 主机名+地址一行显示:超出窗格宽就省略号(多窗格把窗格压得很窄,长主机名
-   曾直接顶破 pp-item 的圆角边框)。min-width:0 是 flex 子项能缩的前提;
-   overflow:hidden 裁掉文字但保住边框 —— 边框比文字重要。 */
-.pane-picker .pp-item { cursor: pointer; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; max-width: 100%; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.pane-picker .pp-item:hover { border-color: var(--accent); background: var(--hover-bg); }
+/* 空窗格的主机选择面板:一张居中卡片,顶部留出让位窗格工具条的呼吸区。
+   关闭入口只有工具条的 ✕(空窗格工具条常显),这里不再画第二个 ✕。 */
+.pane-picker {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; padding: 52px 20px 24px; overflow: auto; min-width: 0;
+}
+.pp-sheet {
+  width: 100%; max-width: 460px; min-width: 0; margin: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); box-shadow: var(--floating-shadow);
+}
+.pp-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.pp-head-ic {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  background: var(--active-bg); color: var(--accent);
+}
+.pp-head-text { min-width: 0; }
+.pp-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.pp-sub { margin-top: 2px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.pp-sec { font-size: 11px; color: var(--muted); letter-spacing: 0.2px; }
+.pp-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* 主机卡片:名称在左、地址第二行,右侧箭头在悬停时点亮 —— 整卡可点,
+   悬停只做位移与外发光(只动 transform/opacity,不触发布局)。 */
+.pp-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; min-width: 0; box-sizing: border-box;
+  padding: 9px 12px; text-align: left;
+  background: var(--bg2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  cursor: pointer; font-size: 13px; line-height: 1.35;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.pp-item:hover { border-color: var(--accent); background: var(--hover-bg); transform: translateY(-1px); }
+.pp-item:active { transform: none; }
+.pp-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.pp-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pp-name-text { min-width: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-chip {
+  flex: none; padding: 0 5px; border-radius: 999px; border: 1px solid var(--warn);
+  color: var(--warn-text); font-size: 10px; line-height: 15px; white-space: nowrap;
+}
+.pp-addr {
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pp-go { flex: none; display: inline-flex; color: var(--muted); opacity: 0; transform: translateX(-3px); transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.pp-item:hover .pp-go, .pp-item:focus-visible .pp-go { opacity: 1; transform: none; color: var(--accent); }
+.pp-quick { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
+.pp-quick .inp { width: 100%; box-sizing: border-box; height: var(--ctl-h); padding: 0 10px; font-size: 12px; font-family: var(--font-mono); }
+/* 空态直达入口:与 .pp-item 同款卡片,但居中标示"这里还没有东西" */
+.pp-add {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; height: 38px; box-sizing: border-box;
+  background: transparent; color: var(--muted);
+  border: 1px dashed var(--border-hover); border-radius: 8px;
+  cursor: pointer; font-size: 12px;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.pp-add:hover { border-color: var(--accent); color: var(--accent); background: var(--hover-bg); }
+.pp-add svg { display: block; flex: none; }
 
 /* 广播条 */
 #broadcast-bar { display: flex; align-items: center; gap: 10px; padding: 4px 12px; background: var(--danger-hover-bg); border-bottom: 1px solid var(--danger); color: var(--text); font-size: 12px; }
@@ -3028,6 +3242,9 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .pane-toolbar svg { display: block; flex: none; width: 14px; height: 14px; }
 .pane-tb-sep { width: 1px; height: 16px; background: var(--border); opacity: 0; }
 .term-pane:is(:hover, .focused, :focus-within) .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
+/* 空窗格没有终端内容可遮挡:✕⤢ 常显,它是这个窗格唯一的关闭/放大入口
+   (选择器自己不再画 ✕)。 */
+.pane-toolbar[data-kind="empty"] :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
 .term-pane:hover .pane-toolbar :is(.pane-tb-btn, .pane-tb-sep),
 .pane-toolbar:focus-within :is(.pane-tb-btn, .pane-tb-sep) { opacity: 1; pointer-events: auto; }
 /* 不可用的按钮在工具条浮现时半透明(原因在 title 里),隐藏时照样隐藏 */

@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
 import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, togglePickerFocus, toggleThreadMenu } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator } from './ai.js';
 import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
   revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu, toggleTargetMenu,
@@ -895,16 +895,31 @@ export function bindEvents() {
   document.addEventListener('click', (e) => {
     if (!e.target.closest?.('#ai-thread-menu, #ai-thread-trigger')) closeThreadMenu();
     if (!e.target.closest?.('#ai-drawer, #ai-drawer-toggle')) closeAiDrawer();
+    if (!e.target.closest?.('#ai-context-popover, #ai-context-trigger')) closeContextPopover();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeThreadMenu();
       if (isAiDrawerOpen()) closeAiDrawer();
+      closeContextPopover();
     }
   });
 
+  // 上下文窗口指示器交互
+  const ctxTrigger = $('#ai-context-trigger');
+  const ctxPopover = $('#ai-context-popover');
+  ctxTrigger?.addEventListener('mouseenter', () => openContextPopover());
+  ctxTrigger?.addEventListener('mouseleave', () => delayCloseContextPopover(200));
+  ctxTrigger?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleContextPopover();
+  });
+  ctxPopover?.addEventListener('mouseenter', () => openContextPopover());
+  ctxPopover?.addEventListener('mouseleave', () => delayCloseContextPopover(200));
+
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
   $('#ai-send').addEventListener('click', () => (state.aiReq || threadBusy(activeAiThread()) ? stopAiGeneration() : aiSend()));
+  $('#ai-input').addEventListener('input', () => updateAiContextIndicator());
   $('#ai-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1264,6 +1279,7 @@ export async function boot() {
   await refreshAiModels();
   ensureDefaultAiThread();
   renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨');
+  updateAiContextIndicator();
 }
 
 boot();

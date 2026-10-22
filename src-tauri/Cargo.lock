@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "nebulashell"
-version = "0.6.12"
+version = "0.6.13"
 dependencies = [
  "aes-gcm",
  "async-trait",

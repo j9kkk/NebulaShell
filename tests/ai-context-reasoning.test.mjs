@@ -4,6 +4,8 @@ import {
   inferModelDefaults,
   normModel,
   estimateMessageTokens,
+  formatTokenCount,
+  calculateThreadContextTokens,
   trimMessagesForContext,
   resolveReasoningParams,
   reasoningLevelLabel,
@@ -120,4 +122,55 @@ test('reasoningLevelLabel maps level keys to user-friendly Chinese labels', () =
   assert.equal(reasoningLevelLabel('high'), '高');
   assert.equal(reasoningLevelLabel('max'), '最高');
   assert.equal(reasoningLevelLabel('custom-tag'), 'custom-tag');
+});
+
+test('formatTokenCount formats small, kilo and mega token numbers accurately', () => {
+  assert.equal(formatTokenCount(0), '0');
+  assert.equal(formatTokenCount(520), '520');
+  assert.equal(formatTokenCount(1200), '1K');
+  assert.equal(formatTokenCount(128000), '128K');
+  assert.equal(formatTokenCount(1000000), '1M');
+  assert.equal(formatTokenCount(2000000), '2M');
+});
+
+test('calculateThreadContextTokens breaks down tokens and reflects load status', () => {
+  const thread = {
+    history: [
+      { role: 'user', content: 'What is the server load?' },
+      { role: 'assistant', content: 'CPU load is around 12%.' },
+    ],
+    trimmedCount: 2,
+  };
+  const result = calculateThreadContextTokens({
+    thread,
+    systemPrompt: 'System instructions',
+    inputDraft: 'Show me top processes',
+    contextLimit: 1000,
+  });
+
+  assert.ok(result.systemTokens > 0);
+  assert.ok(result.historyTokens > 0);
+  assert.ok(result.draftTokens > 0);
+  assert.equal(result.totalTokens, result.systemTokens + result.historyTokens + result.draftTokens);
+  assert.equal(result.contextLimit, 1000);
+  assert.equal(result.status, 'normal');
+  assert.equal(result.trimmedCount, 2);
+  assert.equal(result.historyCount, 2);
+
+  // High usage triggers warn / danger
+  const highResult = calculateThreadContextTokens({
+    thread,
+    systemPrompt: 'System instructions',
+    inputDraft: 'x'.repeat(3000), // ~860 tokens
+    contextLimit: 1000,
+  });
+  assert.equal(highResult.status, 'warn');
+
+  const overflowResult = calculateThreadContextTokens({
+    thread,
+    systemPrompt: 'System instructions',
+    inputDraft: 'x'.repeat(4000), // ~1145 tokens
+    contextLimit: 1000,
+  });
+  assert.equal(overflowResult.status, 'danger');
 });

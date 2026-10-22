@@ -23,7 +23,9 @@ import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
 import { hostKeyOf, hostLabelOf, rebindThread, resolveAiTarget, threadLinkMode } from '../shared/ai-target-state.js';
 import {
+  calculateThreadContextTokens,
   estimateMessageTokens,
+  formatTokenCount,
   inferModelDefaults,
   normModel,
   reasoningLevelLabel,
@@ -36,7 +38,9 @@ import { clearThreadLinks, linksForThread } from './ai-links.js';
 export {
   hostKeyOf,
   hostLabelOf,
+  calculateThreadContextTokens,
   estimateMessageTokens,
+  formatTokenCount,
   inferModelDefaults,
   normModel,
   reasoningLevelLabel,
@@ -727,6 +731,7 @@ export function refreshThreadUi() {
     renderAiDrawer($('#ai-drawer-search')?.value || '');
   }
   refreshAgentHostBar();
+  updateAiContextIndicator();
 }
 
 function formatThreadTime(ts) {
@@ -1502,13 +1507,6 @@ export function renderAiMessage(role, text, opts) {
     aiStickScroll();
   }
   return el;
-}
-
-/// token 数量单位换算:>=1M 显示 M,>=1000 显示 K,四舍五入保留 0 位小数。
-export function formatTokenCount(n) {
-  if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
-  return String(n);
 }
 
 /// AI 响应结束后的元信息行:模型、输入/输出 token、耗时。
@@ -2521,6 +2519,7 @@ export function renderModelSwitch() {
   }
   // 0 模型不禁用:点击语义是"去配置"(见 openModelMenu);流式中/切换中仍禁用
   trigger.disabled = !!activeAiThread()?.req || modelSwitchPending;
+  updateAiContextIndicator();
   // 菜单若开着,同步刷新条目(切换完成/禁用态变化时)
   renderModelMenu();
   if ($('#ai-model-menu').classList.contains('hidden')) return;
@@ -2616,6 +2615,126 @@ export function openModelMenu() {
 
 export function closeModelMenu() {
   $('#ai-model-menu').classList.add('hidden');
+}
+
+let contextPopoverTimer = null;
+
+export function updateAiContextIndicator() {
+  const trigger = $('#ai-context-trigger');
+  if (!trigger) return null;
+  const th = activeAiThread();
+  const current = savedAi().model || '';
+  const models = savedModels();
+  const active = models.find((m) => m.id === current) || (current ? normModel(current) : null);
+  const contextLimit = active ? (active.contextWindow || active.context || 128000) : 128000;
+  const inputDraft = $('#ai-input')?.value || '';
+
+  const ctx = calculateThreadContextTokens({
+    thread: th,
+    systemPrompt: AI_SYSTEM_PROMPT,
+    inputDraft,
+    contextLimit,
+  });
+
+  trigger.dataset.status = ctx.status;
+  trigger.title = `当前会话上下文: ${formatTokenCount(ctx.totalTokens)} / ${formatTokenCount(ctx.contextLimit)} (${ctx.percent}%)`;
+
+  const labelEl = $('#ai-context-label');
+  if (labelEl) {
+    labelEl.textContent = `${formatTokenCount(ctx.totalTokens)} / ${formatTokenCount(ctx.contextLimit)}`;
+  }
+
+  const ringFg = trigger.querySelector('.mon-ring-fg');
+  if (ringFg) {
+    const clampedRatio = Math.min(ctx.ratio, 1);
+    const offset = 47.12 * (1 - clampedRatio);
+    ringFg.style.strokeDashoffset = offset.toFixed(2);
+  }
+
+  const pop = $('#ai-context-popover');
+  if (pop) {
+    pop.dataset.status = ctx.status;
+    const ratioEl = $('#ai-ctx-pop-ratio');
+    if (ratioEl) ratioEl.textContent = `${ctx.percent}%`;
+
+    const maxRatio = Math.max(ctx.ratio, 1);
+    const sysPct = Math.min(100, Math.max(0, ((ctx.systemTokens / ctx.contextLimit) / maxRatio * 100))).toFixed(1);
+    const histPct = Math.min(100, Math.max(0, ((ctx.historyTokens / ctx.contextLimit) / maxRatio * 100))).toFixed(1);
+    const draftPct = Math.min(100, Math.max(0, ((ctx.draftTokens / ctx.contextLimit) / maxRatio * 100))).toFixed(1);
+
+    const barSys = $('#ai-ctx-bar-system');
+    const barHist = $('#ai-ctx-bar-history');
+    const barDraft = $('#ai-ctx-bar-draft');
+    if (barSys) barSys.style.width = `${sysPct}%`;
+    if (barHist) barHist.style.width = `${histPct}%`;
+    if (barDraft) barDraft.style.width = `${draftPct}%`;
+
+    const valSys = $('#ai-ctx-val-system');
+    if (valSys) valSys.textContent = `${ctx.systemTokens} tokens`;
+    const countHist = $('#ai-ctx-count-history');
+    if (countHist) countHist.textContent = `${Math.ceil(ctx.historyCount / 2)} 轮`;
+    const valHist = $('#ai-ctx-val-history');
+    if (valHist) valHist.textContent = `${ctx.historyTokens} tokens`;
+    const valDraft = $('#ai-ctx-val-draft');
+    if (valDraft) valDraft.textContent = `${ctx.draftTokens} tokens`;
+    const valLimit = $('#ai-ctx-val-limit');
+    if (valLimit) valLimit.textContent = `${formatTokenCount(ctx.contextLimit)} Tokens (${active?.name || active?.id || '未配置'})`;
+
+    const trimmedEl = $('#ai-ctx-pop-trimmed');
+    if (trimmedEl) {
+      if (ctx.trimmedCount > 0) {
+        trimmedEl.textContent = `已自动裁剪 ${ctx.trimmedCount} 条旧消息以维持窗口可用`;
+        trimmedEl.classList.remove('hidden');
+      } else {
+        trimmedEl.classList.add('hidden');
+      }
+    }
+  }
+
+  return ctx;
+}
+
+export function openContextPopover() {
+  if (contextPopoverTimer) { clearTimeout(contextPopoverTimer); contextPopoverTimer = null; }
+  const pop = $('#ai-context-popover');
+  const trigger = $('#ai-context-trigger');
+  if (!pop || !trigger) return;
+  updateAiContextIndicator();
+  pop.classList.remove('hidden');
+  trigger.setAttribute('aria-expanded', 'true');
+  const tr = trigger.getBoundingClientRect();
+  const size = { width: pop.offsetWidth || 270, height: pop.offsetHeight || 190 };
+  const pos = popupPosition(
+    { top: tr.top, bottom: tr.top, left: tr.left, right: tr.right },
+    size,
+    { width: window.innerWidth || 1280, height: window.innerHeight || 800 },
+  );
+  pop.style.left = Math.max(8, pos.left) + 'px';
+  pop.style.top = Math.max(8, tr.top - size.height - 6) + 'px';
+}
+
+export function closeContextPopover() {
+  if (contextPopoverTimer) { clearTimeout(contextPopoverTimer); contextPopoverTimer = null; }
+  const pop = $('#ai-context-popover');
+  const trigger = $('#ai-context-trigger');
+  if (pop) pop.classList.add('hidden');
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+export function delayCloseContextPopover(delayMs = 200) {
+  if (contextPopoverTimer) clearTimeout(contextPopoverTimer);
+  contextPopoverTimer = setTimeout(() => {
+    closeContextPopover();
+  }, delayMs);
+}
+
+export function toggleContextPopover() {
+  const pop = $('#ai-context-popover');
+  if (!pop || pop.classList.contains('hidden')) {
+    openContextPopover();
+  } else {
+    closeContextPopover();
+  }
 }
 
 let modelSwitchPending = false;

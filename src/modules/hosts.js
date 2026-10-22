@@ -1,7 +1,7 @@
 // 主机列表、主机编辑弹窗、指纹管理
 import { $, PROVIDER_LABEL, api, askConfirm, closeModal, copyText, openModal, showCtxMenu, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
-import { connectHost } from './terminal.js';
+import { connectHost, refreshPickers } from './terminal.js';
 
 export function groupOf(h) {
   return h.group || (h.cloud ? PROVIDER_LABEL[h.cloud.provider] || h.cloud.provider : '') || '我的主机';
@@ -23,6 +23,8 @@ export function renderHosts() {
   }
   const nav = $('#host-list');
   nav.innerHTML = '';
+  // 空窗格的主机选择器是同一份主机数据的另一个视图,必须跟着刷新
+  refreshPickers();
   if (!list.length) {
     nav.innerHTML = '<div class="host-empty">还没有主机<br />点击「新建主机」或「导入云主机」开始</div>';
     return;
