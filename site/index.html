@@ -33,7 +33,7 @@
       <a href="#stage">场景体验</a>
       <a href="#bento">核心矩阵</a>
       <a href="#arch">轻量架构</a>
-      <a href="#download">下载客户端</a>
+      <a href="#top" id="nav-dl-trigger">下载客户端</a>
       <a class="nav-gh" href="https://github.com/j9kkk/NebulaShell" target="_blank" rel="noopener">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
         <span>GitHub</span>
@@ -60,10 +60,124 @@
         专为高效运维而生的下一代终端。AI 助手直接读取终端上下文、执行命令并诊断故障，配合毫秒级冷启动、自适应分屏矩阵与免插件环境监控，告别笨重的前代工具。
       </p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="#download" id="hero-dl-btn">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span id="hero-dl-label">下载客户端</span>
-        </a>
+        <!-- 分体式下载按钮组 (主按钮 + 下拉展开不同平台) -->
+        <div class="dl-split-group" id="dl-split-group">
+          <a class="btn btn-primary btn-dl-main" id="hero-dl-btn" href="https://github.com/j9kkk/NebulaShell/releases/latest">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span id="hero-dl-label">下载客户端</span>
+          </a>
+          <button class="btn btn-primary btn-dl-toggle" id="hero-dl-toggle" type="button" aria-haspopup="true" aria-expanded="false" title="展开选择其他操作系统架构">
+            <svg class="dl-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+
+          <!-- 浮动平台下拉面板 -->
+          <div class="dl-dropdown-panel" id="dl-dropdown-panel" role="menu">
+            <div class="dl-menu-header">
+              <span>全平台版本下载</span>
+              <span class="dl-ver-tag">v0.6.12 最新版</span>
+            </div>
+            <div class="dl-menu-list">
+
+              <!-- macOS Apple Silicon -->
+              <a class="dl-menu-item" data-os="mac" data-arch="arm64" href="https://github.com/j9kkk/NebulaShell/releases/latest" role="menuitem">
+                <div class="dl-item-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2 .6-2.65 1.35-.58.66-1.08 1.73-.95 2.76.99.08 2.04-.51 2.68-1.26Z"/></svg>
+                </div>
+                <div class="dl-item-body">
+                  <div class="dl-item-title">
+                    <strong>macOS</strong>
+                    <span class="sub-badge">Apple Silicon (M1/M2/M3/M4)</span>
+                    <span class="rec-badge">当前系统</span>
+                  </div>
+                  <div class="dl-item-desc">.dmg 安装包 · 5.7 MB</div>
+                </div>
+              </a>
+
+              <!-- macOS Intel -->
+              <a class="dl-menu-item" data-os="mac" data-arch="x64" href="https://github.com/j9kkk/NebulaShell/releases/latest" role="menuitem">
+                <div class="dl-item-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2 .6-2.65 1.35-.58.66-1.08 1.73-.95 2.76.99.08 2.04-.51 2.68-1.26Z"/></svg>
+                </div>
+                <div class="dl-item-body">
+                  <div class="dl-item-title">
+                    <strong>macOS</strong>
+                    <span class="sub-badge">Intel x64 处理器</span>
+                    <span class="rec-badge">当前系统</span>
+                  </div>
+                  <div class="dl-item-desc">.dmg 安装包 · 6.1 MB</div>
+                </div>
+              </a>
+
+              <!-- Windows Setup -->
+              <a class="dl-menu-item" data-os="win" data-arch="exe" href="https://github.com/j9kkk/NebulaShell/releases/latest" role="menuitem">
+                <div class="dl-item-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+                </div>
+                <div class="dl-item-body">
+                  <div class="dl-item-title">
+                    <strong>Windows</strong>
+                    <span class="sub-badge">Setup.exe (推荐)</span>
+                    <span class="rec-badge">当前系统</span>
+                  </div>
+                  <div class="dl-item-desc">Windows 10 / 11 64位安装包 · 4.6 MB</div>
+                </div>
+              </a>
+
+              <!-- Windows MSI -->
+              <a class="dl-menu-item" data-os="win" data-arch="msi" href="https://github.com/j9kkk/NebulaShell/releases/latest" role="menuitem">
+                <div class="dl-item-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+                </div>
+                <div class="dl-item-body">
+                  <div class="dl-item-title">
+                    <strong>Windows</strong>
+                    <span class="sub-badge">MSI 部署包</span>
+                  </div>
+                  <div class="dl-item-desc">Windows Installer (.msi) · 6.3 MB</div>
+                </div>
+              </a>
+
+              <!-- Linux AppImage -->
+              <a class="dl-menu-item" data-os="linux" data-arch="appimage" href="https://github.com/j9kkk/NebulaShell/releases/latest" role="menuitem">
+                <div class="dl-item-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12.012 0C8.38 0 5.4 2.98 5.4 6.612c0 1.25.35 2.42.96 3.42-.4.49-.66 1.1-.66 1.77 0 .54.18 1.04.48 1.45-.11.37-.18.77-.18 1.18 0 2.43 1.97 4.4 4.4 4.4.77 0 1.49-.2 2.12-.55.77.35 1.63.55 2.53.55 3.32 0 6.01-2.69 6.01-6.01 0-.9-.2-1.76-.55-2.53.35-.63.55-1.35.55-2.12 0-2.43-1.97-4.4-4.4-4.4-.41 0-.81.07-1.18.18-.41-.3-.91-.48-1.45-.48-.67 0-1.28.26-1.77.66-.99-.61-2.17-.96-3.42-.96-.03 0-.06 0-.08 0"/></svg>
+                </div>
+                <div class="dl-item-body">
+                  <div class="dl-item-title">
+                    <strong>Linux</strong>
+                    <span class="sub-badge">AppImage (免安装独立包)</span>
+                    <span class="rec-badge">当前系统</span>
+                  </div>
+                  <div class="dl-item-desc">免安装单文件 · 84.4 MB</div>
+                </div>
+              </a>
+
+              <!-- Linux deb / rpm -->
+              <a class="dl-menu-item" data-os="linux" data-arch="pkg" href="https://github.com/j9kkk/NebulaShell/releases/latest" role="menuitem">
+                <div class="dl-item-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12.012 0C8.38 0 5.4 2.98 5.4 6.612c0 1.25.35 2.42.96 3.42-.4.49-.66 1.1-.66 1.77 0 .54.18 1.04.48 1.45-.11.37-.18.77-.18 1.18 0 2.43 1.97 4.4 4.4 4.4.77 0 1.49-.2 2.12-.55.77.35 1.63.55 2.53.55 3.32 0 6.01-2.69 6.01-6.01 0-.9-.2-1.76-.55-2.53.35-.63.55-1.35.55-2.12 0-2.43-1.97-4.4-4.4-4.4-.41 0-.81.07-1.18.18-.41-.3-.91-.48-1.45-.48-.67 0-1.28.26-1.77.66-.99-.61-2.17-.96-3.42-.96-.03 0-.06 0-.08 0"/></svg>
+                </div>
+                <div class="dl-item-body">
+                  <div class="dl-item-title">
+                    <strong>Linux</strong>
+                    <span class="sub-badge">.deb / .rpm 软件包</span>
+                  </div>
+                  <div class="dl-item-desc">Ubuntu / Debian / Fedora · 6.5 MB</div>
+                </div>
+              </a>
+
+            </div>
+
+            <!-- 下拉菜单底部的快速帮助 -->
+            <div class="dl-menu-footer">
+              <div class="dl-tip-row">
+                <span class="tip-label">macOS 首次打开若拦截：</span>
+                <button class="btn-copy-inline" data-copy="xattr -cr /Applications/NebulaShell.app" type="button" title="点击复制执行命令">复制 xattr 修复命令</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <a class="btn btn-secondary" href="#stage">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           <span>查看功能演示</span>
@@ -481,119 +595,6 @@ worker_connections 10240;</code></pre>
     </div>
   </section>
 
-  <!-- 5. 下载专区 Download Hub -->
-  <section class="section" id="download">
-    <div class="wrap">
-      <div class="section-head text-center">
-        <p class="section-tag">GET STARTED</p>
-        <h2>立即体验 NebulaShell 星云终端</h2>
-        <p class="section-lede">
-          全部安装包构建自 GitHub Actions 自动化管道，代码完全开源。当前版本 <code id="dl-version">0.6.12</code>。
-        </p>
-      </div>
-
-      <!-- 自动检测识别条 -->
-      <div class="dl-detect-box" id="dl-mode" hidden>
-        <div class="detect-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
-        </div>
-        <div class="detect-text" id="dl-mode-text"></div>
-      </div>
-
-      <!-- 下载卡片网格 -->
-      <div class="dl-cards">
-
-        <!-- macOS Apple Silicon -->
-        <div class="dl-card spotlight-card" data-os="mac" data-arch="arm64">
-          <div class="dl-card-head">
-            <div class="os-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2 .6-2.65 1.35-.58.66-1.08 1.73-.95 2.76.99.08 2.04-.51 2.68-1.26Z"/></svg>
-            </div>
-            <div>
-              <h3>macOS</h3>
-              <p class="arch-badge">Apple Silicon (M1/M2/M3/M4)</p>
-            </div>
-          </div>
-          <div class="dl-card-meta">
-            <span class="file-name">NebulaShell_0.6.12_aarch64.dmg</span>
-            <span class="file-size">5.7 MB</span>
-          </div>
-          <a class="btn btn-primary dl-action-btn" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载 DMG 安装包</a>
-        </div>
-
-        <!-- macOS Intel -->
-        <div class="dl-card spotlight-card" data-os="mac" data-arch="x64">
-          <div class="dl-card-head">
-            <div class="os-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2 .6-2.65 1.35-.58.66-1.08 1.73-.95 2.76.99.08 2.04-.51 2.68-1.26Z"/></svg>
-            </div>
-            <div>
-              <h3>macOS</h3>
-              <p class="arch-badge">Intel x64 处理器</p>
-            </div>
-          </div>
-          <div class="dl-card-meta">
-            <span class="file-name">NebulaShell_0.6.12_x64.dmg</span>
-            <span class="file-size">6.1 MB</span>
-          </div>
-          <a class="btn btn-secondary dl-action-btn" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载 DMG 安装包</a>
-        </div>
-
-        <!-- Windows -->
-        <div class="dl-card spotlight-card" data-os="win">
-          <div class="dl-card-head">
-            <div class="os-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
-            </div>
-            <div>
-              <h3>Windows</h3>
-              <p class="arch-badge">Windows 10 / 11 (64位)</p>
-            </div>
-          </div>
-          <div class="dl-card-meta">
-            <span class="file-name">NebulaShell_0.6.12_x64-setup.exe</span>
-            <span class="file-size">4.6 MB</span>
-          </div>
-          <a class="btn btn-secondary dl-action-btn" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载 Setup.exe</a>
-        </div>
-
-        <!-- Linux -->
-        <div class="dl-card spotlight-card" data-os="linux">
-          <div class="dl-card-head">
-            <div class="os-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M12.012 0C8.38 0 5.4 2.98 5.4 6.612c0 1.25.35 2.42.96 3.42-.4.49-.66 1.1-.66 1.77 0 .54.18 1.04.48 1.45-.11.37-.18.77-.18 1.18 0 2.43 1.97 4.4 4.4 4.4.77 0 1.49-.2 2.12-.55.77.35 1.63.55 2.53.55 3.32 0 6.01-2.69 6.01-6.01 0-.9-.2-1.76-.55-2.53.35-.63.55-1.35.55-2.12 0-2.43-1.97-4.4-4.4-4.4-.41 0-.81.07-1.18.18-.41-.3-.91-.48-1.45-.48-.67 0-1.28.26-1.77.66-.99-.61-2.17-.96-3.42-.96-.03 0-.06 0-.08 0"/></svg>
-            </div>
-            <div>
-              <h3>Linux</h3>
-              <p class="arch-badge">AppImage · deb · rpm</p>
-            </div>
-          </div>
-          <div class="dl-card-meta">
-            <span class="file-name">NebulaShell_0.6.12_amd64.AppImage</span>
-            <span class="file-size">84.4 MB / 6.5 MB</span>
-          </div>
-          <a class="btn btn-secondary dl-action-btn" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载 Linux 安装包</a>
-        </div>
-
-      </div>
-
-      <!-- 快速提示与命令行修复 -->
-      <div class="dl-notes-box">
-        <div class="note-item">
-          <strong>macOS 首次打开提示“已损坏”？</strong>
-          <p>
-            由于应用尚未购买昂贵的苹果企业证书公证，Gatekeeper 会默认进行隔离保护。请在终端执行以下命令即可正常开启：
-          </p>
-          <div class="copy-cmd-row">
-            <code>xattr -cr /Applications/NebulaShell.app</code>
-            <button class="btn-copy-cmd" data-copy="xattr -cr /Applications/NebulaShell.app" type="button">复制命令</button>
-          </div>
-        </div>
-      </div>
-
-    </div>
-  </section>
-
 </main>
 
 <!-- 页脚 -->
@@ -618,7 +619,7 @@ worker_connections 10240;</code></pre>
         <a href="#stage">场景交互</a>
         <a href="#bento">功能矩阵</a>
         <a href="#arch">架构对比</a>
-        <a href="#download">下载安装</a>
+        <a href="#top">回到顶部</a>
       </div>
     </div>
   </div>

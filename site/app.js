@@ -1,4 +1,4 @@
-// NebulaShell 官网交互、粒子引力与动态质感引擎
+// NebulaShell 官网交互、分体下载菜单与粒子引力引擎
 // 零外部依赖 · 纯原生 JavaScript · 极致轻量硬件加速
 
 (function () {
@@ -84,8 +84,9 @@
   // ==========================================
   // 4. 复制命令行按钮
   // ==========================================
-  document.querySelectorAll('.btn-copy-cmd').forEach((btn) => {
-    btn.addEventListener('click', async () => {
+  document.querySelectorAll('.btn-copy-cmd, .btn-copy-inline').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
       const text = btn.dataset.copy;
       if (!text) return;
       try {
@@ -106,7 +107,54 @@
   });
 
   // ==========================================
-  // 5. 平台识别与推荐下载卡片高亮
+  // 5. 首屏分体式下载按钮与下拉菜单交互
+  // ==========================================
+  const splitGroup = document.getElementById('dl-split-group');
+  const dlToggle = document.getElementById('hero-dl-toggle');
+  const navDlTrigger = document.getElementById('nav-dl-trigger');
+
+  if (splitGroup && dlToggle) {
+    const toggleDropdown = (e) => {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      const isOpen = splitGroup.classList.toggle('open');
+      dlToggle.setAttribute('aria-expanded', String(isOpen));
+    };
+
+    dlToggle.addEventListener('click', toggleDropdown);
+
+    // 顶栏下载按钮点击时滚动至顶部并自动展开下拉菜单
+    if (navDlTrigger) {
+      navDlTrigger.addEventListener('click', (e) => {
+        e.preventDefault();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        setTimeout(() => {
+          if (!splitGroup.classList.contains('open')) toggleDropdown();
+        }, 300);
+      });
+    }
+
+    // 点击外部任意区域收起下拉
+    document.addEventListener('click', (e) => {
+      if (!splitGroup.contains(e.target)) {
+        splitGroup.classList.remove('open');
+        dlToggle.setAttribute('aria-expanded', 'false');
+      }
+    });
+
+    // Esc 键关闭
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && splitGroup.classList.contains('open')) {
+        splitGroup.classList.remove('open');
+        dlToggle.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  // ==========================================
+  // 6. 操作系统识别与直接下载绑定
   // ==========================================
   const ua = navigator.userAgent;
   const platform = navigator.userAgentData?.platform || navigator.platform || '';
@@ -119,8 +167,8 @@
   else if (isWin) os = 'win';
   else if (isLinux) os = 'linux';
 
-  const cards = Array.from(document.querySelectorAll('.dl-card[data-os]'));
-  if (os && cards.length) {
+  const menuItems = Array.from(document.querySelectorAll('.dl-menu-item[data-os]'));
+  if (os && menuItems.length) {
     let arch = null;
     if (os === 'mac') {
       try {
@@ -130,38 +178,58 @@
         if (/Apple (M\d|GPU)/i.test(renderer)) arch = 'arm64';
         else if (/Intel|AMD|Radeon/i.test(renderer)) arch = 'x64';
       } catch { /* 降级 */ }
+    } else if (os === 'win') {
+      arch = 'exe';
+    } else if (os === 'linux') {
+      arch = 'appimage';
     }
 
-    const matches = cards.filter((c) => c.dataset.os === os && (!c.dataset.arch || !arch || c.dataset.arch === arch));
-    const pick = matches.find((c) => c.dataset.arch) || matches[0];
+    // 匹配最适合的菜单项
+    const matches = menuItems.filter((item) => item.dataset.os === os && (!item.dataset.arch || !arch || item.dataset.arch === arch));
+    const pick = matches.find((item) => item.dataset.arch === arch) || matches[0];
+
     if (pick) {
+      // 在下拉菜单中标注当前推荐
+      menuItems.forEach((i) => i.classList.remove('recommended'));
       pick.classList.add('recommended');
 
       const osName = { mac: 'macOS', win: 'Windows', linux: 'Linux' }[os];
-      const archName = arch === 'arm64' ? ' · Apple Silicon' : arch === 'x64' ? ' · Intel' : '';
-      const actionBtn = pick.querySelector('.dl-action-btn');
-      if (actionBtn) {
-        actionBtn.classList.remove('btn-secondary');
-        actionBtn.classList.add('btn-primary');
-        actionBtn.textContent = '优先推荐下载';
-      }
+      const archName = arch === 'arm64' ? ' (Apple Silicon)' : arch === 'x64' ? ' (Intel)' : '';
 
+      const heroBtn = document.getElementById('hero-dl-btn');
       const heroBtnLabel = document.getElementById('hero-dl-label');
+
       if (heroBtnLabel) {
-        heroBtnLabel.textContent = `下载 ${osName}${archName} 客户端`;
+        heroBtnLabel.textContent = `下载 ${osName}${archName}`;
       }
 
-      const detectBox = document.getElementById('dl-mode');
-      const detectText = document.getElementById('dl-mode-text');
-      if (detectBox && detectText) {
-        detectBox.hidden = false;
-        detectText.innerHTML = `已为你识别到当前操作系统：<strong>${osName}${archName}</strong>，并在下方优先高亮对应安装包。`;
+      // 直连对应安装包
+      const DIRECT_URLS = {
+        'mac-arm64': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.12/NebulaShell_0.6.12_aarch64.dmg',
+        'mac-x64': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.12/NebulaShell_0.6.12_x64.dmg',
+        'win-exe': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.12/NebulaShell_0.6.12_x64-setup.exe',
+        'win-msi': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.12/NebulaShell_0.6.12_x64_en-US.msi',
+        'linux-appimage': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.12/NebulaShell_0.6.12_amd64.AppImage',
+        'linux-pkg': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.12/NebulaShell_0.6.12_amd64.deb',
+      };
+
+      const key = `${os}-${arch || 'default'}`;
+      if (heroBtn && DIRECT_URLS[key]) {
+        heroBtn.href = DIRECT_URLS[key];
       }
+
+      // 给下拉菜单里的各个条目也填上对应直链
+      menuItems.forEach((item) => {
+        const itemKey = `${item.dataset.os}-${item.dataset.arch || 'default'}`;
+        if (DIRECT_URLS[itemKey]) {
+          item.href = DIRECT_URLS[itemKey];
+        }
+      });
     }
   }
 
   // ==========================================
-  // 6. 光标雷达探照灯 (Cursor Spotlight Effect)
+  // 7. 光标雷达探照灯 (Cursor Spotlight Effect)
   // ==========================================
   if (!isTouch) {
     const spotlightCards = document.querySelectorAll('.spotlight-card');
@@ -177,7 +245,7 @@
   }
 
   // ==========================================
-  // 7. 首屏 3D 偏转视差 (Perspective 3D Tilt)
+  // 8. 首屏 3D 偏转视差 (Perspective 3D Tilt)
   // ==========================================
   const heroSection = document.getElementById('hero-section');
   const heroTiltWindow = document.getElementById('hero-tilt-window');
@@ -201,8 +269,8 @@
       targetX = Math.max(-1, Math.min(1, offsetY)) * -4.5; // rotateX
       isHovering = true;
 
-      // 背景光晕微量视差反向偏转
-      if (ambientGlow) {
+      // 背景光晕微量视差反向偏转 (仅桌面端)
+      if (ambientGlow && !isTouch) {
         const glowX = -offsetX * 20;
         const glowY = -offsetY * 15;
         ambientGlow.style.transform = `translate(calc(-50% + ${glowX}px), ${glowY}px)`;
@@ -231,7 +299,7 @@
   }
 
   // ==========================================
-  // 8. 原生星辰粒子引力网络 (Canvas Constellation)
+  // 9. 原生星辰粒子引力网络 (Canvas Constellation)
   // ==========================================
   const canvas = document.getElementById('hero-particles');
   if (canvas && !reducedMotion) {
