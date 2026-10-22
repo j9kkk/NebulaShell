@@ -9,9 +9,11 @@
 [![License](https://img.shields.io/github/license/j9kkk/NebulaShell)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange)](https://www.rust-lang.org/)
 
+**产品介绍页** — https://j9kkk.github.io/NebulaShell/
+
 </div>
 
-基于 **Tauri 2 + Rust** 构建的现代 SSH 客户端。安装包仅 **9.7 MB**，无 Electron/Chromium 运行时依赖，
+基于 **Tauri 2 + Rust** 构建的现代 SSH 客户端。安装包仅 **5.7 MB**，无 Electron/Chromium 运行时依赖，
 使用系统 WebView 渲染，启动快、分发轻。
 
 ---
@@ -71,12 +73,12 @@
 
 | 平台 | 文件 | 大小 |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `NebulaShell_0.1.1_aarch64.dmg` | 5.4 MB |
-| macOS (Intel) | `NebulaShell_0.1.1_x64.dmg` | 5.7 MB |
-| Windows (64 位) | `NebulaShell_0.1.1_x64-setup.exe` | 3.6 MB |
-| Windows (MSI) | `NebulaShell_0.1.1_x64_en-US.msi` | 5.1 MB |
-| Linux (AppImage) | `NebulaShell_0.1.1_amd64.AppImage` | 79.7 MB |
-| Linux (deb / rpm) | `NebulaShell_0.1.1_amd64.deb` / `-1.x86_64.rpm` | 5.4 MB |
+| macOS (Apple Silicon) | `NebulaShell_0.6.12_aarch64.dmg` | 5.7 MB |
+| macOS (Intel) | `NebulaShell_0.6.12_x64.dmg` | 6.1 MB |
+| Windows (64 位) | `NebulaShell_0.6.12_x64-setup.exe` | 4.6 MB |
+| Windows (MSI) | `NebulaShell_0.6.12_x64_en-US.msi` | 6.3 MB |
+| Linux (AppImage) | `NebulaShell_0.6.12_amd64.AppImage` | 84.4 MB |
+| Linux (deb / rpm) | `NebulaShell_0.6.12_amd64.deb` / `-1.x86_64.rpm` | 6.5 MB |
 
 > 所有平台均由 GitHub Actions 在打 tag 时自动构建发布，见
 > [.github/workflows/release.yml](.github/workflows/release.yml)。
@@ -235,9 +237,9 @@ macOS 上 `Ctrl+C` 始终发送中断信号（SIGINT），不会复制选区。
 | HTTP | reqwest + rustls | HTTPS 与云 API |
 | 凭据加密 | aes-gcm | 密钥由机器标识派生 |
 
-> **关于体积与内存**：安装包 9.7 MB（对比典型 Electron 应用约 250 MB），因为不打包浏览器引擎、
-> 动态链接系统 WebKit。但**运行时内存与 Electron 相当**（约 220 MB，含系统 WebKit 的
-> WebContent/GPU/Networking 子进程）—— 体积收益不等于内存收益，详见
+> **关于体积与内存**：安装包 5.7 MB（macOS Apple Silicon，对比典型 Electron 应用约 250 MB），
+> 因为不打包浏览器引擎、动态链接系统 WebKit。但**运行时内存与 Electron 相当**（约 220 MB，
+> 含系统 WebKit 的 WebContent/GPU/Networking 子进程）—— 体积收益不等于内存收益，详见
 > [docs/tauri-migration.md](docs/tauri-migration.md)。
 
 ---

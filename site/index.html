@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="nebula">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NebulaShell 星云终端 — 跨平台 SSH 客户端，内置 AI 助手</title>
+<meta name="description" content="NebulaShell 星云终端：基于 Tauri 2 + Rust 的跨平台 SSH 客户端，安装包 5.7 MB，无 Chromium 运行时。内置 AI 助手可直连主机排查问题，支持 SFTP、端口转发、环境监控与云主机自动发现。">
+<meta name="theme-color" content="#0d1117">
+<meta property="og:type" content="website">
+<meta property="og:title" content="NebulaShell 星云终端 — 跨平台 SSH 客户端，内置 AI 助手">
+<meta property="og:description" content="Tauri 2 + Rust 构建，安装包 5.7 MB，无 Chromium 运行时。内置 AI 助手可直连主机排查问题。">
+<meta property="og:image" content="assets/shot-terminal.png">
+<meta property="og:url" content="https://j9kkk.github.io/NebulaShell/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="#top">
+      <img src="assets/icon.svg" width="26" height="26" alt="">
+      <span>NebulaShell</span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <a href="#features">功能</a>
+      <a href="#screens">界面</a>
+      <a href="#ai">AI 助手</a>
+      <a href="#download">下载</a>
+      <a class="nav-gh" href="https://github.com/j9kkk/NebulaShell" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- 首屏 -->
+  <section class="hero">
+    <div class="hero-glow" aria-hidden="true"></div>
+    <div class="wrap hero-inner">
+      <p class="eyebrow">Tauri 2 · Rust · MIT 开源</p>
+      <h1>连上服务器<br>然后把麻烦交给它</h1>
+      <p class="lede">
+        跨平台 SSH 客户端 · 内置 AI 助手 · 云主机自动发现。
+        AI 不只是在旁边聊天 —— 它能直接读你当前的终端、执行命令、看懂报错，再告诉你问题出在哪。
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#download">下载安装包</a>
+        <a class="btn btn-ghost" href="https://github.com/j9kkk/NebulaShell" target="_blank" rel="noopener">查看源码</a>
+      </div>
+      <ul class="hero-facts">
+        <li><strong>5.7 MB</strong><span>macOS 安装包</span></li>
+        <li><strong>无 Chromium</strong><span>用系统 WebView</span></li>
+        <li><strong>macOS / Windows / Linux</strong><span>同一套代码</span></li>
+      </ul>
+    </div>
+    <div class="wrap hero-shot">
+      <img src="assets/shot-terminal.png" width="1440" height="900" alt="NebulaShell 主界面：左侧主机列表，中间终端正在查看 nginx 与 docker 状态，底部状态栏显示 CPU、内存、磁盘与网络速率">
+    </div>
+  </section>
+
+  <!-- 为什么轻 -->
+  <section class="section light-rationale">
+    <div class="wrap">
+      <h2>轻，是有意的</h2>
+      <p class="section-lede">
+        多数现代终端应用打包了一整份浏览器引擎。NebulaShell 用 Tauri 2 调用系统自带的 WebView，
+        同样的界面能力，少了几百 MB。
+      </p>
+      <div class="compare">
+        <div class="compare-card">
+          <div class="compare-label">NebulaShell</div>
+          <div class="compare-num">5.7 <span>MB</span></div>
+          <p>不打包浏览器引擎，直接复用系统 WebView。启动快，升级包也小。</p>
+        </div>
+        <div class="compare-card muted">
+          <div class="compare-label">典型 Electron 应用</div>
+          <div class="compare-num">≈250 <span>MB</span></div>
+          <p>每个应用携带一份 Chromium，体积与内存开销都随之翻倍。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 功能 -->
+  <section class="section" id="features">
+    <div class="wrap">
+      <h2>日常运维用得上的都在里面</h2>
+      <p class="section-lede">不是把功能堆在一起，而是让它们能在同一个窗口里协作。</p>
+      <div class="grid">
+        <article class="card">
+          <h3>分屏与多会话</h3>
+          <p>按窗口尺寸自动排布、拖拽调宽、单窗格放大。一条命令可广播到多个会话，按当前标签、全部会话或自定义范围。</p>
+        </article>
+        <article class="card">
+          <h3>AI 助手直连主机</h3>
+          <p>AI 能读取当前终端输出、执行命令并汇总结果。三档执行模式：逐条确认、普通命令自动执行、完全托管。</p>
+        </article>
+        <article class="card">
+          <h3>SFTP 文件管理</h3>
+          <p>浏览、上传、下载、改名、改权限一气呵成。传输任务中心显示进度、速度与剩余时间，可随时取消。</p>
+        </article>
+        <article class="card">
+          <h3>端口转发</h3>
+          <p>本地、远程与动态 SOCKS5 三类规则，支持随会话自动建立。跳板链多级 ProxyJump 逐级串联。</p>
+        </article>
+        <article class="card">
+          <h3>环境监控</h3>
+          <p>CPU、内存、磁盘与网络速率取自 <code>/proc</code>，无需在服务端装任何插件；非 Linux 主机优雅降级。</p>
+        </article>
+        <article class="card">
+          <h3>会话日志</h3>
+          <p>纯文本记录，每行带时间戳，可直接用编辑器阅读或 grep。断线自动暂停，重连续写同一个文件。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 截图 -->
+  <section class="section" id="screens">
+    <div class="wrap">
+      <h2>看看它长什么样</h2>
+      <p class="section-lede">全部截图取自真实运行中的应用。</p>
+
+      <figure class="shot">
+        <img src="assets/shot-ai.png" width="1440" height="900" loading="lazy" alt="AI 助手面板与终端并排：左侧是终端中的 nginx 与 docker 输出，右侧 AI 正在给出 worker_processes 的修改建议">
+        <figcaption>终端与 AI 并排。AI 读的是你眼前这台主机，不是泛泛而谈。</figcaption>
+      </figure>
+
+      <div class="shot-pair">
+        <figure class="shot">
+          <img src="assets/shot-sftp.png" width="1440" height="900" loading="lazy" alt="SFTP 文件面板与终端上下分屏，显示远程目录的文件列表与修改时间">
+          <figcaption>文件分屏：传输任务与终端在同一个标签里。</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/shot-split.png" width="1680" height="900" loading="lazy" alt="左右两个终端窗格并排显示不同主机的会话">
+          <figcaption>左右分屏，两台主机同时操作。</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- AI 专区 -->
+  <section class="section section-ai" id="ai">
+    <div class="wrap">
+      <div class="ai-head">
+        <p class="eyebrow">差异化的一环</p>
+        <h2>AI 助手，是真的在操作终端</h2>
+        <p class="section-lede">
+          很多工具把 AI 做成一个输入框，你复制报错、粘贴、再把答案抄回去。
+          NebulaShell 的 AI 与终端共享同一台主机的上下文，可以直接查看输出、执行命令、再解释结果。
+        </p>
+      </div>
+      <div class="ai-steps">
+        <div class="ai-step">
+          <div class="ai-step-no">1</div>
+          <h3>它看得到当前终端</h3>
+          <p>最后一条命令及其输出会随对话一起送入模型，不用手抄报错。</p>
+        </div>
+        <div class="ai-step">
+          <div class="ai-step-no">2</div>
+          <h3>它能执行命令并读回结果</h3>
+          <p>诊断过程中的每条命令都会展开成步骤行，退出码与耗时一目了然，一轮结束后折叠成摘要。</p>
+        </div>
+        <div class="ai-step">
+          <div class="ai-step-no">3</div>
+          <h3>它停在哪里由你决定</h3>
+          <p>逐条确认、普通命令自动执行、完全托管三档随时切换。高危操作、跳板机与 root 场景另有强制确认。</p>
+        </div>
+      </div>
+      <p class="ai-note">
+        支持 OpenAI 兼容与 Anthropic 两种接口，可一键拉取模型列表自选启用。密钥只存在本机。
+      </p>
+    </div>
+  </section>
+
+  <!-- 下载 -->
+  <section class="section" id="download">
+    <div class="wrap">
+      <h2>下载</h2>
+      <p class="section-lede">
+        全部安装包发布于 <a href="https://github.com/j9kkk/NebulaShell/releases/latest" target="_blank" rel="noopener">GitHub Releases</a>，
+        当前版本 <code id="dl-version">0.6.12</code>。下表体积取自该版本实际产物。
+      </p>
+
+      <div class="dl-mode" id="dl-mode" hidden></div>
+
+      <div class="table-wrap">
+        <table class="dl-table">
+          <thead>
+            <tr><th scope="col">平台</th><th scope="col">文件</th><th scope="col">体积</th><th scope="col">下载</th></tr>
+          </thead>
+          <tbody>
+            <tr data-os="mac" data-arch="arm64">
+              <td>macOS<br><span class="dim">Apple Silicon</span></td>
+              <td><code>NebulaShell_0.6.12_aarch64.dmg</code></td>
+              <td>5.7 MB</td>
+              <td><a class="dl-link" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载</a></td>
+            </tr>
+            <tr data-os="mac" data-arch="x64">
+              <td>macOS<br><span class="dim">Intel</span></td>
+              <td><code>NebulaShell_0.6.12_x64.dmg</code></td>
+              <td>6.1 MB</td>
+              <td><a class="dl-link" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载</a></td>
+            </tr>
+            <tr data-os="win">
+              <td>Windows<br><span class="dim">安装程序</span></td>
+              <td><code>NebulaShell_0.6.12_x64-setup.exe</code></td>
+              <td>4.6 MB</td>
+              <td><a class="dl-link" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载</a></td>
+            </tr>
+            <tr data-os="win">
+              <td>Windows<br><span class="dim">MSI</span></td>
+              <td><code>NebulaShell_0.6.12_x64_en-US.msi</code></td>
+              <td>6.3 MB</td>
+              <td><a class="dl-link" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载</a></td>
+            </tr>
+            <tr data-os="linux">
+              <td>Linux<br><span class="dim">AppImage</span></td>
+              <td><code>NebulaShell_0.6.12_amd64.AppImage</code></td>
+              <td>84.4 MB</td>
+              <td><a class="dl-link" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载</a></td>
+            </tr>
+            <tr data-os="linux">
+              <td>Linux<br><span class="dim">deb / rpm</span></td>
+              <td><code>NebulaShell_0.6.12_amd64.deb</code> · <code>-1.x86_64.rpm</code></td>
+              <td>6.5 MB</td>
+              <td><a class="dl-link" href="https://github.com/j9kkk/NebulaShell/releases/latest">下载</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="dl-note">
+        macOS 首次打开若提示「已损坏」，是未做付费公证导致的 Gatekeeper 拦截，
+        在终端执行 <code>xattr -cr /Applications/NebulaShell.app</code> 即可。
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div class="footer-brand">
+      <img src="assets/icon.svg" width="20" height="20" alt="">
+      <span>NebulaShell 星云终端</span>
+    </div>
+    <p class="footer-meta">
+      MIT License · <a href="https://github.com/j9kkk/NebulaShell" target="_blank" rel="noopener">GitHub</a>
+      · <a href="https://github.com/j9kkk/NebulaShell/releases" target="_blank" rel="noopener">Releases</a>
+    </p>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+name: Deploy site
+
+# 只在站点文件或本工作流变化时部署 —— 改应用代码不必重新发页面。
+# 用自定义工作流部署,不占用 Pages 的「每小时 10 次构建」软限制。
+#
+# 首次使用前需要在仓库设置里手工开通一次:
+#   Settings → Pages → Build and deployment → Source 选「GitHub Actions」
+# 不能用 configure-pages 的 enablement 自动开通:该输入要求提供
+# GITHUB_TOKEN 以外的令牌(repo/Pages 写权限),默认令牌不满足。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只允许一次部署。不取消进行中的部署:Pages 部署被中途打断
+# 可能留下半发布状态,新任务排队等前一次结束更稳。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 发布到 GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: pages
+        uses: actions/configure-pages@v6
+
+      # 站点是零构建静态文件:直接打包 site/ 目录。
+      # 产物要求:gzip 压缩的单个 tar,< 10 GB,不含符号链接。
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v5
