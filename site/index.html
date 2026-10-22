@@ -31,8 +31,8 @@
     </a>
     <nav class="nav" aria-label="主导航">
       <a href="#stage">场景体验</a>
+      <a href="#ai-deep">AI 核心特长</a>
       <a href="#bento">核心矩阵</a>
-      <a href="#arch">轻量架构</a>
       <a href="#top" id="nav-dl-trigger">下载客户端</a>
       <a class="nav-gh" href="https://github.com/j9kkk/NebulaShell" target="_blank" rel="noopener">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
@@ -541,58 +541,130 @@ worker_connections 10240;</code></pre>
     </div>
   </section>
 
-  <!-- 4. 架构底盘对比 -->
-  <section class="section section-arch" id="arch">
+  <!-- 4. AI 深度能力专区 (AI Ops In-Depth) -->
+  <section class="section section-ai-deep" id="ai-deep">
     <div class="wrap">
-      <div class="arch-box">
-        <div class="arch-left">
-          <p class="section-tag">TAURI 2 & RUST</p>
-          <h2>为什么我们坚决不打包 Chromium</h2>
-          <p class="arch-p">
-            传统的桌面 SSH 客户端往往为了跨平台而打包 200MB+ 的完整浏览器内核，每次打开都消耗海量常驻内存。
-            NebulaShell 采用 **Tauri 2 + 纯 Rust 底层**，动态链接操作系统自带的现代化 WebKit 引擎，
-            将安装包压缩到惊人的 <strong>5.7 MB</strong>。
+      <div class="section-head text-center">
+        <p class="section-tag">BUILT FOR REAL-WORLD OPS</p>
+        <h2>不仅仅是对话框，而是常驻终端的现场排查工程师</h2>
+        <p class="section-lede">
+          普通 AI 工具脱离实际操作系统，需要反复手工搬运报错；NebulaShell 的 AI 智能体直接贯通终端 PTY 执行流，
+          看得见输出、下得去命令、守得住安全底线。
+        </p>
+      </div>
+
+      <div class="ai-deep-grid">
+
+        <!-- 卡片 1: 原位感知与零拷贝上下文 -->
+        <div class="ai-deep-card spotlight-card">
+          <div class="ai-deep-head">
+            <div class="ai-deep-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div>
+              <h3>原位上下文感知 · 告别手动搬运</h3>
+              <span class="ai-deep-sub">Zero-Copy In-situ Diagnostic</span>
+            </div>
+          </div>
+          <p class="ai-deep-desc">
+            在终端里选中任意异常报错，选区上方立即浮出 <strong>🔍 解释</strong> 气泡；遇到疑难故障，终端右键直达 <strong>AI 诊断</strong>。
+            系统自动打包最后一条命令、退出码与 stderr 输出上下文，无需在终端与网页之间频繁切换复制粘贴。
           </p>
-          <div class="arch-traits">
-            <div class="trait">
-              <strong>超轻体积</strong>
-              <span>5.7 MB 安装包，轻盈秒下</span>
-            </div>
-            <div class="trait">
-              <strong>瞬时冷启动</strong>
-              <span>Rust 编译原生二进制，告别白屏转圈</span>
-            </div>
-            <div class="trait">
-              <strong>内存更可控</strong>
-              <span>后台标签 WebGL 按需挂载释放，长驻不卡顿</span>
-            </div>
+          <div class="ai-deep-pills">
+            <span class="deep-pill">选区悬浮 🔍 极速追问</span>
+            <span class="deep-pill">终端报错原位捕获</span>
+            <span class="deep-pill">密码与不可见输入零落盘</span>
           </div>
         </div>
 
-        <div class="arch-right">
-          <div class="bars-container">
-            <div class="bar-row">
-              <div class="bar-header">
-                <span>NebulaShell (Tauri 2 + Rust)</span>
-                <strong class="text-accent2">5.7 MB</strong>
-              </div>
-              <div class="bar-track">
-                <div class="bar-fill nebula" style="width: 5%;"></div>
-              </div>
+        <!-- 卡片 2: 三档执行解耦与高危防御 -->
+        <div class="ai-deep-card spotlight-card">
+          <div class="ai-deep-head">
+            <div class="ai-deep-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
             </div>
-
-            <div class="bar-row">
-              <div class="bar-header">
-                <span class="dim">典型 Electron 客户端 (打包 Chromium)</span>
-                <strong class="dim">≈ 250 MB</strong>
-              </div>
-              <div class="bar-track">
-                <div class="bar-fill electron" style="width: 100%;"></div>
-              </div>
+            <div>
+              <h3>三档权限控制 · 守牢生产防线</h3>
+              <span class="ai-deep-sub">Three Execution Tiers & Safeguards</span>
             </div>
           </div>
+          <p class="ai-deep-desc">
+            执行权完全由你掌控：
+            <strong>手动逐条确认</strong>（默认审批每一条下发命令）、<strong>自动巡检执行</strong>（只读命令自动下发，修改与破坏类操作拦截）、
+            <strong>完全托管模式</strong>（自动化脚本交付）。遇到高危操作，系统主动模拟列出受影响进程 PID 与依赖包。
+          </p>
+          <div class="ai-deep-pills">
+            <span class="deep-pill">手动确认 · 逐条卡片把关</span>
+            <span class="deep-pill">自动巡检 · 高危拦截阻断</span>
+            <span class="deep-pill">完全托管 · 闭环自主交付</span>
+          </div>
+        </div>
+
+        <!-- 卡片 3: 三大主机链接拓扑 -->
+        <div class="ai-deep-card spotlight-card">
+          <div class="ai-deep-head">
+            <div class="ai-deep-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            </div>
+            <div>
+              <h3>三大主机目标模型 · 伴随或集群</h3>
+              <span class="ai-deep-sub">Chat / Follow / Multi-Target</span>
+            </div>
+          </div>
+          <p class="ai-deep-desc">
+            对话与目标主机架构解耦，灵活胜任三大场景：
+            <strong>纯对话 (Chat)</strong> 作为离线通用知识库；
+            <strong>伴随模式 (Follow)</strong> 跟随当前活动标签页，切到哪台主机上下文就绑定到哪台；
+            <strong>集群编排 (Multi-Target)</strong> 一次会话同时跨节点下发探测并比对环境差异。
+          </p>
+          <div class="ai-deep-pills">
+            <span class="deep-pill">伴随模式：随标签页无感切换</span>
+            <span class="deep-pill">集群编排：跨机联动比对</span>
+            <span class="deep-pill">纯对话：通用技术问答</span>
+          </div>
+        </div>
+
+        <!-- 卡片 4: 过程收口折叠与思考深度调节 -->
+        <div class="ai-deep-card spotlight-card">
+          <div class="ai-deep-head">
+            <div class="ai-deep-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </div>
+            <div>
+              <h3>过程折叠收口 · ⌘T 思考强度调节</h3>
+              <span class="ai-deep-sub">Turn Folding & Reasoning Effort</span>
+            </div>
+          </div>
+          <p class="ai-deep-desc">
+            即使一轮排查执行了多步复杂命令，执行完毕后步骤行与命令回显<strong>自动折叠为一条极简摘要</strong>，
+            主视野只保留关键结论。配合 <strong>⌘T 快捷键</strong>，随时调节关闭/低/中/高思考强度，深度适配 Claude 3.7、o1/o3 及 DeepSeek 推理模型。
+          </p>
+          <div class="ai-deep-pills">
+            <span class="deep-pill">执行步骤卡片自动收口</span>
+            <span class="deep-pill">⌘T 调节推理深度 (Low~High)</span>
+            <span class="deep-pill">⌘N 多会话抽屉完全隔离</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 底部模型协议与安全底盘保障条 -->
+      <div class="ai-model-trust-bar">
+        <div class="trust-left">
+          <span class="trust-title">广泛的模型兼容生态</span>
+          <p class="trust-desc">
+            支持 <strong>OpenAI 兼容规范</strong> 与 <strong>Anthropic 官方协议</strong>，一键拉取候选模型列表。无论是官方 API 还是第三方中转（DeepSeek、Kimi、通义千问等），填入对应 Base URL 与 Key 即可开箱即用。
+          </p>
+        </div>
+        <div class="trust-right">
+          <div class="trust-badge">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3ddc97" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>本地加密存储 · 0 平台中转</span>
+          </div>
+          <span class="trust-meta">API Key 与敏感凭据仅保存在本机密钥链中</span>
         </div>
       </div>
+
     </div>
   </section>
 
@@ -618,8 +690,8 @@ worker_connections 10240;</code></pre>
       <div class="link-col">
         <h4>快速导航</h4>
         <a href="#stage">场景交互</a>
+        <a href="#ai-deep">AI 核心特长</a>
         <a href="#bento">功能矩阵</a>
-        <a href="#arch">架构对比</a>
         <a href="#top">回到顶部</a>
       </div>
     </div>
