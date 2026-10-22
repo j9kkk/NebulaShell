@@ -1167,7 +1167,7 @@ test('deleting busy background thread resolves promise as aborted, emits ai:abor
   assert.ok(abortCall);
 });
 
-test('updateAiContextIndicator updates trigger label, gauge offset and popover details', async () => {
+test('updateAiContextIndicator updates trigger title, gauge offset and popover details', async () => {
   const { ai, state, $ } = await setup();
   const th = ai.ensureDefaultAiThread();
   th.history.push({ role: 'user', content: 'hello' });
@@ -1178,8 +1178,8 @@ test('updateAiContextIndicator updates trigger label, gauge offset and popover d
   assert.ok(ctx.totalTokens > 0);
   assert.equal(ctx.contextLimit, 128000);
 
-  const label = $('#ai-context-label');
-  assert.match(label.textContent, /\d+ \/ 128K/);
+  const trigger = $('#ai-context-trigger');
+  assert.match(trigger.title, /当前会话上下文/);
 
   // open and close popover
   ai.openContextPopover();

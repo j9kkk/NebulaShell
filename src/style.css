@@ -1251,41 +1251,22 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-turn-fold-body .ai-msg { max-width: none; align-self: stretch; }
 .ai-turn-fold-body .ai-msg.assistant .ai-row { padding-left: 0; }
 .ai-turn-fold-body .ai-msg.user .ai-row { padding-right: 0; }
-/* ---- AI 上下文窗口指示器 (微型环状仪表 + 数值胶囊) ---- */
+/* ---- AI 上下文窗口指示器 (极简微型环状仪表，无外围胶囊背景) ---- */
 .ai-context-trigger {
-  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
-  height: 24px; padding: 0 7px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border); border-radius: 999px;
-  color: var(--muted); font-size: 11px; font-family: inherit;
-  cursor: pointer; white-space: nowrap; user-select: none;
-  transition: all var(--dur-fast) var(--ease);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; flex: 0 0 26px;
+  background: none; border: none; border-radius: 6px;
+  color: var(--muted); cursor: pointer; user-select: none;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .ai-context-trigger:hover {
   background: var(--surface-hover); color: var(--text);
-  border-color: var(--border-hover, var(--border));
 }
-.ai-context-trigger[data-status="warn"] {
-  border-color: rgba(245, 158, 11, 0.4);
-}
-.ai-context-trigger[data-status="warn"] .ai-context-label {
-  color: var(--warn);
-}
-.ai-context-trigger[data-status="danger"] {
-  border-color: rgba(239, 68, 68, 0.5);
-  background: rgba(239, 68, 68, 0.08);
-}
-.ai-context-trigger[data-status="danger"] .ai-context-label {
-  color: var(--danger);
-  font-weight: 600;
-}
-.ai-context-label {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1;
-}
+.ai-context-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .ai-context-ring {
   width: 14px; height: 14px; flex: 0 0 14px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .ai-context-ring svg {
   width: 14px; height: 14px;
@@ -1293,10 +1274,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   overflow: visible;
 }
 .ai-context-ring .mon-ring-bg {
-  stroke: var(--progress-track, rgba(255, 255, 255, 0.08));
+  fill: none;
+  stroke: var(--progress-track, rgba(255, 255, 255, 0.12));
   stroke-width: 2.4;
 }
 .ai-context-ring .mon-ring-fg {
+  fill: none;
   stroke: var(--accent, #38bdf8);
   stroke-width: 2.4;
   stroke-linecap: round;
@@ -1396,9 +1379,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-ctx-pop-trimmed.hidden { display: none; }
 
 [data-theme="light"] .ai-context-trigger {
-  background: var(--bg2);
-  border-color: var(--border);
-  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+[data-theme="light"] .ai-context-trigger:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 [data-theme="light"] .ai-context-ring .mon-ring-bg {
   stroke: rgba(0, 0, 0, 0.08);
