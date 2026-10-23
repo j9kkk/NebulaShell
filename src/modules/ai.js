@@ -34,6 +34,15 @@ import {
 } from '../shared/ai-context-reasoning.js';
 import { agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend } from './ai-agent-run.js';
 import { clearThreadLinks, linksForThread } from './ai-links.js';
+import {
+  COMPACT_KEEP_TURNS,
+  COMPACT_MAX_OUTPUT,
+  applyCompaction,
+  buildSummaryMessages,
+  chunkForSummary,
+  planCompaction,
+  shouldCompact,
+} from '../shared/ai-compact.js';
 
 export {
   hostKeyOf,
@@ -71,6 +80,14 @@ function savedModels() {
   const models = Array.isArray(s.models) ? s.models.map(normModel).filter((m) => m.id) : [];
   if (s.model && !models.some((m) => m.id === s.model)) models.push(normModel(s.model));
   return models;
+}
+
+/// 当前会话生效的模型配置(上下文窗口/最大输出/推理档位都从这里读)。
+/// 找不到配置时按模型 id 现推一份,避免窗口为空导致裁剪与压缩整条链路失效。
+function activeModelFor() {
+  const id = savedAi().model || '';
+  if (!id) return null;
+  return savedModels().find((m) => m.id === id) || normModel(id);
 }
 
 function draftEndpoint() {
@@ -1838,6 +1855,110 @@ export function aiFinishHolder(done) {
     });
 }
 
+/// 压缩时的提示行:一条低调的系统注记,不是对话气泡。
+/// 单独节点而不是往气泡里塞 —— 它描述的是历史被改写的动作,不属于任何一轮问答。
+/// 用 DOM 逐个构造(不用 innerHTML + querySelector):文案后面要原地改写,
+/// 持有 span 引用比每次回查更直接。
+function renderCompactNotice(thread, text) {
+  const el = document.createElement('div');
+  el.className = 'ai-compact-notice';
+  el.dataset.role = 'notice';
+  const ic = document.createElement('span');
+  ic.className = 'mi';
+  ic.innerHTML = icon('refresh', { size: 12 });
+  const label = document.createElement('span');
+  label.textContent = text;
+  el.appendChild(ic);
+  el.appendChild(label);
+  el.__label = label;
+  appendToThreadView(thread, el);
+  return el;
+}
+
+/// 对当前会话做一次「AI 摘要压缩」:把较早轮次交给模型改写成一段摘要,
+/// 替换掉 history 里的原文,只保留最近若干轮。
+///
+/// 失败时 history 原样不动(压缩是破坏性操作,不能留中间态),返回 false,
+/// 由调用方继续走发送流程 —— 发送前还有按 token 裁剪兜底。
+export async function compactThread(thread, { notice = true } = {}) {
+  const th = thread || activeAiThread();
+  if (!th || threadBusy(th)) return false;
+  const model = activeModelFor();
+  const contextLimit = model?.contextWindow || model?.context || 0;
+  if (!contextLimit) return false;
+
+  const plan = planCompaction(th.history, { keepRecentTurns: COMPACT_KEEP_TURNS });
+  if (!plan) return false;
+
+  // 摘要请求自己也可能超窗:按字符预算分块、滚动合并,别让压缩动作先失败。
+  const budgetChars = Math.max(4000, Math.floor((contextLimit - COMPACT_MAX_OUTPUT) * 3.5 * 0.5));
+  const chunks = chunkForSummary(plan.droppedMessages, { maxChars: budgetChars });
+  if (!chunks.length) return false;
+
+  const noticeEl = notice ? renderCompactNotice(th, `正在压缩较早的 ${plan.droppedTurns} 轮对话…`) : null;
+  const override = {
+    protocol: savedAi().protocol || 'openai',
+    baseUrl: savedAi().baseUrl || '',
+    model: savedAi().model || '',
+    apiKey: '',
+    useSavedApiKey: true,
+    maxTokens: COMPACT_MAX_OUTPUT,
+  };
+
+  let summary = '';
+  try {
+    for (const chunk of chunks) {
+      const messages = buildSummaryMessages(chunk, summary);
+      // 走普通请求(不 detached):thread.req 会占住会话,用户的 Enter 被挡在
+      // 「正在处理中」,停止键也能中断压缩;record:false 保证摘要不进历史。
+      const r = await aiRequest(messages, null, override, { thread: th, record: false });
+      if (!r || r.error || r.aborted) throw new Error(r?.error || '已停止');
+      const text = String(r.text || '').trim();
+      if (!text) throw new Error('模型未返回摘要内容');
+      summary = text;
+    }
+  } catch (e) {
+    noticeEl?.remove();
+    toast(`自动压缩失败：${e.message}`, 'error');
+    return false;
+  }
+
+  const next = applyCompaction(plan, summary);
+  if (!next) {
+    noticeEl?.remove();
+    return false;
+  }
+  th.history = next;
+  th.compactedAt = Date.now();
+  th.compactedTurns = (th.compactedTurns || 0) + plan.droppedTurns;
+  th.updatedAt = Date.now();
+
+  if (noticeEl) {
+    const after = Math.max(0, plan.droppedTokens + plan.keptTokens - next.reduce((n, m) => n + estimateMessageTokens(m), 0));
+    noticeEl.__label.textContent = `已压缩较早的 ${plan.droppedTurns} 轮对话，节省约 ${formatTokenCount(after)} tokens`;
+    noticeEl.dataset.state = 'done';
+  }
+  updateAiContextIndicator();
+  return true;
+}
+
+/// 发送前判断是否需要压缩。同步、无副作用:调用方据此决定是否要 await 压缩。
+/// 只在会话空闲时判断:压缩期间用请求占住 thread.req,
+/// 用户此时按 Enter 会被"正在处理中"挡住,不会出现两个请求并发改 history。
+function needsCompaction(thread, incomingTokens = 0) {
+  const th = thread || activeAiThread();
+  if (!th || threadBusy(th)) return false;
+  const model = activeModelFor();
+  const contextLimit = model?.contextWindow || model?.context || 0;
+  if (!contextLimit) return false;
+
+  const systemTokens = estimateMessageTokens({ role: 'system', content: AI_SYSTEM_PROMPT });
+  const historyTokens = th.history.reduce((n, m) => n + estimateMessageTokens(m), 0);
+  const reserveTokens = model.maxOutput || 0;
+  return shouldCompact({ systemTokens, historyTokens, incomingTokens, contextLimit, reserveTokens });
+}
+
+
 export async function aiSend(rawText, mode, opts) {
   // 未配置模型时不必发注定失败的请求:提示后直达 AI 设置
   if (!savedModels().length) {
@@ -1914,6 +2035,15 @@ export async function aiSend(rawText, mode, opts) {
     refreshThreadUi();
   }
   if (thread) thread.updatedAt = Date.now();
+
+  // 发送前自动压缩:历史逼近窗口上限时,先让模型把较早轮次摘要成一段,
+  // 否则这一轮会在 trimMessagesForContext 里被静默丢弃旧消息。
+  // 压缩失败不拦发送 —— 发送前还有按 token 裁剪兜底。
+  // 只有真的要压缩才 await:无压缩需求时保持 aiSend 的同步建请求语义
+  // (user 消息立即落历史、气泡立即挂出),否则会被推迟一个微任务。
+  if (thread && needsCompaction(thread, estimateMessageTokens({ role: 'user', content }))) {
+    await compactThread(thread);
+  }
 
   // 绑定了已连接主机、模型支持工具、执行模式非「对话模式」：走工具回合
   // (AI 可直接读日志、执行命令)。对话模式走下面的旧路径,代码块带执行按钮。

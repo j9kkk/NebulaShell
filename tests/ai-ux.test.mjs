@@ -279,6 +279,12 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
   const termText = await load('../src/shared/term-text.js');
   const targetState = await load('../src/shared/ai-target-state.js');
   const contextReasoning = await load('../src/shared/ai-context-reasoning.js');
+  // 上下文压缩是新加的共享模块,ai.js 现在会导入它;测试里只做透传,行为由
+  // tests/ai-compact.test.mjs 覆盖。它自身只依赖 ai-context-reasoning,
+  // 先按同一份实例链接好,避免作为依赖模块参与链接时报 Symbol(kWrap)。
+  const compact = await load('../src/shared/ai-compact.js');
+  await compact.link((specifier) => ({ './ai-context-reasoning.js': contextReasoning }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
+  await compact.evaluate();
   const interaction = new vm.SyntheticModule(['popupPosition'], function () {
     this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
   }, { context });
@@ -302,7 +308,7 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
     });
   }, { context });
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning, '../shared/ai-compact.js': compact }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();
@@ -1190,6 +1196,112 @@ test('updateAiContextIndicator updates trigger title, gauge offset and popover d
   assert.equal($('#ai-context-popover').classList.contains('hidden'), true);
   assert.equal($('#ai-context-trigger').getAttribute('aria-expanded'), 'false');
 });
+
+/// 把会话历史填到超过某模型窗口的压缩阈值。
+function fillHistory(ai, th, { turns = 6, chars = 800 } = {}) {
+  for (let i = 0; i < turns; i++) {
+    th.history.push({ role: 'user', content: `u${i} ` + 'x'.repeat(chars) });
+    th.history.push({ role: 'assistant', content: `a${i} ` + 'y'.repeat(chars) });
+  }
+}
+
+test('compactThread replaces old turns with an AI summary and keeps recent turns', async () => {
+  const { ai, state } = await setup();
+  const th = ai.ensureDefaultAiThread();
+  fillHistory(ai, th, { turns: 6 });
+  const before = th.history.length;
+
+  const pending = ai.compactThread(th);
+  // 压缩请求占住会话:用户此时的 Enter 会被挡住,不会并发改 history
+  assert.ok(th.req, '压缩期间 thread.req 被占用');
+  const h = state.aiReq;
+  h.acc = '用户排查了磁盘,发现 /var 占用 90%,已清理日志。';
+  ai.aiFinishHolder({ requestId: h.id, finishReason: 'stop' });
+  assert.equal(await pending, true);
+
+  // 摘要排在最前,保留最近轮次原文(默认 2 轮 = 4 条)
+  assert.ok(th.history.length < before);
+  assert.equal(th.history[0].role, 'user');
+  assert.match(th.history[0].content, /此前对话摘要/);
+  assert.match(th.history[0].content, /\/var 占用 90%/);
+  assert.equal(th.history.length, 1 + 4);
+  assert.match(th.history.at(-1).content, /a5/, '最近一轮原文保留');
+  assert.equal(th.compactedAt != null, true);
+});
+
+test('compactThread leaves history untouched when the summary request fails', async () => {
+  const { ai, state, toasts } = await setup();
+  const th = ai.ensureDefaultAiThread();
+  fillHistory(ai, th, { turns: 6 });
+  const snapshot = th.history.map((m) => ({ ...m }));
+
+  const pending = ai.compactThread(th);
+  ai.aiFinishHolder({ requestId: state.aiReq.id, finishReason: 'error' });
+  // 用 ai:error 的路径置失败再收口
+  assert.equal(await pending, false);
+  assert.deepEqual(th.history, snapshot, '失败时历史原样不动');
+  assert.ok(toasts.some((t) => /自动压缩失败/.test(t.message)));
+});
+
+test('compactThread refuses when busy, without a window, or with too few turns', async () => {
+  const { ai, state } = await setup();
+  const th = ai.ensureDefaultAiThread();
+
+  // 历史太短(不足保留轮次 + 1)
+  th.history.push({ role: 'user', content: 'only one' });
+  assert.equal(await ai.compactThread(th), false);
+
+  // 忙:已有请求进行中
+  fillHistory(ai, th, { turns: 5 });
+  const blocker = ai.aiRequest([{ role: 'user', content: '占位' }], makeBubble());
+  assert.equal(await ai.compactThread(th), false);
+  ai.aiFinishHolder({ requestId: state.aiReq.id });
+  await blocker;
+});
+
+test('aiSend compacts automatically once history approaches the context window', async () => {
+  const { ai, state, calls } = await setup();
+  // 把模型窗口压到很小,让几轮历史就越过 96% 阈值
+  state.settings.ai.models = [{ id: 'm1', contextWindow: 6000, maxOutput: 1000 }];
+  ai.syncSelectedModelsFromSettings();
+  const th = ai.ensureDefaultAiThread();
+  fillHistory(ai, th, { turns: 5, chars: 2000 });
+  const before = th.history.length;
+
+  const sent = ai.aiSend('再看看内存');
+  const tick = () => new Promise((r) => setImmediate(r));
+  const isSummary = (req) => /对话压缩器/.test(req.messages?.[0]?.content || '');
+
+  // 历史较大时摘要会分块跑多轮:逐个收口摘要请求,直到出现本轮真实提问
+  let summaryReqs = 0;
+  let realReq = null;
+  for (let guard = 0; guard < 20; guard++) {
+    await tick();
+    const req = th.req;
+    if (!req) continue;
+    if (isSummary(req)) {
+      summaryReqs++;
+      req.acc = `第 ${summaryReqs} 段摘要`;
+      ai.aiFinishHolder({ requestId: req.id, finishReason: 'stop' });
+      continue;
+    }
+    realReq = req;
+    break;
+  }
+  assert.ok(summaryReqs > 0, '发送前先跑了摘要请求');
+  assert.ok(realReq, '压缩完成后继续发送本轮提问');
+  realReq.acc = '内存正常';
+  ai.aiFinishHolder({ requestId: realReq.id, finishReason: 'stop' });
+  await sent;
+
+  const allChats = calls.filter((c) => c.channel === 'ai:chat');
+  assert.equal(allChats.filter((c) => /对话压缩器/.test(c.payload.messages[0].content)).length, summaryReqs);
+  assert.ok(th.history.length < before, '历史被压缩');
+  assert.match(th.history[0].content, /此前对话摘要/);
+  assert.equal(th.history.at(-1).role, 'assistant');
+  assert.equal(th.history.at(-1).content, '内存正常');
+});
+
 
 test('draft management: aiSend with text preserves input, switchAiThread restores draft, input send clears draft', async () => {
   const { ai, state, $ } = await setup();

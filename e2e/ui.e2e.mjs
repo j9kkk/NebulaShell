@@ -239,7 +239,8 @@ async function tabTilingRegressions() {
     await waitEval(`return window.__nbTest.workspaceState().sessions.filter(s => s.tabId === ${JSON.stringify(tabA)} && s.status === 'connected').length`, '2');
     const sessionsA = (await snapshot()).sessions.filter((s) => s.tabId === tabA);
     await evalJs(`document.querySelector('#btn-newtab').click();
-      const input = document.querySelector('.pane-picker input'); input.value = 'root@127.0.0.1:${tileSshd.port}';
+      // 选择器现在有搜索框与快速连接框两个输入:显式取底部那条快速连接
+      const input = document.querySelector('.pane-picker .pp-quick .inp'); input.value = 'root@127.0.0.1:${tileSshd.port}';
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1`);
     await answerPrompt(PASSWORD, '快速连接');
     await waitEval(`return document.querySelector('#status-text').textContent`, '已连接');

@@ -160,7 +160,7 @@ async function fixture() {
     requestAnimationFrame: (fn) => { const id = ++sequence; frames.set(id, fn); return id; }, cancelAnimationFrame: (id) => frames.delete(id),
   });
   const adapters = {
-    './hosts.js': { escapeHtml: String },
+    './hosts.js': { escapeHtml: String, groupOf: (h) => h.group || '我的主机', refreshPickers() {} },
     './monitor.js': { closeSnippetMenu() {}, renderMonitorBar() {} },
     './sftp.js': {
       activeConnectedSession: () => { const s = state.sessions.get(state.activeId); return s?.status === 'connected' ? s : null; },
@@ -310,6 +310,50 @@ test('cancelling a quick connect from the picker restores the picker instead of 
   assert.equal(pane.sessionId, null, 'cancelled quick connect leaves the pane empty');
   assert.equal(pane.el.querySelectorAll('.pp-sheet').length, 1, 'picker is restored after cancel');
   assert.equal(tab.panes.size, 1);
+});
+
+test('picker search ranks hosts by name/address/group and keeps the quick-connect row last', async () => {
+  const h0 = await fixture();
+  const rankPickerHosts = h0.subject.rankPickerHosts;
+  // 纯函数先单独覆盖:100 台时的检索质量靠它
+  const entries = [
+    { id: 'a', name: 'prod-web-1', username: 'root', host: '10.0.1.22', port: 22, group: '生产环境' },
+    { id: 'b', name: 'node-002', username: 'root', host: '10.5.2.22', port: 22, group: '测试环境' },
+    { id: 'c', name: 'node-010', username: 'root', host: '10.10.10.11', port: 22, group: '腾讯云轻量', region: 'ap-shanghai' },
+  ];
+  const rank = (query) => rankPickerHosts(query, entries).hosts.map((host) => host.id);
+  assert.deepEqual(rank('prod'), ['a'], '命中名称');
+  assert.deepEqual(rank('10.5.'), ['b'], '命中 IP');
+  assert.deepEqual(rank('测试'), ['b'], '命中分组');
+  assert.deepEqual(rank('不存在的主机'), [], '无命中');
+  assert.equal(rank('pro')[0], 'a', '前缀优先');
+
+  const h = await fixture();
+  const tab = h.subject.createTab();
+  const paneId = h.empty(tab);
+  h.state.hosts.push({ ...h.host('prod-a'), name: 'prod-a' }, h.host('node-b'), h.host('node-c'));
+  h.subject.activateTab(tab.id);
+  h.subject.renderLayout();
+  const el = tab.panes.get(paneId).el;
+  // 无查询:按分组展示,且给出总数
+  assert.equal(el.querySelectorAll('.pp-item').length, 3);
+  assert.equal(el.querySelector('.pp-count').textContent, '共 3 台');
+  assert.equal(el.querySelectorAll('.pp-group-title').length >= 1, true);
+
+  // 有查询:结果平铺(无分组标题),计数变成 "命中 / 总数"
+  const search = el.querySelector('.pp-search-input');
+  search.value = 'prod';
+  search.dispatchEvent({ type: 'input' });
+  assert.equal(el.querySelectorAll('.pp-item').length, 1);
+  assert.equal(el.querySelector('.pp-count').textContent, '1 / 3 台');
+  assert.equal(el.querySelectorAll('.pp-group-title').length, 0);
+
+  // 地址形态的检索词追加一条临时连接,且永远排在已保存主机之后
+  search.value = 'root@1.2.3.4:2222';
+  search.dispatchEvent({ type: 'input' });
+  const rows = [...el.querySelectorAll('.pp-item')];
+  assert.equal(rows.at(-1).classList.contains('pp-quick-target'), true);
+  assert.equal(el.querySelector('.pp-count').textContent, '0 / 3 台');
 });
 
 test('host list refresh rebuilds open pickers so a newly saved host appears immediately', async () => {

@@ -6,7 +6,8 @@ import { bindCommandButton, commandMenuItem, refreshCommandStates } from './comm
 import { DIVIDER_SIZE, layoutMinSize, paneCapacity, paneMinSize, planGrid } from './terminal-layout.js';
 import { renderSplitTree, replaceLayoutContent } from './split-layout-renderer.js';
 import { planWorkspace, renderWorkspaceTree, syncWorkspaceChrome, tabMinimum, workspaceSignature } from './terminal-workspace.js';
-import { escapeHtml } from './hosts.js';
+import { escapeHtml, groupOf } from './hosts.js';
+import { rankItems } from '../shared/palette-match.js';
 import { renderMonitorBar } from './monitor.js';
 import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSession } from './sftp.js';
 import { confirmTransferInterrupt, revealLocalPath } from './file-transfer.js';
@@ -906,6 +907,32 @@ export function attachDivider(div, node, aEl, bEl, wrap) {
 // 关闭入口只有窗格工具条的 ✕:此前选择器自带一个绝对定位的 ✕,与浮在
 // 右上角的工具条 ✕⤢ 叠在同一位置,两个按钮互相压字。空窗格现在让
 // 工具条常显(见 style.css [data-kind="empty"]),选择器本身不再画任何控件。
+//
+// 主机多到上百台时,平铺卡片既找不到也没法快速筛选,故这里按三层收敛:
+// 搜索(模糊匹配名称/地址/分组/区域)→ 按分组折叠展示 + 限高滚动 →
+// 键盘 ↑↓ 高亮、Enter 连接。快速连接固定在面板底部,不随列表滚动。
+const PICKER_RESULT_LIMIT = 100;
+
+/// 检索用的条目形态:名称参与排序主键,地址/分组/区域进关键词,
+/// 这样输 `10.0.`、`上海`、`root@10.0.1.22` 都能命中同一台。
+export function hostSearchEntry(h) {
+  const group = groupOf(h);
+  return {
+    host: h,
+    name: h.name,
+    category: group,
+    keywords: [h.host, `${h.username}@${h.host}`, `${h.username}@${h.host}:${h.port}`, group, h.cloud?.region || ''].filter(Boolean),
+  };
+}
+
+/// 空查询保持原始顺序(交给分组展示);有查询时走命令面板同一套模糊排序,
+/// 结果按相关度平铺 —— 此时"排第一的那台"比"它属于哪个分组"更重要。
+export function rankPickerHosts(query, hosts) {
+  const q = String(query || '').trim();
+  if (!q) return { hosts, filtered: false };
+  return { hosts: rankItems(q, hosts.map(hostSearchEntry)).map((entry) => entry.host), filtered: true };
+}
+
 export function renderPickers(tab = activeTab()) {
   if (!tab) return;
   const tabId = tab.id;
@@ -937,7 +964,9 @@ export function renderPickers(tab = activeTab()) {
     title.textContent = '连接到主机';
     const sub = document.createElement('div');
     sub.className = 'pp-sub';
-    sub.textContent = state.hosts.length ? '选择已保存的主机，或在下方直接输入地址' : '还没有保存的主机，先新建一个，或在下方直接输入地址';
+    sub.textContent = state.hosts.length
+      ? '搜索已保存的主机，或直接输入地址建立临时连接'
+      : '还没有保存的主机，先新建一个，或在下方直接输入地址';
     headText.appendChild(title);
     headText.appendChild(sub);
     head.appendChild(headIcon);
@@ -955,47 +984,225 @@ export function renderPickers(tab = activeTab()) {
       sheet.appendChild(add);
     }
 
+    let searchInput = null;
     if (state.hosts.length) {
-      sheet.insertAdjacentHTML('beforeend', '<div class="pp-sec">已保存的主机</div>');
-      const list = document.createElement('div');
-      list.className = 'pp-list';
-      for (const h of state.hosts) {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'pp-item';
-        item.title = `${h.name} · ${h.username}@${h.host}:${h.port}`;
+      const searchRow = document.createElement('div');
+      searchRow.className = 'pp-search';
+      searchRow.insertAdjacentHTML('beforeend', `<span class="pp-search-ic">${icon('search', { size: 14 })}</span>`);
+      searchInput = document.createElement('input');
+      searchInput.type = 'text';
+      searchInput.className = 'inp pp-search-input';
+      searchInput.placeholder = '搜索主机名称 / IP / 分组…';
+      searchInput.spellcheck = false;
+      searchInput.setAttribute('aria-label', '搜索主机');
+      searchRow.appendChild(searchInput);
+      sheet.appendChild(searchRow);
+    }
+
+    const secRow = document.createElement('div');
+    secRow.className = 'pp-sec-row';
+    const secLabel = document.createElement('span');
+    secLabel.className = 'pp-sec';
+    secLabel.textContent = '已保存的主机';
+    const secCount = document.createElement('span');
+    secCount.className = 'pp-count';
+    secRow.appendChild(secLabel);
+    secRow.appendChild(secCount);
+
+    const list = document.createElement('div');
+    list.className = 'pp-list';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', '已保存的主机');
+    if (state.hosts.length) {
+      sheet.appendChild(secRow);
+      sheet.appendChild(list);
+    }
+
+    let rows = [];        // 当前可键盘选择的条目(按显示顺序)
+    let highlighted = -1;
+    const chooseHost = async (h) => {
+      closePicker();
+      activatePane(tab.id, paneId, false);
+      if (!(await connectHost(h.id, paneId, { force: true, tabId: tab.id }))) restorePicker();
+    };
+    const chooseQuick = async (parsed) => {
+      closePicker();
+      activatePane(tab.id, paneId, false);
+      if (!(await quickConnect(parsed, paneId, tab.id))) restorePicker();
+    };
+
+    const paintHighlight = () => {
+      rows.forEach((row, i) => row.classList.toggle('active', i === highlighted));
+      const row = rows[highlighted];
+      if (row) row.scrollIntoView?.({ block: 'nearest' });
+    };
+
+    const hostRow = (h) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'pp-item';
+      item.setAttribute('role', 'option');
+      item.title = `${h.name} · ${h.username}@${h.host}:${h.port}`;
+      const main = document.createElement('span');
+      main.className = 'pp-main';
+      const name = document.createElement('span');
+      name.className = 'pp-name';
+      const nameText = document.createElement('span');
+      nameText.className = 'pp-name-text';
+      nameText.textContent = h.name;
+      name.appendChild(nameText);
+      if (!h.hasPassword && !h.hasKey) {
+        const chip = document.createElement('span');
+        chip.className = 'pp-chip';
+        chip.textContent = '待补全凭据';
+        name.appendChild(chip);
+      }
+      const addr = document.createElement('span');
+      addr.className = 'pp-addr';
+      addr.textContent = `${h.username}@${h.host}:${h.port}` + (h.cloud?.region ? ` · ${h.cloud.region}` : '');
+      main.appendChild(name);
+      main.appendChild(addr);
+      const go = document.createElement('span');
+      go.className = 'pp-go';
+      go.innerHTML = icon('arrowRight', { size: 14 });
+      item.appendChild(main);
+      item.appendChild(go);
+      item.addEventListener('click', () => chooseHost(h));
+      return item;
+    };
+
+    // 一次重绘:空查询按分组展示(与左侧栏同一套分组名),有查询按相关度平铺。
+    const paint = (query) => {
+      list.replaceChildren();
+      rows = [];
+      highlighted = -1;
+      const q = String(query || '').trim();
+      const { hosts: matched, filtered } = rankPickerHosts(q, state.hosts);
+      secCount.textContent = filtered ? `${matched.length} / ${state.hosts.length} 台` : `共 ${state.hosts.length} 台`;
+      if (matched.length > PICKER_RESULT_LIMIT) {
+        secCount.textContent += ` · 仅显示前 ${PICKER_RESULT_LIMIT} 台`;
+      }
+
+      // 快速连接行放在已保存主机之后:输入完整地址时用户多半想连那台机器,
+      // 但如果它恰好也叫这个名字,已保存主机应当先被选中(存储的连接优先)。
+      const quick = /[.:@]/.test(q) ? parseQuickTarget(q) : null;
+
+      if (!matched.length && !quick) {
+        const empty = document.createElement('div');
+        empty.className = 'pp-empty';
+        empty.textContent = `没有匹配「${q}」的主机`;
+        list.appendChild(empty);
+        return;
+      }
+
+      const visible = matched.slice(0, PICKER_RESULT_LIMIT);
+      if (filtered) {
+        for (const h of visible) {
+          const row = hostRow(h);
+          list.appendChild(row);
+          rows.push(row);
+        }
+      } else {
+        // 无查询:按分组折叠,顺序沿用主机列表(云厂商 → 自定义分组 → 我的主机)
+        const groups = new Map();
+        for (const h of visible) {
+          const g = groupOf(h);
+          if (!groups.has(g)) groups.set(g, []);
+          groups.get(g).push(h);
+        }
+        for (const [group, members] of groups) {
+          const groupEl = document.createElement('div');
+          groupEl.className = 'pp-group';
+          groupEl.setAttribute('role', 'group');
+          groupEl.setAttribute('aria-label', group);
+          const groupTitle = document.createElement('div');
+          groupTitle.className = 'pp-group-title';
+          groupTitle.textContent = `${group} · ${members.length}`;
+          groupEl.appendChild(groupTitle);
+          for (const h of members) {
+            const row = hostRow(h);
+            groupEl.appendChild(row);
+            rows.push(row);
+          }
+          list.appendChild(groupEl);
+        }
+      }
+
+      // 地址形态的检索词额外给一条临时连接:它不保存,所以永远排在已保存主机之后
+      if (quick) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'pp-item pp-quick-target';
+        row.setAttribute('role', 'option');
         const main = document.createElement('span');
         main.className = 'pp-main';
         const name = document.createElement('span');
         name.className = 'pp-name';
-        const nameText = document.createElement('span');
-        nameText.className = 'pp-name-text';
-        nameText.textContent = h.name;
-        name.appendChild(nameText);
-        if (!h.hasPassword && !h.hasKey) {
-          const chip = document.createElement('span');
-          chip.className = 'pp-chip';
-          chip.textContent = '待补全凭据';
-          name.appendChild(chip);
-        }
+        name.textContent = '快速连接';
         const addr = document.createElement('span');
         addr.className = 'pp-addr';
-        addr.textContent = `${h.username}@${h.host}:${h.port}` + (h.cloud?.region ? ` · ${h.cloud.region}` : '');
+        addr.textContent = `${quick.username}@${quick.host}:${quick.port}（不保存到主机列表）`;
         main.appendChild(name);
         main.appendChild(addr);
         const go = document.createElement('span');
         go.className = 'pp-go';
         go.innerHTML = icon('arrowRight', { size: 14 });
-        item.appendChild(main);
-        item.appendChild(go);
-        item.addEventListener('click', async () => {
-          closePicker();
-          activatePane(tab.id, paneId, false);
-          if (!(await connectHost(h.id, paneId, { force: true, tabId: tab.id }))) restorePicker();
-        });
-        list.appendChild(item);
+        row.appendChild(main);
+        row.appendChild(go);
+        row.addEventListener('click', () => chooseQuick(quick));
+        list.appendChild(row);
+        rows.push(row);
       }
-      sheet.appendChild(list);
+    };
+
+    paint('');
+
+    if (searchInput) {
+      const onKey = (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          if (!rows.length) return;
+          e.preventDefault();
+          const step = e.key === 'ArrowDown' ? 1 : -1;
+          highlighted = highlighted < 0
+            ? (step > 0 ? 0 : rows.length - 1)
+            : (highlighted + step + rows.length) % rows.length;
+          paintHighlight();
+          return;
+        }
+        if (e.key === 'Enter' && !e.isComposing) {
+          e.preventDefault();
+          // 回车连第一项(或高亮项):筛选后不必再去找鼠标
+          const row = rows[highlighted] || rows[0];
+          if (row) row.click();
+          else if (searchInput.value.trim()) toast('没有匹配的主机', 'error');
+          return;
+        }
+        if (e.key === 'Escape') {
+          // 第一次 Esc 清掉检索词,第二次交回焦点(让快捷键重新生效)
+          if (searchInput.value) { searchInput.value = ''; paint(''); }
+          else searchInput.blur();
+        }
+      };
+      searchInput.addEventListener('keydown', onKey);
+      searchInput.addEventListener('input', () => paint(searchInput.value));
+      // 打开即可直接打字筛选 —— 用户刚点的是「新建标签」按钮,焦点本来就停在一个
+      // 按钮上,没必要再让他点一下搜索框。只避让真正的输入目标(终端/其它输入框),
+      // 否则会把用户正在打字的焦点抢走。
+      // 注意:renderPickers 在 replaceLayoutContent 的构建回调里执行,此刻选择器
+      // 还没进文档树,focus() 对游离节点无效 —— 必须等样式重算后(下一帧)再聚焦。
+      const active = document.activeElement;
+      const busy = active && active !== document.body && active !== document.querySelector('#btn-newtab')
+        && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable);
+      if (tab.id === state.activeTabId && !busy) {
+        requestAnimationFrame(() => {
+          if (!picker.isConnected || pane.pickerRendered === false) return;
+          // 期间用户已经点到别处(另一个输入框)就让给他
+          const now = document.activeElement;
+          if (now && now !== document.body && now !== searchInput
+            && (now.tagName === 'INPUT' || now.tagName === 'TEXTAREA' || now.tagName === 'SELECT' || now.isContentEditable)) return;
+          searchInput.focus();
+        });
+      }
     }
 
     const quick = document.createElement('div');
@@ -1007,14 +1214,12 @@ export function renderPickers(tab = activeTab()) {
     inp.className = 'inp';
     inp.placeholder = 'user@host:port 快速连接…';
     inp.spellcheck = false;
+    inp.setAttribute('aria-label', '快速连接地址');
     inp.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter') return;
       const parsed = parseQuickTarget(inp.value);
       if (!parsed) return toast('格式:user@host:port', 'error');
-      closePicker();
-      activatePane(tab.id, paneId, false);
-      // 取消密码输入不算"已在连接":把选择器还给用户
-      if (!(await quickConnect(parsed, paneId, tab.id))) restorePicker();
+      await chooseQuick(parsed);
     });
     quick.appendChild(label);
     quick.appendChild(inp);

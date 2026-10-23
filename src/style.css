@@ -1217,13 +1217,24 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-confirm-hint { font-size: 11px; color: var(--muted); }
 .ai-confirm-targets { font-size: 11px; color: var(--text-dim, var(--muted)); overflow-wrap: anywhere; }
 
-.ai-turn-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
-.ai-turn-summary-title { color: var(--muted); }
+.ai-turn-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }.ai-turn-summary-title { color: var(--muted); }
 .ai-turn-summary ul { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
 .ai-turn-summary li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .ai-turn-summary li code { flex: 1 1 auto; }
 .ai-turn-summary li span { flex: none; color: var(--muted); }
 .ai-turn-summary li[data-state="warn"] span { color: var(--warn); }
+
+/* 上下文压缩提示行:历史被改写的动作注记,不属于任何一轮问答。
+   低调、无气泡、与消息同一左缘,滚动时随信息流一起移动。 */
+.ai-compact-notice {
+  flex-shrink: 0; align-self: flex-start;
+  display: flex; align-items: center; gap: 6px;
+  max-width: calc(92% - 32px); margin-left: 32px; padding: 2px 0;
+  color: var(--muted); font-size: 11.5px; line-height: 1.5;
+}
+.ai-compact-notice svg { flex: none; }
+.ai-compact-notice[data-state="done"] { color: var(--accent2, var(--accent)); }
+.ai-compact-notice span { min-width: 0; }
 
 /* 一轮工具回合的折叠块:中间步骤(步骤行/确认卡/中间气泡)与本轮命令清单收在这里,
    只留最终结论在信息流里。头部与步骤行同左缘:图标落在步骤行图标的同一竖线上。 */
@@ -2914,18 +2925,21 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .term-pane { position: relative; inset: auto; display: block; flex: 1 1 0; min-width: 320px; min-height: 180px; overflow: hidden; }
 .term-pane.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
 /* 空窗格的主机选择面板:一张居中卡片,顶部留出让位窗格工具条的呼吸区。
-   关闭入口只有工具条的 ✕(空窗格工具条常显),这里不再画第二个 ✕。 */
+   关闭入口只有工具条的 ✕(空窗格工具条常显),这里不再画第二个 ✕。
+   面板自身高度有上限(见 .pp-sheet),主机会多时滚动发生在 .pp-list 内部,
+   这样头部搜索与底部快速连接恒在视野里,不随主机数量增长。 */
 .pane-picker {
   position: absolute; inset: 0; z-index: 6;
   display: flex; padding: 52px 20px 24px; overflow: auto; min-width: 0;
 }
 .pp-sheet {
   width: 100%; max-width: 460px; min-width: 0; margin: auto;
+  max-height: 100%;
   display: flex; flex-direction: column; gap: 10px;
   padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--panel); box-shadow: var(--floating-shadow);
 }
-.pp-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.pp-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; flex: none; }
 .pp-head-ic {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 8px;
@@ -2935,8 +2949,30 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .pp-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .pp-sub { margin-top: 2px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 .pp-sec { font-size: 11px; color: var(--muted); letter-spacing: 0.2px; }
-.pp-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-/* 主机卡片:名称在左、地址第二行,右侧箭头在悬停时点亮 —— 整卡可点,
+/* 分节标题行:左侧固定标题,右侧计数(共 N 台 / N / M 台) */
+.pp-sec-row { flex: none; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.pp-count { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 检索行:图标内嵌在输入框里,失焦时也不抢走"这里可以打字"的暗示 */
+.pp-search { position: relative; flex: none; display: flex; align-items: center; min-width: 0; }
+.pp-search-ic { position: absolute; left: 9px; display: inline-flex; color: var(--muted); pointer-events: none; }
+.pp-search-ic svg { display: block; }
+.pp-search-input { width: 100%; box-sizing: border-box; height: var(--ctl-h); padding: 0 10px 0 30px; font-size: 12px; }
+/* 列表区限高滚动:面板总高恒定,快速连接永远固定在底部 */
+.pp-list {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  margin: 0 -2px; padding: 2px;
+  max-height: min(46vh, 380px);
+}
+.pp-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pp-group + .pp-group { margin-top: 4px; }
+.pp-group-title {
+  position: sticky; top: -2px; z-index: 1;
+  padding: 4px 2px 2px; background: var(--panel);
+  font-size: 11px; color: var(--muted); letter-spacing: 0.4px;
+}
+.pp-empty { padding: 18px 4px; text-align: center; font-size: 12px; color: var(--muted); }
+/* 主机卡片:名称在左、地址第二行,右侧箭头在悬停/键盘高亮时点亮 —— 整卡可点,
    悬停只做位移与外发光(只动 transform/opacity,不触发布局)。 */
 .pp-item {
   display: flex; align-items: center; gap: 10px;
@@ -2949,6 +2985,9 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 }
 .pp-item:hover { border-color: var(--accent); background: var(--hover-bg); transform: translateY(-1px); }
 .pp-item:active { transform: none; }
+/* ↑↓ 选中态:与悬停同款外观,但位移归零(避免移动中的高亮) */
+.pp-item.active { border-color: var(--accent); background: var(--hover-bg); }
+.pp-item.active .pp-go { opacity: 1; transform: none; color: var(--accent); }
 .pp-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
 .pp-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pp-name-text { min-width: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2962,7 +3001,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 }
 .pp-go { flex: none; display: inline-flex; color: var(--muted); opacity: 0; transform: translateX(-3px); transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
 .pp-item:hover .pp-go, .pp-item:focus-visible .pp-go { opacity: 1; transform: none; color: var(--accent); }
-.pp-quick { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
+.pp-quick { flex: none; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
 .pp-quick .inp { width: 100%; box-sizing: border-box; height: var(--ctl-h); padding: 0 10px; font-size: 12px; font-family: var(--font-mono); }
 /* 空态直达入口:与 .pp-item 同款卡片,但居中标示"这里还没有东西" */
 .pp-add {
