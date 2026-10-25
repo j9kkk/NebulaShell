@@ -511,6 +511,15 @@ pub async fn nebula_invoke(
                 Err(e) => err_msg(e),
             }
         }
+        // 云账号 SecretKey 明文按需揭示:编辑器默认只显示实际长度的 • 掩码,
+        // 用户点眼睛才单取明文(与主机弹窗 hosts:revealSecret 同一语义)
+        "cloud:revealSecret" => match state
+            .store
+            .cloud_account_creds(payload["id"].as_str().unwrap_or(""))
+        {
+            Ok((_key, secret, _endpoint, _vendor)) => ok(json!({ "value": secret })),
+            Err(e) => err_msg(e),
+        },
         "hosts:exportFile" => {
             // includeCredentials 为真时必须带 passphrase,由 Store 用 scrypt+AES-GCM 加密;
             // 否则导出文件不含任何凭据(明文密码落盘后很难收回)。
@@ -1577,38 +1586,6 @@ pub async fn nebula_invoke(
                 }
             }
             ok(json!({ "instances": instances, "errors": errors }))
-        }
-
-        "cloud:fetch" => {
-            let provider = payload["provider"]
-                .as_str()
-                .unwrap_or("tencent")
-                .to_string();
-            let key = payload["key"].as_str().unwrap_or("").to_string();
-            let secret = payload["secret"].as_str().unwrap_or("").to_string();
-            let region = payload["region"].as_str().unwrap_or("").to_string();
-            let endpoint = payload["endpoint"].as_str().unwrap_or("").to_string();
-            let res = if provider == "aliyun" {
-                crate::cloud::aliyun_describe_instances(&key, &secret, &region, &endpoint).await
-            } else {
-                crate::cloud::tencent_describe_instances(
-                    &key, &secret, &provider, &region, &endpoint,
-                )
-                .await
-            };
-            match res {
-                Ok(list) => {
-                    // 凭据保存失败不吞结果:列表已拉到,凭据错误随下一次拉取暴露
-                    if let Err(e) = state
-                        .store
-                        .save_cloud_creds(&provider, &key, &secret, &endpoint)
-                    {
-                        return err_msg(e);
-                    }
-                    ok(json!(list))
-                }
-                Err(e) => err_msg(e),
-            }
         }
 
         "settings:get" => ok(state.store.get_settings()),

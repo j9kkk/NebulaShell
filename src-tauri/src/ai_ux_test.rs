@@ -101,33 +101,79 @@ async fn cancellation_polling_keeps_one_future_alive() {
 
 #[test]
 fn usage_chains_and_unicode_errors_remain_intact() {
-    let (mut input, mut output) = (None, None);
+    let mut usage = Usage::default();
     collect_usage(
         "openai",
         &json!({"usage":{"prompt_tokens":12,"completion_tokens":3}}),
-        &mut input,
-        &mut output,
+        &mut usage,
     );
-    assert_eq!((input, output), (Some(12), Some(3)));
+    assert_eq!((usage.input, usage.output), (Some(12), Some(3)));
     collect_usage(
         "anthropic",
         &json!({"type":"message_start","message":{"usage":{"input_tokens":20}}}),
-        &mut input,
-        &mut output,
+        &mut usage,
     );
     collect_usage(
         "anthropic",
         &json!({"type":"message_delta","usage":{"output_tokens":7}}),
-        &mut input,
-        &mut output,
+        &mut usage,
     );
-    assert_eq!((input, output), (Some(20), Some(7)));
-    let done = done_payload("request", "aborted", input, output, Instant::now());
+    assert_eq!((usage.input, usage.output), (Some(20), Some(7)));
+    let done = done_payload("request", "aborted", usage, Instant::now());
     assert_eq!(done["requestId"], "request");
     assert_eq!(done["finishReason"], "aborted");
     assert_eq!(done["usage"]["completionTokens"], 7);
+    // 没有任何缓存字段时透传 null,前端据此隐藏「缓存命中率」行
+    assert!(done["usage"]["cacheReadTokens"].is_null());
+    assert!(done["usage"]["cacheWriteTokens"].is_null());
     assert!(done["elapsedMs"].is_number());
     assert_eq!(error_excerpt(&"中".repeat(400), 200), "中".repeat(200));
+}
+
+#[test]
+fn collect_usage_normalises_cache_fields_across_protocols() {
+    // Anthropic: cache_read_input_tokens / cache_creation_input_tokens
+    let mut a = Usage::default();
+    collect_usage(
+        "anthropic",
+        &json!({"type":"message_start","message":{"usage":{
+            "input_tokens": 100,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 50
+        }}}),
+        &mut a,
+    );
+    assert_eq!(a.input, Some(100));
+    assert_eq!(a.cache_read, Some(800));
+    assert_eq!(a.cache_write, Some(50));
+
+    // DeepSeek: prompt_cache_hit_tokens / prompt_cache_miss_tokens
+    let mut d = Usage::default();
+    collect_usage(
+        "openai",
+        &json!({"usage":{
+            "prompt_tokens": 1000,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 750,
+            "prompt_cache_miss_tokens": 250
+        }}),
+        &mut d,
+    );
+    assert_eq!(d.cache_read, Some(750));
+    assert_eq!(d.cache_write, Some(250));
+
+    // OpenAI: 只有 prompt_tokens_details.cached_tokens,没有写入侧
+    let mut o = Usage::default();
+    collect_usage(
+        "openai",
+        &json!({"usage":{
+            "prompt_tokens": 500,
+            "prompt_tokens_details": {"cached_tokens": 400}
+        }}),
+        &mut o,
+    );
+    assert_eq!(o.cache_read, Some(400));
+    assert_eq!(o.cache_write, None);
 }
 
 #[test]
@@ -373,4 +419,59 @@ async fn abort_before_headers_emits_done_without_waiting_for_server() {
     .unwrap();
     server.await.unwrap();
     assert_eq!(events.lock().unwrap()[0]["finishReason"], "aborted");
+}
+
+// ---- /models 上游能力字段解析 ----
+
+// DeepSeek 新版 /models 直给 context_window / max_output_tokens / effort,
+// 这些是供应商权威值,必须原样透传给前端(不能被按模型 ID 推导的默认值覆盖)。
+#[test]
+fn model_entries_carry_upstream_context_output_and_effort() {
+    let list = vec![json!({
+        "id": "deepseek-flash",
+        "name": "deepseek-flash",
+        "owned_by": "deepseek",
+        "context_window": 1000000,
+        "max_output_tokens": 384000,
+        "effort": { "supported_levels": ["low", "medium", "high"], "default_level": "medium" },
+        "input_modalities": ["text"]
+    })];
+    let out = crate::ai::parse_model_entries(&list);
+    assert_eq!(out.len(), 1);
+    let m = &out[0];
+    assert_eq!(m["context"], json!(1000000));
+    assert_eq!(m["maxOutput"], json!(384000));
+    assert_eq!(m["effortLevels"], json!(["low", "medium", "high"]));
+    assert_eq!(m["effortDefault"], json!("medium"));
+    assert_eq!(m["vision"], json!(false));
+}
+
+// OpenRouter 用 context_length + architecture.input_modalities;
+// 缺 max_output_tokens 时该字段必须是 null,让前端回落到本地推荐值。
+#[test]
+fn model_entries_fall_back_to_openrouter_aliases_and_null_output() {
+    let list = vec![json!({
+        "id": "openrouter/model",
+        "name": "Model",
+        "context_length": 128000,
+        "architecture": { "input_modalities": ["text", "image"] }
+    })];
+    let out = crate::ai::parse_model_entries(&list);
+    let m = &out[0];
+    assert_eq!(m["context"], json!(128000));
+    assert_eq!(m["maxOutput"], Value::Null);
+    assert_eq!(m["effortLevels"], Value::Null);
+    assert_eq!(m["vision"], json!(true));
+}
+
+// 重复 id 只保留一条;display_name 优先于 name。
+#[test]
+fn model_entries_dedupe_and_prefer_display_name() {
+    let list = vec![
+        json!({ "id": "dup", "display_name": "First", "name": "raw" }),
+        json!({ "id": "dup", "name": "Second" }),
+    ];
+    let out = crate::ai::parse_model_entries(&list);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["name"], json!("First"));
 }

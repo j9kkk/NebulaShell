@@ -25,6 +25,7 @@ import { hostKeyOf, hostLabelOf, rebindThread, resolveAiTarget, threadLinkMode }
 import {
   calculateThreadContextTokens,
   estimateMessageTokens,
+  formatCompactNumber,
   formatTokenCount,
   inferModelDefaults,
   normModel,
@@ -49,6 +50,7 @@ export {
   hostLabelOf,
   calculateThreadContextTokens,
   estimateMessageTokens,
+  formatCompactNumber,
   formatTokenCount,
   inferModelDefaults,
   normModel,
@@ -586,6 +588,9 @@ export function clearCurrentAiThread() {
   // 清空即开始新任务:断开本对话的无头链接(继续保留旧内容属于另一台主机的语义已不成立)。
   clearThreadLinks(thread);
   thread.history = [];
+  // 清空会话同时清掉上一段的速率/命中率统计:新对话没有请求记录,
+  // 沿用旧值会让弹窗显示与当前对话无关的数字。
+  thread.lastStats = null;
   if (thread.containerEl) {
     thread.containerEl.innerHTML = '';
   }
@@ -1526,6 +1531,67 @@ export function renderAiMessage(role, text, opts) {
   return el;
 }
 
+/// 把本轮请求的用量统计挂到会话上,供上下文弹窗展示速率与缓存命中率。
+/// 只在拿到 usage 时记录:供应商不返回 usage 时不伪造 0。
+function recordThreadStats(thread, holder, done) {
+  const usage = done?.usage;
+  if (!usage) return;
+  // 生成阶段时长 = 收尾时刻 − 首个 token 到达时刻。用全程耗时会把网络等待和
+  // 排队算进去,速率低得没有参考意义。
+  let genMs = null;
+  if (holder.firstTokenAt) {
+    genMs = Math.max(0, (holder.endedAt || Date.now()) - holder.firstTokenAt);
+  }
+  thread.lastStats = {
+    promptTokens: usage.promptTokens ?? null,
+    completionTokens: usage.completionTokens ?? null,
+    cacheReadTokens: usage.cacheReadTokens ?? null,
+    cacheWriteTokens: usage.cacheWriteTokens ?? null,
+    genMs,
+    at: Date.now(),
+  };
+}
+
+/// 生成速率(tokens/秒):只算「已有输出」的阶段。时长过短或没有输出时返回 null,
+/// 由界面隐藏该行 —— 0.05 秒内出 3 个 token 算出来的 60 tok/s 是噪声。
+export function tokenRateOf(stats) {
+  if (!stats) return null;
+  const out = stats.completionTokens;
+  const ms = stats.genMs;
+  if (!(out > 0) || !(ms >= 200)) return null;
+  return out / (ms / 1000);
+}
+
+/// 缓存命中率(0~1):各协议分母不同,这里统一成「命中 / 总量」。
+/// - OpenAI: promptTokens 已含 cached,分母用 promptTokens
+/// - DeepSeek: cacheRead 是命中、cacheWrite 记的是 miss,两者相加即总量
+/// - Anthropic: inputTokens 不含 cache 部分,分母要加回 read+write
+/// 返回 null 表示供应商没给缓存字段(界面隐藏整行,而不是显示 0%)。
+export function cacheHitRateOf(stats, protocol = 'openai') {
+  if (!stats) return null;
+  const read = stats.cacheReadTokens;
+  const write = stats.cacheWriteTokens;
+  // 两个都没给:这家不支持缓存统计,隐藏
+  if (read == null && write == null) return null;
+  const hit = read || 0;
+  const miss = write || 0;
+  let denom;
+  if (protocol === 'anthropic') {
+    // input 里只有未缓存部分,总量 = input + read + write
+    denom = (stats.promptTokens || 0) + hit + miss;
+  } else if (miss > 0) {
+    // DeepSeek 式:命中与未命中分别给出
+    denom = hit + miss;
+  } else {
+    // OpenAI 式:只报命中,cached 已含在 promptTokens 内
+    denom = stats.promptTokens || hit;
+  }
+  if (!(denom > 0)) return null;
+  const rate = hit / denom;
+  // 供应商口径不一致时可能算出 >100%,封顶避免显示读不懂的数字
+  return Math.min(1, Math.max(0, rate));
+}
+
 /// AI 响应结束后的元信息行:模型、输入/输出 token、耗时。
 /// 传入 null 值的项跳过;整行更新到 .ai-meta-text(时间戳扩展成完整元信息)。
 /// 只改文字节点:.ai-meta 里还有头像,整体重写 textContent 会把它抹掉。
@@ -1787,6 +1853,9 @@ export function aiFinishHolder(done) {
   if (!match) return;
   const { holder: h, thread } = match;
   clearTimeout(h.idleTimer);
+  // 收尾时刻:速率按「首个 token → 收尾」计算,这里固定下来,
+  // 避免 recordThreadStats 里再取一次 Date.now() 引入抖动。
+  h.endedAt = Date.now();
 
   if (h.detached) {
     detachedRequests.delete(h.id);
@@ -1845,6 +1914,9 @@ export function aiFinishHolder(done) {
       thread.updatedAt = Date.now();
     }
   }
+  // 记录本轮统计供上下文弹窗展示(生成速率 / 缓存命中率)。
+  // 失败或中止也记录 usage,但速率要求有首个 token 时刻,否则宁可不显示。
+  if (thread && !h.detached) recordThreadStats(thread, h, done);
   // ai:error 置入的 h.failed 必须带回给调用方:否则"测试连接"会把失败当成功
   h.resolve(h.failed
     ? { error: h.failed, code: h.failedCode || null, text: h.acc }
@@ -2135,9 +2207,34 @@ export async function aiTestConnection() {
   }
 }
 
+/// 拉取模型后的诊断输出(仅控制台):这次上游给了哪些能力字段。
+/// 一个能力字段都没有时,列表里所有模型都会挂「本地推荐」胶囊 ——
+/// 这条日志用来快速判断"是供应商没给"还是"我们没解析"。
+function logModelFetchDiagnostics(rawList, normalized) {
+  if (typeof console === 'undefined' || !console.debug) return;
+  try {
+    const keySet = new Set();
+    for (const raw of rawList || []) {
+      for (const k of Object.keys(raw || {})) {
+        if (k === 'id' || k === 'name' || k === 'ownedBy' || k === 'created') continue;
+        keySet.add(k);
+      }
+    }
+    const withCaps = (normalized || []).filter((m) => m.capabilitySource === 'upstream').length;
+    const total = (normalized || []).length;
+    console.debug('[AI 模型拉取]', {
+      模型数: total,
+      带上游能力字段: withCaps,
+      上游额外字段: [...keySet].sort(),
+      结论: withCaps === 0
+        ? '上游未提供上下文/输出规格，全部使用本地推荐值'
+        : `其中 ${withCaps} 个模型使用了上游权威值`,
+    });
+  } catch { /* 诊断失败不影响主流程 */ }
+}
+
 // dsh 式快速配置:按当前协议请求 /models,结果填入弹框供勾选
-export async function fetchAiModels() {
-  const btn = $('#btn-ai-fetch-models');
+export async function fetchAiModels() {  const btn = $('#btn-ai-fetch-models');
   const config = readAiDraft();
   if (!config.baseUrl) return toast('请先填写 Base URL', 'error');
   if (!config.apiKey && !config.useSavedApiKey) return toast('请先填写 API Key，再拉取模型列表', 'error');
@@ -2156,6 +2253,10 @@ export async function fetchAiModels() {
       return;
     }
     state.aiModels = list.map(normModel).filter((m) => m.id);
+    // 诊断:很多中转站的 /models 只回 id/owned_by,一个能力字段都没有。
+    // 把"这次到底拿到了哪些字段"记下来,换供应商时能一眼看出要不要补别名,
+    // 不用再手工 curl 探测。只在控制台可见,不进配置。
+    logModelFetchDiagnostics(list, state.aiModels);
     // 把已启用但本次没拉到的模型并进候选:否则用户勾过的模型会从弹框里
     // 凭空消失,看起来像"被自动取消了"。
     for (const cur of state.aiSelected) {
@@ -2196,14 +2297,58 @@ function modelCreated(m) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/// 模型行的能力胶囊:上下文 / 输出 / 思考档 / 视觉 / 图像模型 / 本地推荐。
+/// 拾取器与设置页共用同一份数据,避免两处各写一套格式化逻辑再次漂移。
+///
+/// 注意读 contextWindow 而不是 context:后者是上游原始值(常为 null),
+/// 前者才是 normModel 规范化后的实际生效值 —— 之前读错这里,导致
+/// 即使有值也显示不出来。
+export function modelCapabilityBadges(m) {
+  if (!m) return [];
+  const badges = [];
+  if (m.kind === 'image') {
+    badges.push({ key: 'kind', text: '图像模型', title: '图像生成模型，不参与对话上下文' });
+    return badges;
+  }
+  if (m.contextWindow > 0) {
+    badges.push({
+      key: 'ctx',
+      text: `${formatTokenCount(m.contextWindow)} 上下文`,
+      title: `上下文窗口 ${m.contextWindow.toLocaleString()} tokens`,
+    });
+  }
+  if (m.maxOutput > 0) {
+    badges.push({
+      key: 'out',
+      text: `${formatTokenCount(m.maxOutput)} 输出`,
+      title: `最大输出 ${m.maxOutput.toLocaleString()} tokens`,
+    });
+  }
+  const levels = (m.reasoning?.levels || []).filter((l) => l !== 'disabled');
+  if (levels.length) {
+    badges.push({
+      key: 'reasoning',
+      text: `${levels.length} 档思考`,
+      title: `支持档位：${(m.reasoning.levels || []).join(' / ')}`,
+    });
+  }
+  if (m.vision) badges.push({ key: 'vision', text: '视觉', title: '支持图片输入' });
+  // 供应商没给能力字段时,这些数是本地按模型 ID 猜的,必须让用户看得见
+  if (m.capabilitySource !== 'upstream') {
+    badges.push({
+      key: 'source',
+      text: '本地推荐',
+      title: '供应商的模型列表未提供上下文/输出规格，当前数值为本地推荐，可在编辑模型配置中修改',
+    });
+  }
+  return badges;
+}
+
 function modelMeta(m) {
   const parts = [];
   if (m.ownedBy) parts.push(m.ownedBy);
   const c = modelCreated(m);
   if (c) parts.push(c);
-  // 上下文窗口/视觉能力是供应商可选字段,拿不到就不展示
-  if (m.context) parts.push(`上下文 ${m.context >= 1000 ? Math.round(m.context / 1000) + 'K' : m.context} tokens`);
-  if (m.vision) parts.push('支持图片');
   return parts.join(' · ');
 }
 
@@ -2215,7 +2360,17 @@ let pickerFilter = '';
 function pickerMatches() {
   const kw = pickerFilter.trim().toLowerCase();
   if (!kw) return state.aiModels;
-  return state.aiModels.filter((m) => (m.id + ' ' + m.name + ' ' + m.ownedBy).toLowerCase().includes(kw));
+  return state.aiModels.filter((m) => {
+    // 胶囊里的信息也要可搜:输入「1m」「384k」能按上下文/输出筛出模型,
+    // 只看 id/name/ownedBy 时这些数字是搜不到的。
+    const hay = [
+      m.id, m.name, m.ownedBy,
+      m.contextWindow ? formatTokenCount(m.contextWindow) : '',
+      m.maxOutput ? formatTokenCount(m.maxOutput) : '',
+      ...modelCapabilityBadges(m).map((b) => b.text),
+    ].join(' ').toLowerCase();
+    return hay.includes(kw);
+  });
 }
 
 function renderModelPickerList() {
@@ -2238,11 +2393,22 @@ function renderModelPickerList() {
       el.setAttribute('aria-selected', on ? 'true' : 'false');
       // 建模为 checkbox:勾选=启用。整行可点,避免只点中小方块才生效。
       el.innerHTML = '<span class="picker-box" aria-hidden="true">✓</span>' +
-        '<span class="picker-text"><span class="picker-name"></span><span class="picker-meta"></span></span>';
+        '<span class="picker-text"><span class="picker-name"></span>' +
+        '<span class="picker-meta-row"><span class="picker-meta"></span>' +
+        '<span class="picker-badges"></span></span></span>';
       el.querySelector('.picker-name').textContent = modelLabel(m);
       const meta = modelMeta(m);
       el.querySelector('.picker-meta').textContent = meta;
       el.querySelector('.picker-meta').classList.toggle('hidden', !meta);
+      const badgeBox = el.querySelector('.picker-badges');
+      for (const b of modelCapabilityBadges(m)) {
+        const chip = document.createElement('span');
+        chip.className = 'model-badge picker-badge';
+        chip.dataset.kind = b.key;
+        chip.textContent = b.text;
+        chip.title = b.title;
+        badgeBox.appendChild(chip);
+      }
       el.addEventListener('click', () => {
         if (pickerChecked.has(m.id)) pickerChecked.delete(m.id);
         else pickerChecked.add(m.id);
@@ -2430,8 +2596,13 @@ export function renderModelTable() {
     if (ctx) {
       const ctxBadge = document.createElement('span');
       ctxBadge.className = 'model-badge badge-ctx';
-      ctxBadge.textContent = ctx >= 1000 ? `${Math.round(ctx / 1000)}K` : `${ctx}`;
-      ctxBadge.title = `上下文窗口: ${ctx} Tokens`;
+      // 走统一的 formatTokenCount:1000000 显示 1M 而不是「1000K」
+      ctxBadge.textContent = formatTokenCount(ctx);
+      // 标明来源:上游权威值 vs 本地按模型 ID 推导的推荐值。
+      // 后者可能与供应商实际规格不一致,用户可点「拉取模型」刷新为上游值。
+      const fromUpstream = m.capabilitySource === 'upstream';
+      ctxBadge.title = `上下文窗口: ${ctx.toLocaleString()} Tokens（${fromUpstream ? '来自供应商' : '本地推荐，可点「拉取模型」获取准确值'}）`;
+      if (!fromUpstream) ctxBadge.dataset.source = 'inferred';
       titleWrap.appendChild(ctxBadge);
     }
 
@@ -2511,8 +2682,25 @@ export function openModelConfigModal(modelId) {
 
   $('#cfg-reasoning-mapping').value = JSON.stringify(m.reasoning?.mapping || {}, null, 2);
   $('#cfg-mapping-error').textContent = '';
+  renderConfigSourceNote(m);
 
   openModal('#modal-model-config');
+}
+
+/// 在弹窗顶部说明当前能力值的来源。上游 /models 给过就是权威值;
+/// 只拿到模型 ID(手填、或供应商不返回能力字段)时是本地推荐,可能与实际规格不符。
+function renderConfigSourceNote(model) {
+  const note = $('#cfg-source-note');
+  if (!note) return;
+  const source = model?.capabilitySource || 'inferred';
+  note.dataset.source = source;
+  if (source === 'upstream') {
+    note.textContent = '能力值来自供应商的模型列表';
+  } else if (source === 'manual') {
+    note.textContent = '当前为手动配置；重新「拉取模型」可用供应商值覆盖';
+  } else {
+    note.textContent = '供应商未提供上下文规格，当前为本地推荐值；可关闭本弹窗后点「拉取模型」获取准确值';
+  }
 }
 
 export function closeModelConfigModal() {
@@ -2603,6 +2791,9 @@ export function saveModelConfigModal() {
       default: $('#cfg-reasoning-default').value || 'disabled',
       mapping,
     };
+    // 用户亲手改过就不再是"上游权威值":标记为手动,避免界面继续声称来自供应商。
+    // 之后重新「拉取模型」会用上游值覆盖(见 fetchAiModels)。
+    target.capabilitySource = 'manual';
     const inAll = state.aiModels.find((x) => x.id === editingModelId);
     if (inAll) Object.assign(inAll, target);
   }
@@ -2613,18 +2804,27 @@ export function saveModelConfigModal() {
   toast('模型配置已更新', 'success');
 }
 
+/// 「恢复默认推荐」:先回到上游给的能力值(若有),再退回按 ID 推导的默认。
+/// 之前直接传 null,把拉取到的 1M 上下文 / 384K 输出抹成了通用的 128000。
 export function resetModelConfigModal() {
   if (!editingModelId) return;
-  const inferred = inferModelDefaults(editingModelId, null, false);
+  const upstream = state.aiModels.find((x) => x.id === editingModelId) || null;
+  const inferred = inferModelDefaults(editingModelId, upstream?.context ?? null, !!upstream?.vision);
   $('#cfg-auto').checked = true;
-  $('#cfg-model-name').value = editingModelId;
-  $('#cfg-context-window').value = inferred.contextWindow;
-  $('#cfg-max-output').value = inferred.maxOutput;
-  editingReasoningLevels = [...inferred.reasoning.levels];
+  $('#cfg-model-name').value = upstream?.name || editingModelId;
+  $('#cfg-context-window').value = upstream?.context || inferred.contextWindow;
+  $('#cfg-max-output').value = upstream?.maxOutput || inferred.maxOutput;
+  // 上游声明了推理档位就以它为准,否则用按 ID 推导的
+  const levels = upstream?.effortLevels?.length ? upstream.effortLevels.slice() : inferred.reasoning.levels;
+  const defLevel = upstream?.effortLevels?.length
+    ? (upstream.effortDefault && upstream.effortLevels.includes(upstream.effortDefault) ? upstream.effortDefault : levels[0])
+    : inferred.reasoning.default;
+  editingReasoningLevels = levels;
   renderEditingReasoningChips();
-  updateDefaultReasoningSelect(inferred.reasoning.default);
+  updateDefaultReasoningSelect(defLevel);
   $('#cfg-reasoning-mapping').value = JSON.stringify(inferred.reasoning.mapping || {}, null, 2);
   $('#cfg-mapping-error').textContent = '';
+  renderConfigSourceNote(upstream ? normModel(upstream) : null);
 }
 
 /* ---------------- 资源监控 ---------------- */
@@ -2697,6 +2897,7 @@ export function renderModelReasoning() {
     slider.min = '0';
     slider.max = String(levels.length - 1);
     slider.value = String(levels.indexOf(currentEffort));
+    slider.setAttribute('aria-valuetext', reasoningLevelLabel(currentEffort));
   }
 
   const ticks = $('#ai-reasoning-ticks');
@@ -2784,8 +2985,12 @@ export function updateAiContextIndicator() {
   const pop = $('#ai-context-popover');
   if (pop) {
     pop.dataset.status = ctx.status;
-    const ratioEl = $('#ai-ctx-pop-ratio');
-    if (ratioEl) ratioEl.textContent = `${ctx.percent}%`;
+    // 标题行:已用 / 上限 (百分比)。上限从底部挪到这里,读数集中一处。
+    const usageEl = $('#ai-ctx-pop-usage');
+    if (usageEl) {
+      usageEl.textContent = `${formatCompactNumber(ctx.totalTokens)} / ${formatCompactNumber(ctx.contextLimit)} (${ctx.percent}%)`;
+      usageEl.dataset.status = ctx.status;
+    }
 
     const maxRatio = Math.max(ctx.ratio, 1);
     const sysPct = Math.min(100, Math.max(0, ((ctx.systemTokens / ctx.contextLimit) / maxRatio * 100))).toFixed(1);
@@ -2800,28 +3005,70 @@ export function updateAiContextIndicator() {
     if (barDraft) barDraft.style.width = `${draftPct}%`;
 
     const valSys = $('#ai-ctx-val-system');
-    if (valSys) valSys.textContent = `${ctx.systemTokens} tokens`;
+    if (valSys) valSys.textContent = `${ctx.systemTokens.toLocaleString('en-US')} tokens`;
     const countHist = $('#ai-ctx-count-history');
     if (countHist) countHist.textContent = `${Math.ceil(ctx.historyCount / 2)} 轮`;
     const valHist = $('#ai-ctx-val-history');
-    if (valHist) valHist.textContent = `${ctx.historyTokens} tokens`;
+    if (valHist) valHist.textContent = `${ctx.historyTokens.toLocaleString('en-US')} tokens`;
     const valDraft = $('#ai-ctx-val-draft');
-    if (valDraft) valDraft.textContent = `${ctx.draftTokens} tokens`;
-    const valLimit = $('#ai-ctx-val-limit');
-    if (valLimit) valLimit.textContent = `${formatTokenCount(ctx.contextLimit)} Tokens (${active?.name || active?.id || '未配置'})`;
+    if (valDraft) valDraft.textContent = `${ctx.draftTokens.toLocaleString('en-US')} tokens`;
 
-    const trimmedEl = $('#ai-ctx-pop-trimmed');
-    if (trimmedEl) {
-      if (ctx.trimmedCount > 0) {
-        trimmedEl.textContent = `已自动裁剪 ${ctx.trimmedCount} 条旧消息以维持窗口可用`;
-        trimmedEl.classList.remove('hidden');
-      } else {
-        trimmedEl.classList.add('hidden');
-      }
-    }
+    renderContextStats(th);
+    renderContextTrimmed(ctx);
   }
 
   return ctx;
+}
+
+/// 性能指标行:生成速率与缓存命中率。
+/// 拿不到就整行隐藏 —— 显示 0% 会被误读成"缓存完全没命中",
+/// 而实际语义是"这家供应商根本不报缓存"。
+function renderContextStats(thread) {
+  const box = $('#ai-ctx-pop-stats');
+  if (!box) return;
+  const stats = thread?.lastStats || null;
+  const protocol = savedAi().protocol || 'openai';
+
+  const rate = tokenRateOf(stats);
+  const rateRow = $('#ai-ctx-pop-rate-row');
+  if (rateRow) {
+    if (rate == null) {
+      rateRow.classList.add('hidden');
+    } else {
+      rateRow.classList.remove('hidden');
+      const rateEl = $('#ai-ctx-pop-rate');
+      // 极慢时保留 1 位小数,正常量级取整更易读
+      if (rateEl) rateEl.textContent = `${rate >= 10 ? Math.round(rate) : rate.toFixed(1)} tok/s`;
+    }
+  }
+
+  const hit = cacheHitRateOf(stats, protocol);
+  const cacheRow = $('#ai-ctx-pop-cache-row');
+  if (cacheRow) {
+    if (hit == null) {
+      cacheRow.classList.add('hidden');
+    } else {
+      cacheRow.classList.remove('hidden');
+      const cacheEl = $('#ai-ctx-pop-cache');
+      if (cacheEl) cacheEl.textContent = `${(hit * 100).toFixed(1)}%`;
+    }
+  }
+
+  // 两行都隐藏时连容器一起收起,避免留一条空白分隔线
+  const anyVisible = (rateRow && !rateRow.classList.contains('hidden'))
+    || (cacheRow && !cacheRow.classList.contains('hidden'));
+  box.classList.toggle('hidden', !anyVisible);
+}
+
+function renderContextTrimmed(ctx) {
+  const trimmedEl = $('#ai-ctx-pop-trimmed');
+  if (!trimmedEl) return;
+  if (ctx.trimmedCount > 0) {
+    trimmedEl.textContent = `已自动裁剪 ${ctx.trimmedCount} 条旧消息以维持窗口可用`;
+    trimmedEl.classList.remove('hidden');
+  } else {
+    trimmedEl.classList.add('hidden');
+  }
 }
 
 export function openContextPopover() {

@@ -2825,12 +2825,22 @@ async function main() {
   await evalJs(`document.querySelector('.term-pane.file-pane .fp-refresh').click(); return 1`);
   await waitEval(`return JSON.stringify(window.__nbTest.filePanel(0).names)`, 'README.md', 15000);
 
-  // 云导入:在界面上一张表单填完凭据 + 保存前"测试连接"校验,
-  // 然后多账号 CRUD + 一键全区域拉取(腾讯云 CVM+轻量合并)。
-  // 回归:轻量实例的 IP 字段名(PublicAddresses)与 CVM(PublicIpAddresses)不同,
-  // 旧实现读不到 → 轻量主机被过滤 → "没有获取到可用实例"。
+  // 云导入:零账号时在云导入向导中展示引导态与去配置入口;
+  // 凭据收敛到设置中心:在设置中心›云账号中完成添加/编辑/测试连接/多账号 CRUD,
+  // 导入向导实时同步生效账号并执行全区域拉取(腾讯云 CVM+轻量合并)。
   await evalJs(`document.querySelector('#btn-cloud-import').click(); return 1`);
   await waitEval(`return String(!document.querySelector('#modal-cloud').classList.contains('hidden'))`, 'true', 10000);
+  const zeroState = asObj(await evalJs(`return JSON.stringify({
+    stripEmpty: document.querySelector('#cloud-import-account-strip').classList.contains('empty'),
+    fetchDisabled: document.querySelector('#btn-cloud-fetch').disabled,
+    hasEmptyGuide: !document.querySelector('#cloud-import-empty-guide').classList.contains('hidden'),
+  })`));
+  check('T22b 零账号时云导入展示引导横条且拉取按钮置灰', zeroState.stripEmpty && zeroState.fetchDisabled && zeroState.hasEmptyGuide, JSON.stringify(zeroState));
+
+  // 点引导按钮跳转到设置中心云账号页签
+  await evalJs(`document.querySelector('#btn-cloud-guide-config').click(); return 1`);
+  await waitEval(`return String(window.__nbTest.settingsOpen() && window.__nbTest.settingsSection() === 'cloud')`, 'true', 10000);
+
   // 打开添加账号表单:厂商切换必须同步字段名(阿里云是 AccessKeyId/Secret)
   await evalJs(`document.querySelector('#btn-cloud-add-account').click(); return 1`);
   const formOpen = asObj(await evalJs(`window.__nbTest.cloudFormFill({ vendor: 'tencent' }); return JSON.stringify(window.__nbTest.cloudForm())`));
@@ -2860,23 +2870,20 @@ async function main() {
     JSON.stringify(aliyunLabels),
   );
 
-  // 负例:故意填错密钥,"测试连接"必须报错且不落库
-  await evalJs(`
-    window.__nbTest.cloudFormFill({ label: 'e2e错密钥', keyId: 'BADAKID-ui', secret: 'sk-bad', endpoint: '${cloud.base}' });
-    window.__nbTest.cloudFormTest(); return 1`);
-  await waitEval(`window.__nbTest.cloudForm().testStatus`, '✗', 20000);
-  const badTest = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
+  // 表单内「测试连接」已删(与行级测试重复):操作行只留 取消/保存,
+  // 测试唯一入口 = 账号卡片上的行级「测试」按钮
+  const formShape = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
   check(
-    'T25 错误密钥测试连接失败且不保存',
-    badTest.testStatus.startsWith('✗') && badTest.accountCount === 0,
-    JSON.stringify(badTest),
+    'T25 编辑器无「测试连接」按钮(行级测试是唯一测试入口)',
+    formShape.hasFormTestBtn === false && formShape.open === true,
+    JSON.stringify(formShape),
   );
   // 回归:弹窗打开时 syncModalScope 会内联设 z-index 200+,toast 容器曾停在 99,
   // 失败提示被弹窗整个盖住 —— 通知必须浮在所有操作界面之上。
-  // 弹窗仍开着,对 toast 中心做命中测试:命中的必须是 toast 自己(而不是弹窗遮罩)。
+  // 载体改为"空 keyId 保存被拦"的报错 toast(表单内测试连接已删)。
   await evalJs(`
-    window.__nbTest.cloudFormFill({ label: 'e2e错密钥2', keyId: 'BADAKID-ui2', secret: 'sk-bad2', endpoint: '${cloud.base}' });
-    window.__nbTest.cloudFormTest(); return 1`);
+    window.__nbTest.cloudFormFill({ label: 'e2e空id', keyId: '', secret: 'sk-bad' });
+    window.__nbTest.cloudFormSave(); return 1`);
   const toastTop = await waitEval(`
     const t = document.querySelector('#toasts .toast.error');
     if (!t) return '';
@@ -2886,38 +2893,11 @@ async function main() {
   `, 'toast-hit=', 20000);
   check('T25b 弹窗打开时失败 toast 保持在最顶层(不被遮挡)', toastTop.includes('toast-hit=true'), toastTop);
 
-  // 正例:正确密钥 → 校验通过(报出地域数/实例数),再保存。
-  // 回归:校验曾是"只抽样首个地域"的路径,报的实例数与拉取结果对不上 ——
-  // 现在校验与拉取共用同一条全量扫描路径,数字必须一致:
-  // mock 里 CVM 地域表 {广州,上海} + 轻量地域表 {广州},共 2 地域 5 台(4 CVM + 1 轻量)。
+  // 正例:直接保存(校验口径由行级测试 T29b 覆盖;mock 里 CVM+轻量共 2 地域 5 台)。
+  // endpoint 指向 mock 云服务,后续 T11 一键拉取与本判定走同一条真实链路。
   await evalJs(`
-    window.__nbTest.cloudFormFill({ label: 'e2e账号', keyId: 'AKID-ui', secret: 'sk-ui' });
-    window.__nbTest.cloudFormTest(); return 1`);
-  await waitEval(`window.__nbTest.cloudForm().testStatus`, '✓', 20000);
-  const goodTest = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
-  check(
-    'T26 正确密钥测试连接通过(全量扫描口径:地域与实例数)',
-    goodTest.testStatus.includes('校验通过') &&
-      goodTest.testStatus.includes('2 个地域') &&
-      goodTest.testStatus.includes('共发现 5 台'),
-    JSON.stringify(goodTest),
-  );
-  // 校验结论只对当时那组凭据有效:改动字段后必须作废(否则"✓ 通过"会
-  // 停留在未校验过的新值上,用户改错密钥还以为是好的)
-  const staleCleared = asObj(await evalJs(`
-    window.__nbTest.cloudFormFill({ keyId: 'AKID-changed-after-test' });
-    return JSON.stringify(window.__nbTest.cloudForm())`));
-  check(
-    'T31 改动凭据后上次校验结论作废',
-    staleCleared.testStatus === '',
-    JSON.stringify(staleCleared),
-  );
-  // 改回来再测一次,恢复通过态以便后续保存
-  await evalJs(`
-    window.__nbTest.cloudFormFill({ keyId: 'AKID-ui' });
-    window.__nbTest.cloudFormTest(); return 1`);
-  await waitEval(`window.__nbTest.cloudForm().testStatus`, '✓', 20000);
-  await evalJs(`window.__nbTest.cloudFormSave(); return 1`);
+    window.__nbTest.cloudFormFill({ label: 'e2e账号', keyId: 'AKID-ui', secret: 'sk-ui', endpoint: '${cloud.base}' });
+    window.__nbTest.cloudFormSave(); return 1`);
   await waitEval(`window.__nbTest.cloudForm().accountCount`, '1', 10000);
   const saved = asObj(await evalJs(`return JSON.stringify(window.__nbTest.cloudForm())`));
   check(
@@ -2925,6 +2905,17 @@ async function main() {
     saved.open === false && saved.accountCount === 1,
     JSON.stringify(saved),
   );
+
+  // 关闭设置中心，返回云导入任务向导
+  await evalJs(`window.__nbTest.dismissSettings(); document.querySelector('#modal-settings').classList.add('hidden'); return 1`);
+  await evalJs(`document.querySelector('#btn-cloud-import').click(); return 1`);
+  await waitEval(`return String(!document.querySelector('#modal-cloud').classList.contains('hidden'))`, 'true', 10000);
+  const hasAccountStrip = asObj(await evalJs(`return JSON.stringify({
+    stripEmpty: document.querySelector('#cloud-import-account-strip').classList.contains('empty'),
+    fetchDisabled: document.querySelector('#btn-cloud-fetch').disabled,
+    stripText: document.querySelector('#cloud-strip-summary').textContent,
+  })`));
+  check('T22c 账号配置后云导入横条更新且拉取可用', !hasAccountStrip.stripEmpty && !hasAccountStrip.fetchDisabled && hasAccountStrip.stripText.includes('1 个云账号'), JSON.stringify(hasAccountStrip));
 
   // 一键拉取:直接点界面按钮(而非 IPC),验证全区域 CVM+轻量合并
   await evalJs(`document.querySelector('#btn-cloud-fetch').click(); return 1`);
@@ -2943,15 +2934,46 @@ async function main() {
     `rows=${fetchAll.rows} groups=${fetchAll.groups} cvm=${cvmRow} lh=${lhRow}`,
   );
 
-  // 编辑已存账号:密钥留空 = 保持不变(不该因"没重输密钥"而保存失败)
+  // 关闭云导入弹窗，在设置中心进行账号编辑与行级测试
+  await evalJs(`document.querySelector('#btn-cloud-close').click(); return 1`);
+  await evalJs(`window.__nbTest.openSettings('cloud'); return 1`);
+  await waitEval(`return String(window.__nbTest.settingsOpen() && window.__nbTest.settingsSection() === 'cloud')`, 'true', 10000);
+
+  // 行级直接测试已保存凭据
+  await evalJs(`document.querySelector('.cloud-account-row .ca-test').click(); return 1`);
+  await waitEval(`return document.querySelector('.cloud-card-test-result').textContent`, '✓ 校验通过', 20000);
+  const rowTest = await evalJs(`return document.querySelector('.cloud-card-test-result').textContent`);
+  check('T29b 云账号卡片行级直接测试通过', rowTest.includes('2 个地域') && rowTest.includes('5 台实例'), rowTest);
+
+  // 编辑已存账号:SecretKey 按主机弹窗规范显示实际长度 • 掩码 + 眼睛常驻;
+  // 掩码未被改动提交 = 保持原密钥;编辑器嵌入账号卡片内部(融为一体),且不抢焦点
   await evalJs(`document.querySelector('.cloud-account-row .ca-edit').click(); return 1`);
   const editState = asObj(await evalJs(`
     window.__nbTest.cloudFormFill({ keyId: 'AKID-ui-edited' });
     return JSON.stringify(window.__nbTest.cloudForm())`));
   check(
-    'T28 编辑已存账号可留空密钥(placeholder 提示保持不变)',
-    editState.open === true && !!editState.editingId && editState.secretLabel.includes('保持不变'),
+    'T28 编辑已存账号显示 • 掩码与眼睛,嵌卡融合且不抢焦点(掩码提交=保持不变)',
+    editState.open === true && !!editState.editingId
+      && /^•+$/.test(editState.secretValue) && editState.eyeHidden === false
+      && editState.inline === true && editState.hostRow === true
+      && editState.focused !== 'cloud-form-keyid',
     JSON.stringify(editState),
+  );
+  // 点眼睛按需取回明文:值从掩码变为真实密钥,再点隐藏恢复暗文
+  const revealState = asObj(await evalJs(`
+    return (async () => {
+      document.querySelector('#btn-reveal-cloud-secret').click();
+      await new Promise(r => setTimeout(r, 400));
+      const shown = window.__nbTest.cloudForm();
+      document.querySelector('#btn-reveal-cloud-secret').click();
+      await new Promise(r => setTimeout(r, 100));
+      const hidden = window.__nbTest.cloudForm();
+      return JSON.stringify({ shown: shown.secretValue, hiddenEmpty: hidden.secretValue === shown.secretValue });
+    })()`));
+  check(
+    'T28b 眼睛按需揭示明文并可切回暗文',
+    typeof revealState.shown === 'string' && revealState.shown.length > 0 && !/^•+$/.test(revealState.shown),
+    JSON.stringify(revealState),
   );
   await evalJs(`window.__nbTest.cloudFormSave(); return 1`);
   await waitEval(`window.__nbTest.cloudForm().accountCount`, '1', 10000);
@@ -2959,21 +2981,21 @@ async function main() {
     return (async () => {
       const r = await window.nebula.invoke('cloud:accounts');
       const a = r.data.accounts[0];
-      return JSON.stringify({ count: r.data.accounts.length, keyId: a.keyId, secretSet: a.secretSet });
+      return JSON.stringify({ count: r.data.accounts.length, keyId: a.keyId, secretSet: a.secretSet, secretLen: a.secretLen });
     })()`));
   check(
     'T29 编辑保存后 keyId 更新且密钥仍保留',
-    afterEdit.count === 1 && afterEdit.keyId === 'AKID-ui-edited' && afterEdit.secretSet === true,
+    afterEdit.count === 1 && afterEdit.keyId === 'AKID-ui-edited' && afterEdit.secretSet === true && afterEdit.secretLen > 0,
     JSON.stringify(afterEdit),
   );
 
-  // 编辑时改厂商不能沿用旧密钥:placeholder 撤销"保持不变"暗示,保存被拦下
+  // 编辑时改厂商不能沿用旧密钥:掩码被清空,保存被拦下要求重输
   await evalJs(`document.querySelector('.cloud-account-row .ca-edit').click(); return 1`);
   const vendorSwitch = asObj(await evalJs(`
     window.__nbTest.cloudFormFill({ vendor: 'aliyun' });
     const s = window.__nbTest.cloudForm();
     window.__nbTest.cloudFormSave();
-    return JSON.stringify({ secretLabel: s.secretLabel, keyIdLabel: s.keyIdLabel })`));
+    return JSON.stringify({ secretLabel: s.secretLabel, keyIdLabel: s.keyIdLabel, secretValue: s.secretValue, eyeHidden: s.eyeHidden })`));
   await sleep(400);
   const vendorBlocked = asObj(await evalJs(`
     return (async () => {
@@ -2982,15 +3004,16 @@ async function main() {
                               open: window.__nbTest.cloudForm().open });
     })()`));
   check(
-    'T30 编辑改厂商时必须重输密钥(不静默沿用旧密钥)',
+    'T30 编辑改厂商时必须重输密钥(掩码清空,不静默沿用旧密钥)',
     vendorSwitch.keyIdLabel === 'AccessKeyId' && !vendorSwitch.secretLabel.includes('保持不变')
+      && vendorSwitch.secretValue === '' && vendorSwitch.eyeHidden === true
       && vendorBlocked.vendor === 'tencent' && vendorBlocked.toast.includes('请填写 AccessKeySecret')
       && vendorBlocked.open === true,
     `${JSON.stringify(vendorSwitch)} | ${JSON.stringify(vendorBlocked)}`,
   );
   await evalJs(`document.querySelector('#btn-cloud-form-cancel').click(); return 1`);
   await sleep(300);
-  await evalJs(`document.querySelector('#btn-cloud-close').click(); return 1`);
+  await evalJs(`window.__nbTest.dismissSettings(); document.querySelector('#modal-settings').classList.add('hidden'); return 1`);
   await sleep(300);
 
   // 同一主机再开一个独立标签(回归:此前同主机点击只切焦点,无法多开会话)
@@ -3824,7 +3847,7 @@ async function main() {
     focus: document.activeElement?.id, oldModals: !!document.querySelector('#modal-term, #modal-ai') })`));
   check('T46b ⌘, / Ctrl+, 在终端内打开设置窗口(终端分区,焦点在分区页签),不发给 shell;旧的两个设置弹窗已合并',
     comma.prevented && comma.emitted === '' && JSON.stringify(comma.commands) === '["settings.open"]'
-      && settingsSnap.open && settingsSnap.section === 'terminal' && JSON.stringify(settingsSnap.tabs) === '["terminal","ai","log","keys"]'
+      && settingsSnap.open && settingsSnap.section === 'terminal' && JSON.stringify(settingsSnap.tabs) === '["terminal","ai","cloud","log","keys"]'
       && settingsSnap.termForm && !settingsSnap.aiForm && settingsSnap.focus === 'settings-tab-terminal' && !settingsSnap.oldModals,
     JSON.stringify({ comma, settingsSnap }));
   await focusedKey('End'); await sleep(100);
@@ -3834,11 +3857,13 @@ async function main() {
   await focusedKey('ArrowUp'); await sleep(100);
   const upToLog = asObj(await evalJs(`return JSON.stringify({ log: window.__nbTest.settingsSection() === 'log', dirInput: !!document.querySelector('#setlog-dir').getClientRects().length })`));
   await focusedKey('ArrowUp'); await sleep(100);
+  const upToCloud = asObj(await evalJs(`return JSON.stringify({ cloud: window.__nbTest.settingsSection() === 'cloud', countText: !!document.querySelector('#settings-cloud-count') })`));
+  await focusedKey('ArrowUp'); await sleep(100);
   const upToAi = asObj(await evalJs(`return JSON.stringify({ ai: window.__nbTest.aiSettingsOpen(), aiForm: !!document.querySelector('#ai-provider').getClientRects().length })`));
-  check('T46c 设置窗口四个分区:快捷键分区按平台只读列出键位,方向键切换分区(会话日志分区含目录输入)',
+  check('T46c 设置窗口五个分区:快捷键分区按平台只读列出键位,方向键切换分区(含云账号与会话日志)',
     keys.section === 'keys' && keys.focus === 'settings-tab-keys' && keys.rows.length >= 10
       && keyOf('settings.open') === (isMac ? '⌘,' : 'Ctrl+,') && keyOf('palette.open') === (isMac ? '⌘⇧P' : 'Ctrl+Shift+P')
-      && upToLog.log && upToLog.dirInput && upToAi.ai && upToAi.aiForm, JSON.stringify({ keys, upToLog, upToAi }));
+      && upToLog.log && upToLog.dirInput && upToCloud.cloud && upToCloud.countText && upToAi.ai && upToAi.aiForm, JSON.stringify({ keys, upToLog, upToCloud, upToAi }));
   await focusedKey('Escape'); await sleep(200);
   const afterEsc = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.settingsOpen(), terminal: document.activeElement?.classList.contains('xterm-helper-textarea') })`));
   await openAiSettings(); await sleep(200);

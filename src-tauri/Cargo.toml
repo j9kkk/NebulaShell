@@ -1,6 +1,6 @@
 [package]
 name = "nebulashell"
-version = "0.6.14"
+version = "0.6.15"
 description = "NebulaShell 星云终端 — Tauri 版"
 edition = "2021"
 
@@ -36,10 +36,12 @@ futures = "0.3"
 notify-rust = "4"
 async-trait = "0.1"
 
-# 红绿灯定位(src/traffic_lights.rs)直接调 AppKit;与 tao/wry 用的是同一版本
+# 红绿灯定位(src/traffic_lights.rs)与 NSWorkspace 打开/定位文件(src/win32.rs)
+# 直接调 AppKit;与 tao/wry 用的是同一版本。NSWorkspace 让 macOS 打开外链/文件
+# 不再派生 `open` CLI 子进程 —— GUI 进程拉 CLI 会在部分 macOS 版本闪终端窗口。
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSGeometry", "NSString", "NSURL", "NSArray"] }
 
 [lib]
 name = "nebulashell_lib"

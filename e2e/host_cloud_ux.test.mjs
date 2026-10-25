@@ -15,10 +15,16 @@ class Element {
   checked = false;
   disabled = false;
   className = '';
-  classList = { add() {}, remove() {}, toggle() {} };
+  offsetTop = 0;
+  classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
   setAttribute(k, v) { this[k] = v; }
   getAttribute(k) { return this[k]; }
   removeAttribute(k) { delete this[k]; }
+  // 折叠编辑器在账号行与列表之间搬移,桩上补齐 DOM 搬移 API
+  after() {}
+  before() {}
+  remove() {}
+  scrollTo() {}
   get options() { return this.children; }
   get selectedOptions() { return this.children.filter((c) => c.selected); }
   set innerHTML(html) {
@@ -78,7 +84,7 @@ async function fixture() {
   }, { context });
   const modules = new Map([
     ['./core.js', synthetic(core)],
-    ['./terminal.js', synthetic({ connectHost: (id) => connections.push(id) })],
+    ['./terminal.js', synthetic({ connectHost: (id) => connections.push(id), refreshPickers: () => {} })],
     ['../shared/icons.js', synthetic({ icon: (name) => `<svg data-icon="${name}"></svg>` })],
   ]);
   for (const name of ['hosts', 'cloud']) {

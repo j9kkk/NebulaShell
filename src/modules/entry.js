@@ -4,7 +4,7 @@ import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
-import { clearCloudTestStatus, closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, testCloudAccount } from './cloud.js';
+import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator } from './ai.js';
 import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
@@ -529,13 +529,11 @@ registerCommand('panel.snippets', { label: '常用命令', category: 'panel', ki
 
 export function bindEvents() {
   $('#btn-cloud-add-account').addEventListener('click', () => editCloudAccount(null));
-  $('#cloud-form-vendor').addEventListener('change', () => {
-    syncCloudFormLabels();
-    clearCloudTestStatus();
-  });
-  $('#btn-cloud-test').addEventListener('click', testCloudAccount);
+  $('#cloud-form-vendor').addEventListener('change', syncCloudFormLabels);
   $('#btn-cloud-form-save').addEventListener('click', saveCloudAccountFromForm);
   $('#btn-cloud-form-cancel').addEventListener('click', closeCloudForm);
+  $('#btn-reveal-cloud-secret')?.addEventListener('click', toggleCloudSecretVisibility);
+  $('#cloud-form-secret')?.addEventListener('input', onCloudSecretInput);
   // 密钥帮助里的跳转链接:仅白名单控制台域名(后端 regex_lite 二次校验)
   $('#cloud-form-help').addEventListener('click', (e) => {
     const link = e.target.closest('.help-link');
@@ -544,11 +542,6 @@ export function bindEvents() {
       toast('无法打开链接：' + err.message, 'error'),
     );
   });
-  // 改动任一凭据字段即清掉上次校验结论:否则"✓ 校验通过"会停留在
-  // 尚未校验过的新值上,反而误导用户以为改完还是对的。
-  for (const sel of ['#cloud-form-keyid', '#cloud-form-secret', '#cloud-form-endpoint']) {
-    $(sel).addEventListener('input', clearCloudTestStatus);
-  }
   // 表单内回车 = 保存(密钥输入框不再走 askPrompt 链路)
   $('#cloud-account-form').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
@@ -655,6 +648,12 @@ export function bindEvents() {
   $('#btn-cloud-fetch').addEventListener('click', cloudFetchAll);
   $('#btn-cloud-import-selected').addEventListener('click', cloudImportSelected);
   $('#btn-cloud-close').addEventListener('click', () => closeModal('#modal-cloud'));
+  const jumpToCloudSettings = () => {
+    closeModal('#modal-cloud');
+    openSettings('cloud');
+  };
+  $('#btn-cloud-manage-accounts')?.addEventListener('click', jumpToCloudSettings);
+  $('#btn-cloud-guide-config')?.addEventListener('click', jumpToCloudSettings);
 
   bindRightPanel();
   bindHistoryPage();
@@ -690,7 +689,6 @@ export function bindEvents() {
   });
 
   // 编辑模型能力配置弹窗
-  $('#btn-model-config-close')?.addEventListener('click', closeModelConfigModal);
   $('#btn-model-config-cancel')?.addEventListener('click', closeModelConfigModal);
   $('#btn-model-config-save')?.addEventListener('click', saveModelConfigModal);
   $('#btn-model-config-reset')?.addEventListener('click', resetModelConfigModal);
@@ -735,6 +733,7 @@ export function bindEvents() {
       if (th) th.reasoningEffort = levels[val];
       const labelEl = $('#ai-reasoning-label');
       if (labelEl) labelEl.textContent = reasoningLevelLabel(levels[val]);
+      e.target.setAttribute('aria-valuetext', reasoningLevelLabel(levels[val]));
     }
   });
   $('#ai-model-reasoning')?.addEventListener('click', (e) => {
@@ -1105,6 +1104,9 @@ export function bindEvents() {
     if (!match) return;
     const { holder: h, thread } = match;
     aiTouchRequest(requestId);
+    // 首个 token 到达时刻:生成速率的分母从这一刻算起。
+    // 用全程耗时会掺进排队与网络等待,算出的速率没有参考意义。
+    if (!h.firstTokenAt) h.firstTokenAt = Date.now();
     h.acc += text;
     if (!h.bubble) return;
     // 首个 token:撤掉"正在思考…"占位,转入流式态
@@ -1402,6 +1404,8 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     aiSettingsOpen: () => settingsOpen() && settingsSection() === 'ai',
     settingsOpen: () => settingsOpen(),
     settingsSection: () => settingsSection(),
+    openSettings: (sec) => openSettings(sec),
+    dismissSettings: () => dismissSettings(),
     // 已保存的自定义键位(动作名 → 键位数组);空对象 = 全部默认
     keybindings: () => ({ ...((state.settings && state.settings.keybindings) || {}) }),
     // 右侧工具栏:是否打开、当前页签、焦点是否在面板内
@@ -1666,10 +1670,15 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     // 云账号凭据表单:供 e2e 驱动"一次性填写 + 测试连接"链路
     cloudForm: () => ({
       open: !$('#cloud-account-form').classList.contains('hidden'),
+      inline: $('#cloud-account-form').classList.contains('inline'),
+      hostRow: $('#cloud-account-form').parentElement?.classList?.contains('cloud-account-row') || false,
       editingId: state.cloudEditing ? state.cloudEditing.id : null,
       keyIdLabel: $('#cloud-form-keyid-label').textContent,
       secretLabel: $('#cloud-form-secret').placeholder,
-      testStatus: $('#cloud-test-status').textContent,
+      secretValue: $('#cloud-form-secret').value,
+      eyeHidden: $('#btn-reveal-cloud-secret').classList.contains('hidden'),
+      focused: document.activeElement?.id || null,
+      hasFormTestBtn: !!document.querySelector('#btn-cloud-test'),
       accountCount: state.cloudAccounts.length,
       helpHtml: $('#cloud-form-help').innerHTML,
     }),
@@ -1687,7 +1696,6 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       if (o.secret !== undefined) setVal('#cloud-form-secret', o.secret, 'input');
       if (o.endpoint !== undefined) setVal('#cloud-form-endpoint', o.endpoint, 'input');
     },
-    cloudFormTest: () => $('#btn-cloud-test').click(),
     cloudFormSave: () => $('#btn-cloud-form-save').click(),
     // 文件面板状态:供 e2e 断言"面板标识的目标 = 当前会话",以及切换后是否跟随
     sidebar: () => ({

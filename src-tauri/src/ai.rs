@@ -172,9 +172,20 @@ pub async fn list_models(
     }
     let j: Value = res.json().await.map_err(|e| e.to_string())?;
     let list = j["data"].as_array().cloned().unwrap_or_default();
+    let out = parse_model_entries(&list);
+    if out.is_empty() {
+        return Err("端点未返回任何模型,请确认 Base URL 是否到 /v1 级别".into());
+    }
+    Ok(out)
+}
+
+/// 把各家 /models 的条目归一成前端用的结构。
+/// 抽成纯函数以便单测:上游字段的别名覆盖(OpenAI / Anthropic / OpenRouter /
+/// DeepSeek)是这里最容易出错、也最需要固定下来的部分。
+pub fn parse_model_entries(list: &[Value]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for m in &list {
+    for m in list {
         let id = m["id"]
             .as_str()
             .or_else(|| m["name"].as_str())
@@ -201,17 +212,33 @@ pub async fn list_models(
         } else {
             m["created"].clone()
         };
-        // 上下文窗口 / 视觉能力不是所有供应商都返回:OpenRouter 用
-        // context_length + architecture.input_modalities,其余字段是各家常见
-        // 别名。拿不到就传 null,前端对 null 一律不展示。
+        // 上下文窗口:OpenRouter 用 context_length,DeepSeek 用 context_window,
+        // 其余是各家常见别名。拿不到就传 null,由前端按模型 ID 推导兜底。
         let context = m["context_length"]
             .as_i64()
             .or_else(|| m["context_window"].as_i64())
             .or_else(|| m["max_input_tokens"].as_i64())
             .or_else(|| m["max_model_len"].as_i64())
             .or_else(|| m["top_provider"]["context_length"].as_i64());
+        // 最大输出同理由上游给(DeepSeek 用 max_output_tokens)。
+        let max_output = m["max_output_tokens"]
+            .as_i64()
+            .or_else(|| m["max_completion_tokens"].as_i64())
+            .or_else(|| m["max_tokens"].as_i64());
+        // 推理档位:DeepSeek 新版 /models 直接给 effort.supported_levels,
+        // 这是"上游权威值",优先于前端按 ID 猜的那套。
+        let effort_levels = m["effort"]["supported_levels"].as_array().map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
+        let effort_default = m["effort"]["default_level"].as_str().map(|s| s.to_string());
+        // 视觉能力:OpenRouter 走 architecture.input_modalities,
+        // DeepSeek / 其余用扁平的 input_modalities。
         let vision = m["architecture"]["input_modalities"]
             .as_array()
+            .or_else(|| m["input_modalities"].as_array())
             .map(|a| a.iter().any(|v| v.as_str() == Some("image")))
             .unwrap_or(false);
         out.push(json!({
@@ -220,13 +247,13 @@ pub async fn list_models(
             "ownedBy": owned_by,
             "created": created,
             "context": context,
+            "maxOutput": max_output,
+            "effortLevels": effort_levels,
+            "effortDefault": effort_default,
             "vision": vision,
         }));
     }
-    if out.is_empty() {
-        return Err("端点未返回任何模型,请确认 Base URL 是否到 /v1 级别".into());
-    }
-    Ok(out)
+    out
 }
 
 /// 服务端拒绝工具调用时 Err 文本的前缀；commands 据此给 ai:error 加 code。
@@ -291,7 +318,7 @@ pub async fn chat_stream_with_tools<
         emit_evt(
             &app,
             "ai:done",
-            done_payload(&request_id, "aborted", None, None, started),
+            done_payload(&request_id, "aborted", Usage::default(), started),
         );
         return Ok(());
     }
@@ -372,7 +399,7 @@ pub async fn chat_stream_with_tools<
         emit_evt(
             &app,
             "ai:done",
-            done_payload(&request_id, "aborted", None, None, started),
+            done_payload(&request_id, "aborted", Usage::default(), started),
         );
         return Ok(());
     };
@@ -386,7 +413,7 @@ pub async fn chat_stream_with_tools<
             emit_evt(
                 &app,
                 "ai:done",
-                done_payload(&request_id, "aborted", None, None, started),
+                done_payload(&request_id, "aborted", Usage::default(), started),
             );
             return Ok(());
         };
@@ -409,13 +436,12 @@ pub async fn chat_stream_with_tools<
     let mut buffer: Vec<u8> = Vec::new();
     // token 用量:OpenAI 兼容在最后一帧带 usage;Anthropic 分散在 message_start
     // (输入)与 message_delta(输出)里。拿不到就留 null,前端不展示。
-    let mut usage_in: Option<i64> = None;
-    let mut usage_out: Option<i64> = None;
+    let mut usage = Usage::default();
     // 结束标记只说明传输完成;明确的截断原因必须跨帧保留,不能被 usage 帧覆盖。
     let mut finish_reason: Option<String> = None;
     let mut acc = crate::ai_wire::ToolAcc::default();
-    let finished = |finish: &str, usage_in, usage_out, acc: &crate::ai_wire::ToolAcc| {
-        let mut payload = done_payload(&request_id, finish, usage_in, usage_out, started);
+    let finished = |finish: &str, usage: Usage, acc: &crate::ai_wire::ToolAcc| {
+        let mut payload = done_payload(&request_id, finish, usage, started);
         acc.attach(&mut payload);
         payload
     };
@@ -425,7 +451,7 @@ pub async fn chat_stream_with_tools<
             emit_evt(
                 &app,
                 "ai:done",
-                done_payload(&request_id, "aborted", usage_in, usage_out, started),
+                done_payload(&request_id, "aborted", usage, started),
             );
             return Ok(());
         };
@@ -457,14 +483,14 @@ pub async fn chat_stream_with_tools<
             }
             if data == "[DONE]" {
                 let finish = finish_reason.as_deref().unwrap_or("stop");
-                emit_evt(&app, "ai:done", finished(finish, usage_in, usage_out, &acc));
+                emit_evt(&app, "ai:done", finished(finish, usage, &acc));
                 return Ok(());
             }
             let evt: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            collect_usage(protocol.as_str(), &evt, &mut usage_in, &mut usage_out);
+            collect_usage(protocol.as_str(), &evt, &mut usage);
             collect_finish_reason(protocol.as_str(), &evt, &mut finish_reason);
             if let Some(name) = acc.feed(&protocol, &evt) {
                 emit_evt(
@@ -478,7 +504,7 @@ pub async fn chat_stream_with_tools<
                 // Anthropic 用 message_stop 收尾,保留此前 message_delta 的明确原因
                 Ok(FrameOutcome::Done) => {
                     let finish = finish_reason.as_deref().unwrap_or("stop");
-                    emit_evt(&app, "ai:done", finished(finish, usage_in, usage_out, &acc));
+                    emit_evt(&app, "ai:done", finished(finish, usage, &acc));
                     return Ok(());
                 }
                 Err(e) => return Err(e),
@@ -486,16 +512,26 @@ pub async fn chat_stream_with_tools<
         }
         buffer.drain(..start);
     }
-    emit_evt(&app, "ai:done", finished("end", usage_in, usage_out, &acc));
+    emit_evt(&app, "ai:done", finished("end", usage, &acc));
     Ok(())
+}
+
+/// SSE 累计的 token 用量。缓存相关字段各家命名不同,统一归一到这两个:
+/// cache_read(命中缓存、按低价计费的输入)与 cache_write(写入缓存)。
+/// 前端据此算命中率;拿不到就保持 None,界面隐藏该行而不是显示 0。
+#[derive(Default, Clone, Copy)]
+struct Usage {
+    input: Option<i64>,
+    output: Option<i64>,
+    cache_read: Option<i64>,
+    cache_write: Option<i64>,
 }
 
 /// 结束事件附带耗时(毫秒)与 token 用量,缺省字段以 null 透传
 fn done_payload(
     request_id: &str,
     finish: &str,
-    usage_in: Option<i64>,
-    usage_out: Option<i64>,
+    usage: Usage,
     started: std::time::Instant,
 ) -> Value {
     json!({
@@ -503,19 +539,16 @@ fn done_payload(
         "finishReason": finish,
         "elapsedMs": started.elapsed().as_millis() as u64,
         "usage": {
-            "promptTokens": usage_in,
-            "completionTokens": usage_out,
+            "promptTokens": usage.input,
+            "completionTokens": usage.output,
+            "cacheReadTokens": usage.cache_read,
+            "cacheWriteTokens": usage.cache_write,
         },
     })
 }
 
 /// 从一帧 SSE 里提取 token 用量,其余字段忽略
-fn collect_usage(
-    protocol: &str,
-    evt: &Value,
-    usage_in: &mut Option<i64>,
-    usage_out: &mut Option<i64>,
-) {
+fn collect_usage(protocol: &str, evt: &Value, usage: &mut Usage) {
     let u = if protocol == "anthropic" {
         match evt["type"].as_str().unwrap_or("") {
             // message_start 的 message.usage 只有输入;输出计数后续由 message_delta 累加
@@ -531,13 +564,37 @@ fn collect_usage(
         .as_i64()
         .or_else(|| u["input_tokens"].as_i64())
     {
-        *usage_in = Some(v);
+        usage.input = Some(v);
     }
     if let Some(v) = u["completion_tokens"]
         .as_i64()
         .or_else(|| u["output_tokens"].as_i64())
     {
-        *usage_out = Some(v);
+        usage.output = Some(v);
+    }
+    // 缓存字段按协议取,顺序覆盖为"后到的帧更新":
+    //   Anthropic: message.usage.cache_read_input_tokens / cache_creation_input_tokens
+    //   DeepSeek:  usage.prompt_cache_hit_tokens / prompt_cache_miss_tokens
+    //   OpenAI:    usage.prompt_tokens_details.cached_tokens(只报命中,不报写入)
+    if protocol == "anthropic" {
+        if let Some(v) = u["cache_read_input_tokens"].as_i64() {
+            usage.cache_read = Some(v);
+        }
+        if let Some(v) = u["cache_creation_input_tokens"].as_i64() {
+            usage.cache_write = Some(v);
+        }
+    } else {
+        if let Some(v) = u["prompt_cache_hit_tokens"]
+            .as_i64()
+            .or_else(|| u["prompt_tokens_details"]["cached_tokens"].as_i64())
+        {
+            usage.cache_read = Some(v);
+        }
+        if let Some(v) = u["prompt_cache_miss_tokens"].as_i64() {
+            // miss 是"未命中"的那部分,换算成写入侧仅供展示参考;
+            // 命中率分母用 命中+未命中。
+            usage.cache_write = Some(v);
+        }
     }
 }
 

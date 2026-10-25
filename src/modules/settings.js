@@ -3,11 +3,12 @@
 // 终端分区含文件双击打开的临时缓存目录;会话日志分区含目录/格式/时间戳/自动记录。
 import { $, accel, api, applyAccelTitles, closeModal, state, toast } from './core.js';
 import { closeAiSettings, openAiSettings } from './ai.js';
+import { closeCloudForm, refreshCloudAccounts } from './cloud.js';
 import { listCommands } from './commands.js';
 import { DEFAULT_KEYMAP, bindingSignature, defaultSpecsOf, findKeyConflicts, invalidateKeymapCache, keybindingsPatchOf, specOfEvent, specsOf } from './keymap.js';
 import { applyTheme, fitAllVisible, scheduleResizeSync, visibleSessions } from './terminal.js';
 
-export const SETTINGS_SECTIONS = ['terminal', 'ai', 'log', 'keys'];
+export const SETTINGS_SECTIONS = ['terminal', 'ai', 'cloud', 'log', 'keys'];
 
 export const settingsOpen = () => !$('#modal-settings').classList.contains('hidden');
 export const settingsSection = () => document.querySelector('#modal-settings .settings-tab[aria-selected="true"]')?.dataset.section || '';
@@ -19,12 +20,13 @@ export function revertUnsavedTheme() {
   if (el) el.value = saved;
 }
 
-// 设置窗口关闭的统一出口:先回滚未保存的主题预览,再关窗口(同时丢弃 AI 分区未保存草稿)。
+// 设置窗口关闭的统一出口:先回滚未保存的主题预览,再关窗口(同时丢弃 AI 分区未保存草稿与云账号编辑草稿)。
 // 任何关闭入口(各分区取消/保存、#btn-ai-cancel、Esc、遮罩)都必须走这里,禁止自行拼装步骤——
 // 顺序有依赖:先还原主题再关窗,closeAiSettings 才能按已保存主题收尾。
 export function dismissSettings() {
   revertUnsavedTheme();
   closeAiSettings();
+  closeCloudForm();
 }
 
 function fillTermSettings() {
@@ -290,7 +292,10 @@ function showSection(section, { focus = false } = {}) {
     if (on && focus) tab.focus();
   }
   for (const sec of document.querySelectorAll('#modal-settings .settings-sec')) sec.classList.toggle('hidden', sec.dataset.section !== target);
-  if (target === 'keys') {
+  if (target === 'cloud') {
+    closeCloudForm();
+    refreshCloudAccounts();
+  } else if (target === 'keys') {
     // 每次进入按已保存值重建(丢弃上次未保存的录制草稿)
     resetKeyDraft();
     renderKeymapTable();

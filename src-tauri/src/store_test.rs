@@ -448,6 +448,24 @@ fn cloud_accounts_crud() {
         (k2.as_str(), s2b.as_str(), v2b.as_str()),
         ("AKID-ccc", "secret-new", "tencent")
     );
+
+    // P2: 删除账号时，关联主机上的 cloud.accountId 应自动解绑置空
+    store
+        .save_host(&json!({
+            "name": "云主机A",
+            "host": "10.0.0.1",
+            "cloud": { "accountId": id2, "provider": "cvm", "region": "ap-guangzhou", "instanceId": "ins-101" }
+        }))
+        .unwrap();
+    store.delete_cloud_account(&id2).unwrap();
+    let hosts = store.list_hosts();
+    let target_host = hosts.iter().find(|h| h["host"] == "10.0.0.1").unwrap();
+    assert!(
+        target_host["cloud"]["accountId"].is_null(),
+        "删除账号后主机的 cloud.accountId 必须被置空，实际为: {:?}",
+        target_host["cloud"]["accountId"]
+    );
+
     let _ = std::fs::remove_dir_all(&store.dir);
 }
 

@@ -926,7 +926,8 @@ test('token counts format with K/M units below rounding', async () => {
   assert.equal(ai.formatTokenCount(999), '999');
   assert.equal(ai.formatTokenCount(1000), '1K');
   assert.equal(ai.formatTokenCount(8653), '9K');
-  assert.equal(ai.formatTokenCount(999999), '1000K');
+  // 999999 四舍五入后是 1000K,应进位成 1M(不显示"一千千")
+  assert.equal(ai.formatTokenCount(999999), '1M');
   assert.equal(ai.formatTokenCount(1000000), '1M');
   assert.equal(ai.formatTokenCount(2500000), '3M');
 });
@@ -2042,4 +2043,43 @@ test('工具回合收口:模型直接作答（无步骤行）与失败轮都不�
   assert.equal(th.containerEl.children.filter((c) => c.className === 'ai-turn-fold').length, 0);
   assert.ok(th.containerEl.children.includes(failed));
   assert.ok(th.containerEl.children.includes(step));
+});
+
+test('tokenRateOf only reports a rate when generation time is measurable', async () => {
+  const { ai } = await setup();
+  assert.equal(ai.tokenRateOf(null), null);
+  // 没有输出 / 没有计时 / 时长过短都视为不可用
+  assert.equal(ai.tokenRateOf({ completionTokens: 0, genMs: 5000 }), null);
+  assert.equal(ai.tokenRateOf({ completionTokens: 100, genMs: null }), null);
+  assert.equal(ai.tokenRateOf({ completionTokens: 100, genMs: 150 }), null); // <200ms 是噪声
+  // 正常:100 token / 2s = 50 tok/s
+  assert.equal(ai.tokenRateOf({ completionTokens: 100, genMs: 2000 }), 50);
+  // 边界:刚好 200ms 可用
+  assert.equal(ai.tokenRateOf({ completionTokens: 20, genMs: 200 }), 100);
+});
+
+test('cacheHitRateOf handles the three protocol shapes and hides when unsupported', async () => {
+  const { ai } = await setup();
+  // 供应商完全不报缓存:返回 null(界面隐藏该行),不是 0
+  assert.equal(ai.cacheHitRateOf({ promptTokens: 1000 }), null);
+  assert.equal(ai.cacheHitRateOf(null), null);
+
+  // OpenAI:promptTokens 已含 cached
+  assert.equal(ai.cacheHitRateOf({ promptTokens: 1000, cacheReadTokens: 800 }, 'openai'), 0.8);
+  // OpenAI 命中为 0:如实返回 0(真没命中),不是 null
+  assert.equal(ai.cacheHitRateOf({ promptTokens: 1000, cacheReadTokens: 0 }, 'openai'), 0);
+
+  // DeepSeek:命中与未命中分别是两个字段
+  assert.equal(ai.cacheHitRateOf({ cacheReadTokens: 750, cacheWriteTokens: 250 }, 'openai'), 0.75);
+
+  // Anthropic:input 不含缓存部分,分母要加回 read+write
+  assert.equal(
+    ai.cacheHitRateOf({ promptTokens: 100, cacheReadTokens: 800, cacheWriteTokens: 100 }, 'anthropic'),
+    800 / 1000,
+  );
+
+  // 异常口径:命中率 >100% 时封顶
+  assert.equal(ai.cacheHitRateOf({ promptTokens: 100, cacheReadTokens: 900 }, 'openai'), 1);
+  // 分母为 0 时不可计算
+  assert.equal(ai.cacheHitRateOf({ promptTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }), null);
 });

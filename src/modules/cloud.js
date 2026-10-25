@@ -1,10 +1,15 @@
 // 云主机导入:多账号凭据 + 全区域一键拉取
 import { $, PROVIDER_LABEL, api, askConfirm, closeModal, state, toast } from './core.js';
 import { connectHost } from './terminal.js';
-import { escapeHtml, refreshHosts } from './hosts.js';
+import { escapeHtml, refreshHosts, secretMask } from './hosts.js';
+import { icon } from '../shared/icons.js';
 
 export const VENDOR_LABEL = { tencent: '腾讯云', aliyun: '阿里云' };
 export const SERVICE_LABEL = { cvm: 'CVM', lighthouse: '轻量', aliyun: 'ECS', tencent: 'CVM' };
+export const CLOUD_OFFICIAL_ENDPOINTS = {
+  tencent: 'https://cvm.tencentcloudapi.com',
+  aliyun: 'https://ecs.aliyuncs.com',
+};
 
 // 密钥获取帮助:随表单厂商切换;外链仅白名单控制台域名(见 commands.rs regex_lite)。
 // 多账号重构(90f0e96)时整块随旧 UI 丢失,现恢复并挂到新表单里。
@@ -21,50 +26,270 @@ export async function refreshCloudAccounts() {
   const r = await api('cloud:accounts');
   state.cloudAccounts = r.accounts || [];
   renderCloudAccounts();
+  renderCloudImportStrip();
 }
 
 export function renderCloudAccounts() {
   const box = $('#cloud-accounts');
+  if (!box) return;
+  // 编辑器可能被移动到账号行下方,list 重建前先摘下,渲染完按当前编辑态归位
+  const form = $('#cloud-account-form');
+  const formOpen = form && !form.classList.contains('hidden');
+  form?.remove();
   box.innerHTML = '';
+  const countEl = $('#settings-cloud-count');
+  if (countEl) countEl.textContent = `共 ${state.cloudAccounts.length} 个账号`;
   if (!state.cloudAccounts.length) {
-    box.innerHTML = '<div class="muted small-note" style="padding:6px 2px;">尚未添加账号。添加后即可一键拉取该账号下所有地域的主机(腾讯云自动包含 CVM 与轻量)。</div>';
+    box.innerHTML = '<div class="muted small-note" style="padding:10px 4px;">尚未添加云账号。添加后即可一键拉取该账号下所有地域的主机（腾讯云自动包含 CVM 与轻量）。</div>';
+    if (form) {
+      if (formOpen) attachCloudForm(form);
+      else { box.after(form); form.classList.add('hidden'); }
+    }
     return;
   }
   for (const a of state.cloudAccounts) {
     const row = document.createElement('div');
     row.className = 'cloud-account-row';
+    row.dataset.accountId = a.id;
+    if (state.cloudEditing?.id === a.id) row.classList.add('editing');
+    const vendorClass = a.vendor === 'aliyun' ? 'aliyun' : 'tencent';
+    const vendorName = VENDOR_LABEL[a.vendor] || a.vendor;
+    const scopeText = a.vendor === 'aliyun' ? 'ECS (自动探测)' : 'CVM + 轻量 (自动探测)';
     row.innerHTML = `
-      <span class="ca-vendor">${escapeHtml(VENDOR_LABEL[a.vendor] || a.vendor)}</span>
-      <span class="ca-label">${escapeHtml(a.label || '(未命名)')}</span>
-      <span class="ca-key mono">${escapeHtml(a.keyId || '')}</span>
-      ${a.secretSet ? '<span class="ca-ok">已保存密钥</span>' : '<span class="ca-miss">缺密钥</span>'}
-      <span class="spacer"></span>
-      <button class="btn small ca-edit">编辑</button>
-      <button class="btn small ca-del">删除</button>`;
+      <div class="cloud-card-row1">
+        <span class="cloud-vendor-pill ${vendorClass}">${escapeHtml(vendorName)}</span>
+        <span class="cloud-card-label ca-label">${escapeHtml(a.label || '(未命名)')}</span>
+        <div class="cloud-card-actions">
+          <button class="btn small ca-test" type="button" title="测试该账号凭据有效性">测试</button>
+          <button class="btn small ca-edit" type="button">编辑</button>
+          <button class="btn small ghost danger ca-del" type="button">删除</button>
+        </div>
+      </div>
+      <div class="cloud-card-row2">
+        <span class="cloud-card-key ca-key mono">${escapeHtml(a.keyId || '')}</span>
+        ${a.secretSet ? '<span class="cloud-status-dot ok ca-ok">● 密钥已保存</span>' : '<span class="cloud-status-dot warn ca-miss">● 缺密钥</span>'}
+        <span class="cloud-scope-hint">${escapeHtml(scopeText)}</span>
+      </div>
+      <div class="cloud-card-test-result hidden" id="cloud-test-result-${escapeHtml(a.id)}"></div>`;
+
+    const testBtn = row.querySelector('.ca-test');
+    const testResultEl = row.querySelector(`#cloud-test-result-${CSS.escape(a.id)}`);
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      testResultEl.className = 'cloud-card-test-result';
+      testResultEl.classList.remove('hidden');
+      testResultEl.textContent = '正在探测所有地域并校验凭据…';
+      try {
+        const r = await api('cloud:testAccount', { id: a.id });
+        testResultEl.className = 'cloud-card-test-result success';
+        testResultEl.textContent = `✓ 校验通过：${r.regionCount} 个地域，共发现 ${r.instanceCount} 台实例` +
+          (r.errorCount ? `；另有 ${r.errorCount} 项地域查询失败` : '');
+        toast('凭据校验通过', 'success');
+      } catch (e) {
+        testResultEl.className = 'cloud-card-test-result error';
+        testResultEl.textContent = '✗ 校验失败：' + e.message;
+        toast('校验失败：' + e.message, 'error');
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+
     row.querySelector('.ca-edit').addEventListener('click', () => editCloudAccount(a));
     row.querySelector('.ca-del').addEventListener('click', async () => {
       if (!(await askConfirm(`删除云账号「${a.label || a.keyId}」?已导入的主机不受影响。`, { title: '删除云账号', okText: '删除' }))) return;
       await api('cloud:deleteAccount', { id: a.id });
+      if (state.cloudEditing?.id === a.id) closeCloudForm();
       await refreshCloudAccounts();
     });
     box.appendChild(row);
   }
+  if (form) {
+    if (formOpen) attachCloudForm(form);
+    else {
+      form.classList.remove('inline');
+      form.classList.add('hidden');
+      box.after(form);
+    }
+  }
 }
 
-/// 添加/编辑账号:在弹窗内用一张表单一次性填完(厂商/备注/Key ID/Secret),
-/// 保存前可点"测试连接"实探校验 —— 避免"存了才发现密钥是错的"。
+/// 折叠编辑器的落位:编辑已有账号 → 嵌入该账号卡片内部(与信息区融为一体,
+/// 加 .inline 走无边框分隔线样式);新增 → 列表顶部独立卡片(无账号可依附)。
+/// 账号行已被删除等找不到目标时收起编辑器。
+function attachCloudForm(form) {
+  const list = $('#cloud-accounts');
+  if (!list) return;
+  if (state.cloudEditing) {
+    const row = list.querySelector(`.cloud-account-row[data-account-id="${CSS.escape(state.cloudEditing.id)}"]`);
+    if (row) {
+      row.appendChild(form);
+      form.classList.add('inline');
+      return;
+    }
+    closeCloudForm();
+    return;
+  }
+  form.classList.remove('inline');
+  const first = list.querySelector('.cloud-account-row');
+  if (first) first.before(form);
+  else list.appendChild(form);
+}
+
+/// 云导入向导瘦身横条与零账号引导状态
+export function renderCloudImportStrip() {
+  const strip = $('#cloud-import-account-strip');
+  if (!strip) return;
+  const summaryEl = $('#cloud-strip-summary');
+  const hintEl = $('#cloud-strip-hint');
+  const fetchBtn = $('#btn-cloud-fetch');
+  const emptyGuide = $('#cloud-import-empty-guide');
+  const cloudTable = $('#cloud-table');
+  const statusEl = $('#cloud-status');
+
+  const count = state.cloudAccounts.length;
+  if (count === 0) {
+    strip.classList.add('empty');
+    if (summaryEl) summaryEl.textContent = '尚未配置云厂商 API 凭据，无法探测云端实例';
+    if (hintEl) hintEl.classList.add('hidden');
+    if (fetchBtn) fetchBtn.disabled = true;
+    if (statusEl) statusEl.textContent = '请先在设置中添加云账号';
+    if (emptyGuide && !state.cloudResults?.length) emptyGuide.classList.remove('hidden');
+    if (cloudTable && !state.cloudResults?.length) cloudTable.classList.add('hidden');
+  } else {
+    strip.classList.remove('empty');
+    const names = state.cloudAccounts.map((a) => `${VENDOR_LABEL[a.vendor] || a.vendor}${a.label ? ' (' + a.label + ')' : ''}`).join('、');
+    if (summaryEl) summaryEl.innerHTML = `已生效 <b>${count} 个云账号</b>：${escapeHtml(names)}`;
+    if (hintEl) {
+      hintEl.classList.remove('hidden');
+      hintEl.textContent = '· 支持全地域自动发现';
+    }
+    if (fetchBtn) fetchBtn.disabled = false;
+    if (emptyGuide) emptyGuide.classList.add('hidden');
+    if (statusEl && !state.cloudResults?.length) {
+      statusEl.textContent = '点击拉取将自动探测已配账号的所有地域';
+    }
+  }
+}
+
+/// 已存密钥的编辑态:默认只显示实际长度的 • 掩码(与主机弹窗密钥规范一致),
+/// 明文在用户点眼睛时经 cloud:revealSecret 按需取回;掩码原样提交 = 保持不变。
+let cloudSecret = { len: 0, mask: '', revealed: false };
+
+/// 伸缩折叠编辑器:点「编辑」在对应账号卡片内部展开(与信息区融为一体)、
+/// 再点同一个「编辑」折叠;「＋ 添加账号」(existing 为空)在列表顶部独立展开。
 export function editCloudAccount(existing) {
+  const form = $('#cloud-account-form');
+  // 同一目标的编辑器已展开 → 折叠收起(按 id 比对,列表刷新后对象引用会换新)
+  const sameTarget = state.cloudEditing && existing
+    ? state.cloudEditing.id === existing.id
+    : state.cloudEditing === existing;
+  if (form && !form.classList.contains('hidden') && sameTarget) {
+    closeCloudForm();
+    return;
+  }
   state.cloudEditing = existing || null;
   const vendor = existing ? existing.vendor : 'tencent';
   $('#cloud-form-vendor').value = vendor;
   $('#cloud-form-label').value = existing ? existing.label || '' : '';
   $('#cloud-form-keyid').value = existing ? existing.keyId || '' : '';
-  $('#cloud-form-secret').value = '';
+  const secInput = $('#cloud-form-secret');
+  secInput.type = 'password';
+  const revBtn = $('#btn-reveal-cloud-secret');
+  if (existing?.secretSet) {
+    cloudSecret = { len: existing.secretLen || 8, mask: secretMask(existing.secretLen), revealed: false };
+    secInput.value = cloudSecret.mask;
+    if (revBtn) {
+      revBtn.classList.remove('hidden');
+      revBtn.title = '显示密钥';
+      revBtn.setAttribute('aria-label', '显示密钥');
+      revBtn.innerHTML = icon('eyeOff');
+    }
+  } else {
+    cloudSecret = { len: 0, mask: '', revealed: false };
+    secInput.value = '';
+    if (revBtn) revBtn.classList.add('hidden');
+  }
   $('#cloud-form-endpoint').value = existing ? existing.endpoint || '' : '';
+  const titleEl = $('#cloud-form-title');
+  if (titleEl) {
+    titleEl.textContent = existing
+      ? `编辑云账号：${existing.label || existing.keyId}`
+      : '添加云账号';
+  }
   syncCloudFormLabels();
-  $('#cloud-test-status').textContent = '';
-  $('#cloud-account-form').classList.remove('hidden');
-  $('#cloud-form-keyid').focus();
+  form.classList.remove('hidden');
+  markEditingRow();
+  attachCloudForm(form);
+  // 不抢焦点:展开即聚焦会把键盘输入/输入法从用户当前操作中夺走
+  const sec = $('#settings-sec-cloud');
+  if (sec) {
+    const top = form.offsetTop - sec.offsetTop;
+    sec.scrollTo({ top: Math.max(0, top - 8), left: 0, behavior: 'smooth' });
+    sec.scrollLeft = 0;
+  }
+}
+
+/// 正在编辑的账号行加高亮描边,其余还原
+function markEditingRow() {
+  const list = $('#cloud-accounts');
+  if (!list) return;
+  const id = state.cloudEditing?.id;
+  for (const row of list.querySelectorAll('.cloud-account-row')) {
+    row.classList.toggle('editing', !!id && row.dataset.accountId === id);
+  }
+}
+
+export async function toggleCloudSecretVisibility() {
+  const input = $('#cloud-form-secret');
+  const btn = $('#btn-reveal-cloud-secret');
+  if (!input || !btn) return;
+  if (input.type === 'password') {
+    // 首次揭示:值仍是掩码时才向后端按需取明文(掩码本身不含密钥)
+    if (
+      state.cloudEditing
+      && cloudSecret.mask
+      && input.value === cloudSecret.mask
+    ) {
+      try {
+        const r = await api('cloud:revealSecret', { id: state.cloudEditing.id });
+        cloudSecret.revealed = true;
+        cloudSecret.len = (r?.value || '').length;
+        cloudSecret.mask = secretMask(cloudSecret.len);
+        input.value = r?.value || '';
+      } catch (e) {
+        toast('获取明文失败：' + e.message, 'error');
+        return;
+      }
+    } else {
+      cloudSecret.revealed = true;
+    }
+    input.type = 'text';
+    btn.title = '隐藏密钥';
+    btn.setAttribute('aria-label', '隐藏密钥');
+    btn.innerHTML = icon('eye');
+  } else {
+    input.type = 'password';
+    cloudSecret.revealed = false;
+    btn.title = '显示密钥';
+    btn.setAttribute('aria-label', '显示密钥');
+    btn.innerHTML = icon('eyeOff');
+  }
+}
+
+export function onCloudSecretInput() {
+  const input = $('#cloud-form-secret');
+  const btn = $('#btn-reveal-cloud-secret');
+  if (!input) return;
+  if (btn) btn.classList.toggle('hidden', input.value.length === 0);
+  if (input.value.length === 0 && cloudSecret.revealed) {
+    input.type = 'password';
+    cloudSecret.revealed = false;
+    if (btn) {
+      btn.title = '显示密钥';
+      btn.setAttribute('aria-label', '显示密钥');
+      btn.innerHTML = icon('eyeOff');
+    }
+  }
 }
 
 export function secretFieldName(vendor) {
@@ -79,36 +304,53 @@ export function syncCloudFormLabels() {
   $('#cloud-form-keyid-label').textContent = keyIdFieldName(vendor);
   $('#cloud-form-keyid').placeholder = vendor === 'aliyun' ? 'LTAI…' : 'AKID…';
   const prev = state.cloudEditing;
-  // 编辑已存密钥的账号时,留空 = 保持不变;但换了厂商就不能再沿用旧密钥,
-  // 此时要改回真实字段名,避免 placeholder 给出错误暗示。
+  // 编辑已存密钥的账号时,留空 = 保持不变;但换了厂商就不能再沿用旧密钥:
+  // 掩码一并清掉(它代表的是旧厂商的密钥),placeholder 改回真实字段名。
   const keepExisting = prev && prev.secretSet && prev.vendor === vendor;
-  $('#cloud-form-secret').placeholder = keepExisting
+  const secInput = $('#cloud-form-secret');
+  if (prev && prev.secretSet && prev.vendor !== vendor) {
+    cloudSecret = { len: 0, mask: '', revealed: false };
+    secInput.value = '';
+    secInput.type = 'password';
+    $('#btn-reveal-cloud-secret')?.classList.add('hidden');
+  }
+  secInput.placeholder = keepExisting
     ? '已保存，留空保持不变'
     : secretFieldName(vendor);
+  const epDisplay = $('#cloud-form-endpoint-display');
+  if (epDisplay) {
+    epDisplay.textContent = CLOUD_OFFICIAL_ENDPOINTS[vendor] || 'https://cvm.tencentcloudapi.com';
+  }
   $('#cloud-form-help').innerHTML =
     (CLOUD_KEY_HELP[vendor] || '') + '<br />' + CLOUD_KEY_HELP_FOOT;
 }
 
 export function closeCloudForm() {
   state.cloudEditing = null;
-  $('#cloud-account-form').classList.add('hidden');
-  $('#cloud-test-status').textContent = '';
-}
-
-/// 校验结论只对"当时那组凭据"有效:字段一变就得作废,否则会停留在
-/// 尚未校验过的新值上,误导用户以为改完仍然正确。
-export function clearCloudTestStatus() {
-  const el = $('#cloud-test-status');
-  if (el.textContent) el.textContent = '';
+  const form = $('#cloud-account-form');
+  form.classList.add('hidden');
+  form.classList.remove('inline');
+  // 收起时把编辑器挪回账号列表之后的常驻位置,列表刷新不会误伤它
+  const list = $('#cloud-accounts');
+  if (list && form) list.after(form);
+  markEditingRow();
+  const sec = $('#settings-sec-cloud');
+  if (sec) sec.scrollLeft = 0;
 }
 
 export function cloudFormPayload() {
+  const raw = $('#cloud-form-secret').value;
+  // 掩码原样(未被改动)提交 = 保持已存密钥不变;清空同理。明文只在
+  // 用户揭示或重新输入后才随表单发送。
+  const secretUnchanged = state.cloudEditing
+    && cloudSecret.mask
+    && (raw === cloudSecret.mask || raw.trim() === '');
   return {
     id: state.cloudEditing ? state.cloudEditing.id : '',
     vendor: $('#cloud-form-vendor').value,
     label: $('#cloud-form-label').value.trim(),
     keyId: $('#cloud-form-keyid').value.trim(),
-    secret: $('#cloud-form-secret').value.trim(),
+    secret: secretUnchanged ? '' : raw.trim(),
     endpoint: $('#cloud-form-endpoint').value.trim(),
   };
 }
@@ -124,28 +366,6 @@ export function validateCloudForm(p) {
     return `请填写 ${secretFieldName(p.vendor)}`;
   }
   return null;
-}
-
-export async function testCloudAccount() {
-  const p = cloudFormPayload();
-  const err = validateCloudForm(p);
-  if (err) return toast(err, 'error');
-  const btn = $('#btn-cloud-test');
-  const status = $('#cloud-test-status');
-  btn.disabled = true;
-  status.textContent = '正在校验…';
-  try {
-    const r = await api('cloud:testAccount', p);
-    // 校验是与"拉取全部"同路径的全量只读扫描:数字即真实拉取结果,不再是抽样
-    status.textContent = `✓ 校验通过：${r.regionCount} 个地域，共发现 ${r.instanceCount} 台实例（未保存）` +
-      (r.errorCount ? `；另有 ${r.errorCount} 项地域查询失败，结果可能不完整` : '');
-    toast('凭据校验通过', 'success');
-  } catch (e) {
-    status.textContent = '✗ ' + e.message;
-    toast('校验失败：' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 export async function saveCloudAccountFromForm() {

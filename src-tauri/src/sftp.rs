@@ -642,7 +642,8 @@ pub async fn open_remote<
 pub fn open_with_default_app(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        // NSWorkspace 原生调用,不派生 `open` CLI(GUI 进程拉 CLI 会闪终端窗口)
+        crate::win32::open_path_native(path);
     }
     #[cfg(target_os = "windows")]
     {
@@ -664,10 +665,8 @@ pub fn open_with_default_app(path: &std::path::Path) {
 pub fn reveal_in_file_manager(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open")
-            .arg("-R")
-            .arg(path)
-            .spawn();
+        // NSWorkspace activateFileViewerSelectingURLs 等价 `open -R`,零子进程
+        crate::win32::reveal_path_native(path);
     }
     #[cfg(target_os = "windows")]
     {

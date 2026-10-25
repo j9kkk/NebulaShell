@@ -1319,19 +1319,20 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .ai-context-popover.hidden { display: none; }
 .ai-ctx-pop-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin-bottom: 8px; flex-wrap: wrap;
 }
 .ai-ctx-pop-title {
   font-weight: 600; font-size: 12px; color: var(--text);
 }
-.ai-ctx-pop-ratio {
+/* 标题行的「已用 / 上限 (百分比)」:数值用等宽,百分比跟随状态色 */
+.ai-ctx-pop-usage {
   font-family: var(--font-mono);
-  font-weight: 600; font-size: 12px;
-  color: var(--accent);
+  font-size: 11px; color: var(--muted);
+  white-space: nowrap;
 }
-.ai-context-popover[data-status="warn"] .ai-ctx-pop-ratio { color: var(--warn); }
-.ai-context-popover[data-status="danger"] .ai-ctx-pop-ratio { color: var(--danger); }
+.ai-ctx-pop-usage[data-status="warn"] { color: var(--warn); }
+.ai-ctx-pop-usage[data-status="danger"] { color: var(--danger); }
 
 .ai-ctx-pop-bar-wrap {
   width: 100%; height: 6px;
@@ -1351,10 +1352,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-ctx-bar-seg.hist { background: #818cf8; }
 .ai-ctx-bar-seg.draft { background: #34d399; }
 
+/* 明细区不再自带下边框:它和下方的指标区、上方的进度条之间只应有一条分隔线,
+   由各分区用 border-top 单侧声明(见 .ai-ctx-pop-stats / .ai-ctx-pop-trimmed),
+   两侧都声明会叠成双线。 */
 .ai-ctx-pop-list {
   display: flex; flex-direction: column; gap: 6px;
   padding: 4px 0 8px;
-  border-bottom: 1px solid var(--border);
 }
 .ai-ctx-pop-item {
   display: flex; align-items: center; gap: 6px;
@@ -1372,20 +1375,26 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   flex: 0 0 auto; font-family: var(--font-mono); font-size: 11px;
 }
 
-.ai-ctx-pop-foot {
-  padding-top: 8px;
-  display: flex; flex-direction: column; gap: 4px;
+/* 性能指标区(速率 / 缓存命中率):字段缺失时整块隐藏,不留空分隔线 */
+.ai-ctx-pop-stats {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
 }
-.ai-ctx-pop-total-row {
+.ai-ctx-pop-stats.hidden { display: none; }
+.ai-ctx-pop-stat {
   display: flex; align-items: center; justify-content: space-between;
   color: var(--muted); font-size: 11px;
 }
-.ai-ctx-pop-total-row b {
-  color: var(--text); font-family: var(--font-mono);
+.ai-ctx-pop-stat.hidden { display: none; }
+.ai-ctx-pop-stat-val {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text);
 }
 .ai-ctx-pop-trimmed {
   font-size: 10.5px; color: var(--warn);
-  line-height: 1.4; margin-top: 2px;
+  line-height: 1.4; margin-top: 8px;
+  padding-top: 8px; border-top: 1px solid var(--border);
 }
 .ai-ctx-pop-trimmed.hidden { display: none; }
 
@@ -1744,11 +1753,18 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 
 /* 设置窗口:左侧分区导航 + 右侧分区内容。分区高度不同,给内容区定一个
-   最小高度,切换分区时卡片不上下跳。 */
-.modal-card.settings-card { width: 680px; }
+   最小高度,切换分区时卡片不上下跳。外层卡片严格 overflow:hidden,滚动只发生在分区内部 */
+.modal-card.settings-card { width: 680px; overflow: hidden; }
 /* 高度锁定:四个页签同高(取 AI 页常态高度为基准),页签切换弹窗不再跳变。
-   小屏收窄到视口;页签内容超高时内页自己滚,底部操作条 sticky 吸底常驻。 */
-.settings-body { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 18px; height: min(520px, calc(100dvh - 120px)); min-height: 0; }
+   小屏收窄到视口;行高 minmax(0,1fr) 把分区钉在容器高内,使 .settings-sec 成为唯一
+   真正的滚动容器(auto 行会按内容撑高、溢出被裁,表现为「没有滚动条也滚不动」)。
+   dvh-170 为卡片留足标题+内边距余量,卡片永不越过自身 max-height 而被裁底。 */
+.settings-body {
+  display: grid; grid-template-columns: 128px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr); gap: 18px;
+  height: min(520px, calc(100dvh - 170px));
+  min-height: 0; min-width: 0; overflow: hidden;
+}
 .settings-nav { display: flex; flex-direction: column; gap: 2px; padding-right: 12px; border-right: 1px solid var(--border); }
 .settings-tab {
   display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
@@ -1758,10 +1774,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .settings-tab svg { width: 15px; height: 15px; }
 .settings-tab:hover { color: var(--text); background: var(--hover-bg); }
 .settings-tab[aria-selected="true"] { color: var(--text); background: var(--active-bg); font-weight: 600; }
-.settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 打开设置时的程序化聚焦不再画外圈:选中态已有 --active-bg 底色作为视觉位置指示,
+   叠一圈 outline 会被当成多余的边框(首次打开终端页签出现一圈蓝框的来源) */
+.settings-tab:focus { outline: none; }
 .settings-sec {
   min-width: 0; display: flex; flex-direction: column; min-height: 0;
-  overflow-y: auto; scrollbar-width: thin;
+  overflow-y: auto; overflow-x: hidden !important; scrollbar-width: thin;
   /* 聚焦外圈(outline 2px + offset 2px)画在元素框外 4px 处,留内距防滚动容器边缘裁剪 */
   padding: 4px 6px 4px 4px;
 }
@@ -2212,11 +2230,13 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 /* 多选行:左侧方框 + 右侧"名称 / 属性"两行 */
 .picker-item {
-  display: flex; gap: 9px; align-items: center; width: 100%; text-align: left;
+  display: flex; gap: 9px; align-items: flex-start; width: 100%; text-align: left;
   background: transparent; border: 1px solid transparent; color: var(--text);
   border-radius: 6px; padding: 7px 9px; font-size: 13px;
   font-family: inherit; cursor: pointer;
 }
+/* 勾选框与首行名称对齐(行可能因胶囊折行而变高) */
+.picker-item .picker-box { margin-top: 2px; }
 .picker-item:hover { background: var(--hover-bg); }
 .picker-item.focus { border-color: var(--accent); }
 .picker-item.active { background: var(--active-bg); }
@@ -2234,6 +2254,32 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 /* 名称允许换行截断,不让长 id 把行撑破 */
 .picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-meta { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 第二行:来源/日期 + 能力胶囊。胶囊跟在日期右侧,放不下时整体折行,
+   不挤压日期文本(日期有一定信息量,不该先被截断)。 */
+.picker-meta-row {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 4px 6px; min-width: 0;
+}
+.picker-meta-row .picker-meta { flex: 0 1 auto; min-width: 0; }
+.picker-badges { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.picker-badge {
+  font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px;
+  font-family: var(--font-mono); font-weight: 500;
+  background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+  white-space: nowrap; cursor: help;
+}
+/* 本地推荐:虚线边框 + 警示色,与设置页的 .badge-ctx[data-source] 语义一致 */
+.picker-badge[data-kind="source"] {
+  border-style: dashed; color: var(--warn, #f59e0b);
+}
+.picker-badge[data-kind="vision"] {
+  background: rgba(59, 130, 246, 0.15); color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+.picker-badge[data-kind="kind"] {
+  background: rgba(167, 139, 250, 0.15); color: #a78bfa;
+  border-color: rgba(167, 139, 250, 0.3);
+}
 .picker-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 30px 0; }
 
 /* 命令面板:贴近顶部(视线起点),输入框常驻焦点,结果用 activedescendant 高亮 */
@@ -2281,26 +2327,136 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .cloud-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
 /* 多账号云凭据 */
 .cloud-accounts-head { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-.cloud-accounts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.cloud-accounts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; width: 100%; box-sizing: border-box; }
 .cloud-account-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg2); font-size: 12px;
+  transition: border-color 0.15s ease;
+  width: 100%; box-sizing: border-box; min-width: 0;
+  overflow: hidden;
 }
-.cloud-account-row .ca-vendor { font-weight: 600; }
-.cloud-account-row .ca-label { color: var(--text); }
-.cloud-account-row .ca-key { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-.cloud-account-row .ca-ok { color: var(--accent2); }
-.cloud-account-row .ca-miss { color: var(--warn); }
-/* 凭据一次性填写表单:默认收起,点"添加账号/编辑"时展开 */
+.cloud-account-row:hover { border-color: rgba(56, 189, 248, 0.4); }
+.cloud-card-row1 { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; overflow: hidden; }
+.cloud-vendor-pill {
+  font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.2px; flex-shrink: 0;
+}
+.cloud-vendor-pill.tencent {
+  background: rgba(0, 164, 255, 0.15); color: #38bdf8; border: 1px solid rgba(0, 164, 255, 0.3);
+}
+.cloud-vendor-pill.aliyun {
+  background: rgba(255, 106, 0, 0.15); color: #fb923c; border: 1px solid rgba(255, 106, 0, 0.3);
+}
+.cloud-card-label { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.cloud-card-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+.cloud-card-actions .btn { --ctl-h: 26px; }
+.cloud-card-row2 {
+  display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); min-width: 0; flex-wrap: wrap; width: 100%;
+}
+.cloud-card-key {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text); background: var(--bg);
+  padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border);
+  max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
+}
+.cloud-status-dot { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; flex-shrink: 0; }
+.cloud-status-dot.ok { color: var(--accent2, #34d399); }
+.cloud-status-dot.warn { color: var(--warn, #f59e0b); }
+.cloud-scope-hint {
+  margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap;
+  flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.cloud-card-test-result {
+  margin-top: 2px; padding: 6px 8px; border-radius: 6px; font-size: 11.5px; display: flex; align-items: center; gap: 6px;
+  word-break: break-all;
+}
+.cloud-card-test-result.success {
+  background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.25); color: #34d399;
+}
+.cloud-card-test-result.error {
+  background: rgba(255, 107, 107, 0.1); border: 1px solid rgba(255, 107, 107, 0.25); color: var(--danger);
+}
+
+/* 设置中心云账号分区工具栏与注记 */
+.settings-cloud-intro { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; width: 100%; min-width: 0; }
+.settings-cloud-desc { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: break-word; }
+.settings-cloud-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; width: 100%; min-width: 0; }
+.settings-cloud-count { font-size: 12px; color: var(--muted); font-weight: 500; }
+.settings-sec-cloud-foot {
+  position: sticky; bottom: 0; margin-top: auto; padding: 12px 6px 4px;
+  background: var(--panel); border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--muted);
+  width: 100%; box-sizing: border-box; min-width: 0;
+  overflow: hidden;
+}
+
+/* 凭据伸缩折叠编辑器:默认收起;点「编辑」嵌入对应账号卡片内部展开(融合为
+   一张卡,分隔线通到两端、无独立边框)、「＋ 添加账号」在列表顶部独立展开(细边框) */
 .cloud-account-form {
-  margin: 8px 0 10px; padding: 12px 14px;
-  border: 1px solid var(--accent); border-radius: 8px;
-  background: var(--bg2);
+  margin: 0; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg2); box-sizing: border-box; width: 100%; max-width: 100%;
+  overflow: hidden;
 }
-.cloud-account-form .form-grid { row-gap: 8px; }
-.cloud-form-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-.cloud-form-actions #cloud-test-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 嵌入账号卡内的编辑态:去掉自身边框与底色,负外边距抵消卡片内边距,
+   让上分隔线贯通卡片整宽,与信息区融为一张卡 */
+.cloud-account-form.inline {
+  margin: 2px -11px -9px;
+  padding: 12px 12px 6px;
+  border: none; border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+}
+.cloud-account-row.editing { border-color: var(--border-hover); }
+.cloud-account-form .form-grid {
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px 10px;
+}
+.cloud-inline-form-title {
+  font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+}
+.cloud-inline-form-title .mi { width: 14px; height: 14px; }
+.cloud-form-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.cloud-endpoint-row { display: flex; align-items: center; width: 100%; min-width: 0; }
+.cloud-endpoint-badge {
+  font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+  background: var(--bg); padding: 0 10px; border-radius: 6px;
+  border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  width: 100%; height: 34px; box-sizing: border-box;
+  display: inline-flex; align-items: center;
+}
+
+/* 云导入向导瘦身横条与引导卡片 */
+.cloud-import-account-strip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; margin-bottom: 14px;
+}
+.cloud-import-account-strip.empty {
+  border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.06);
+}
+.strip-lead-icon { color: var(--accent); display: flex; align-items: center; }
+.strip-lead-icon.warn { color: var(--warn); }
+.strip-text { font-size: 12.5px; color: var(--text); display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.strip-text b { font-weight: 600; color: var(--text); }
+.strip-muted { color: var(--muted); font-size: 12px; }
+.strip-manage-link {
+  font-size: 12px; color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(56, 189, 248, 0.2);
+  background: rgba(56, 189, 248, 0.08); font-weight: 500; height: 26px; box-sizing: border-box;
+}
+.strip-manage-link:hover { background: rgba(56, 189, 248, 0.16); color: var(--accent2); }
+.strip-manage-link .mi { width: 12px; height: 12px; }
+.cloud-import-empty-card {
+  padding: 32px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; text-align: center; background: var(--bg2); border: 1px dashed var(--border);
+  border-radius: 8px; margin-top: 10px;
+}
+.cloud-import-empty-card .empty-icon-circle {
+  width: 44px; height: 44px; border-radius: 22px; background: rgba(56, 189, 248, 0.12);
+  display: flex; align-items: center; justify-content: center; color: var(--accent);
+}
+.cloud-import-empty-card .empty-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.cloud-import-empty-card .empty-sub { font-size: 12px; color: var(--muted); max-width: 380px; line-height: 1.5; }
 .cloud-errors {
   margin: 6px 0; padding: 8px 10px; border: 1px solid var(--warn);
   border-radius: 8px; font-size: 12px; color: var(--warn); max-height: 110px; overflow: auto;
@@ -2310,7 +2466,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   padding: 6px 8px; border-bottom: 1px solid var(--border);
 }
 .cloud-help {
-  margin: -2px 0 12px;
+  margin: 12px 0;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -3429,6 +3585,21 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 }
 .badge-default { background: var(--accent); color: #fff; }
 .badge-ctx { background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+/* 本地推荐值(未从供应商拿到):虚线边框 + 弱化的问号提示,与权威值区分开 */
+.badge-ctx[data-source="inferred"] {
+  border-style: dashed;
+  color: var(--warn, #f59e0b);
+}
+/* 弹窗顶部的能力值来源说明:跨满整行,弱化为注释 */
+.cfg-source-note {
+  grid-column: 1 / -1;
+  margin: -2px 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.cfg-source-note[data-source="inferred"] { color: var(--warn, #f59e0b); }
+.cfg-source-note[data-source="upstream"] { color: var(--accent2, var(--accent)); }
 .badge-vision { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
 .badge-reasoning { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
 .model-row-actions {
@@ -3480,34 +3651,85 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 }
 .cfg-error { font-size: 11px; color: var(--danger); min-height: 16px; }
 
-/* 底部模型菜单内的思考强度滑块 (阶段 3) */
+/* 底部模型菜单内的思考强度滑块:色彩渐变轨道 + 漂浮粒子 + 白色大滑块。
+   颜色本身编码强度(绿=轻 → 青=中 → 蓝=重),粒子让"思考在流动"可感;
+   原生 range 保持透明叠在上层,键盘操作与无障碍语义完全不变。 */
 .ai-model-reasoning-section {
-  padding: 8px 10px; border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px 10px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px;
 }
 .ai-reasoning-head {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 11px; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11.5px; color: var(--muted);
 }
-.ai-reasoning-title { font-weight: 500; }
-.ai-reasoning-current { color: var(--text); font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
-.ai-reasoning-accel { font-size: 10px; padding: 1px 4px; background: var(--bg2); border-radius: 3px; color: var(--muted); }
-.ai-reasoning-slider-wrap {
-  position: relative; display: flex; align-items: center; padding: 2px 0;
+.ai-reasoning-title { flex: none; font-weight: 500; }
+.ai-reasoning-head .spacer { flex: 1 1 auto; }
+/* 当前档位:比标题大一号、白色加粗(截图里的「最高」) */
+.ai-reasoning-value { flex: none; font-size: 13px; font-weight: 600; color: var(--text); }
+.ai-reasoning-accel {
+  flex: none; font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  background: var(--bg2); border: 1px solid var(--border); color: var(--muted);
 }
+
+.ai-reasoning-slider-wrap { position: relative; display: flex; align-items: center; }
+/* 轨道本体:渐变由绿经青到蓝,与截图取色一致。
+   轨道比滑块矮,滑块略微探出轨道上下外缘(参考稿的关系)。
+   左右各内缩 15px(=半个滑块):原生 range 的 thumb 中心行程恰好到此为止,
+   这样滑块在两端时圆心压在轨道圆角上,不会露出轨道外的空白。 */
+.ai-reasoning-track {
+  position: absolute; top: 0; bottom: 0; left: 15px; right: 15px;
+  display: flex; align-items: center;
+  height: 24px; margin: auto 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: linear-gradient(90deg,
+    #5cbd80 0%, #00b9a3 20%, #00b1c4 38%,
+    #00a5dc 58%, #0097ed 78%, #2888f9 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+/* 粒子:半透明白点,轻微上下漂移;--delay 负值让它们错峰,不整齐划一 */
+.ai-reasoning-particle {
+  position: absolute;
+  left: var(--x); top: var(--y);
+  width: var(--s); height: var(--s);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  transform: translate(-50%, -50%);
+  animation: ai-particle-drift 3.4s ease-in-out infinite;
+  animation-delay: var(--delay);
+  pointer-events: none;
+}
+@keyframes ai-particle-drift {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.55; }
+  50% { transform: translate(-50%, calc(-50% - 3px)) scale(1.25); opacity: 0.95; }
+}
+/* 原生滑块:完全透明,只保留交互区域与键盘行为 */
 .ai-reasoning-slider {
-  width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
-  background: var(--border); border-radius: 3px; outline: none; cursor: pointer;
+  position: relative; z-index: 1;
+  width: 100%; height: 30px; margin: 0;
+  -webkit-appearance: none; appearance: none;
+  background: transparent; cursor: pointer;
 }
+.ai-reasoning-slider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
+.ai-reasoning-slider::-webkit-slider-runnable-track { background: transparent; height: 30px; }
 .ai-reasoning-slider::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
-  width: 14px; height: 14px; border-radius: 50%;
-  background: var(--accent); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  width: 30px; height: 30px; border-radius: 50%;
+  background: #fff; border: none; cursor: grab;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.38);
   transition: transform var(--dur-fast) var(--ease);
 }
-.ai-reasoning-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+.ai-reasoning-slider::-webkit-slider-thumb:hover { transform: scale(1.06); }
+.ai-reasoning-slider::-webkit-slider-thumb:active { cursor: grabbing; transform: scale(1.02); }
+/* Firefox 等价选择器(项目主用 WebKit,但别留半边坏掉) */
+.ai-reasoning-slider::-moz-range-track { background: transparent; height: 30px; }
+.ai-reasoning-slider::-moz-range-thumb {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: #fff; border: none; cursor: grab;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.38);
+}
 .ai-reasoning-ticks {
-  display: flex; justify-content: space-between; margin-top: 2px;
+  display: flex; justify-content: space-between;
   font-size: 10px; color: var(--muted);
 }
 

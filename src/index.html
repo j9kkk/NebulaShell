@@ -323,43 +323,28 @@
   <!-- 云主机导入弹窗 -->
   <div id="modal-cloud" class="modal hidden">
     <div class="modal-card wide">
-      <h3>导入云主机</h3>
-      <!-- 多账号云凭据:腾讯云(CVM+轻量共用) / 阿里云,各自可配多个 API Key -->
-      <div class="cloud-accounts-head">
-        <span class="muted">云账号（同一厂商可添加多个账号的密钥）</span>
-        <span class="spacer"></span>
-        <button id="btn-cloud-add-account" class="btn small">＋ 添加账号</button>
+      <h3>从云端导入服务器</h3>
+      <!-- 账号状态横条:展示当前生效的云账号,支持一键跳转配置中心 -->
+      <div id="cloud-import-account-strip" class="cloud-import-account-strip">
+        <span class="strip-lead-icon"><span class="mi" data-icon="cloud"></span></span>
+        <div class="strip-text">
+          <span id="cloud-strip-summary">已配置 0 个云账号</span>
+          <span id="cloud-strip-hint" class="strip-muted">· 支持全地域自动发现</span>
+        </div>
+        <button id="btn-cloud-manage-accounts" class="strip-manage-link" type="button" title="前往设置中心管理云账号凭据">
+          <span>管理账号</span>
+          <span class="mi" data-icon="externalLink"></span>
+        </button>
       </div>
-      <div id="cloud-accounts" class="cloud-accounts"></div>
-      <!-- 凭据一次性填写:密钥与备注同表单提交,并可在保存前"测试连接"校验 -->
-      <div id="cloud-account-form" class="cloud-account-form hidden">
-        <div class="form-grid">
-          <label>厂商</label>
-          <select id="cloud-form-vendor">
-            <option value="tencent">腾讯云（CVM + 轻量）</option>
-            <option value="aliyun">阿里云（ECS）</option>
-          </select>
-          <label>备注名</label>
-          <input id="cloud-form-label" type="text" placeholder="例如：公司主账号（可留空）" maxlength="50" />
-          <label id="cloud-form-keyid-label">SecretId</label>
-          <input id="cloud-form-keyid" type="text" autocomplete="off" placeholder="AKID…" />
-          <label id="cloud-form-secret-label">SecretKey</label>
-          <input id="cloud-form-secret" type="password" autocomplete="new-password" placeholder="SecretKey" />
-          <label>接口地址</label>
-          <input id="cloud-form-endpoint" type="text" placeholder="留空使用官方 API（私有化部署可填）" />
-        </div>
-        <div id="cloud-form-help" class="cloud-help"></div>
-        <div class="cloud-form-actions">
-          <button id="btn-cloud-test" class="btn small">测试连接</button>
-          <span id="cloud-test-status" class="muted"></span>
-          <span class="spacer"></span>
-          <button id="btn-cloud-form-cancel" class="btn">取消</button>
-          <button id="btn-cloud-form-save" class="btn primary">保存</button>
-        </div>
+      <div id="cloud-import-empty-guide" class="cloud-import-empty-card hidden">
+        <div class="empty-icon-circle"><span class="mi" data-icon="cloud"></span></div>
+        <div class="empty-title">尚未添加云账号</div>
+        <div class="empty-sub">支持腾讯云（CVM + 轻量）与阿里云（ECS），添加只读 API 密钥后，NebulaShell 将自动并发扫描所有可用地域。</div>
+        <button id="btn-cloud-guide-config" class="btn primary" type="button">＋ 前往设置中心添加云账号</button>
       </div>
       <div class="cloud-fetch-row">
         <button id="btn-cloud-fetch" class="btn primary">⟳ 一键拉取全部主机</button>
-        <span id="cloud-status" class="muted">添加账号后点击拉取,将自动探测所有地域</span>
+        <span id="cloud-status" class="muted">点击拉取将自动探测已配账号的所有地域</span>
       </div>
       <div id="cloud-errors" class="cloud-errors hidden"></div>
       <table id="cloud-table" class="hidden">
@@ -377,8 +362,8 @@
     </div>
   </div>
 
-  <!-- 设置窗口:左侧分区(终端 / AI / 快捷键),右侧是当前分区的表单。
-       终端与 AI 两个分区各自保存、各自取消(保存后关闭窗口);快捷键分区只读,
+  <!-- 设置窗口:左侧分区(终端 / AI / 云账号 / 会话日志 / 快捷键),右侧是当前分区的表单。
+       终端与 AI 两个分区各自保存、各自取消(保存后关闭窗口);云账号分区即时生效;快捷键分区只读,
        内容取自 keymap(settings.js renderKeymapTable)。 -->
   <div id="modal-settings" class="modal hidden">
     <div class="modal-card settings-card">
@@ -387,6 +372,7 @@
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分区">
           <button id="settings-tab-terminal" class="settings-tab" type="button" role="tab" data-section="terminal" aria-controls="settings-sec-terminal"><span class="mi" data-icon="terminal"></span><span>终端</span></button>
           <button id="settings-tab-ai" class="settings-tab" type="button" role="tab" data-section="ai" aria-controls="settings-sec-ai"><span class="mi" data-icon="sparkles"></span><span>AI</span></button>
+          <button id="settings-tab-cloud" class="settings-tab" type="button" role="tab" data-section="cloud" aria-controls="settings-sec-cloud"><span class="mi" data-icon="cloud"></span><span>云账号</span></button>
           <button id="settings-tab-log" class="settings-tab" type="button" role="tab" data-section="log" aria-controls="settings-sec-log"><span class="mi" data-icon="circleDot"></span><span>会话日志</span></button>
           <button id="settings-tab-keys" class="settings-tab" type="button" role="tab" data-section="keys" aria-controls="settings-sec-keys"><span class="mi" data-icon="keyboard"></span><span>快捷键</span></button>
         </nav>
@@ -452,6 +438,55 @@
         <button id="btn-ai-test" class="btn">测试连接</button>
         <button id="btn-ai-save" class="btn primary">保存</button>
       </div>
+        </section>
+        <section id="settings-sec-cloud" class="settings-sec hidden" role="tabpanel" data-section="cloud" aria-labelledby="settings-tab-cloud">
+          <div class="settings-cloud-intro">
+            <span class="settings-cloud-desc">配置云厂商 API 凭据，用于自动探测全地域并拉取云服务器（CVM / 轻量 / ECS）。凭据经本机密钥派生加密，绝不上传第三方。</span>
+          </div>
+          <div class="settings-cloud-toolbar">
+            <span id="settings-cloud-count" class="settings-cloud-count muted">共 0 个账号</span>
+            <button id="btn-cloud-add-account" class="btn small primary" type="button">＋ 添加账号</button>
+          </div>
+          <div id="cloud-accounts" class="cloud-accounts"></div>
+          <!-- 凭据一次性填写:密钥与备注同表单提交,并可在保存前"测试连接"校验 -->
+          <div id="cloud-account-form" class="cloud-account-form hidden">
+            <div class="cloud-inline-form-title">
+              <span class="mi" data-icon="pencil"></span>
+              <span id="cloud-form-title">添加云账号</span>
+            </div>
+            <div class="form-grid">
+              <label for="cloud-form-vendor">厂商</label>
+              <select id="cloud-form-vendor">
+                <option value="tencent">腾讯云（CVM + 轻量）</option>
+                <option value="aliyun">阿里云（ECS）</option>
+              </select>
+              <label for="cloud-form-label">备注名</label>
+              <input id="cloud-form-label" type="text" placeholder="例如：公司主账号（可留空）" maxlength="50" />
+              <label id="cloud-form-keyid-label" for="cloud-form-keyid">SecretId</label>
+              <input id="cloud-form-keyid" type="text" autocomplete="off" placeholder="AKID…" />
+              <label id="cloud-form-secret-label" for="cloud-form-secret">SecretKey</label>
+              <div class="secret-field">
+                <div class="secret-input-wrap">
+                  <input id="cloud-form-secret" type="password" autocomplete="new-password" placeholder="SecretKey" />
+                  <button id="btn-reveal-cloud-secret" class="btn icon btn-reveal-secret hidden" type="button" title="显示密钥" aria-label="显示密钥"><span class="mi" data-icon="eyeOff"></span></button>
+                </div>
+              </div>
+              <label>接口地址</label>
+              <div class="cloud-endpoint-row">
+                <span id="cloud-form-endpoint-display" class="cloud-endpoint-badge mono">https://cvm.tencentcloudapi.com</span>
+                <input id="cloud-form-endpoint" type="hidden" />
+              </div>
+            </div>
+            <div id="cloud-form-help" class="cloud-help"></div>
+            <div class="cloud-form-actions">
+              <span class="spacer"></span>
+              <button id="btn-cloud-form-cancel" class="btn" type="button">取消</button>
+              <button id="btn-cloud-form-save" class="btn primary" type="button">保存</button>
+            </div>
+          </div>
+          <div class="settings-sec-cloud-foot">
+            <span class="muted small-note">提示：云账号增删改即时生效，已导入的主机不受影响。</span>
+          </div>
         </section>
         <section id="settings-sec-log" class="settings-sec hidden" role="tabpanel" data-section="log" aria-labelledby="settings-tab-log">
           <div class="form-grid">
@@ -538,7 +573,6 @@
     <div class="modal-card model-config-card">
       <div class="modal-head">
         <h3 id="model-config-title">编辑模型配置</h3>
-        <button id="btn-model-config-close" class="btn icon close-btn" type="button" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
       </div>
       <div class="model-config-body form-grid">
         <label for="cfg-auto">智能配置</label>
@@ -547,6 +581,8 @@
           <span class="switch-slider"></span>
           <span class="switch-label">按模型 ID 推荐上下文与推理参数</span>
         </label>
+        <!-- 能力值来源:来自供应商 /models 的权威值,还是本地按模型 ID 推导的推荐值 -->
+        <span class="cfg-source-note" id="cfg-source-note" aria-live="polite"></span>
         <label for="cfg-model-id">模型 ID</label>
         <input id="cfg-model-id" class="inp" type="text" readonly />
         <label for="cfg-model-name">显示名称</label>
@@ -838,13 +874,28 @@
     <div id="ai-model-reasoning" class="ai-model-reasoning-section hidden">
       <div class="ai-reasoning-head">
         <span class="ai-reasoning-title">思考强度</span>
-        <span class="ai-reasoning-current">
-          <span id="ai-reasoning-label">中</span>
-          <kbd id="ai-reasoning-accel" class="ai-reasoning-accel" data-accel="ai.cycleEffort"></kbd>
-        </span>
+        <span id="ai-reasoning-label" class="ai-reasoning-value">中</span>
+        <span class="spacer"></span>
+        <kbd id="ai-reasoning-accel" class="ai-reasoning-accel" data-accel="ai.cycleEffort"></kbd>
       </div>
+      <!-- 渐变轨道 + 漂浮粒子 + 白色大滑块:颜色表达强度(绿→青→蓝),粒子给"思考在流动"的动效。
+           原生 input[type=range] 叠在轨道上方并保持完全透明,键盘/无障碍语义不变。 -->
       <div class="ai-reasoning-slider-wrap">
-        <input id="ai-reasoning-slider" class="ai-reasoning-slider" type="range" min="0" max="3" step="1" value="2" />
+        <div class="ai-reasoning-track" aria-hidden="true">
+          <i class="ai-reasoning-particle" style="--x:4%;--y:46%;--s:3px;--delay:0s"></i>
+          <i class="ai-reasoning-particle" style="--x:10%;--y:62%;--s:4px;--delay:-1.1s"></i>
+          <i class="ai-reasoning-particle" style="--x:15%;--y:30%;--s:2px;--delay:-2.3s"></i>
+          <i class="ai-reasoning-particle" style="--x:22%;--y:58%;--s:5px;--delay:-0.6s"></i>
+          <i class="ai-reasoning-particle" style="--x:31%;--y:38%;--s:2px;--delay:-1.7s"></i>
+          <i class="ai-reasoning-particle" style="--x:39%;--y:66%;--s:3px;--delay:-2.8s"></i>
+          <i class="ai-reasoning-particle" style="--x:47%;--y:44%;--s:4px;--delay:-0.9s"></i>
+          <i class="ai-reasoning-particle" style="--x:56%;--y:64%;--s:2px;--delay:-2.1s"></i>
+          <i class="ai-reasoning-particle" style="--x:64%;--y:36%;--s:3px;--delay:-1.4s"></i>
+          <i class="ai-reasoning-particle" style="--x:74%;--y:56%;--s:5px;--delay:-0.3s"></i>
+          <i class="ai-reasoning-particle" style="--x:83%;--y:34%;--s:2px;--delay:-2.6s"></i>
+          <i class="ai-reasoning-particle" style="--x:92%;--y:62%;--s:4px;--delay:-1.9s"></i>
+        </div>
+        <input id="ai-reasoning-slider" class="ai-reasoning-slider" type="range" min="0" max="3" step="1" value="2" aria-label="思考强度" />
       </div>
       <div id="ai-reasoning-ticks" class="ai-reasoning-ticks"></div>
     </div>
@@ -877,8 +928,9 @@
   <!-- 上下文窗口详情卡片:挂在 body + fixed 定位,展开在 #ai-context-trigger 上方 -->
   <div id="ai-context-popover" class="ai-context-popover hidden" role="dialog" aria-label="上下文窗口详情">
     <div class="ai-ctx-pop-head">
-      <span class="ai-ctx-pop-title">上下文窗口使用情况</span>
-      <span id="ai-ctx-pop-ratio" class="ai-ctx-pop-ratio">0%</span>
+      <span class="ai-ctx-pop-title">上下文窗口</span>
+      <!-- 已用 / 上限 (百分比):模型上限从底部挪到这里,读数集中在一处 -->
+      <span id="ai-ctx-pop-usage" class="ai-ctx-pop-usage">0 / 128万 (0%)</span>
     </div>
     <div class="ai-ctx-pop-bar-wrap">
       <div id="ai-ctx-pop-bar" class="ai-ctx-pop-bar">
@@ -904,13 +956,18 @@
         <span id="ai-ctx-val-draft" class="ai-ctx-pop-val">0</span>
       </div>
     </div>
-    <div class="ai-ctx-pop-foot">
-      <div class="ai-ctx-pop-total-row">
-        <span>当前模型上限</span>
-        <b id="ai-ctx-val-limit">128K Tokens</b>
+    <!-- 性能指标:供应商不返回对应字段时整行隐藏(不是显示 0 / –) -->
+    <div id="ai-ctx-pop-stats" class="ai-ctx-pop-stats hidden">
+      <div id="ai-ctx-pop-rate-row" class="ai-ctx-pop-stat hidden">
+        <span class="ai-ctx-pop-stat-name">生成速率</span>
+        <span id="ai-ctx-pop-rate" class="ai-ctx-pop-stat-val">–</span>
       </div>
-      <div id="ai-ctx-pop-trimmed" class="ai-ctx-pop-trimmed hidden">已自动裁剪最旧消息以维持窗口可用</div>
+      <div id="ai-ctx-pop-cache-row" class="ai-ctx-pop-stat hidden">
+        <span class="ai-ctx-pop-stat-name">缓存命中率</span>
+        <span id="ai-ctx-pop-cache" class="ai-ctx-pop-stat-val">–</span>
+      </div>
     </div>
+    <div id="ai-ctx-pop-trimmed" class="ai-ctx-pop-trimmed hidden">已自动裁剪最旧消息以维持窗口可用</div>
   </div>
   <div id="ctx-menu" class="hidden"></div>
   <!-- 任务中心浮层:点击状态栏 ⇅ 向上弹出(见 file-transfer.js renderTaskCenter)。

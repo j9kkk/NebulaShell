@@ -110,15 +110,43 @@ pub fn clean_history(history: &mut Vec<Value>) -> bool {
 // 该方案无需系统授权、跨会话稳定、且密文与明文一样可随配置迁移(与 Electron 版 base64 回退同级,
 // 但强度显著更高)。keyring 保留为可选增强:仅当显式设置 NEBULA_USE_KEYRING=1 时尝试。
 
+// Unix 原生 gethostname:零子进程。此前用 `hostname` 子进程取值,GUI 应用拉起
+// CLI 工具会在部分 macOS 版本上闪出命令行窗口,而首次派生恰好落在"打开云账号
+// 分区/点测试/存账号"这类交互时刻,非常突兀。字节兼容:CLI stdout 是
+// "<hostname>\n",原生取值后补 '\n',既有密文无需迁移即可继续解开。
+#[cfg(unix)]
+extern "C" {
+    fn gethostname(name: *mut std::ffi::c_char, len: usize) -> i32;
+}
+
+#[cfg(unix)]
+fn hostname_material() -> Vec<u8> {
+    const CAP: usize = 256;
+    let mut buf = [0u8; CAP];
+    // POSIX:名字超长会被截断且不保证 NUL 结尾,失败时返回非 0(与旧版子进程
+    // 失败时不追加任何字节的行为一致)
+    if unsafe { gethostname(buf.as_mut_ptr().cast(), CAP) } != 0 {
+        return Vec::new();
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(CAP);
+    let mut out = buf[..end].to_vec();
+    out.push(b'\n');
+    out
+}
+
+// Windows 维持 hostname 子进程:CREATE_NO_WINDOW 下不会闪控制台;且其 stdout
+// 换行为平台格式,改用环境变量重写会让旧密文解不开。
+#[cfg(windows)]
+fn hostname_material() -> Vec<u8> {
+    let mut hostname_cmd = std::process::Command::new("hostname");
+    crate::win32::no_window(&mut hostname_cmd);
+    hostname_cmd.output().map(|o| o.stdout).unwrap_or_default()
+}
+
 fn machine_key_material() -> Vec<u8> {
     let mut material = Vec::new();
     material.extend_from_slice(b"nebulashell-v1");
-    // 主机名(Windows 子进程不闪控制台窗口,统一走 win32::no_window)
-    let mut hostname_cmd = std::process::Command::new("hostname");
-    crate::win32::no_window(&mut hostname_cmd);
-    if let Ok(out) = hostname_cmd.output() {
-        material.extend_from_slice(&out.stdout);
-    }
+    material.extend_from_slice(&hostname_material());
     // 用户名
     if let Ok(u) = std::env::var("USER").or_else(|_| std::env::var("USERNAME")) {
         material.extend_from_slice(u.as_bytes());
@@ -1241,17 +1269,21 @@ impl Store {
                 .map(|h| h.join("NebulaShell-logs").to_string_lossy().to_string())
                 .unwrap_or_default(),
             "snippets": data["snippets"].clone(),
-            // 多账号云凭据:公开形态不回传 Secret,只给 keyId 与"是否已存"
+            // 多账号云凭据:公开形态不回传 Secret,只给 keyId/是否已存/长度
+            // (前端按实际长度渲染 • 掩码,与主机弹窗密钥显示规范一致;
+            // 明文只在用户点眼睛时经 cloud:revealSecret 按需单取)
             "cloudAccounts": data["settings"]["cloudAccounts"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default()
                 .iter()
                 .map(|a| {
+                    let secret_len = self.dec(a["secretEnc"].as_str().unwrap_or("")).len();
                     json!({
                         "id": a["id"], "label": a["label"], "vendor": a["vendor"],
                         "keyId": a["keyId"], "endpoint": a["endpoint"],
-                        "secretSet": !self.dec(a["secretEnc"].as_str().unwrap_or("")).is_empty(),
+                        "secretSet": secret_len > 0,
+                        "secretLen": secret_len,
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -1327,7 +1359,20 @@ impl Store {
             .ok_or("云账号存储损坏")?;
         let before = accounts.len();
         accounts.retain(|a| a["id"] != json!(id));
-        Ok((before - accounts.len()) as i64)
+        let removed = (before - accounts.len()) as i64;
+        if removed > 0 {
+            // P2: 清理主机对已删除账号的绑定引用，避免换号重新导入时因旧 accountId 导致实例被当成不同机器而重复创建
+            if let Some(hosts) = data["hosts"].as_array_mut() {
+                for h in hosts.iter_mut() {
+                    if let Some(cloud) = h.get_mut("cloud") {
+                        if cloud.get("accountId").and_then(|v| v.as_str()) == Some(id) {
+                            cloud["accountId"] = json!(null);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// 取某账号的明文凭据(仅后端内部使用,不经过 IPC 返回)
@@ -1564,30 +1609,6 @@ impl Store {
                 }
             }
         }
-        if let Some(clouds) = patch["clouds"].as_object() {
-            for p in ["tencent", "aliyun"] {
-                if let Some(pc) = clouds.get(p) {
-                    let c = &mut data["settings"]["clouds"][p];
-                    if let Some(v) = pc.get("key") {
-                        if !v.is_null() {
-                            c["key"] = v.clone();
-                        }
-                    }
-                    if let Some(v) = pc.get("endpoint") {
-                        if !v.is_null() {
-                            c["endpoint"] = v.clone();
-                        }
-                    }
-                    if let Some(v) = pc.get("secret") {
-                        let plain = v.as_str().unwrap_or("");
-                        if !plain.is_empty() {
-                            c["secretEnc"] =
-                                json!(self.enc(plain, &format!("settings.clouds.{}.secret", p)));
-                        }
-                    }
-                }
-            }
-        }
         drop(data);
         self.save().ok();
         Ok(self.get_settings())
@@ -1599,28 +1620,5 @@ impl Store {
             .as_object()
             .map(|m| m.iter().map(|(k, v)| json!({ "id": k, "fp": v })).collect())
             .unwrap_or_default()
-    }
-
-    pub fn save_cloud_creds(
-        &self,
-        provider: &str,
-        key: &str,
-        secret: &str,
-        endpoint: &str,
-    ) -> Result<Value, String> {
-        let p = if provider == "aliyun" {
-            "aliyun"
-        } else {
-            "tencent"
-        };
-        let mut patch = json!({ "clouds": { p: {} } });
-        if !key.is_empty() {
-            patch["clouds"][p]["key"] = json!(key);
-        }
-        if !secret.is_empty() {
-            patch["clouds"][p]["secret"] = json!(secret);
-        }
-        patch["clouds"][p]["endpoint"] = json!(endpoint);
-        self.save_settings(&patch)
     }
 }
