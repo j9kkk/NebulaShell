@@ -28,6 +28,7 @@ class Element {
   }
   setAttribute(k, v) { this._attrs.set(k, v); if (k === 'id') this.id = v; }
   getAttribute(k) { return this._attrs.get(k); }
+  hasAttribute(k) { return this._attrs.has(k); }
   appendChild(c) { c.parentNode = this; c.isConnected = this.isConnected || this === this.ownerDocument.body; this.children.push(c); this.ownerDocument.notifyMutation(c, 'childList', [c], []); return c; }
   querySelectorAll(sel) {
     const out = [];
@@ -203,6 +204,36 @@ test('applyAccelTitles resolves keymap action names via injected resolver', asyn
   document.body.appendChild(btn);
   core.applyAccelTitles(document);
   assert.equal(btn.title, '多选(Ctrl+C)');
+});
+
+test('applyAccelTitles 填充 data-accel-text 元素的文本;未绑定键位时留空', async () => {
+  const { core, keymap, document } = await setup('darwin');
+  core.applyAccelTitles._accelSpec = keymap.accelSpec;
+  const badge = document.createElement('kbd');
+  badge.setAttribute('data-accel', 'ai.cycleEffort');
+  badge.setAttribute('data-accel-text', '');
+  const empty = document.createElement('kbd');
+  empty.setAttribute('data-accel', 'ai.cycleEffort');
+  document.body.appendChild(badge);
+  document.body.appendChild(empty);
+  core.applyAccelTitles(document);
+  assert.equal(badge.textContent, '⌘T');
+  // 无 data-accel-text 的元素只写 title,不写文本(兼容既有调用方)
+  assert.equal(empty.textContent, undefined);
+});
+
+test('applyAccelTitles 给 data-accel-text 徽章补 title(省略号时可查看完整键位)', async () => {
+  for (const [platform, expected] of [['darwin', '⌘T'], ['windows', 'Ctrl+T']]) {
+    const { core, keymap, document } = await setup(platform);
+    core.applyAccelTitles._accelSpec = keymap.accelSpec;
+    const badge = document.createElement('kbd');
+    badge.setAttribute('data-accel', 'ai.cycleEffort');
+    badge.setAttribute('data-accel-text', '');
+    document.body.appendChild(badge);
+    core.applyAccelTitles(document);
+    assert.equal(badge.textContent, expected, platform + ' 徽章文本');
+    assert.equal(badge.title, expected, platform + ' 徽章 title 应等于完整键位');
+  }
 });
 
 test('防回归:UI 文案禁止写死 ⌘(core 符号表与 keymap 注释除外)', async () => {

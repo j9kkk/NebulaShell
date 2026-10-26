@@ -146,6 +146,14 @@ export function applyAccelTitles(root = document) {
     let title = el.dataset.title || '';
     specs.forEach((k, i) => { title = title.split('%' + (i + 1)).join(k); });
     el.title = title;
+    // data-accel-text:把解析出的键位写进元素文本(徽章类提示用),否则空
+    // kbd 会渲染成一个空心小条。放在这里随自定义键位每次重写。
+    // 没有 data-title 模板时,title 补成完整键位 —— 徽章在窄宽度下会被
+    // 省略(如 Ctrl+Shift+Alt+...),悬停要能看到完整组合。
+    if (el.hasAttribute('data-accel-text')) {
+      el.textContent = specs.filter(Boolean).join(' / ');
+      if (!title) el.title = el.textContent;
+    }
   }
 }
 

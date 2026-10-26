@@ -1444,6 +1444,13 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   border: 1px solid var(--border); border-radius: 8px;
   box-shadow: var(--menu-shadow);
 }
+/* 模型菜单特例:改 flex 列布局、只有模型清单滚动 —— 思考强度区与「管理模型」
+   固定在底部,模型多时滚动列表不会把滑块区一起滚出视野/被 max-height 裁掉。
+   其余复用 .ai-model-menu 底座的菜单(会话/模式/目标)保持整体滚动不变。 */
+#ai-model-menu {
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#ai-model-menu-list { overflow-y: auto; min-height: 0; }
 .ai-model-menu-item {
   display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 7px 10px; background: none; border: none; border-radius: 6px;
@@ -1454,7 +1461,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-model-menu-item.active { color: var(--accent); }
 .ai-model-menu-item .check { margin-left: auto; visibility: hidden; }
 .ai-model-menu-item.active .check { visibility: visible; }
-.ai-model-menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+/* 分隔线:与思考强度区的 border-top 同为贯穿全宽(该区本身带 10px 内边距),
+   两线内缩一致,不再一长一短。此类仅模型菜单在用;其余菜单各有独立分隔类。 */
+.ai-model-menu-sep { height: 1px; margin: 4px 0; background: var(--border); }
 /* 模式菜单:沿用 .ai-model-menu 浮层底座(fixed/z-index/圆角/阴影),加头部行 */
 .ai-mode-menu { max-height: none; overflow: visible; min-width: 240px; }
 .ai-mode-menu-head {
@@ -3662,24 +3671,37 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
   display: flex; align-items: center; gap: 8px;
   font-size: 11.5px; color: var(--muted);
 }
-.ai-reasoning-title { flex: none; font-weight: 500; }
-.ai-reasoning-head .spacer { flex: 1 1 auto; }
+/* 收缩优先级:标题与档位值绝不压缩(它们是这张卡片的主信息),弹性 spacer
+   先归零;超长键位(Windows/Linux 的 Ctrl+Shift+Alt+T)由徽章自己省略,
+   完整组合键仍在 title 提示里。 */
+.ai-reasoning-title { flex: none; font-weight: 500; white-space: nowrap; }
+.ai-reasoning-head .spacer { flex: 1 1 auto; min-width: 0; }
 /* 当前档位:比标题大一号、白色加粗(截图里的「最高」) */
 .ai-reasoning-value { flex: none; font-size: 13px; font-weight: 600; color: var(--text); }
+/* 快捷键徽章:文本由 applyAccelTitles 按平台渲染(⌘T / Ctrl+T / CtrlShift…),
+   字体必须走 --font-mono 规范 —— 不写会落到 UA 默认 monospace,
+   各平台解析出的实际字体不同,与设置页的 kbd 不一致。
+   宽度策略:优先完整显示(Windows/Linux 的 Ctrl+Shift+Alt+T 约 108px);
+   只有超出头部行时才省略,完整组合键仍在 title 提示里。 */
 .ai-reasoning-accel {
-  flex: none; font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  flex: 0 1 auto; min-width: 0; font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  font-family: var(--font-mono);
   background: var(--bg2); border: 1px solid var(--border); color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
 }
+/* 键位被用户清空时徽章无内容:隐藏,避免渲染成空心小条 */
+.ai-reasoning-accel:empty { display: none; }
 
-.ai-reasoning-slider-wrap { position: relative; display: flex; align-items: center; }
+.ai-reasoning-slider-wrap { position: relative; display: flex; align-items: center; --thumb-s: 22px; }
 /* 轨道本体:渐变由绿经青到蓝,与截图取色一致。
    轨道比滑块矮,滑块略微探出轨道上下外缘(参考稿的关系)。
-   左右各内缩 15px(=半个滑块):原生 range 的 thumb 中心行程恰好到此为止,
-   这样滑块在两端时圆心压在轨道圆角上,不会露出轨道外的空白。 */
+   左右各内缩 2px:原生 range 的 thumb 中心行程覆盖整个 input 内容区(盒
+   子已重置为无 border/padding),轨道帽半径 9px 比滑块半径 11px 小 2px,
+   内缩 2px 后滑块在两端时圆心与轨道端帽圆心重合,既不露空白也不过冲。 */
 .ai-reasoning-track {
-  position: absolute; top: 0; bottom: 0; left: 15px; right: 15px;
-  display: flex; align-items: center;
-  height: 24px; margin: auto 0;
+  position: absolute; top: 0; bottom: 0; left: 2px; right: 2px;
+  height: 18px; margin: auto 0;
   border-radius: 999px;
   overflow: hidden;
   background: linear-gradient(90deg,
@@ -3701,36 +3723,70 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 }
 @keyframes ai-particle-drift {
   0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.55; }
-  50% { transform: translate(-50%, calc(-50% - 3px)) scale(1.25); opacity: 0.95; }
+  50% { transform: translate(-50%, calc(-50% - 2px)) scale(1.25); opacity: 0.95; }
 }
-/* 原生滑块:完全透明,只保留交互区域与键盘行为 */
+/* 可视 thumb:独立元素,档位切换(⌘T/点击轨道)时沿轨道平移过渡 ——
+   原生 range 的 thumb 伪元素不支持 transition,只能靠它自己动。
+   位移由 JS 直写 inline transform(计算好像素):不能走 CSS 变量公式 ——
+   系统 WKWebView(macOS 27 实测)对 custom property 变化不触发依赖属性的
+   transition,滑块会瞬移;inline transform 的值变化则所有引擎都过渡。
+   缩放用独立的 scale 属性,与 JS 写的 transform 互不覆盖。
+   原生 thumb 保持透明但尺寸一致,保证命中区域与可视元素完全重合。 */
+.ai-reasoning-thumb {
+  position: absolute; top: 50%; left: 0;
+  width: var(--thumb-s); height: var(--thumb-s);
+  border-radius: 50%;
+  transform: translate(0, -50%);
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: transform var(--dur) var(--ease);
+  pointer-events: none;
+}
+/* 原生滑块:完全透明,只保留交互区域与键盘行为。
+   必须显式重置 border/padding/border-radius:不重置会继承全局 input 规则
+   (style.css 顶部),在渐变轨道外渲染出一圈 8px 圆角的输入框描边。 */
 .ai-reasoning-slider {
   position: relative; z-index: 1;
-  width: 100%; height: 30px; margin: 0;
+  width: 100%; height: 26px; margin: 0;
   -webkit-appearance: none; appearance: none;
   background: transparent; cursor: pointer;
+  border: 0; padding: 0; border-radius: 0;
 }
 .ai-reasoning-slider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
-.ai-reasoning-slider::-webkit-slider-runnable-track { background: transparent; height: 30px; }
+.ai-reasoning-slider::-webkit-slider-runnable-track { background: transparent; height: 26px; }
 .ai-reasoning-slider::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
-  width: 30px; height: 30px; border-radius: 50%;
-  background: #fff; border: none; cursor: grab;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.38);
-  transition: transform var(--dur-fast) var(--ease);
+  width: 22px; height: 22px; border-radius: 50%;
+  background: transparent; border: none; cursor: grab;
 }
-.ai-reasoning-slider::-webkit-slider-thumb:hover { transform: scale(1.06); }
-.ai-reasoning-slider::-webkit-slider-thumb:active { cursor: grabbing; transform: scale(1.02); }
+.ai-reasoning-slider::-webkit-slider-thumb:active { cursor: grabbing; }
+/* 拖拽中:关掉可视 thumb 的位移过渡(跟手);悬停/拖拽轻微放大提示抓取
+   (scale 属性与 transform 分轴叠加,不冲突) */
+.ai-reasoning-slider-wrap.dragging .ai-reasoning-thumb { transition: none; }
+.ai-reasoning-slider-wrap.dragging .ai-reasoning-thumb,
+.ai-reasoning-slider-wrap:hover .ai-reasoning-thumb { scale: 1.08; }
 /* Firefox 等价选择器(项目主用 WebKit,但别留半边坏掉) */
-.ai-reasoning-slider::-moz-range-track { background: transparent; height: 30px; }
+.ai-reasoning-slider::-moz-range-track { background: transparent; height: 26px; }
 .ai-reasoning-slider::-moz-range-thumb {
-  width: 30px; height: 30px; border-radius: 50%;
-  background: #fff; border: none; cursor: grab;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.38);
+  width: 22px; height: 22px; border-radius: 50%;
+  background: transparent; border: none; cursor: grab;
 }
+/* 亮色主题:面板底色接近白色,纯白滑块仅靠阴影无法辨认,补一圈灰描边 */
+[data-theme="light"] .ai-reasoning-thumb {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(31, 35, 40, 0.25);
+}
+/* 刻度标签:中心锚定在各档位的滑块停靠点上(space-between 会把首尾标签的
+   外缘贴到容器两端,与滑块停靠点错开半个标签宽,档位越多错得越多)。
+   停靠点行程 = 滑块半径 11px(=--thumb-s 22px 的一半)→ (100% - 22px),
+   必须与 .ai-reasoning-thumb 的宽度保持一致,JS 端写入 --i/--n。 */
 .ai-reasoning-ticks {
-  display: flex; justify-content: space-between;
+  position: relative; height: 14px;
   font-size: 10px; color: var(--muted);
+}
+.ai-reasoning-ticks span {
+  position: absolute; top: 0;
+  left: calc(11px + (100% - 22px) * var(--i) / var(--n));
+  transform: translateX(-50%); white-space: nowrap;
 }
 
 .modal:not(.hidden) { animation: fade-in var(--dur-fast) ease-out; }

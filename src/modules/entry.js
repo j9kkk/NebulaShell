@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator } from './ai.js';
 import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
   revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu, toggleTargetMenu,
@@ -735,7 +735,26 @@ export function bindEvents() {
       if (labelEl) labelEl.textContent = reasoningLevelLabel(levels[val]);
       e.target.setAttribute('aria-valuetext', reasoningLevelLabel(levels[val]));
     }
+    // 可视 thumb 平滑跟随(点击轨道/键盘步进/拖拽;真拖拽时 .dragging 关过渡)
+    syncReasoningThumb(val, { animate: true });
   });
+  // 只有"按下后确实移动了"才算拖拽:单击轨道/按下不动时保持过渡,值一步跨到
+  // 目标档位是平滑滑过去的。pointerdown 就加 .dragging 会让单击也瞬移。
+  const reasoningWrap = $('#ai-reasoning-slider-wrap');
+  const reasoningSlider = $('#ai-reasoning-slider');
+  let reasoningDown = null;
+  reasoningSlider?.addEventListener('pointerdown', (e) => {
+    reasoningDown = { x: e.clientX, y: e.clientY };
+  });
+  reasoningSlider?.addEventListener('pointermove', (e) => {
+    if (!reasoningDown || reasoningWrap?.classList.contains('dragging')) return;
+    if (Math.abs(e.clientX - reasoningDown.x) >= 3 || Math.abs(e.clientY - reasoningDown.y) >= 3) {
+      reasoningWrap?.classList.add('dragging');
+    }
+  });
+  const endReasoningDrag = () => { reasoningDown = null; reasoningWrap?.classList.remove('dragging'); };
+  window.addEventListener('pointerup', endReasoningDrag);
+  window.addEventListener('pointercancel', endReasoningDrag);
   $('#ai-model-reasoning')?.addEventListener('click', (e) => {
     e.stopPropagation();
   });

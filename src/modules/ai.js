@@ -2869,6 +2869,35 @@ function renderModelMenu() {
   renderModelReasoning();
 }
 
+/// 可视 thumb 位置同步:idx 为档位索引,直接算出像素位移写进 inline
+/// transform(translate(xpx, -50%))。不能走 CSS 变量公式 —— 系统 WKWebView
+/// 对 custom property 变化不触发依赖属性的 transition(Chromium 可以,
+/// 实测 app 内滑块瞬移);inline transform 的值变化所有引擎都会过渡。
+/// animate=false 用于菜单打开/切模型等"瞬间落位"场景;input 事件(拖拽/
+/// 点击轨道/键盘)传 animate:true 走平移过渡。拖拽中由 .dragging 关过渡跟手。
+export function syncReasoningThumb(idx, { animate = true } = {}) {
+  const wrap = $('#ai-reasoning-slider-wrap');
+  const slider = $('#ai-reasoning-slider');
+  const thumb = wrap?.querySelector('.ai-reasoning-thumb');
+  if (!wrap || !slider || !thumb) return;
+  const max = Number(slider.max) || 0;
+  const pos = max > 0 ? (Number(idx) || 0) / max : 0;
+  // 菜单 hidden 时 clientWidth 为 0,量出的行程是假的;此时保留上次可见时
+  // 的宽度估计,只更新位移,否则菜单打开后 thumb 会全部堆在原点。
+  const travel = wrap.clientWidth > 0 ? Math.max(0, wrap.clientWidth - thumb.offsetWidth) : null;
+  const tx = (travel ?? 0) * pos;
+  const apply = () => { thumb.style.transform = `translate(${tx}px, -50%)`; };
+  if (!animate || travel === null) {
+    // 无动画落位(或行程未知,先按估计值摆位):临时关掉 transition
+    thumb.style.transition = 'none';
+    apply();
+    void thumb.offsetWidth;
+    thumb.style.transition = '';
+  } else {
+    apply();
+  }
+}
+
 export function renderModelReasoning() {
   const section = $('#ai-model-reasoning');
   if (!section) return;
@@ -2898,11 +2927,18 @@ export function renderModelReasoning() {
     slider.max = String(levels.length - 1);
     slider.value = String(levels.indexOf(currentEffort));
     slider.setAttribute('aria-valuetext', reasoningLevelLabel(currentEffort));
+    // 可视 thumb 同步。_initial(菜单刚打开/切模型后重绘)直接落位,避免
+    // 从旧位置滑过去的错觉;菜单开着时的 ⌘T 切档走平移过渡。
+    syncReasoningThumb(levels.indexOf(currentEffort), { animate: !renderModelReasoning._initial && !$('#ai-model-menu')?.classList.contains('hidden') });
+    renderModelReasoning._initial = false;
   }
 
   const ticks = $('#ai-reasoning-ticks');
   if (ticks) {
-    ticks.innerHTML = levels.map((lvl) => `<span>${reasoningLevelLabel(lvl)}</span>`).join('');
+    // --i/--n 供 CSS 把每个标签中心锚定到对应档位的滑块停靠点(见 .ai-reasoning-ticks)
+    ticks.innerHTML = levels
+      .map((lvl, i) => `<span style="--i:${i};--n:${levels.length - 1}">${reasoningLevelLabel(lvl)}</span>`)
+      .join('');
   }
 }
 
@@ -2931,8 +2967,13 @@ export function openModelMenu() {
   if (trigger.disabled) return;
   $('#ai-mode-menu')?.classList.add('hidden');
   $('#ai-thread-menu')?.classList.add('hidden');
+  // 首次渲染标记:让 renderModelReasoning 直接落位,thumb 不从旧位置滑过来
+  renderModelReasoning._initial = true;
   renderModelMenu();
   menu.classList.remove('hidden');
+  // 菜单可见后 wrap 才有真实宽度:hidden 期间 renderModelReasoning 测不出
+  // travel(见 syncReasoningThumb),这里补一次落位,把 --travel 修正到位。
+  syncReasoningThumb($('#ai-reasoning-slider')?.value ?? 0, { animate: false });
   // 菜单展开在触发钮上方(输入区在面板底部,向下没有空间),右缘对齐触发钮
   const tr = trigger.getBoundingClientRect();
   const size = { width: menu.offsetWidth || 220, height: menu.offsetHeight || 200 };
