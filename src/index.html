@@ -222,6 +222,8 @@
                  不用原生 <select>:要展示"管理模型"入口与选中 ✓,原生下拉做不到。 -->
             <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
               <span id="ai-model-name">未启用模型</span>
+              <!-- 思考强度档位:仅当模型名能完整显示时才出现(JS 实测后切 hidden) -->
+              <span id="ai-model-effort" class="ai-model-effort hidden" aria-hidden="true"></span>
               <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
             </button>
             <!-- 发送/停止同钮双状态:空闲=↑ 发送,流式=■ 停止(见 ai.js setAiBusy)。
@@ -880,7 +882,7 @@
       </div>
       <!-- 渐变轨道 + 漂浮粒子 + 白色滑块:颜色表达强度(绿→青→蓝),粒子给"思考在流动"的动效。
            原生 input[type=range] 叠在轨道上方并保持完全透明(键盘/无障碍语义不变);
-           可视 thumb 是独立元素 .ai-reasoning-thumb,由 JS 同步 --pos,档位切换才有平移动画。 -->
+           可视 thumb 是独立元素 .ai-reasoning-thumb,由 JS 写 inline translate,档位切换才有平移动画。 -->
       <div id="ai-reasoning-slider-wrap" class="ai-reasoning-slider-wrap">
         <div class="ai-reasoning-track" aria-hidden="true">
           <i class="ai-reasoning-particle" style="--x:4%;--y:46%;--s:3px;--delay:0s"></i>

@@ -2849,11 +2849,44 @@ export function renderModelSwitch() {
   }
   // 0 模型不禁用:点击语义是"去配置"(见 openModelMenu);流式中/切换中仍禁用
   trigger.disabled = !!activeAiThread()?.req || modelSwitchPending;
+  updateModelEffortBadge(active);
   updateAiContextIndicator();
   // 菜单若开着,同步刷新条目(切换完成/禁用态变化时)
   renderModelMenu();
   if ($('#ai-model-menu').classList.contains('hidden')) return;
   if (models.length === 0 || !!activeAiThread()?.req || modelSwitchPending) closeModelMenu();
+}
+
+/// 模型名右侧的思考强度档位。只在"模型名能完整显示"时出现:
+/// 默认 360px 面板下模型名刚好占满一行,加上档位会把长名字截短 ——
+/// 档位是附加信息,模型名才是主信息,所以宁可藏掉档位也不截模型名。
+/// 判据是实测而非固定断点:面板可被用户拖宽/拖窄,断点猜不准。
+/// active 省略时按当前选中的模型自行推导(档位滑块变动后直接调用即可)。
+export function updateModelEffortBadge(active) {
+  const badge = $('#ai-model-effort');
+  const nameEl = $('#ai-model-name');
+  if (!badge || !nameEl) return;
+  if (active === undefined) {
+    const current = savedAi().model || '';
+    active = savedModels().find((m) => m.id === current) || null;
+  }
+  const levels = active?.reasoning?.levels || [];
+  const th = activeAiThread();
+  const effort = th?.reasoningEffort || active?.reasoning?.default || '';
+  // 无档位 / 关闭 / 最低档(等同不思考)都不值得占位
+  if (!active || !levels.length || !effort || levels.indexOf(effort) <= 0) {
+    badge.classList.add('hidden');
+    badge.textContent = '';
+    return;
+  }
+  badge.textContent = reasoningLevelLabel(effort);
+  badge.classList.remove('hidden');
+  // 加上档位后模型名是否被挤到截断:一次同步布局后就能判定。
+  // 截断就整体收回 —— 不牺牲模型名。
+  if (nameEl.scrollWidth > nameEl.clientWidth + 1) {
+    badge.classList.add('hidden');
+    badge.textContent = '';
+  }
 }
 
 function renderModelMenu() {
@@ -2870,9 +2903,12 @@ function renderModelMenu() {
 }
 
 /// 可视 thumb 位置同步:idx 为档位索引,直接算出像素位移写进 inline
-/// transform(translate(xpx, -50%))。不能走 CSS 变量公式 —— 系统 WKWebView
-/// 对 custom property 变化不触发依赖属性的 transition(Chromium 可以,
-/// 实测 app 内滑块瞬移);inline transform 的值变化所有引擎都会过渡。
+/// `translate`(独立变换属性)。两条硬约束:
+/// 1) 不能走 CSS 变量公式 —— 系统 WKWebView 对 custom property 变化不触发
+///    依赖属性的 transition(Chromium 可以),滑块会瞬移;
+/// 2) 不能写进 transform —— 独立属性合成顺序是 translate → rotate → scale →
+///    transform,hover 的 scale 在 transform 外层,位移会被一起放大,球心
+///    横甩出 位移×0.08(最高档 13px)。translate 在 scale 内层,放大只作用于球体。
 /// animate=false 用于菜单打开/切模型等"瞬间落位"场景;input 事件(拖拽/
 /// 点击轨道/键盘)传 animate:true 走平移过渡。拖拽中由 .dragging 关过渡跟手。
 export function syncReasoningThumb(idx, { animate = true } = {}) {
@@ -2886,13 +2922,24 @@ export function syncReasoningThumb(idx, { animate = true } = {}) {
   // 的宽度估计,只更新位移,否则菜单打开后 thumb 会全部堆在原点。
   const travel = wrap.clientWidth > 0 ? Math.max(0, wrap.clientWidth - thumb.offsetWidth) : null;
   const tx = (travel ?? 0) * pos;
-  const apply = () => { thumb.style.transform = `translate(${tx}px, -50%)`; };
+  const apply = () => {
+    thumb.style.translate = `${tx}px 0`;
+    // 轨道进度 = 滑块圆心位置(轨道两端各内缩 2px 使圆角对齐)
+    if (travel !== null) {
+      wrap.style.setProperty('--fill', `${tx + thumb.offsetWidth / 2}px`);
+      wrap.style.setProperty('--track-w', `${travel + thumb.offsetWidth}px`);
+    }
+    // 最高档才开启动态粒子:冲刺态的信号,常态下静止更安静
+    wrap.classList.toggle('is-max', max > 0 && Number(idx) >= max);
+  };
   if (!animate || travel === null) {
     // 无动画落位(或行程未知,先按估计值摆位):临时关掉 transition
     thumb.style.transition = 'none';
+    thumb.parentElement.classList.add('no-fill-anim');
     apply();
     void thumb.offsetWidth;
     thumb.style.transition = '';
+    thumb.parentElement.classList.remove('no-fill-anim');
   } else {
     apply();
   }
@@ -2958,6 +3005,7 @@ export function cycleAiReasoningEffort() {
   th.reasoningEffort = nextEffort;
 
   renderModelReasoning();
+  updateModelEffortBadge(active);
   toast(`思考强度：${reasoningLevelLabel(nextEffort)}`, 'info');
 }
 

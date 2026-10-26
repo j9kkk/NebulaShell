@@ -459,3 +459,37 @@ test('hasCustomBindings:只有真正偏离默认的覆盖项才算自定义', as
   assert.equal(keymap.hasCustomBindings({ 'tab.new': ['cmd+t'] }), false, '与默认相同不算自定义');
   assert.equal(keymap.hasCustomBindings({ 'tab.new': ['cmd+shift+y'] }), true);
 });
+
+test('防回归:思考强度滑块位移必须走 translate 属性,不能写进 transform', async () => {
+  // 独立变换属性的合成顺序固定为 translate → rotate → scale → transform。
+  // hover 的缩放写在 scale 上,若位移放在 transform 里,会被 scale 一起放大,
+  // 球心横向甩出「位移 × 0.08」(最高档实测 13px,Windows 上同样明显)。
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+  const block = css.match(/\.ai-reasoning-thumb \{([\s\S]*?)\}/);
+  assert.ok(block, '找不到 .ai-reasoning-thumb 规则');
+  assert.match(block[1], /translate:\s*0 0/, '.ai-reasoning-thumb 必须用 translate 属性承载位移');
+  assert.doesNotMatch(block[1], /transform:\s*translate/, '.ai-reasoning-thumb 不得用 transform 承载位移(会被 hover 的 scale 放大)');
+  const js = await readFile(new URL('../src/modules/ai.js', import.meta.url), 'utf8');
+  assert.match(js, /thumb\.style\.translate\s*=/, 'syncReasoningThumb 应写 inline translate');
+  assert.doesNotMatch(js, /thumb\.style\.transform\s*=/, 'syncReasoningThumb 不应写 inline transform');
+});
+
+test('防回归:思考强度档位标签只在模型名完整时显示,且不挤占模型名', async () => {
+  const js = await readFile(new URL('../src/modules/ai.js', import.meta.url), 'utf8');
+  // 判定必须基于实测截断(scrollWidth vs clientWidth),不能是固定断点
+  assert.match(js, /nameEl\.scrollWidth\s*>\s*nameEl\.clientWidth/,
+    '档位标签显示条件必须实测模型名是否被截断');
+  // 截断时收回标签(模型名优先于档位)
+  const fn = js.match(/export function updateModelEffortBadge[\s\S]*?\n}/);
+  assert.ok(fn, '找不到 updateModelEffortBadge');
+  assert.match(fn[0], /badge\.classList\.add\('hidden'\)/, '名字截断时应隐藏档位标签');
+  assert.match(fn[0], /indexOf\(effort\)\s*<=\s*0/, '关闭/最低档不应显示标签');
+
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+  // 粒子动画只在最高档(.is-max)生效
+  const partBlock = css.match(/\.ai-reasoning-particle \{[\s\S]*?\n\}/);
+  assert.ok(partBlock, '找不到 .ai-reasoning-particle 规则');
+  assert.doesNotMatch(partBlock[0], /animation:/, '常态粒子不应有动画');
+  assert.match(css, /\.ai-reasoning-slider-wrap\.is-max \.ai-reasoning-particle \{[\s\S]*?animation:/,
+    '最高档(.is-max)才开启动画');
+});

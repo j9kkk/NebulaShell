@@ -5,7 +5,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator, updateModelEffortBadge } from './ai.js';
 import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
   revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu, toggleTargetMenu,
@@ -737,6 +737,8 @@ export function bindEvents() {
     }
     // 可视 thumb 平滑跟随(点击轨道/键盘步进/拖拽;真拖拽时 .dragging 关过渡)
     syncReasoningThumb(val, { animate: true });
+    // 底部模型名旁的档位标签同步
+    updateModelEffortBadge();
   });
   // 只有"按下后确实移动了"才算拖拽:单击轨道/按下不动时保持过渡,值一步跨到
   // 目标档位是平滑滑过去的。pointerdown 就加 .dragging 会让单击也瞬移。
@@ -1021,6 +1023,7 @@ export function bindEvents() {
   // the fixed outer stack (not its rendered children) avoids layout feedback loops.
   // 分屏容量按 #layout-root 的尺寸折算:尺寸变了,分屏 / 新增文件分屏的可用状态也要跟着变
   let commandRefresh = null;
+  let effortBadgeTimer = null;
   const ro = new ResizeObserver(() => {
     scheduleWorkspaceLayout(); fitAllVisible(); scheduleResizeSync();
     clearTimeout(commandRefresh);
@@ -1028,6 +1031,15 @@ export function bindEvents() {
   });
   ro.observe($('#term-stack'));
   ro.observe($('#layout-root'));
+
+  // AI 面板宽度变化时重算"模型名是否被截断",它决定档位标签能否显示
+  // (面板可被拖拽调宽,固定断点猜不准)
+  const aiPanelRo = new ResizeObserver(() => {
+    // 拖拽时每帧都触发,节流到停顿后判定,避免每帧强制同步布局
+    clearTimeout(effortBadgeTimer);
+    effortBadgeTimer = setTimeout(renderModelSwitch, 120);
+  });
+  aiPanelRo.observe($('#ai-panel'));
 
   // 主进程事件
   window.nebula.on('ssh:data', ({ sessionId, data }) => {

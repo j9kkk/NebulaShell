@@ -31,6 +31,9 @@
   --scrollbar-thumb-hover: #2e3a52;
   --table-divider: rgba(35, 44, 61, 0.5);
   --progress-track: rgba(128, 140, 160, 0.2);
+  /* 思考强度滑块的未走完沟槽:比 --progress-track 更实,否则在面板底色上
+     几乎看不出轨道存在(参考稿的灰槽是明确可见的实体块)。 */
+  --reasoning-track-empty: rgba(255, 255, 255, 0.1);
   --drag-accent: rgba(91, 140, 255, 0.15);
   --danger-hover-bg: rgba(255, 107, 107, 0.12);
   --muted-hover-bg: rgba(139, 150, 168, 0.15);
@@ -89,6 +92,7 @@
   --scrollbar-thumb-hover: #afb8c1;
   --table-divider: rgba(208, 215, 222, 0.7);
   --progress-track: rgba(140, 150, 165, 0.25);
+  --reasoning-track-empty: rgba(31, 35, 40, 0.12);
   --drag-accent: rgba(9, 105, 218, 0.12);
   --danger-hover-bg: rgba(207, 34, 46, 0.12);
   --muted-hover-bg: rgba(101, 109, 118, 0.15);
@@ -1432,6 +1436,14 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-model-trigger.ai-model-unset { color: var(--accent); }
 .ai-model-trigger.ai-model-unset:hover { color: var(--accent); filter: brightness(1.15); }
 #ai-model-name { overflow: hidden; text-overflow: ellipsis; }
+/* 模型名右侧的思考强度档位:只在模型名完整显示时出现 —— 它是顺带一瞥的
+   附加信息,不该抢走模型名的空间(默认 360px 面板下模型名刚好占满)。
+   由 renderModelSwitch 实测名字是否被截断后切 .hidden,不靠固定断点。
+   样式取参考稿的纯文字形态(无胶囊背景),比模型名更弱一档。 */
+.ai-model-effort {
+  flex: none; font-size: 11px; color: var(--muted); opacity: 0.75;
+  white-space: nowrap; letter-spacing: 0.2px;
+}
 /* 下箭头走 SVG 注册表(chevronDown),flex 容器内与文字天然同轴,
    不再用文字符号 ⌄ + translateY 手工补偿 —— 那在不同字体度量下必然错位。 */
 .ai-model-caret { flex: none; display: inline-flex; }
@@ -3694,32 +3706,61 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 .ai-reasoning-accel:empty { display: none; }
 
 .ai-reasoning-slider-wrap { position: relative; display: flex; align-items: center; --thumb-s: 22px; }
-/* 轨道本体:渐变由绿经青到蓝,与截图取色一致。
-   轨道比滑块矮,滑块略微探出轨道上下外缘(参考稿的关系)。
-   左右各内缩 2px:原生 range 的 thumb 中心行程覆盖整个 input 内容区(盒
-   子已重置为无 border/padding),轨道帽半径 9px 比滑块半径 11px 小 2px,
-   内缩 2px 后滑块在两端时圆心与轨道端帽圆心重合,既不露空白也不过冲。 */
+/* 轨道本体:未走完的部分是灰色沟槽,走完的部分由 --fill 宽度的渐变层覆盖。
+   --fill 是滑块圆心位置(JS 每次同步),因此"轨道颜色随档位推进",与参考稿
+   一致:低/中/高档只见左侧绿色,最高档铺满绿→蓝渐变。
+   轨道比滑块矮,滑块略微探出轨道上下外缘。
+   左右各内缩 2px:轨道帽半径 9px 比滑块半径 11px 小 2px,内缩 2px 后滑块在
+   两端时圆心与轨道端帽圆心重合,既不露空白也不过冲。 */
 .ai-reasoning-track {
   position: absolute; top: 0; bottom: 0; left: 2px; right: 2px;
   height: 18px; margin: auto 0;
   border-radius: 999px;
   overflow: hidden;
-  background: linear-gradient(90deg,
-    #5cbd80 0%, #00b9a3 20%, #00b1c4 38%,
-    #00a5dc 58%, #0097ed 78%, #2888f9 100%);
+  background: var(--reasoning-track-empty);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
 }
-/* 粒子:半透明白点,轻微上下漂移;--delay 负值让它们错峰,不整齐划一 */
+/* 已填充进度层:宽度 = 滑块圆心(--fill),随档位推进而变长。
+   配色按参考稿分两态:
+   - 常态(低/中/高档):纯绿实体填充,右侧是灰色沟槽 —— 颜色不表达强度,
+     长度表达;
+   - 最高档(.is-max):整条铺满绿→青→蓝渐变,颜色本身成为"冲刺态"的信号。
+   渐变用 background-size 对齐整条轨道宽度,最高档才完整呈现绿到蓝。
+   overflow 裁切在父级,圆角由父级统一收口。 */
+.ai-reasoning-track::before {
+  content: '';
+  position: absolute; inset: 0 auto 0 0;
+  width: var(--fill, 0%);
+  border-radius: 999px;
+  background: #46bf72;
+  transition: width var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.ai-reasoning-slider-wrap.is-max .ai-reasoning-track::before {
+  background: linear-gradient(90deg,
+    #46bf72 0%, #12bf9a 22%, #00b4c4 42%,
+    #00a3e8 64%, #0090f8 84%, #38a1ff 100%);
+  background-size: var(--track-w, 100%) 100%;
+  background-repeat: no-repeat;
+}
+/* 无动画落位(菜单刚打开/切模型):进度条也别从 0 滚过去 */
+.ai-reasoning-slider-wrap.no-fill-anim .ai-reasoning-track::before { transition: none; }
+/* 最高档:整条轨道都点亮的渐变,粒子开始流动(见 .is-max) */
+/* 粒子:低档位是静止的小点(垫在渐变之上,表示刻度感);
+   只有最高档(.is-max)才让它们漂移 —— "思考在流动"是冲刺态的信号,
+   常态下动起来会喧宾夺主(参考稿只有最高档有动态)。 */
 .ai-reasoning-particle {
   position: absolute;
   left: var(--x); top: var(--y);
   width: var(--s); height: var(--s);
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.55);
   transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.ai-reasoning-slider-wrap.is-max .ai-reasoning-particle {
+  background: rgba(255, 255, 255, 0.8);
   animation: ai-particle-drift 3.4s ease-in-out infinite;
   animation-delay: var(--delay);
-  pointer-events: none;
 }
 @keyframes ai-particle-drift {
   0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.55; }
@@ -3727,19 +3768,23 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 }
 /* 可视 thumb:独立元素,档位切换(⌘T/点击轨道)时沿轨道平移过渡 ——
    原生 range 的 thumb 伪元素不支持 transition,只能靠它自己动。
-   位移由 JS 直写 inline transform(计算好像素):不能走 CSS 变量公式 ——
-   系统 WKWebView(macOS 27 实测)对 custom property 变化不触发依赖属性的
-   transition,滑块会瞬移;inline transform 的值变化则所有引擎都过渡。
-   缩放用独立的 scale 属性,与 JS 写的 transform 互不覆盖。
+   位移由 JS 直写 inline translate:不能走 CSS 变量公式 —— 系统 WKWebView
+   对 custom property 变化不触发依赖属性的 transition,滑块会瞬移。
+   位移必须用 translate 属性而不是 transform:独立变换属性的合成顺序固定为
+   translate → rotate → scale → transform,hover 的 scale 排在 transform 外层,
+   若把位移写进 transform,放大时位移会被一起放大(球心横向甩出 位移×0.08,
+   最高档达 13px)。translate 在 scale 内层,放大只影响球体本身。
+   垂直居中因此走 top,不能用 transform 的 -50%。
    原生 thumb 保持透明但尺寸一致,保证命中区域与可视元素完全重合。 */
 .ai-reasoning-thumb {
-  position: absolute; top: 50%; left: 0;
+  position: absolute;
+  top: calc(50% - var(--thumb-s) / 2); left: 0;
   width: var(--thumb-s); height: var(--thumb-s);
   border-radius: 50%;
-  transform: translate(0, -50%);
+  translate: 0 0;
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-  transition: transform var(--dur) var(--ease);
+  transition: translate var(--dur) var(--ease);
   pointer-events: none;
 }
 /* 原生滑块:完全透明,只保留交互区域与键盘行为。
@@ -3762,7 +3807,9 @@ body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opac
 .ai-reasoning-slider::-webkit-slider-thumb:active { cursor: grabbing; }
 /* 拖拽中:关掉可视 thumb 的位移过渡(跟手);悬停/拖拽轻微放大提示抓取
    (scale 属性与 transform 分轴叠加,不冲突) */
-.ai-reasoning-slider-wrap.dragging .ai-reasoning-thumb { transition: none; }
+/* 拖拽中:关掉位移过渡(跟手),悬停/拖拽时球体轻微放大提示可抓取。
+   只关 translate 的过渡:scale 仍走自己的过渡,放大回弹不会生硬。 */
+.ai-reasoning-slider-wrap.dragging .ai-reasoning-thumb { transition: translate 0s; }
 .ai-reasoning-slider-wrap.dragging .ai-reasoning-thumb,
 .ai-reasoning-slider-wrap:hover .ai-reasoning-thumb { scale: 1.08; }
 /* Firefox 等价选择器(项目主用 WebKit,但别留半边坏掉) */
