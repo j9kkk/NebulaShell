@@ -1628,13 +1628,14 @@ export function markBubblePending(bubble) {
   const sp = document.createElement('span');
   sp.className = 'ai-spinner';
   sp.setAttribute('aria-hidden', 'true');
-  // spinner 挂在 .ai-row 里、正文列之前:转圈和"正在思考…"同行,
-  // 插进 .ai-col 会落到时间戳上方,成了一颗无意义的空心椭圆。
-  const row = body.closest('.ai-row');
-  const col = body.parentElement;
-  if (row) row.insertBefore(sp, col);
-  else col.appendChild(sp);
-  body.textContent = '正在思考…';
+  // spinner 和文案一起放在 .ai-body 内部:挂到 .ai-row(气泡之外)会把气泡
+  // 左缘整体推开约 28px,首个 token 到达移除 spinner 时再弹回来 —— 那一跳
+  // 就是"等待态气泡与时间戳不对齐、转流式时横向暴跳"的成因。
+  const label = document.createElement('span');
+  label.textContent = '正在思考…';
+  // body 已被上面的 textContent 判空,这里直接追加即可
+  body.appendChild(sp);
+  body.appendChild(label);
   // 占位写入让气泡长高约一行:与 renderAiMessage 里的首次贴底相隔同帧,
   // 不收口就会从第一条回复起差出一点。调用方保证只对活动线程的气泡调用。
   aiStickScroll();
@@ -1679,6 +1680,11 @@ export function aiShowThinking(bubble, text) {
     box.append(head, pre);
     body.parentElement.insertBefore(box, body);
   }
+  // 纯思考阶段(.ai-body 还是空的):此时正文光标是一条悬在空白里的孤儿,
+  // 既没有字符可跟又被撑成一整行高度。只留折叠条自己,气泡才贴得住内容。
+  // 按正文是否真的有字判定,而不是"来了思考就隐藏" —— 少数模型会先吐
+  // 正文再补思考,那种交错流里光标必须留着。
+  bubble.classList.toggle('thinking-only', !aiBodyOf(bubble)?.textContent);
   box.querySelector('.ai-thinking-text').textContent = text;
 }
 
@@ -1694,13 +1700,15 @@ export function aiSealThinking(bubble) {
   const box = bubble && bubble.querySelector('.ai-thinking');
   if (!box) return;
   box.classList.remove('streaming');
+  // 正文开始:撤掉纯思考标记,恢复正文光标 —— 此时它后面终于是有内容的字
+  bubble.classList.remove('thinking-only');
   const head = box.querySelector('.ai-thinking-head');
   if (head) head.textContent = '已深度思考';
 }
 
 export function clearBubbleState(bubble) {
   if (!bubble) return;
-  bubble.classList.remove('pending', 'streaming');
+  bubble.classList.remove('pending', 'streaming', 'thinking-only');
   const sp = bubble.querySelector('.ai-spinner');
   if (sp) sp.remove();
   if (bubble.dataset.pending) {

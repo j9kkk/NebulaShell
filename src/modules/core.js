@@ -477,6 +477,36 @@ function runConfirm(message, { title = '确认操作', okText = '确定', cancel
   });
 }
 
+/* ---------------- 外链:确认后交给系统浏览器 ----------------
+   终端里的链接(xterm 的 WebLinksAddon / OSC 8)与 AI 回复里的 Markdown 链接
+   都走这里。不能依赖 addon 自带的处理器:它 window.open() 一个新窗口再改
+   location,而 Tauri 的 WKWebView 不实现 createWebViewWithConfiguration,
+   返回 null 后只打一句 console.warn —— 用户看到的就是"确认了却没反应"。
+   也不能依赖原生 confirm:wry 未实现 runJavaScriptConfirmPanel,直接判 false。
+   所以用应用内确认框,再交给主进程的 app:openExternal(NSWorkspace / start)。 */
+export async function openExternalLink(url) {
+  const target = String(url || '').trim();
+  if (!/^https?:\/\//i.test(target)) {
+    toast('只支持打开 http/https 链接', 'error');
+    return false;
+  }
+  const ok = await askConfirm(target, {
+    title: '打开外部链接',
+    okText: '用浏览器打开',
+    cancelText: '取消',
+    danger: false,
+    defaultFocus: 'ok',
+  });
+  if (!ok) return false;
+  try {
+    await api('app:openExternal', { url: target });
+    return true;
+  } catch (err) {
+    toast('无法打开链接：' + err.message, 'error');
+    return false;
+  }
+}
+
 /* ---------------- 右键菜单(通用浮层) ----------------
    放在 core 而不是 entry:文件面板也要用它(下载/重命名/删除挪进右键菜单),
    而 entry 已经依赖 sftp —— 若把菜单留在 entry,文件面板就得反向依赖它,
@@ -676,6 +706,20 @@ export function bindCtxMenuDismiss() {
   window.addEventListener('resize', closeCtxMenu);
   window.addEventListener('blur', closeCtxMenu);
   document.addEventListener('scroll', (event) => { if (!event.target.closest?.('#ctx-menu')) closeCtxMenu(); }, true);
+}
+
+/// 顺手拦下 DOM 里所有外链(<a data-external>,即 Markdown 渲染出来的链接)。
+/// 不拦的话 WebView 会把整页导航到目标站点 —— 应用本身就被替掉了。
+/// 捕获阶段处理,先于任何局部 click 逻辑。
+export function bindExternalLinks() {
+  if (bindExternalLinks._bound) return;
+  bindExternalLinks._bound = true;
+  document.addEventListener('click', (event) => {
+    const link = event.target.closest?.('a[data-external]');
+    if (!link) return;
+    event.preventDefault();
+    openExternalLink(link.getAttribute('href'));
+  }, true);
 }
 
 /* ---------------- 主机列表 ---------------- */

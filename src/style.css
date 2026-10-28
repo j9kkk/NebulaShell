@@ -206,12 +206,24 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 收起态的浮出层以 left:100% 贴在本节点右缘,需要定位上下文 */
+  position: relative;
   transition: width var(--dur) var(--ease), min-width var(--dur) var(--ease), max-width var(--dur) var(--ease);
 }
-/* 侧栏头部:logo 与红绿灯都在顶层标题栏,这里只有操作按钮与搜索框 */
-.side-header { flex: none; padding: 12px 14px 10px; border-bottom: 1px solid var(--border); }
-.side-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-bottom: 10px; }
-.side-actions .btn { min-width: 0; padding: 0 6px; font-size: 12px; }
+/* 侧栏头部:logo 与红绿灯都在顶层标题栏,这里只有标题行与搜索框。
+   低频操作收进「⠇」后,头部从 4 个等权按钮的 2×2 网格降到两行(标题 + 搜索),
+   释放约 46px 列表高度。 */
+.side-header { flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--border); }
+.side-title { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.side-title-name { font-size: 13px; font-weight: 650; letter-spacing: 0.2px; }
+.side-count {
+  font-size: 10.5px; color: var(--muted); background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 1px 6px; font-variant-numeric: tabular-nums;
+}
+.side-spacer { flex: 1; }
+/* 展开态:列表占满剩余高度 */
+.side-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* SVG 图标(shared/icons.js)通用对齐:.mi 容器与按钮内的 svg 一律纵向居中,
    尺寸由注入时的 width/height 决定,CSS 不再依赖 font-size */
@@ -226,20 +238,74 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 #host-search { width: 100%; }
 
 #host-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
+/* 分组头是按钮(可折叠),不再是纯文本 —— 100 台机器分了十几组时,
+   折叠是唯一能让人不滚到底的手段。 */
+.host-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 7px 6px 5px; margin: 0; border: none; border-radius: 6px;
+  background: none; color: var(--muted); font: inherit;
+  font-size: 11px; letter-spacing: 0.4px; text-align: left; cursor: pointer;
+}
+.host-group-head:hover { background: var(--bg2); }
+.host-group-head .hg-caret { display: inline-flex; transition: transform var(--dur-fast) var(--ease); }
+.host-group-head .hg-caret svg { width: 10px; height: 10px; }
+.host-group-head.collapsed .hg-caret { transform: rotate(-90deg); }
+.host-group-head .hg-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 计数胶囊:与侧栏标题行的 .side-count 同款,数字有了边界也更易扫读 */
+.host-group-head .hg-count {
+  margin-left: auto; flex: none;
+  font-size: 10.5px; line-height: 1; color: var(--muted);
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 6px; font-variant-numeric: tabular-nums;
+}
+/* 常用组的 SVG 星标(替代文本 emoji):颜色与命令历史收藏一致 */
+.host-group-head .hg-fav-ic { display: inline-flex; color: var(--warn); flex: none; }
+.host-group-head .hg-fav-ic svg { width: 11px; height: 11px; }
+.host-group-head.fav .hg-name { color: var(--warn); }
+/* 兼容旧选择器(空窗格选择器等仍在用纯文本分组标题) */
 .host-group-title {
   color: var(--muted); font-size: 11px; text-transform: none;
   padding: 10px 6px 4px; letter-spacing: 0.4px;
 }
 .host-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: 8px; cursor: pointer;
   border: 1px solid transparent;
 }
 .host-item:hover { background: var(--bg2); }
 .host-item.active { background: var(--bg2); border-color: var(--accent); }
+/* 星标:未收藏时只在 hover 露出来,已收藏常显 —— 否则每行一颗星星,
+   整列都是视觉噪音 */
+/* 与命令历史的收藏按钮(.h-fav)同一套语言:
+   muted 描边星,已收藏转 --warn 且只变色不填充,hover 加灰底。
+   16×26 的点击区贴近 .h-fav 的 26px 命中尺寸,视觉仍是 12px 星。 */
+.host-star {
+  flex: none; width: 20px; height: 26px; padding: 0; border: none; background: none;
+  color: var(--muted); opacity: 0; display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; border-radius: 4px; margin: -3px 0 -3px -4px;
+}
+.host-star svg { width: 12px; height: 12px; }
+.host-item:hover .host-star { opacity: 0.55; }
+.host-star:hover { opacity: 1 !important; color: var(--warn); background: var(--muted-hover-bg); }
+.host-star.on { opacity: 1; color: var(--warn); }
+.host-star.on:hover { background: var(--muted-hover-bg); }
 .host-main { flex: 1; min-width: 0; }
 .host-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .host-sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 紧凑地址只在紧凑密度下替换掉 .host-sub */
+.host-sub-compact { display: none; }
+/* 紧凑密度:单行 26px,同屏容量约 ×1.8。名称占主,右侧只留 IP
+   (非 22 端口补 :port) —— 完整 user@host:port 仍在 title 里。
+   host-main 必须转为 flex:它默认是 block,名称与地址会上下堆叠而非同行,
+   星标 / 名称 / 地址三者的垂直中线也就无法对齐。 */
+#host-list.dense .host-item { padding: 3px 8px; gap: 5px; }
+#host-list.dense .host-main { display: flex; align-items: center; gap: 6px; }
+#host-list.dense .host-name { font-size: 12.5px; flex: 1; min-width: 0; }
+#host-list.dense .host-sub { display: none; }
+#host-list.dense .host-sub-compact {
+  display: block; flex: none; padding-left: 8px;
+  text-align: right; font-variant-numeric: tabular-nums;
+}
 .host-chip {
   display: inline-block; font-size: 10px; color: var(--warn);
   border: 1px solid var(--warn); padding: 0 5px; border-radius: 999px;
@@ -495,6 +561,15 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
    会把行尾整排按钮推出状态栏 —— 这正是要避免的遮挡。min-width:0 是 flex 子项
    真正能缩到 0 的前提(默认 min-width:auto 会拒绝收缩)。 */
 #statusbar > #status-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 断开态的重连引导:与会话信息分属两个语义段,用强调色区分,且绝不收缩
+   (它就是要被看见的),收缩压力全部交给左侧状态文字去省略号。 */
+#statusbar > #status-hint { flex: 0 0 auto; color: var(--accent); font-weight: 500; white-space: nowrap; }
+#statusbar > #status-hint.hidden { display: none; }
+/* 窄窗口优先牺牲这条提示,而不是把行尾按钮挤出去(按钮永不收缩的既有契约)。
+   收起后仍可读状态文字里的原因,并有 ↻ 按钮的 title 兜底。 */
+@container (max-width: 620px) {
+  #statusbar > #status-hint { display: none; }
+}
 #statusbar > .dot, #statusbar > .ro-badge { flex: 0 0 auto; }
 #statusbar > .spacer { flex: 1 1 0; min-width: 0; }
 #statusbar > .btn { flex: 0 0 auto; }
@@ -950,12 +1025,12 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 .ai-msg.assistant { align-self: flex-start; }
 .ai-msg.assistant .ai-col { background: var(--bg2); border: 1px solid var(--border); border-top-left-radius: 0; }
 
-/* 等待首个 token:转圈 + 文案,让"正在执行"这件事可见(spinner 在 .ai-row 内、正文列左侧) */
+/* 等待首个 token:转圈 + 文案。spinner 在 .ai-body 内部与文案同行 ——
+   挂在气泡外面(旧实现)会把气泡左缘推开约 28px,首个 token 移除 spinner
+   时又弹回去,表现为等待态与时间戳不对齐 + 转流式时横向暴跳。 */
 .ai-msg.pending { color: var(--muted); }
-.ai-msg.pending .ai-row { align-items: center; }
-.ai-msg.pending .ai-spinner { margin-right: 8px; }
 .ai-msg.pending .ai-copy { display: none; }
-.ai-pending-text { font-size: 12px; }
+.ai-msg.pending .ai-body { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .ai-spinner {
   flex: 0 0 auto; width: 12px; height: 12px;
   border: 2px solid var(--border);
@@ -970,27 +1045,47 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
   content: '▌'; margin-left: 1px; color: var(--accent);
   animation: ai-caret 1s step-end infinite;
 }
+/* 纯思考阶段正文还没到:.ai-body 是空的,光标伪元素会在思考条下面撑出
+   一整行(约 20px)的空白 + 一颗无字可跟的孤儿光标。整个撤掉。 */
+.ai-msg.thinking-only .ai-col::after { content: none; }
 @keyframes ai-caret { 50% { opacity: 0; } }
 
 /* 思考内容(reasoning/thinking)折叠块:独立于 .ai-body,插在正文之前。
    默认收起只留一行头部;流式期间头部带"思考中"动效,正文开始后 seal。
-   展开后为淡色小字,不与正文抢视觉;max-height 限制超长推理的占屏。 */
-.ai-thinking { margin: 2px 0 6px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+   展开后为淡色小字,不与正文抢视觉;max-height 限制超长推理的占屏。
+   刻意不加闭合边框:气泡本体已有 1px 描边,里面再套一圈就是"框中框"。
+   改用左侧一条 2px 导引条 + 极弱底色,提示这是从属段落而非并列卡片。 */
+.ai-thinking {
+  margin: 0 0 6px; overflow: hidden;
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+/* 纯思考阶段气泡里只有这一块:撤掉下外边距,气泡才贴得住 */
+.ai-msg.thinking-only .ai-thinking { margin-bottom: 0; }
 .ai-thinking-head {
   display: block; width: 100%; text-align: left;
   font-family: inherit; font-size: 12px; line-height: 1.4;
-  color: var(--muted); background: none; border: none;
-  padding: 4px 8px; cursor: pointer; user-select: none;
+  color: var(--accent); background: none; border: none;
+  padding: 5px 8px; cursor: pointer; user-select: none;
 }
 .ai-thinking-head:hover { color: var(--text); }
 .ai-thinking.streaming .ai-thinking-head::after {
   content: '…'; animation: ai-caret 1s step-end infinite;
 }
+/* 封存态:正文开始后思考过程退成背景,导引条与文字一起降饱和 */
+.ai-thinking:not(.streaming) {
+  border-left-color: var(--border);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.ai-thinking:not(.streaming) .ai-thinking-head { color: var(--muted); }
 .ai-thinking-text {
-  display: none; padding: 2px 8px 6px;
-  color: var(--muted); font-size: 12px; line-height: 1.5;
+  display: none; padding: 6px 8px 8px;
+  color: var(--muted); font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 40vh; overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
 }
 .ai-thinking.open .ai-thinking-text { display: block; }
 
@@ -1618,7 +1713,9 @@ body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: 
 }
 .fp-input-row, .snippet-add { --ctl-h: 26px; }
 /* 图标按钮:正方形,仅靠内距控制 */
-.btn.icon { --ctl-h: 26px; width: var(--ctl-h); padding: 0; font-size: 13px; }
+/* flex: none —— 图标钮放在 flex 行里(如侧栏标题行的「⠇」)会被压缩成非正方形,
+   导致 layout-audit 的 deformed-icon 报警。宽度固定就不该参与收缩。 */
+.btn.icon { --ctl-h: 26px; width: var(--ctl-h); flex: none; padding: 0; font-size: 13px; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.ghost:hover { color: var(--text); border-color: var(--border); }
 /* .btn.danger(2885 行,实心红底)优先级虽低但在文件后部,会盖掉 ghost 的透明背景,
@@ -3080,16 +3177,45 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ===== P1 批次新增 ===== */
-/* 收起态:侧栏塌缩为窄条。主机列表/搜索框隐藏,头部只留新建主机/云导入/批量执行/管理
-   四个图标按钮纵向排列(28×28,窄条 40px 减去两侧 6px 内距);文字标签隐藏,
-   靠 title 提示。展开/收起开关在顶层标题栏。 */
+/* 收起态:侧栏塌缩为 40px 窄条,只留「新建」「⠇」两枚 28×28 按钮。
+   主机列表不在这里做任何"识别编码"(缩写/字母/图标都是二次编码,40px 放不下
+   可读的名字),而是整块 `.side-body` 变成悬停浮出的覆盖层:鼠标停留 120ms
+   浮出完整侧栏,移开收回。宽度必须精确 40px —— e2e T63f 断言 collapsed
+   width ≤ 44,且浮层是 absolute 不占布局,故 #main 宽度不受影响。 */
 #sidebar.collapsed { width: 40px; min-width: 40px; max-width: 40px; }
-#sidebar.collapsed .side-header { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 6px; border-bottom: none; }
-#sidebar.collapsed #host-search { display: none; }
-#sidebar.collapsed .side-actions { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 0; }
-#sidebar.collapsed .side-actions .btn { width: 28px; height: 28px; padding: 0; font-size: 15px; }
-#sidebar.collapsed .side-actions .btn .lbl { display: none; }
-#sidebar.collapsed #host-list { display: none; }
+/* overflow 必须放开:默认 hidden 会把浮出的 .side-body 裁掉 */
+#sidebar.collapsed { overflow: visible; }
+#sidebar.collapsed .side-header {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 8px 6px; border-bottom: none;
+}
+#sidebar.collapsed .side-title {
+  flex-direction: column; gap: 6px; margin: 0;
+}
+#sidebar.collapsed .side-title-name,
+#sidebar.collapsed .side-count,
+#sidebar.collapsed .side-spacer { display: none; }
+#sidebar.collapsed .side-title .btn { width: 28px; height: 28px; padding: 0; font-size: 15px; }
+#sidebar.collapsed .side-title .btn .lbl { display: none; }
+#sidebar.collapsed .side-header .search-field { display: none; }
+/* 收起态下 .side-body 成为贴在窄条右缘的浮层。display:none 让它不参与布局,
+   也不被 layout-audit / T64 的 getClientRects() 扫到(未悬停时零 rect)。 */
+#sidebar.collapsed .side-body {
+  display: none;
+  position: absolute; left: 100%; top: 0; bottom: 0; width: 264px;
+  background: var(--panel); border-right: 1px solid var(--border-hover);
+  box-shadow: var(--card-shadow); z-index: 35;
+  flex-direction: column;
+}
+/* 浮层左缘的单条强调线:叠在窄条 border-right 之上,避免出现两条并排的竖线 */
+#sidebar.collapsed .side-body::before {
+  content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px;
+  background: var(--accent);
+}
+#sidebar.collapsed.peek-open .side-body { display: flex; }
+#sidebar.collapsed.peek-open .side-header { background: var(--panel); }
+/* 窄条本身在浮出时给一点反馈(指针确实在这个区域上) */
+#sidebar.collapsed.peek-open { box-shadow: inset -1px 0 0 var(--accent); }
 
 /* 分屏布局 */
 #term-stack { position: relative; }
@@ -3863,4 +3989,138 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ===== 主机库弹窗(百台级批量管理) ===== */
+/* 880px 不够:名称列只剩 170px,`cache-prod-01` 会被截成 `cache-pro…`。
+   960px 下名称列约 270px,所有常见主机名完整可读。 */
+.hl-card { width: 960px; max-width: calc(100vw - 40px); }
+/* 搜索框不铺满整行:右侧留出导入/导出/新建一排库级动作 */
+.hl-card .search-field { flex: 1; max-width: 560px; }
+.hl-count {
+  font-size: 10.5px; color: var(--muted); background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 1px 6px; margin-left: 8px; font-variant-numeric: tabular-nums;
+}
+.hl-body {
+  display: flex; min-height: 0; flex: 1;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+/* 左栏分组:派生分组(云厂商/我的主机)置灰不可拖入 —— 拖进去会写入字面量
+   分组名,和真实云主机混在一起且外部无法区分 */
+.hl-groups {
+  width: 170px; flex: none; border-right: 1px solid var(--border);
+  padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px;
+}
+.hl-group {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  border-radius: 6px; font-size: 12px; color: var(--muted); cursor: pointer;
+  border: 1px solid transparent;
+}
+.hl-group:hover { background: var(--bg2); }
+.hl-group.on { background: var(--hover-bg); color: var(--accent); font-weight: 600; }
+.hl-group.fav.on, .hl-group.fav { color: var(--warn); }
+.hl-group .hlg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 计数胶囊:与侧栏分组计数同款 */
+.hl-group .hlg-n {
+  margin-left: auto; flex: none;
+  font-size: 10.5px; line-height: 1; color: var(--muted);
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 6px; font-variant-numeric: tabular-nums;
+}
+.hl-group.on .hlg-n { color: var(--accent); }
+/* 不可落点:置灰 + 禁止光标。拖动经过时也不会出现落点高亮。 */
+.hl-group.dis { opacity: 0.32; cursor: not-allowed; }
+.hl-group.dis:hover { background: transparent; }
+/* 可接受的落点高亮 */
+.hl-group.drop {
+  background: var(--active-bg); color: var(--accent); font-weight: 600;
+  border-color: var(--accent);
+}
+.hl-table-wrap { flex: 1; min-width: 0; overflow: auto; }
+.hl-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; table-layout: fixed; }
+.hl-table thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel);
+  text-align: left; font-weight: 600; font-size: 11px; color: var(--muted);
+  padding: 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.hl-table tbody td {
+  padding: 6px 8px; border-bottom: 1px solid var(--table-divider);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+}
+.hl-table tbody tr { cursor: pointer; }
+.hl-table tbody tr:hover td { background: var(--bg2); }
+.hl-table tbody tr.sel td { background: var(--hover-bg); }
+/* 拖动中的行:降透明度,同时不可再作为落点 */
+.hl-table tbody tr.drag td { opacity: 0.35; }
+/* 排序落点:上缘 2px 强调线 */
+.hl-table tbody tr.insert td { border-top: 2px solid var(--accent); }
+/* 列宽预算(表格区约 756px):固定列 494 + 名称 160 + 标签自适应 ≈ 102。
+   名称列必须保底 160 —— `OpenCloudOS-u058` 在 12px 下约 118px,
+   table-layout:fixed 会把无宽度的 auto 列平分,名称曾被挤到截断。 */
+.hl-w-h { width: 20px; } .hl-w-chk { width: 28px; } .hl-w-name { width: 160px; } .hl-w-user { width: 64px; }
+.hl-w-addr { width: 132px; } .hl-w-grp { width: 92px; } .hl-w-cred { width: 48px; } .hl-w-act { width: 104px; }
+.hl-th-act { text-align: right; }
+.hl-c-user, .hl-c-addr { font-family: var(--font-mono); font-size: 11px; }
+.hl-c-user { color: var(--muted); }
+.hl-c-grp, .hl-c-cred { color: var(--muted); }
+.hl-c-cred.warn { color: var(--warn); }
+/* 端口灰化:非 22 也保留同一写法,对齐不受影响,但一眼能认出非标端口 */
+.hl-port { color: var(--muted); opacity: 0.75; }
+.hl-tag {
+  display: inline-block; font-size: 9.5px; line-height: 15px; padding: 0 5px;
+  border-radius: 4px; background: var(--hover-bg); color: var(--accent);
+  border: 1px solid rgba(91, 140, 255, 0.28); margin-right: 3px;
+}
+/* 把手长显:它是排序的唯一入口,藏进 hover 里等于不存在(用户实测反馈)。
+   竖向六点是行排序的通用把手形状;横向三点是"更多"的语义,不能混用。 */
+.hl-grip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 22px; color: var(--muted); opacity: 0.55; cursor: grab;
+  border-radius: 4px;
+}
+.hl-grip:hover { opacity: 1; background: var(--muted-hover-bg); color: var(--text); }
+.hl-table tbody tr.drag .hl-grip { cursor: grabbing; }
+.hl-box {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 4px;
+  border: 1.5px solid var(--border-hover); vertical-align: middle; cursor: pointer;
+}
+.hl-box.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.hl-box.on svg { display: block; }
+/* 半选:当前筛选结果里只有部分被选中 */
+.hl-box.part { background: var(--accent); border-color: var(--accent); }
+.hl-box.part::after { content: ''; width: 7px; height: 2px; background: #fff; border-radius: 1px; }
+/* 操作列:默认 72% 可见度(默认隐藏会让 4 个图标几乎看不见),
+   hover 提亮。★ 已收藏时填色。 */
+.hl-acts { display: flex; gap: 0; justify-content: flex-end; opacity: 0.72; }
+.hl-table tbody tr:hover .hl-acts { opacity: 1; }
+.hl-acts button {
+  width: 24px; height: 22px; padding: 0; border: none; border-radius: 5px;
+  background: none; color: var(--muted); display: inline-flex;
+  align-items: center; justify-content: center; cursor: pointer;
+}
+.hl-acts button:hover { background: var(--border); color: var(--text); }
+.hl-acts button .muted-ic { display: block; }
+/* 与命令历史 .h-fav 一致:已收藏只变色不填充 */
+.hl-acts .hl-fav.on { color: var(--warn); }
+.hl-acts .hl-fav:hover { color: var(--warn); background: var(--muted-hover-bg); }
+.hl-acts button.del:hover { background: var(--danger-hover-bg); color: var(--danger); }
+.hl-empty { color: var(--muted); text-align: center; padding: 30px 10px; font-size: 12px; }
+/* 批量栏:只在有选中时出现(不占常态高度) */
+.hl-batch {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  padding: 9px 12px; border-radius: 8px; font-size: 12px;
+  background: var(--hover-bg); border: 1px solid rgba(91, 140, 255, 0.28);
+}
+.hl-batch.hidden { display: none !important; }
+.hl-sel { font-weight: 600; color: var(--accent); }
+.hl-tip { color: var(--muted); font-size: 11.5px; }
+.hl-foot { align-items: center; }
+/* 拖动跟随标签:跟随光标,显示"移动 N 台"或主机名 */
+.hl-dragon {
+  position: fixed; z-index: 60; pointer-events: none;
+  padding: 4px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600;
+  color: var(--accent); background: var(--panel);
+  border: 1px solid var(--accent); box-shadow: var(--menu-shadow); white-space: nowrap;
 }

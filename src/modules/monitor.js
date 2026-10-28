@@ -551,7 +551,11 @@ export function renderMonitorBar() {
   const bar = $('#monitor-bar');
   // 监控固定显示在状态栏,不再有开关(旧 #btn-monitor 已移除)。
   // 无活动会话时隐藏:此时状态栏显示"就绪 — 尚未建立连接",监控块没有意义。
-  if (!state.activeId) {
+  const active = state.activeId ? state.sessions.get(state.activeId) : null;
+  // 未连接时同样隐藏:指标来自 SSH 会话,断开后 entry.js 已删掉 metrics,
+  // 这一整块只剩一排"–",却仍占几百像素,把断开原因和重连提示挤成省略号。
+  // 断开态状态栏最该说清"为什么断、怎么连回来",这几个空仪表没有任何信息。
+  if (!active || active.status !== 'connected') {
     bar.classList.add('hidden');
     hideAllPopovers();
     return;
@@ -562,14 +566,16 @@ export function renderMonitorBar() {
   // 数值槽是定长的,超大主机(如 100TB 盘)的详情可能被裁掉;裁切时把完整值放进
   // title,悬停仍可读到精确数字 —— 定长换来的稳定不该以丢信息为代价。
   const setV = (id, txt) => { const el = $(id); el.textContent = txt; el.title = txt; };
-  // 延迟按阈值着色(<150ms 绿 / <400ms 琥珀 / 更高红),链路质量不用读数字也能感知
+  // 延迟按阈值着色(<75ms 绿 / <200ms 琥珀 / 更高红):这是单次往返的
+  // 真实 RTT,同城直连在绿档、跨省多半琥珀、跨国专线进红档 —— 阈值按
+  // 用户敲一个键到看到回显的感知划档,不用读数字也能判断链路质量。
   const setLat = (ms) => {
     const el = $('#mon-lat');
     el.textContent = fmtLat(ms);
-    el.title = ms == null ? '' : `连接延迟(echo 往返):${fmtLat(ms)}`;
-    el.classList.toggle('lat-ok', ms != null && ms < 150);
-    el.classList.toggle('lat-mid', ms != null && ms >= 150 && ms < 400);
-    el.classList.toggle('lat-bad', ms != null && ms >= 400);
+    el.title = ms == null ? '' : `连接延迟(单次往返):${fmtLat(ms)}`;
+    el.classList.toggle('lat-ok', ms != null && ms < 75);
+    el.classList.toggle('lat-mid', ms != null && ms >= 75 && ms < 200);
+    el.classList.toggle('lat-bad', ms != null && ms >= 200);
   };
   if (!m) {
     bar.classList.remove('mon-unsupported');

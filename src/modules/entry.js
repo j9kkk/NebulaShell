@@ -1,9 +1,11 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
-import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindExternalLinks, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
-import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, updateSessionLogHint } from './hosts.js';
+import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
+import { bindHostLibrary, openHostLibrary } from './host-library.js';
+import { bindSidebarPeek, resetPeekOnToggle } from './sidebar-peek.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator, updateModelEffortBadge } from './ai.js';
 import {
@@ -85,14 +87,24 @@ function splitMenuItems() {
   ];
 }
 
-/// 侧栏「管理」:主机库层面的低频操作。
+/// 侧栏「⠇」:主机库层面的操作 + 视图开关。
+/// 「视图」分组把密度这类**频繁切换**的状态放在被控对象旁边 —— 塞进设置中心
+/// 意味着每次切换都要多点三层,而密度是"看集群想紧凑、逐台操作用舒适"的东西。
+/// 「批量执行」原先占着侧栏一个常驻按钮,频率远低于新建主机,一并下沉到这里。
 function hostManageItems() {
   return [
+    commandMenuItem('cloud.import'),
+    '-',
+    commandMenuItem('hosts.library', undefined, { label: '主机库(批量管理)…' }),
+    commandMenuItem('tools.batch', undefined, { label: '批量执行…' }),
+    '-',
     commandMenuItem('hosts.import'),
     commandMenuItem('hosts.export'),
     '-',
     commandMenuItem('settings.fingerprints'),
     commandMenuItem('tools.forwards', undefined, { label: '端口转发规则…' }),
+    '-',
+    commandMenuItem('view.hostDensity'),
   ];
 }
 
@@ -201,6 +213,8 @@ function toggleSidebar() {
   }
   sb.classList.toggle('collapsed', collapsed);
   sb.classList.remove('hidden');
+  // 切换时清掉浮出态:否则展开态会带着 peek-open,收起后再悬停的判断也会错乱
+  resetPeekOnToggle();
   $('#sidebar-resizer').classList.toggle('hidden', collapsed);
   syncSidebarToggle(collapsed);
   fitAllVisible();
@@ -506,13 +520,31 @@ function setupWorkspaceCommands() {
   registerCommand('hosts.import', { label: '导入主机', category: 'host', kind: 'dialog', keywords: ['import hosts', 'drzj', 'daoru'], run: importHosts });
   registerCommand('hosts.export', { label: '导出主机', category: 'host', kind: 'dialog', keywords: ['export hosts', 'backup', 'dczj', 'daochu'], run: exportHosts });
   registerCommand('settings.fingerprints', { label: '主机指纹', category: 'host', kind: 'dialog', keywords: ['fingerprints', 'known hosts', 'zjzw', 'zhiwen'], run: openFingerprints });
+  registerCommand('hosts.library', { label: '主机库', category: 'host', kind: 'dialog', keywords: ['library', 'manage hosts', 'batch edit', 'zjk', 'zhujiku', 'piliang'], run: openHostLibrary });
+  // 列表密度:checked 让菜单显示勾选态,切换后立即重绘侧栏
+  registerCommand('view.hostDensity', {
+    label: '紧凑列表', category: 'panel',
+    keywords: ['density', 'compact', 'dense', 'jc', 'jincou', 'midu'],
+    checked: () => uiPrefs().hostDensity === 'compact',
+    run: () => {
+      const next = uiPrefs().hostDensity === 'compact' ? 'comfortable' : 'compact';
+      saveUiPrefs({ hostDensity: next });
+      renderHosts();
+      refreshCommandStates();
+    },
+  });
 
   const buttons = {
-    'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar', 'btn-batch': 'tools.batch',
+    'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
-    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-cloud-import': 'cloud.import', 'btn-welcome-cloud': 'cloud.import',
+    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
   };
-  for (const [id, command] of Object.entries(buttons)) document.getElementById(id).dataset.command = command;
+  // 元素可能不存在(按钮随设计演进被移除到菜单里):这里必须判空,
+  // 否则 boot 会在一句 TypeError 上中断,后续所有连接/终端接线都注册不上。
+  for (const [id, command] of Object.entries(buttons)) {
+    const el = document.getElementById(id);
+    if (el) el.dataset.command = command;
+  }
   bindCommandButtons();
   bindMenuButton($('#btn-split-menu'), splitMenuItems, { label: '分屏与布局', alignRight: true });
   bindMenuButton($('#btn-host-manage'), hostManageItems, { label: '主机管理' });
@@ -551,6 +583,15 @@ export function bindEvents() {
   });
 
   $('#host-search').addEventListener('input', renderHosts);
+  // 清空钮:命令历史/常用命令同款 .search-clear-btn。清空后焦点留在输入框,
+  // 便于继续输入(而不是跳到别处)。
+  $('#host-search-clear').addEventListener('click', () => {
+    const inp = $('#host-search');
+    inp.value = '';
+    renderHosts();
+    inp.focus();
+  });
+  bindSidebarPeek();
   $('#host-auth').addEventListener('change', toggleAuthRows);
 
   // 认证方式滑块:点击分段项切换 + 键盘左右箭头支持
@@ -836,6 +877,7 @@ export function bindEvents() {
   $('#btn-fw-save').addEventListener('click', saveForwardRule);
   $('#btn-fw-close').addEventListener('click', () => closeModal('#modal-forward'));
   bindBatchUi();
+  bindHostLibrary();
 
   // 文件分屏:窗格内交互(导航/路径/新建/重命名/权限/上传/右键菜单)
   // 全部在 sftp.js buildFilePane 里按窗格闭包绑定;这里只接拖拽上传与任务中心。
@@ -1284,6 +1326,7 @@ export async function boot() {
   // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
   hydrateIcons(document);
   bindModalInteractions();
+  bindExternalLinks();
   bindAiCodeActions();
   bindAiScroll();
   bindEvents();

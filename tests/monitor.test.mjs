@@ -46,6 +46,9 @@ async function createMonitorModule() {
     metrics: new Map(),
     metricHistory: new Map(),
     settings: { snippets: [] },
+    // renderMonitorBar 需要知道活动会话是否仍连着:断开时这一块要收起
+    // (指标已被删,只剩一排"–",却会把断开原因挤出状态栏)。
+    sessions: new Map([['sess-1', { sessionId: 'sess-1', status: 'connected' }]]),
   };
 
   const core = {
@@ -239,4 +242,30 @@ test('renderMonitorBar 兼容旧 Array 格式并安全转换', async () => {
   const hist = state.metricHistory.get('sess-1');
   assert.deepEqual([...hist.cpu], [10, 20, 30, 40]);
   assert.deepEqual([...hist.mem], [50]);
+});
+
+// 断开态状态栏要腾地方给"为什么断、怎么连回来":监控块此时只剩一排"–",
+// 却实测占 300-580px,把断开原因挤成省略号。见 terminal.js 的 updateStatusbar。
+test('renderMonitorBar 在断开/无会话时收起监控条', async () => {
+  const { mod, state, getEl } = await createMonitorModule();
+  state.metrics.set('sess-1', {
+    supported: true, cpuPct: 10, memPct: 20, memUsedMB: 100, memTotalMB: 500,
+    diskPct: 30, diskUsedGB: 30, diskTotalGB: 100, rxBps: 1024, txBps: 2048, latencyMs: 20,
+  });
+  const bar = getEl('monitor-bar');
+
+  state.sessions.get('sess-1').status = 'connected';
+  mod.renderMonitorBar();
+  assert.equal(bar.classList.contains('hidden'), false, '已连接时监控条可见');
+
+  for (const status of ['disconnected', 'error', 'exited', 'connecting']) {
+    state.sessions.get('sess-1').status = status;
+    mod.renderMonitorBar();
+    assert.equal(bar.classList.contains('hidden'), true, `${status} 时应收起`);
+  }
+
+  state.sessions.get('sess-1').status = 'connected';
+  state.activeId = null;
+  mod.renderMonitorBar();
+  assert.equal(bar.classList.contains('hidden'), true, '无活动会话时收起');
 });

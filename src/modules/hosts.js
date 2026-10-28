@@ -1,103 +1,251 @@
 // 主机列表、主机编辑弹窗、指纹管理
 import { $, PROVIDER_LABEL, api, askConfirm, closeModal, copyText, openModal, showCtxMenu, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
-import { connectHost, refreshPickers } from './terminal.js';
+import { connectHost, rankPickerHosts, refreshPickers } from './terminal.js';
+
+/// 「⭐ 常用」虚拟分组的规范名。星标归属只由 settings.ui.favoriteHostIds 表达,
+/// 这个名字**不能**成为 h.group 的值 —— 否则它会同时是虚拟分组和真实分组,
+/// 列表里出现两个同名目录(实施首日真实发生过的 bug)。
+export const STAR_NOTE = '⭐ 常用';
 
 export function groupOf(h) {
   return h.group || (h.cloud ? PROVIDER_LABEL[h.cloud.provider] || h.cloud.provider : '') || '我的主机';
 }
 
+/// 界面偏好(收藏/折叠/密度)存在 settings.ui。读写都经这里,前端各处不必判空。
+export function uiPrefs() {
+  const ui = state.settings?.ui;
+  return {
+    favoriteHostIds: Array.isArray(ui?.favoriteHostIds) ? ui.favoriteHostIds : [],
+    collapsedGroups: Array.isArray(ui?.collapsedGroups) ? ui.collapsedGroups : [],
+    hostDensity: ui?.hostDensity === 'compact' ? 'compact' : 'comfortable',
+  };
+}
+
+/// 写界面偏好:乐观更新本地 state,去抖后落盘(切换密度/折叠会连续触发,
+/// 每次全量写配置没有意义)。失败只提示,不回滚 —— 这些是纯视图状态。
+let uiSaveTimer = null;
+export function saveUiPrefs(patch) {
+  state.settings = state.settings || {};
+  state.settings.ui = { ...uiPrefs(), ...patch };
+  clearTimeout(uiSaveTimer);
+  uiSaveTimer = setTimeout(() => {
+    api('settings:save', { ui: uiPrefs() }).catch((e) => {
+      toast('保存界面偏好失败:' + e.message, 'error');
+    });
+  }, 400);
+}
+
+/// 分组名是否是"派生"的(不是真实目录):
+/// 云厂商分组来自 `PROVIDER_LABEL[provider]`,`我的主机`是 `h.group` 空值兜底。
+/// 这些分组不能作为拖拽落点 —— 拖进去会写入字面量分组名,与真实数据混淆。
+export function isDerivedGroup(name, hosts) {
+  if (name === '我的主机') return true;
+  const members = hosts.filter((h) => groupOf(h) === name);
+  if (!members.length) return false;
+  return members.every((h) => !h.group && h.cloud);
+}
+
+/// 检索语法:`#标签` / `@分组` 与普通关键词可混用。
+/// 返回 { hosts, filtered } —— 有查询时走命令面板同一套模糊排序。
+export function filterHosts(query, hosts) {
+  const raw = String(query || '').trim();
+  if (!raw) return { hosts, filtered: false };
+  const tags = [];
+  const groups = [];
+  const words = [];
+  for (const token of raw.split(/\s+/)) {
+    if (token.startsWith('#') && token.length > 1) tags.push(token.slice(1).toLowerCase());
+    else if (token.startsWith('@') && token.length > 1) groups.push(token.slice(1).toLowerCase());
+    else if (token) words.push(token);
+  }
+  let out = hosts;
+  if (tags.length) {
+    out = out.filter((h) =>
+      tags.every((t) => (h.tags || []).some((x) => String(x).toLowerCase().includes(t))));
+  }
+  if (groups.length) {
+    out = out.filter((h) => groups.every((g) => groupOf(h).toLowerCase().includes(g)));
+  }
+  if (!words.length) return { hosts: out, filtered: true };
+  // 关键词交给已有的模糊排序(palette-match),与空窗格选择器同一套打分
+  const ranked = rankPickerHosts(words.join(' '), out);
+  return { hosts: ranked.hosts, filtered: true };
+}
+
 export async function refreshHosts() {
   state.hosts = await api('hosts:list');
+  await healStarGroup();
   renderHosts();
+  // 主机库弹窗、收藏计数等订阅这一个事件,避免各处各自轮询
+  document.dispatchEvent(new Event('nebula:hosts-changed'));
+}
+
+/// 数据自愈:把 h.group === STAR_NOTE 的主机摘出错误分组。
+/// 「常用」是星标标记(favoriteHostIds),不是目录 —— 早期版本允许把它作为
+/// 拖拽落点,写入了这个非法值,导致列表出现两个同名「常用」目录。
+let healedStarGroup = false;
+async function healStarGroup() {
+  const bad = state.hosts.filter((h) => h.group === STAR_NOTE);
+  if (!bad.length || healedStarGroup) return;
+  healedStarGroup = true;
+  try {
+    await api('hosts:bulkUpdate', { ids: bad.map((h) => h.id), patch: { group: '' } });
+    state.hosts = await api('hosts:list');
+    toast('已修复主机的错误分组:「常用」是星标标记,不是目录', 'warn');
+  } catch { /* 修正失败不阻塞列表;下次启动再试 */ }
 }
 
 export function renderHosts() {
-  const kw = ($('#host-search').value || '').trim().toLowerCase();
-  const list = state.hosts.filter((h) => !kw || h.name.toLowerCase().includes(kw) || h.host.toLowerCase().includes(kw));
+  const nav = $('#host-list');
+  if (!nav) return;
+  // 重绘会清空 DOM,滚动位置要手动保住(否则每次输入搜索词都跳回顶部)
+  const keepTop = nav.scrollTop;
+  const prefs = uiPrefs();
+  const favorites = new Set(prefs.favoriteHostIds);
+  const collapsed = new Set(prefs.collapsedGroups);
+  const density = prefs.hostDensity;
+
+  const { hosts: list, filtered } = filterHosts($('#host-search')?.value, state.hosts);
   const groups = new Map();
   for (const h of list) {
     const g = groupOf(h);
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(h);
   }
-  const nav = $('#host-list');
+  // 星标置顶:查询时不插这一组(此时按相关度平铺,分组概念已让位)
+  const starred = !filtered ? state.hosts.filter((h) => favorites.has(h.id)) : [];
+
   nav.innerHTML = '';
+  nav.classList.toggle('dense', density === 'compact');
+  const countEl = $('#host-count');
+  if (countEl) countEl.textContent = String(state.hosts.length);
   // 空窗格的主机选择器是同一份主机数据的另一个视图,必须跟着刷新
   refreshPickers();
   if (!list.length) {
-    nav.innerHTML = '<div class="host-empty">还没有主机<br />点击「新建主机」或「导入云主机」开始</div>';
+    nav.innerHTML = '<div class="host-empty">' +
+      (filtered ? '没有匹配的主机' : '还没有主机<br />点击「新建主机」或「导入云主机」开始') +
+      '</div>';
+    nav.scrollTop = keepTop;
     return;
   }
-  for (const [g, hosts] of groups) {
-    const title = document.createElement('div');
-    title.className = 'host-group-title';
-    title.textContent = `${g} · ${hosts.length}`;
-    nav.appendChild(title);
-    for (const h of hosts) {
-      const item = document.createElement('div');
-      item.className = 'host-item' + (isActiveHost(h.id) ? ' active' : '');
-      item.dataset.id = h.id;
-      const sub = `${h.username}@${h.host}:${h.port}` + (h.cloud && h.cloud.region ? `  ·  ${h.cloud.region}` : '');
-      item.innerHTML = `
-        <div class="host-main">
-          <div class="host-name">${escapeHtml(h.name)}${!h.hasPassword && !h.hasKey ? '<span class="host-chip">待补全凭据</span>' : ''}</div>
-          <div class="host-sub">${escapeHtml(sub)}</div>
-        </div>
-        <div class="host-actions">
-          <button class="hi-clone" title="克隆">${icon('copy')}</button>
-          <button class="hi-edit" title="编辑">${icon('settings')}</button>
-          <button class="hi-del" title="删除">${icon('trash')}</button>
-        </div>`;
-      // 点击或中键:直接在新标签连接(若当前停留于空白单窗格标签则就地复用)。
-      item.addEventListener('click', () => {
-        connectHost(h.id, null, { newTab: true });
-      });
-      item.addEventListener('auxclick', (e) => {
-        if (e.button === 1) { e.preventDefault(); connectHost(h.id, null, { newTab: true }); }
-      });
-      // 悬停图标与右键菜单共用同一组动作(菜单多出"新标签连接/复制地址")。
-      // 图标保留给习惯鼠标悬停的人;右键兜底 —— 此前主机是全应用唯一
-      // 没有右键菜单的列表对象,终端、文件行都能右键,这里却毫无反应。
-      const cloneThis = async () => {
-        try {
-          await api('hosts:clone', { id: h.id });
-          toast('已克隆主机', 'success');
-          refreshHosts();
-        } catch (err) {
-          toast('克隆失败：' + err.message, 'error');
-        }
-      };
-      const delThis = async () => {
-        if (!(await askConfirm(`确定删除主机「${h.name}」吗？此操作不可撤销。`, { title: '删除主机', okText: '删除' }))) return;
-        await api('hosts:delete', { id: h.id });
-        toast('已删除', 'success');
+
+  const renderRow = (h) => {
+    const item = document.createElement('div');
+    item.className = 'host-item'
+      + (isActiveHost(h.id) ? ' active' : '')
+      + (favorites.has(h.id) ? ' starred' : '');
+    item.dataset.id = h.id;
+    const addr = `${h.username}@${h.host}:${h.port}`;
+    const sub = addr + (h.cloud && h.cloud.region ? `  ·  ${h.cloud.region}` : '');
+    // 紧凑态只留 IP(端口非 22 时补上),完整连接串仍在 title 里
+    const compactAddr = h.host + (Number(h.port) === 22 ? '' : `:${h.port}`);
+    const isStar = favorites.has(h.id);
+    item.innerHTML = `
+      <button class="host-star${isStar ? ' on' : ''}" type="button"
+        title="${isStar ? '取消常用' : '标记为常用'}" aria-label="${isStar ? '取消常用' : '标记为常用'}"
+        aria-pressed="${isStar}">${icon('star')}</button>
+      <div class="host-main">
+        <div class="host-name">${escapeHtml(h.name)}${!h.hasPassword && !h.hasKey ? '<span class="host-chip">待补全凭据</span>' : ''}</div>
+        <div class="host-sub">${escapeHtml(sub)}</div>
+        <div class="host-sub host-sub-compact">${escapeHtml(compactAddr)}</div>
+      </div>
+      <div class="host-actions">
+        <button class="hi-clone" title="克隆">${icon('copy')}</button>
+        <button class="hi-edit" title="编辑">${icon('settings')}</button>
+        <button class="hi-del" title="删除">${icon('trash')}</button>
+      </div>`;
+    item.title = sub;
+    // 点击或中键:直接在新标签连接(若当前停留于空白单窗格标签则就地复用)。
+    item.addEventListener('click', () => {
+      connectHost(h.id, null, { newTab: true });
+    });
+    item.addEventListener('auxclick', (e) => {
+      if (e.button === 1) { e.preventDefault(); connectHost(h.id, null, { newTab: true }); }
+    });
+    const cloneThis = async () => {
+      try {
+        await api('hosts:clone', { id: h.id });
+        toast('已克隆主机', 'success');
         refreshHosts();
-      };
-      item.querySelector('.hi-clone').addEventListener('click', (e) => { e.stopPropagation(); cloneThis(); });
-      item.querySelector('.hi-edit').addEventListener('click', (e) => { e.stopPropagation(); openHostModal(h); });
-      item.querySelector('.hi-del').addEventListener('click', (e) => { e.stopPropagation(); delThis(); });
-      item.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
-        const hasSession = [...state.sessions.values()].some((s) => s.host.id === h.id && ['connected', 'connecting'].includes(s.status));
-        showCtxMenu(e.clientX, e.clientY, [
-          { label: '连接', run: () => connectHost(h.id, null, { newTab: true }) },
-          { label: '在新标签连接', run: () => connectHost(h.id, null, { newTab: true }) },
-          ...(hasSession ? [{ label: '切换到已有标签', run: () => connectHost(h.id, null, { reuseExisting: true }) }] : []),
-          '-',
-          { label: '编辑…', run: () => openHostModal(h) },
-          { label: '克隆', run: () => cloneThis() },
-          { label: '复制 user@host', run: () => {
-            copyText(`${h.username}@${h.host}:${h.port}`).then((ok) => toast(ok ? '已复制' : '复制失败', ok ? 'success' : 'error'));
-          } },
-          '-',
-          { label: '删除…', danger: true, run: () => delThis() },
-        ]);
-      });
-      nav.appendChild(item);
-    }
+      } catch (err) {
+        toast('克隆失败：' + err.message, 'error');
+      }
+    };
+    const delThis = async () => {
+      if (!(await askConfirm(`确定删除主机「${h.name}」吗？此操作不可撤销。`, { title: '删除主机', okText: '删除' }))) return;
+      await api('hosts:delete', { id: h.id });
+      toast('已删除', 'success');
+      refreshHosts();
+    };
+    const starThis = (e) => {
+      e.stopPropagation();
+      const next = new Set(uiPrefs().favoriteHostIds);
+      if (next.has(h.id)) next.delete(h.id); else next.add(h.id);
+      saveUiPrefs({ favoriteHostIds: [...next] });
+      renderHosts();
+    };
+    item.querySelector('.host-star').addEventListener('click', starThis);
+    item.querySelector('.hi-clone').addEventListener('click', (e) => { e.stopPropagation(); cloneThis(); });
+    item.querySelector('.hi-edit').addEventListener('click', (e) => { e.stopPropagation(); openHostModal(h); });
+    item.querySelector('.hi-del').addEventListener('click', (e) => { e.stopPropagation(); delThis(); });
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
+      const hasSession = [...state.sessions.values()].some((s) => s.host.id === h.id && ['connected', 'connecting'].includes(s.status));
+      showCtxMenu(e.clientX, e.clientY, [
+        { label: '连接', run: () => connectHost(h.id, null, { newTab: true }) },
+        { label: '在新标签连接', run: () => connectHost(h.id, null, { newTab: true }) },
+        ...(hasSession ? [{ label: '切换到已有标签', run: () => connectHost(h.id, null, { reuseExisting: true }) }] : []),
+        '-',
+        { label: isStar ? '取消常用' : '标记为常用', run: () => starThis({ stopPropagation() {} }) },
+        { label: '编辑…', run: () => openHostModal(h) },
+        { label: '克隆', run: () => cloneThis() },
+        { label: '复制 user@host', run: () => {
+          copyText(addr).then((ok) => toast(ok ? '已复制' : '复制失败', ok ? 'success' : 'error'));
+        } },
+        '-',
+        { label: '删除…', danger: true, run: () => delThis() },
+      ]);
+    });
+    return item;
+  };
+
+  const groupHead = (name, count, { fav = false } = {}) => {
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'host-group-head' + (fav ? ' fav' : '')
+      + (collapsed.has(name) ? ' collapsed' : '');
+    head.dataset.group = name;
+    head.setAttribute('aria-expanded', String(!collapsed.has(name)));
+    // 常用组的标识用 SVG 星标(与命令历史收藏按钮同款),不用文本里的 emoji ——
+    // emoji 与整套线性图标风格不一致,且宽度不可控。
+    // 常用组的标识只画一枚 SVG 星标(hg-fav-ic);名称文本不再重复画星
+    const nameHtml = `<span class="hg-name">${escapeHtml(fav ? '常用' : name)}</span>`;
+    head.innerHTML = `<span class="hg-caret">${icon('chevronDown')}</span>`
+      + (fav ? `<span class="hg-fav-ic">${icon('star')}</span>` : '')
+      + nameHtml
+      + `<span class="hg-count">${count}</span>`;
+    head.addEventListener('click', () => {
+      const next = new Set(uiPrefs().collapsedGroups);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      saveUiPrefs({ collapsedGroups: [...next] });
+      renderHosts();
+    });
+    return head;
+  };
+
+  if (starred.length) {
+    nav.appendChild(groupHead(STAR_NOTE, starred.length, { fav: true }));
+    if (!collapsed.has(STAR_NOTE)) for (const h of starred) nav.appendChild(renderRow(h));
   }
+  for (const [g, hosts] of groups) {
+    // 收藏组已经把它们列在上面了;这里仍按分组展示,避免"收藏后就从原分组消失"
+    nav.appendChild(groupHead(g, hosts.length));
+    if (collapsed.has(g)) continue;
+    for (const h of hosts) nav.appendChild(renderRow(h));
+  }
+  nav.scrollTop = keepTop;
 }
 
 export function isActiveHost(hostId) {

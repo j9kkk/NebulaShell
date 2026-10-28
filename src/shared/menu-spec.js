@@ -35,10 +35,12 @@ export const MENU_SPEC = [
     cmd('panel.sidebar'), cmd('panel.tools'), SEP,
     cmd('ai.newThread', { accelerator: false }), cmd('ai.cycleEffort', { accelerator: false }), SEP,
     cmd('tabs.list'), cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), SEP,
+    cmd('view.hostDensity'), SEP,
     pre('Fullscreen', '进入全屏'), cmd('window.fullscreen', { only: 'pc' }),
   ] },
   { submenu: '主机', items: [
     cmd('host.new'), cmd('cloud.import'), SEP,
+    cmd('hosts.library'), SEP,
     cmd('hosts.import'), cmd('hosts.export'), SEP,
     cmd('settings.fingerprints'), cmd('tools.forwards'), cmd('tools.batch'),
   ] },

@@ -33,6 +33,10 @@ fn defaults() -> Value {
             // 自定义键位:动作名 → 键位 spec 数组;空对象 = 全部走内置默认。
             // 只存"覆盖项",设置页保存时整块替换。
             "keybindings": {},
+            // 界面偏好:与主机数据无关的视图状态,单放一处避免污染 host 字段。
+            // favoriteHostIds 存 id 而非写进 host —— 写进 host 要同步新建 shape /
+            // merge_host 白名单 / 导出字段表 / 导入合并四处,漏任一处都是静默丢字段。
+            "ui": { "favoriteHostIds": [], "collapsedGroups": [], "hostDensity": "comfortable" },
             "clouds": {
                 "tencent": { "key": "", "secret": "", "endpoint": "" },
                 "aliyun": { "key": "", "secret": "", "endpoint": "" }
@@ -949,6 +953,171 @@ impl Store {
         Ok(removed)
     }
 
+    /// 批量删除:一次加锁、一次落盘,并清理跳板机对这种主机的悬空引用。
+    /// 与 delete_host 的区别只是不重复写盘(100 台 = 1 次全量写而非 100 次)。
+    pub fn delete_hosts(&self, ids: &[String]) -> Result<Value, String> {
+        if ids.is_empty() {
+            return Ok(json!({ "deleted": 0, "skipped": [] }));
+        }
+        let wanted: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut data = self.data.lock().unwrap();
+        let hosts = data["hosts"].as_array_mut().ok_or("主机列表损坏")?;
+        let before = hosts.len();
+        let found: std::collections::HashSet<String> = hosts
+            .iter()
+            .filter_map(|h| h["id"].as_str())
+            .filter(|id| wanted.contains(id))
+            .map(String::from)
+            .collect();
+        hosts.retain(|h| {
+            h["id"]
+                .as_str()
+                .map(|id| !wanted.contains(id))
+                .unwrap_or(true)
+        });
+        let deleted = before - hosts.len();
+        // 被删的主机可能还挂在别人的跳板链上:一并摘掉,且保持跳板图无环。
+        if !found.is_empty() {
+            for host in hosts.iter_mut() {
+                if let Some(jumps) = host["jumpIds"].as_array_mut() {
+                    jumps
+                        .retain(|jump| jump.as_str().map(|id| !found.contains(id)).unwrap_or(true));
+                }
+            }
+        }
+        let skipped: Vec<Value> = ids
+            .iter()
+            .filter(|id| !found.contains(*id))
+            .map(|id| json!({ "id": id, "reason": "主机不存在" }))
+            .collect();
+        drop(data);
+        self.save()?;
+        Ok(json!({ "deleted": deleted, "skipped": skipped }))
+    }
+
+    /// 重排主机顺序。顺序没有独立字段 —— 它就是 hosts 数组本身的次序
+    /// (list_hosts 直接返回该数组,且没有任何逻辑依赖下标做持久化引用:
+    /// 云端实例匹配用 provider+instanceId,跳板机引用用 id 字符串)。
+    /// `ordered_ids` 里未出现的主机保持相对次序追加到末尾,保证不丢主机。
+    pub fn reorder_hosts(&self, ordered_ids: &[String]) -> Result<usize, String> {
+        let mut data = self.data.lock().unwrap();
+        let hosts = data["hosts"].as_array().ok_or("主机列表损坏")?.clone();
+        let mut by_id: std::collections::HashMap<&str, &Value> = std::collections::HashMap::new();
+        for h in &hosts {
+            if let Some(id) = h["id"].as_str() {
+                by_id.insert(id, h);
+            }
+        }
+        let mut out: Vec<Value> = Vec::with_capacity(hosts.len());
+        let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for id in ordered_ids {
+            if let Some(host) = by_id.get(id.as_str()) {
+                if used.insert(id.as_str()) {
+                    out.push((*host).clone());
+                }
+            }
+        }
+        for h in &hosts {
+            let keep = match h["id"].as_str() {
+                Some(id) => !used.contains(id),
+                None => true,
+            };
+            if keep {
+                out.push(h.clone());
+            }
+        }
+        let changed = out.len() == hosts.len()
+            && out
+                .iter()
+                .zip(hosts.iter())
+                .any(|(a, b)| a["id"] != b["id"]);
+        data["hosts"] = json!(out);
+        drop(data);
+        if changed {
+            self.save()?;
+        }
+        Ok(if changed { out.len() } else { 0 })
+    }
+
+    /// 批量更新分组 / 标签。一次加锁一次落盘 —— 循环调 save_host 会为每台主机
+    /// 全量重写整份配置(含全部加密凭据),100 台即 100 次全量落盘。
+    /// patch: { group?: string, addTags?: [string], removeTags?: [string] }
+    /// 同一次调用里 add 先于 remove 应用,便于"打新标签并摘旧标签"。
+    pub fn bulk_update_hosts(&self, ids: &[String], patch: &Value) -> Result<Value, String> {
+        let group = patch["group"].as_str();
+        let add_tags: Vec<String> = patch["addTags"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str())
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let remove_tags: Vec<String> = patch["removeTags"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str())
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if group.is_none() && add_tags.is_empty() && remove_tags.is_empty() {
+            return Err("没有要更新的字段".into());
+        }
+        let wanted: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut data = self.data.lock().unwrap();
+        let hosts = data["hosts"].as_array_mut().ok_or("主机列表损坏")?;
+        let mut updated = 0;
+        let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for host in hosts.iter_mut() {
+            let id = match host["id"].as_str() {
+                Some(id) if wanted.contains(id) => id.to_owned(),
+                _ => continue,
+            };
+            found.insert(id);
+            if let Some(g) = group {
+                host["group"] = json!(g.trim());
+            }
+            if !add_tags.is_empty() || !remove_tags.is_empty() {
+                let mut tags: Vec<String> = host["tags"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|t| t.as_str())
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for t in &add_tags {
+                    if !tags.iter().any(|x| x == t) {
+                        tags.push(t.clone());
+                    }
+                }
+                tags.retain(|t| !remove_tags.iter().any(|r| r == t));
+                host["tags"] = json!(tags);
+            }
+            updated += 1;
+        }
+        let skipped: Vec<Value> = ids
+            .iter()
+            .filter(|id| !found.contains(*id))
+            .map(|id| json!({ "id": id, "reason": "主机不存在" }))
+            .collect();
+        drop(data);
+        if updated > 0 {
+            self.save()?;
+        }
+        Ok(json!({ "updated": updated, "skipped": skipped }))
+    }
+
+    /// 克隆主机:副本**紧跟在原主机之后**,而不是追加到列表末尾 ——
+    /// 侧栏与主机库里点「复制」后,新行应该就出现在眼皮底下。
     pub fn clone_host(&self, id: &str) -> Result<Value, String> {
         let full = self.host_full(id)?;
         let mut payload = full.clone();
@@ -960,7 +1129,27 @@ impl Store {
                 .unwrap_or_else(|| full["host"].as_str().unwrap_or(""))
         ));
         payload["cloud"] = json!(null);
-        self.save_host(&payload)
+        let created = self.save_host(&payload)?;
+        // save_host 已 append 到末尾;这里把它挪到原主机身后。
+        let new_id = created["id"].as_str().unwrap_or("").to_owned();
+        if !new_id.is_empty() {
+            let mut data = self.data.lock().unwrap();
+            if let Some(hosts) = data["hosts"].as_array_mut() {
+                if let Some(from) = hosts.iter().position(|h| h["id"] == json!(new_id)) {
+                    let host = hosts.remove(from);
+                    let at = hosts
+                        .iter()
+                        .position(|h| h["id"] == json!(id))
+                        .map(|i| i + 1)
+                        .unwrap_or(hosts.len());
+                    hosts.insert(at, host);
+                }
+            }
+            drop(data);
+            self.save()?;
+        }
+        self.public_host(&new_id)
+            .ok_or_else(|| "克隆后读取失败".to_string())
     }
 
     /// 导出主机。
@@ -1263,6 +1452,13 @@ impl Store {
             "sessionLog": data["settings"]["sessionLog"].clone(),
             // 自定义键位(动作名 → 键位数组);空对象 = 全部走内置默认
             "keybindings": data["settings"]["keybindings"].clone(),
+            // 界面偏好(收藏主机 / 折叠的分组 / 列表密度)。旧配置文件没有该键时
+            // 给默认值,避免前端拿到 null 后各处判空。
+            "ui": if data["settings"]["ui"].is_object() {
+                data["settings"]["ui"].clone()
+            } else {
+                json!({ "favoriteHostIds": [], "collapsedGroups": [], "hostDensity": "comfortable" })
+            },
             // 设置页默认目录提示用(实际取目录走 commands 的 default_log_dir,
             // 那里还要考虑测试模式隔离)
             "sessionLogDefaultDir": dirs::home_dir()
@@ -1545,6 +1741,34 @@ impl Store {
                         }
                     }
                 }
+            }
+        }
+        // 界面偏好:逐键按白名单清洗后合并。数组去重并限长(收藏/折叠都是 UI 状态,
+        // 无限增长只会让配置变大);hostDensity 只接受两个合法值,其余归一为默认。
+        if let Some(ui) = patch["ui"].as_object() {
+            if data["settings"]["ui"].is_null() || !data["settings"]["ui"].is_object() {
+                data["settings"]["ui"] = json!({ "favoriteHostIds": [], "collapsedGroups": [], "hostDensity": "comfortable" });
+            }
+            for key in ["favoriteHostIds", "collapsedGroups"] {
+                if let Some(arr) = ui.get(key).and_then(Value::as_array) {
+                    let mut seen = std::collections::HashSet::new();
+                    let cleaned: Vec<Value> = arr
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .filter(|s| seen.insert((*s).to_owned()))
+                        .take(2000)
+                        .map(|s| json!(s))
+                        .collect();
+                    data["settings"]["ui"][key] = json!(cleaned);
+                }
+            }
+            if let Some(v) = ui.get("hostDensity") {
+                let density = match v.as_str() {
+                    Some("compact") => "compact",
+                    _ => "comfortable",
+                };
+                data["settings"]["ui"]["hostDensity"] = json!(density);
             }
         }
         if let Some(ai) = patch["ai"].as_object() {

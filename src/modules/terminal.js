@@ -1,5 +1,5 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, activeTab, api, askConfirm, askPrompt, bindMenuButton, closeCtxMenu, copyText, hasOpenModal, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
+import { $, activeTab, api, askConfirm, askPrompt, bindMenuButton, closeCtxMenu, copyText, hasOpenModal, openExternalLink, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { accelOf, appShortcutOf, matchAction } from './keymap.js';
 import { bindCommandButton, commandMenuItem, refreshCommandStates } from './commands.js';
@@ -432,6 +432,8 @@ export function activatePane(tabId, paneId, focus = false) {
   syncFocusedPane(tab.id, paneId);
   syncTabChrome();
   updateStatusbar(null);
+  // 没有活动会话 = 状态栏不再代言任何窗格,断开的窗格都要亮出横幅
+  syncAllPaneStatusBanners();
   renderMonitorBar();
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
     window.dispatchEvent(new CustomEvent('nb:active-session'));
@@ -1709,12 +1711,13 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
     cursorBlink: true,
     scrollback: Number(ts.scrollback) || 2000,
     theme: termTheme(),
+    linkHandler: { activate: (_event, uri) => openExternalLink(uri) },
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
   term.loadAddon(fit);
   term.loadAddon(search);
-  term.loadAddon(new WebLinksAddon()); // D7:链接识别,点击经主进程开系统浏览器
+  term.loadAddon(new WebLinksAddon((_event, uri) => openExternalLink(uri))); // D7:链接识别,点击经主进程开系统浏览器
   const surface = document.createElement('div');
   surface.className = 'term-surface';
   pane.appendChild(surface);
@@ -1843,6 +1846,33 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
       }
       return lines.join('\n');
     };
+    // e2e 钩子:某段 buffer 文本在**屏幕上的单元格坐标**。buffer 行号是绝对行,
+    // 长会话里早已滚出视口,直接拿它当屏幕行会点到无关单元格(实测差上百行)。
+    window.__NB_TERM_CELL__ = (spans) => {
+      const s = state.sessions.get(state.activeId);
+      if (!s) return null;
+      const buf = s.term.buffer.active;
+      const screen = document.querySelector('.term-pane.focused .term-surface .xterm-screen')
+        || document.querySelector('.term-surface .xterm-screen');
+      if (!screen) return null;
+      const r = screen.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) return null;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        const text = line ? line.translateToString(true) : '';
+        const col = text.indexOf(spans);
+        if (col < 0) continue;
+        const row = i - buf.viewportY;
+        if (row < 0 || row >= s.term.rows) continue;
+        const cw = r.width / s.term.cols;
+        const chh = r.height / s.term.rows;
+        return {
+          x: Math.round(r.x + (col + 4) * cw + cw / 2),
+          y: Math.round(r.y + row * chh + chh / 2),
+        };
+      }
+      return null;
+    };
   }
   tab.sessionId = sessionId;
   syncTabChrome();
@@ -1940,6 +1970,9 @@ export function activateSession(sessionId, { focus = true } = {}) {
   }
   syncTabChrome();
   updateStatusbar(s);
+  // 活动会话一换,横幅的归属也跟着换:新活动窗格要收起(状态栏接管),
+  // 上一个活动窗格若仍断开则要重新挂出来。只刷自己会有一次静默的错位。
+  syncAllPaneStatusBanners();
   if (selectionChanged) loadSessionLogState(s);
   renderMonitorBar();
   syncWebglForVisibility();
@@ -2016,6 +2049,26 @@ export function updateTab(session) {
   syncPaneStatusBanner(session);
 }
 
+// 断开原因的中文摘要。状态栏只有一行,英文原文(如 "All configured authentication
+// methods failed")实测要 480px,在 1080px 以下的窗口必然被省略号截断,而它恰恰是
+// 用户最需要读懂的信息。这里把常见的几类归成几个短词,完整原文仍放在 title 里。
+// 认不出来的原因原样返回 —— 宁可显示原文被截断,也不要编一个错的分类。
+// 注意入参是**未剥离**的 error:指纹标记 [NB-FP ...] 只在这里还认得出来,
+// 展示前才 strip(见 updateStatusbar)。
+export function disconnectReasonSummary(why) {
+  const text = String(why || '').trim();
+  if (!text) return '';
+  if (parseFpError(text)) return '主机指纹已变更';
+  const clean = stripFpMark(text);
+  if (/auth|password|credential|private.?key|unknown.?key|permission denied|认证|密码|私钥/i.test(clean)) return '认证失败';
+  if (/timed? ?out|timeout|超时/i.test(clean)) return '连接超时';
+  if (/refused|拒绝/i.test(clean)) return '连接被拒绝';
+  if (/reset|broken pipe|eof|keepalive|断开|重置/i.test(clean)) return '连接被重置';
+  if (/unreachable|no route|host is down|无法访问|不可达/i.test(clean)) return '主机不可达';
+  if (/dns|resolve|name or service|not known|域名/i.test(clean)) return '域名解析失败';
+  return clean;
+}
+
 export function updateStatusbar(session, error = session?.lastError) {
   notifyTerminalStateChange();
   const dot = $('#status-dot');
@@ -2026,6 +2079,14 @@ export function updateStatusbar(session, error = session?.lastError) {
   const btnClear = $('#btn-clear');
   const btnLog = $('#btn-log-toggle');
   const roBadge = $('#ro-badge');
+  const hint = $('#status-hint');
+  // 断线提示默认收起,只有"断开"分支按需打开,免得各分支各写一遍显隐
+  const setHint = (txt) => {
+    if (!hint) return;
+    hint.classList.toggle('hidden', !txt);
+    if (txt) hint.textContent = txt;
+  };
+  setHint('');
   // 按钮一律常驻、用禁用态表达可用性,不再随状态显隐 —— 此前"断开↔重连"互换、
   // 三个会话按钮随状态出现/消失,都会让整排按钮左右跳动,热区不固定。
   // 禁用原因写进 title,而不是让用户点了才知道为什么没反应。
@@ -2034,6 +2095,7 @@ export function updateStatusbar(session, error = session?.lastError) {
   if (!session) {
     dot.className = 'dot idle';
     text.textContent = '就绪 — 尚未建立连接';
+    text.title = '';
     for (const b of [btnRe, btnDis, btnRo, btnClear, btnLog]) setBtn(b, false, '未建立连接');
     roBadge.classList.add('hidden');
     return;
@@ -2061,11 +2123,13 @@ export function updateStatusbar(session, error = session?.lastError) {
   if (connected) {
     dot.className = 'dot connected';
     text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 广播中' : '');
+    text.title = '';
     setBtn(btnRe, false, '已连接');
     setBtn(btnDis, true, '断开连接');
   } else if (connecting) {
     dot.className = 'dot connecting';
     text.textContent = `正在连接 ${label}…`;
+    text.title = '';
     setBtn(btnRe, false, '正在连接');
     setBtn(btnDis, true, '取消连接');
   } else {
@@ -2074,8 +2138,16 @@ export function updateStatusbar(session, error = session?.lastError) {
     const retry = session.reconnectScheduled ? ` · 自动重连 ${session.reconnectAttempt}/3（${seconds} 秒后）` : '';
     // Strip only at the display boundary; lastError retains fingerprint metadata for trust/retry logic.
     const displayError = stripFpMark(error);
-    text.textContent = `已断开 ${label}` + (displayError ? `（${displayError}）` : '') + retry;
-    setBtn(btnRe, true, '重连');
+    // 手动断开没有"原因"可言,lastError 可能还是上一次失败的残留,一并隐去。
+    // 摘要要拿未剥离的原文:指纹标记只在 strip 前认得出来。
+    const summary = session.manualDisconnect ? '' : disconnectReasonSummary(error);
+    text.textContent = `已断开 ${label}` + (summary ? ` · ${summary}` : '') + retry;
+    // 完整原因留在这里:状态栏只有一行,英文原文动辄 480px,只能靠悬停读全。
+    text.title = displayError || '';
+    // 横幅不再覆盖活动窗格,这条提示是用户唯一能看见的「怎么连回去」。
+    // 自动重连排期时改成"立即重连",与横幅此前同一套语义。
+    setHint(session.reconnectScheduled ? `按 Enter 立即重连` : '按 Enter 重连');
+    setBtn(btnRe, true, '重连（也可按 Enter）');
     setBtn(btnDis, !!session.reconnectScheduled, session.reconnectScheduled ? '取消自动重连' : '连接已断开');
   }
 }
@@ -2084,11 +2156,24 @@ export function updateStatusbar(session, error = session?.lastError) {
 // 静止、毫无反馈,用户甚至不知道哪一格死了。每个窗格底部悬浮一条说明(原因 +
 // 重连方式),connected 后移除。仅按 Enter 重连,见 createSession 的 onData 分流;
 // 横幅可接收悬停(完整错误进 title)但不拦截任何语义:点击会冒泡到窗格照常激活。
+//
+// 活动会话不挂横幅:底部状态栏本就是它的代言人,两者同一句话上下相邻,既重影又
+// 遮住终端末行。断开原因与"按 Enter 重连"由 updateStatusbar 承载,回车分流不看
+// 横幅是否存在(见 createSession 的 onData),因此移除横幅不影响就地重连。
+// 只有分屏里用户当前没看着的窗格才需要横幅 —— 那时状态栏显示的是别人的状态。
+
+/// 重刷所有窗格的横幅。横幅显隐取决于"谁在活动",光刷自己那一个会在切换焦点后
+/// 留下错位(旧活动窗格该出现的横幅没有出现)。
+export function syncAllPaneStatusBanners() {
+  for (const s of state.sessions.values()) syncPaneStatusBanner(s);
+}
+
 export function syncPaneStatusBanner(session, error = session?.lastError) {
   const pane = session?.pane;
   if (!pane || typeof pane.querySelector !== 'function') return;
   let el = pane.querySelector('.pane-status-banner');
-  if (session.status === 'connected') { if (el) el.remove(); return; }
+  const active = !!session && state.activeId === session.sessionId;
+  if (session.status === 'connected' || active) { if (el) el.remove(); return; }
   // 首次建立连接(打开标签/新建会话未曾连接过)时窗格内不展示横幅,由标签栏与底部状态栏提供连接反馈,避免重复
   if (session.status === 'connecting' && !session.everConnected) {
     if (el) el.remove();
@@ -2172,7 +2257,12 @@ export async function disconnectSession(sessionId) {
     // 后端断连不发 ssh:status(事件只覆盖网络侧断开),这里直接同步文件分屏状态。
     syncFilePanesForSession(sessionId);
     updateTab(s);
-    if (state.activeId === sessionId) updateStatusbar(s);
+    if (state.activeId === sessionId) {
+      updateStatusbar(s);
+      // 断开后监控条要收起,把宽度让给断开原因与重连引导(见 renderMonitorBar)。
+      // 后端不发 ssh:status,这条路径不刷就会留下整块空仪表。
+      renderMonitorBar();
+    }
     refreshBroadcast();
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
       window.dispatchEvent(new CustomEvent('nb:session-status', { detail: { sessionId, status: 'disconnected' } }));
@@ -2525,7 +2615,11 @@ async function runSessionConnection(s, automatic = false) {
   s.manualDisconnect = false;
   s.status = 'connecting';
   updateTab(s);
-  if (state.activeId === s.sessionId) updateStatusbar(s);
+  if (state.activeId === s.sessionId) {
+    updateStatusbar(s);
+    // 连接中监控条没有数据,先收起;连上之后由 handleSessionStatus 重新放出
+    renderMonitorBar();
+  }
   refreshBroadcast();
   try {
     const descriptor = s.connection;
@@ -2536,7 +2630,10 @@ async function runSessionConnection(s, automatic = false) {
     if (result?.cancelled) {
       s.status = 'disconnected';
       updateTab(s);
-      if (state.activeId === s.sessionId) updateStatusbar(s);
+      if (state.activeId === s.sessionId) {
+        updateStatusbar(s);
+        renderMonitorBar();
+      }
       refreshBroadcast();
       return false;
     }
@@ -2557,7 +2654,10 @@ async function runSessionConnection(s, automatic = false) {
     s.status = 'error';
     s.lastError = why;
     updateTab(s);
-    if (state.activeId === s.sessionId) updateStatusbar(s, why);
+    if (state.activeId === s.sessionId) {
+      updateStatusbar(s, why);
+      renderMonitorBar();
+    }
     refreshBroadcast();
     const fp = parseFpError(why);
     if (fp) offerFpRetrust(s, fp);

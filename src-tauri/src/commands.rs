@@ -449,7 +449,7 @@ pub async fn nebula_invoke(
 
         "app:openExternal" => {
             let url = payload["url"].as_str().unwrap_or("");
-            let allow = regex_lite(url);
+            let allow = is_allowed_external_url(url);
             if !allow {
                 return err_msg(format!("不允许打开外部链接: {}", url));
             }
@@ -497,6 +497,62 @@ pub async fn nebula_invoke(
             Ok(h) => ok(h),
             Err(e) => err_msg(e),
         },
+        // 批量与排序:一次加锁一次落盘。循环调 hosts:save 会为每台主机全量重写
+        // 整份配置(含全部加密凭据),100 台即 100 次全量写。
+        "hosts:reorder" => {
+            let ids: Vec<String> = payload["orderedIds"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                return err_msg("orderedIds 不能为空");
+            }
+            match state.store.reorder_hosts(&ids) {
+                Ok(n) => ok(json!({ "count": n })),
+                Err(e) => err_msg(e),
+            }
+        }
+        "hosts:bulkUpdate" => {
+            let ids: Vec<String> = payload["ids"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                return err_msg("请先选择主机");
+            }
+            match state.store.bulk_update_hosts(&ids, &payload["patch"]) {
+                Ok(v) => ok(v),
+                Err(e) => err_msg(e),
+            }
+        }
+        "hosts:bulkDelete" => {
+            let ids: Vec<String> = payload["ids"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                return err_msg("请先选择主机");
+            }
+            match state.store.delete_hosts(&ids) {
+                Ok(v) => ok(v),
+                Err(e) => err_msg(e),
+            }
+        }
         "hosts:revealSecret" => {
             let id = payload["id"].as_str().unwrap_or("");
             let field = payload["field"].as_str().unwrap_or("password");
@@ -1834,10 +1890,19 @@ where
     }
 }
 
-pub fn regex_lite(url: &str) -> bool {
-    url.starts_with("https://console.cloud.tencent.com/")
-        || url.starts_with("https://ram.console.aliyun.com/")
-        || url.starts_with("https://console.aliyun.com/")
+/// 外链白名单:只放行 http/https。
+/// 这里**不能**按域名收敛:终端输出里的链接、AI 回复里的链接都是用户自己要打开的
+/// 任意站点(此前只放行三个云控制台域名,导致终端里点链接一律被拒)。
+/// 真正的防线是协议:拒绝 file:/javascript:/data: 等会让系统用其它处理程序
+/// 或内联执行的协议,以及带控制字符/首尾空白的畸形输入。
+pub fn is_allowed_external_url(url: &str) -> bool {
+    if url.is_empty() || url.trim() != url || url.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    match tauri::Url::parse(url) {
+        Ok(u) => matches!(u.scheme(), "http" | "https") && u.host_str().is_some(),
+        Err(_) => false,
+    }
 }
 
 /// 云实例默认名:{云}-{区域}-{IP}。仅在实例没有名字时使用。
@@ -2015,6 +2080,34 @@ fn batch_exec(
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+
+    #[test]
+    fn external_url_allowlist_accepts_any_http_site_and_rejects_other_schemes() {
+        // 终端/AI 里的链接是任意站点,不能按域名收敛
+        assert!(is_allowed_external_url(
+            "https://platform.deepseek.com/api_keys"
+        ));
+        assert!(is_allowed_external_url(
+            "http://example.invalid/path?a=1&b=2"
+        ));
+        assert!(is_allowed_external_url(
+            "https://console.cloud.tencent.com/cam/capi"
+        ));
+        // 非 http(s) 一律拒绝:会让系统交给别的处理程序或就地执行
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "not a url",
+            "",
+            " https://example.invalid/",
+            "https://",
+            "https://example.invalid/\n",
+        ] {
+            assert!(!is_allowed_external_url(bad), "应拒绝: {bad:?}");
+        }
+    }
 
     struct BatchExportTempDir(std::path::PathBuf);
 

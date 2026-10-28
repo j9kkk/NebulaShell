@@ -794,3 +794,152 @@ fn keybindings_null_value_removes_override() {
     );
     let _ = std::fs::remove_dir_all(&store.dir);
 }
+
+/// 排序:顺序就是 hosts 数组本身,重排后 list_hosts 的返回次序同步改变,
+/// 且未出现在 orderedIds 里的主机不丢失(追加到末尾)。
+#[test]
+fn reorder_hosts_rewrites_array_order_without_loss() {
+    let store = tmp_store("reorder");
+    let mut ids = Vec::new();
+    for name in ["a", "b", "c"] {
+        let h = store
+            .save_host(&json!({ "name": name, "host": format!("10.0.0.{}", ids.len() + 1), "port": 22, "username": "root" }))
+            .unwrap();
+        ids.push(h["id"].as_str().unwrap().to_owned());
+    }
+    // 只给出 c、a(省略 b):b 必须仍在,且追加到末尾
+    store
+        .reorder_hosts(&[ids[2].clone(), ids[0].clone()])
+        .unwrap();
+    let names: Vec<String> = store
+        .list_hosts()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, vec!["c", "a", "b"], "显式顺序生效且未提及的主机保留");
+
+    // 未知 id 被忽略,不产生空条目
+    store
+        .reorder_hosts(&["no-such-id".into(), ids[1].clone()])
+        .unwrap();
+    assert_eq!(store.list_hosts().len(), 3, "未知 id 不会增删主机");
+    assert_eq!(
+        store.list_hosts()[0]["name"],
+        json!("b"),
+        "未知 id 被跳过,合法 id 仍生效"
+    );
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// 批量移动分组 / 批量删除:一次完成,且删除会摘掉跳板链里的悬空引用。
+#[test]
+fn bulk_update_and_delete_are_single_shot() {
+    let store = tmp_store("bulk");
+    let jump = store
+        .save_host(&json!({ "name": "jump", "host": "10.0.0.9", "port": 22, "username": "root" }))
+        .unwrap();
+    let jump_id = jump["id"].as_str().unwrap().to_owned();
+    let mut ids = Vec::new();
+    for name in ["h1", "h2"] {
+        let h = store
+            .save_host(&json!({ "name": name, "host": "10.0.1.1", "port": 22, "username": "root", "jumpIds": [jump_id] }))
+            .unwrap();
+        ids.push(h["id"].as_str().unwrap().to_owned());
+    }
+
+    let r = store
+        .bulk_update_hosts(
+            &ids,
+            &json!({ "group": "生产 · 上海", "addTags": ["prod", "db"] }),
+        )
+        .unwrap();
+    assert_eq!(r["updated"], json!(2));
+    let host = store
+        .list_hosts()
+        .into_iter()
+        .find(|h| h["name"] == json!("h1"))
+        .unwrap();
+    assert_eq!(host["group"], json!("生产 · 上海"));
+    assert_eq!(host["tags"], json!(["prod", "db"]));
+
+    // 摘标签
+    store
+        .bulk_update_hosts(&ids, &json!({ "removeTags": ["db"] }))
+        .unwrap();
+    let host = store
+        .list_hosts()
+        .into_iter()
+        .find(|h| h["name"] == json!("h2"))
+        .unwrap();
+    assert_eq!(host["tags"], json!(["prod"]));
+
+    // 批量删除跳板机:主机上的 jumpIds 必须被清空,否则留下悬空引用
+    let d = store.delete_hosts(&[jump_id.clone()]).unwrap();
+    assert_eq!(d["deleted"], json!(1));
+    for h in store.list_hosts() {
+        assert_eq!(h["jumpIds"], json!([]), "悬空跳板引用必须被摘掉");
+    }
+
+    // 删除不存在的 id 走 skipped 而不是整体失败
+    let d = store.delete_hosts(&["ghost".into()]).unwrap();
+    assert_eq!(d["deleted"], json!(0));
+    assert_eq!(d["skipped"].as_array().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// 克隆插在原主机之后,而不是列表末尾。
+#[test]
+fn clone_inserts_after_source() {
+    let store = tmp_store("clone-pos");
+    let mut ids = Vec::new();
+    for name in ["a", "b", "c"] {
+        let h = store
+            .save_host(&json!({ "name": name, "host": format!("10.0.2.{}", ids.len() + 1), "port": 22, "username": "root" }))
+            .unwrap();
+        ids.push(h["id"].as_str().unwrap().to_owned());
+    }
+    store.clone_host(&ids[0]).unwrap();
+    let names: Vec<String> = store
+        .list_hosts()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, vec!["a", "a 副本", "b", "c"], "副本紧跟原主机");
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// settings.ui 必须真的落盘:save_settings 对未知 key 是静默丢弃的,
+/// 若白名单漏了 ui,接口会返回成功、重启后全丢。
+#[test]
+fn settings_ui_roundtrip_and_sanitize() {
+    let store = tmp_store("ui");
+    let s = store
+        .save_settings(&json!({ "ui": {
+            "favoriteHostIds": ["a", "a", "", "b"],
+            "collapsedGroups": ["生产 · 上海"],
+            "hostDensity": "compact"
+        }}))
+        .unwrap();
+    assert_eq!(
+        s["ui"]["favoriteHostIds"],
+        json!(["a", "b"]),
+        "去重并丢弃空串"
+    );
+    assert_eq!(s["ui"]["hostDensity"], json!("compact"));
+
+    // 非法密度归一为 comfortable,不报错(手改配置不该卡住保存)
+    let s = store
+        .save_settings(&json!({ "ui": { "hostDensity": "huge" } }))
+        .unwrap();
+    assert_eq!(s["ui"]["hostDensity"], json!("comfortable"));
+    assert_eq!(
+        s["ui"]["collapsedGroups"],
+        json!(["生产 · 上海"]),
+        "未提及的键保留"
+    );
+
+    // 重新读一次,确认是真的写进了 data 而不是仅存在于返回值
+    let again = store.get_settings();
+    assert_eq!(again["ui"]["hostDensity"], json!("comfortable"));
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

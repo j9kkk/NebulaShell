@@ -307,6 +307,14 @@ fn is_alive(session: &Session) -> bool {
     session.alive.load(Ordering::Relaxed)
 }
 
+/// 子串查找(needle 非空)。避免为探测回显引入额外依赖。
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// 会话日志的断开原因文案(与 ssh:status 载荷对应)。
 pub(crate) fn pump_exit_reason(st: &serde_json::Value) -> String {
     match st["state"].as_str() {
@@ -392,7 +400,26 @@ pub struct Session {
     /// 以 (sessionId, epoch) 二元组锁定真实连接,旧代次的响应/进度/清理
     /// 不得作用于新连接。
     pub epoch: u64,
+    /// 延迟探测专用的常驻通道（`exec("cat")`，把 stdin 原样回显）。
+    ///
+    /// 为什么不复用 exec:每次 `exec` 都要 `channel_open_session` + `exec(want_reply)`
+    /// 两次往返,拿它计时会把真实 RTT 算成两倍(实测 proxy 注入 80ms RTT 时
+    /// 报 174ms)。`cat` 通道建好之后,一次探测只剩"写一行 → 收回显"一个往返。
+    /// 为什么不复用用户的交互 shell:探测字节会混进用户终端。
+    /// 放在 Session 内部而不是 SshService 表里 —— 会话被替换/回收时随 Arc 一起
+    /// 销毁,russh 的连接断开即关闭其下全部通道,无需额外清理路径。
+    ping: tokio::sync::Mutex<Option<PingChannel>>,
     generation: Arc<PendingConnection>,
+}
+
+/// 常驻回显通道:写什么 stdout 回什么。
+struct PingChannel {
+    channel: russh::Channel<russh::client::Msg>,
+    /// 本轮探测的序号;每轮写一行 `__NB_PING_<seq>__`,必须读到同一序号才算回来,
+    /// 避免把上一轮迟到的回显误记到本轮(高 RTT + 抖动时会出现)。
+    seq: u64,
+    /// 跨多次 `wait()` 的残余字节:回显和上一次的尾巴可能粘在同一个消息里。
+    buf: Vec<u8>,
 }
 
 static EPOCH_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -816,6 +843,7 @@ impl SshService {
             alive: AtomicBool::new(true),
             read_only: AtomicBool::new(false),
             epoch: next_epoch(),
+            ping: tokio::sync::Mutex::new(None),
             generation: token.clone(),
         });
         let replaced = {
@@ -1328,6 +1356,134 @@ impl SshService {
             .map(|s| s.host["id"].as_str().unwrap_or("").to_string())
     }
 
+    /// 测量一次真实连接往返(毫秒),供状态栏延迟仪使用。
+    ///
+    /// 实现是"常驻回显通道":首次调用用 `exec("cat")` 建一条通道,之后每次只写一行
+    /// 标记并等它原样回来 —— 一次探测 = 一个往返,量到的就是用户敲命令感知到的
+    /// 网络延迟。不能用 `exec` 计时:它每次都 `channel_open_session` +
+    /// `exec(want_reply)` 两次往返,会把结果算成约两倍(旧实现的问题)。
+    ///
+    /// `cat` 只依赖最基本的 POSIX,非 Linux 主机(无 /proc)同样可用;不占用用户的
+    /// 交互 shell,探测字节不会出现在终端里。
+    ///
+    /// 通道读坏/会话关闭时返回 Err,调用方据此重建(下次调用自动重开)。
+    pub async fn probe_latency(&self, session_id: &str) -> Result<u64, String> {
+        let session = {
+            let sessions = self.sessions.lock().await;
+            let s = sessions.get(session_id).ok_or("会话不存在或已断开")?;
+            if !s.alive.load(Ordering::Relaxed) {
+                return Err("会话不存在或已断开".into());
+            }
+            s.clone()
+        };
+        // 串行化本会话的探测:两条探测并发写同一个通道会互相读到对方的标记。
+        let mut slot = session.ping.lock().await;
+        let mut fresh = false;
+        if slot.is_none() {
+            *slot = Some(Self::open_ping(&session).await?);
+            // 开通道本身是一个往返,不能计入延迟:紧接着的这一轮只是把通道
+            // 拉到"已就绪"状态,报出去的数值从第二轮起才是真实的单次往返。
+            fresh = true;
+        }
+        let seq = {
+            let p = slot.as_mut().unwrap();
+            p.seq += 1;
+            p.seq
+        };
+        let started = std::time::Instant::now();
+        let probe = {
+            let p = slot.as_mut().unwrap();
+            Self::round_trip(p, seq).await
+        };
+        match probe {
+            Ok(()) if fresh => {
+                // 刚建的通道:本次读数含建通道开销,丢弃并补测一次纯往返。
+                let seq = {
+                    let p = slot.as_mut().unwrap();
+                    p.seq += 1;
+                    p.seq
+                };
+                let started = std::time::Instant::now();
+                let r = Self::round_trip(slot.as_mut().unwrap(), seq).await;
+                match r {
+                    Ok(()) => Ok(started.elapsed().as_millis() as u64),
+                    Err(e) => {
+                        *slot = None;
+                        Err(e)
+                    }
+                }
+            }
+            Ok(()) => Ok(started.elapsed().as_millis() as u64),
+            Err(e) => {
+                // 通道已僵死(远端 cat 退出/连接抖动):丢弃,下轮重建。
+                *slot = None;
+                Err(e)
+            }
+        }
+    }
+
+    /// 为会话建立常驻回显通道。
+    async fn open_ping(session: &Session) -> Result<PingChannel, String> {
+        let channel = {
+            let handle = session.handle.lock().await;
+            handle
+                .channel_open_session()
+                .await
+                .map_err(|e| e.to_string())?
+        };
+        channel.exec(true, "cat").await.map_err(|e| e.to_string())?;
+        // cat 读 stdin 直到 EOF,不需要写 EOF/close:通道随会话一起结束。
+        Ok(PingChannel {
+            channel,
+            seq: 0,
+            buf: Vec::new(),
+        })
+    }
+
+    /// 写一行标记并等到同一行原样返回。成功即代表完成一个往返。
+    ///
+    /// 自带超时:远端 cat 卡住(负载高/链路黑洞)时不能让探测永久占着会话的
+    /// 探测锁 —— 那样后续每轮探测都会排在它后面,延迟仪彻底冻结。
+    async fn round_trip(p: &mut PingChannel, seq: u64) -> Result<(), String> {
+        const ROUND_TRIP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        match tokio::time::timeout(ROUND_TRIP_TIMEOUT, Self::round_trip_inner(p, seq)).await {
+            Ok(r) => r,
+            Err(_) => Err("回显超时".into()),
+        }
+    }
+
+    async fn round_trip_inner(p: &mut PingChannel, seq: u64) -> Result<(), String> {
+        let marker = format!("__NB_PING_{}__", seq);
+        p.channel
+            .data(format!("{}\n", marker).as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        let needle = marker.as_bytes();
+        loop {
+            // 先查次数:一个消息里可能同时带回多轮标记(抖动时上一轮迟到)。
+            if contains(&p.buf, needle) {
+                p.buf.clear();
+                return Ok(());
+            }
+            match p.channel.wait().await {
+                Some(russh::ChannelMsg::Data { ref data }) => p.buf.extend_from_slice(data),
+                Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
+                    p.buf.extend_from_slice(data)
+                }
+                // close/eof 表示远端 cat 已退出(或连接断了),通道不可再用。
+                Some(russh::ChannelMsg::Close) | Some(russh::ChannelMsg::Eof) | None => {
+                    return Err("回显通道已关闭".into())
+                }
+                _ => {}
+            }
+            // 只留末尾一小段:标记很短,没必要让 buf 无限增长。
+            if p.buf.len() > 4096 {
+                let keep = p.buf.len() - 4096;
+                p.buf.drain(..keep);
+            }
+        }
+    }
+
     /// 探测交互 shell 的当前工作目录(文件面板首次打开的默认路径)。
     ///
     /// exec 通道的命令与交互 shell 同为本连接 sshd 会话进程的子进程:在 exec 里
@@ -1464,6 +1620,7 @@ mod lifecycle_tests {
             alive: AtomicBool::new(true),
             read_only: AtomicBool::new(false),
             epoch: next_epoch(),
+            ping: tokio::sync::Mutex::new(None),
             generation: Arc::new(PendingConnection::default()),
         })
     }

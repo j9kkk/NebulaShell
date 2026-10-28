@@ -40,16 +40,26 @@
     <!-- 侧边栏：主机列表 -->
     <aside id="sidebar">
       <div class="side-header">
-        <div class="side-actions">
-          <!-- 图标与文字分 span:收起态窄条里 .lbl 隐藏,只留 .mi 图标(见 style.css 收起态) -->
-          <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建主机</span></button>
-          <button id="btn-cloud-import" class="btn small" title="从腾讯云 / 阿里云导入主机"><span class="mi" data-icon="cloud"></span><span class="lbl">云导入</span></button>
-          <button id="btn-batch" class="btn small" title="多主机批量执行命令"><span class="mi" data-icon="play"></span><span class="lbl">批量执行</span></button>
-          <button id="btn-host-manage" class="btn small" title="主机管理:导入、导出、指纹、端口转发" aria-label="主机管理"><span class="mi" data-icon="dots"></span><span class="lbl">管理</span></button>
+        <!-- 第一行:标题 + 计数 + 主动作。低频操作(云导入/导入导出/指纹/转发)收进「⠇」,
+             它们不是每次打开侧栏都要点的东西,占常驻位置会挤掉列表高度。 -->
+        <div class="side-title">
+          <span class="side-title-name">主机</span>
+          <span id="host-count" class="side-count">0</span>
+          <span class="side-spacer"></span>
+          <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
+          <button id="btn-host-manage" class="btn icon" title="主机管理:云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
         </div>
-        <input id="host-search" type="text" placeholder="搜索主机名称 / IP…" />
+        <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
+        <div class="search-field">
+          <input id="host-search" class="inp" type="text" placeholder="搜索 / #标签 / @分组" autocomplete="off" spellcheck="false" aria-label="搜索主机" />
+          <button id="host-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
+        </div>
       </div>
-      <nav id="host-list"></nav>
+      <!-- .side-body 包住列表:收起态整块变成浮出层(见 style.css 收起态规则),
+           展开态视觉与原来一致 -->
+      <div class="side-body">
+        <nav id="host-list"></nav>
+      </div>
     </aside>
     <div id="sidebar-resizer" class="resizer" title="拖动调整侧边栏宽度"></div>
 
@@ -87,6 +97,9 @@
       <div id="statusbar">
         <span id="status-dot" class="dot idle"></span>
         <span id="status-text">就绪 — 尚未建立连接</span>
+        <!-- 断开时的重连引导:活动窗格不再挂横幅后,这条提示是"怎么连回去"的唯一
+             可见入口(按 Enter 亦可)。窄窗口由容器查询收起,见 style.css。 -->
+        <span id="status-hint" class="status-hint hidden"></span>
         <span id="ro-badge" class="ro-badge hidden">只读</span>
         <!-- 资源监控固定显示在状态栏:跟着"已连接 xxx@ip"一行。
              每个指标一个 mon-group(组间距大、组内紧凑),数值槽定宽左对齐 ——
@@ -689,6 +702,60 @@
           <button id="btn-batch-cancel" class="btn" disabled>取消执行</button>
           <button id="btn-batch-close" class="btn">关闭</button>
         </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主机库:百台级批量管理。
+       侧栏只管"快速访问",多选/批量改分组/批量打标签/批量删除放这里 ——
+       264px 的侧栏叠不下第四种点击语义(左键连接/中键新标签/右键菜单)。 -->
+  <div id="modal-host-library" class="modal hidden">
+    <div class="modal-card hl-card">
+      <div class="modal-head">
+        <h3>主机库</h3>
+        <span id="hl-count" class="hl-count">0 台</span>
+        <span class="spacer"></span>
+        <button id="hl-close" class="btn icon" type="button" title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
+      <div class="modal-toolbar">
+        <div class="search-field">
+          <input id="hl-search" class="inp" type="text" placeholder="搜索 / #标签 / @分组" aria-label="搜索主机" autocomplete="off" spellcheck="false" />
+          <button id="hl-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
+        </div>
+        <button id="hl-import" class="btn small" type="button">导入…</button>
+        <button id="hl-export" class="btn small" type="button">导出…</button>
+        <button id="hl-new-host" class="btn small primary" type="button">新建主机</button>
+      </div>
+      <div class="hl-body">
+        <div id="hl-groups" class="hl-groups" role="list" aria-label="分组"></div>
+        <div id="hl-table-wrap" class="hl-table-wrap">
+          <table class="hl-table">
+            <colgroup>
+              <col class="hl-w-h"><col class="hl-w-chk"><col class="hl-w-name"><col class="hl-w-user">
+              <col class="hl-w-addr"><col class="hl-w-grp"><col class="hl-w-tags"><col class="hl-w-cred"><col class="hl-w-act">
+            </colgroup>
+            <thead>
+              <tr>
+                <th></th>
+                <th><span id="hl-check-all" class="hl-box" role="checkbox" aria-label="全选当前列表"></span></th>
+                <th>名称</th><th>用户</th><th>地址</th><th>分组</th><th>标签</th><th>凭据</th>
+                <th class="hl-th-act">操作</th>
+              </tr>
+            </thead>
+            <tbody id="hl-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="hl-batch" class="hl-batch hidden">
+        <span id="hl-sel-count" class="hl-sel">已选 0 台</span>
+        <span class="hl-tip">拖到左侧分组可批量移动</span>
+        <span class="spacer"></span>
+        <button id="hl-bulk-tag" class="btn small" type="button">批量标签…</button>
+        <button id="hl-bulk-del" class="btn small danger" type="button">删除所选</button>
+        <button id="hl-cancel-sel" class="btn small ghost" type="button">取消选择</button>
+      </div>
+      <div class="modal-actions modal-foot hl-foot">
+        <span class="muted small-note">拖动行首把手排序 · 选中后拖到左侧分组即可批量移动 · 云厂商等派生分组不可作为落点</span>
       </div>
     </div>
   </div>

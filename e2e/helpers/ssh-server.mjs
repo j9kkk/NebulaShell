@@ -237,12 +237,14 @@ function attachMockSftp(session, tree, emit = () => {}, opts = {}) {
   });
 }
 
-export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent, commandBlockInput = false, sftpReadDelayMs = 0 } = {}) {
+export async function startMockSshd({ user = 'root', password = 'test-pass-123', port = 0, onEvent, commandBlockInput = false, sftpReadDelayMs = 0, catCloseAfter = Number(process.env.NB_MOCK_CAT_CLOSE_AFTER || 0) } = {}) {
   const hostPrivateKey = crypto
     .generateKeyPairSync('rsa', { modulusLength: 2048 })
     .privateKey.export({ type: 'pkcs1', format: 'pem' });
   const tree = makeMemFs();
   const sftpOpts = { readDelayMs: sftpReadDelayMs };
+  // 常驻延迟探测的 cat 通道计数:让"关闭开关"只作用于第一条通道。
+  let catOpened = 0;
   // AI 工具 exec 走真实本地 shell(带 __NB_PGID 包装脚本的命令):远端 /home/user
   // 映射到这个临时目录,进程组、超时、中止都是真的。
   const realHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-mock-home-'));
@@ -447,6 +449,27 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
             stream.write('NB_CWD /home/user/data\n');
             stream.exit(0);
             stream.end();
+            return;
+          }
+          // 延迟探测的常驻回显通道(ssh::probe_latency 执行 `cat`):
+          // stdin 写什么原样回什么,通道保持打开直到客户端关闭 —— 真实 cat 的行为。
+          // 不能走下面的 EXEC-OK 分支:那条会立刻 exit/end,客户端会判定通道僵死,
+          // 每轮探测都要重建通道(退化成用建通道的往返计时)。
+          if (String(info.command).trim() === 'cat') {
+            // 只让**第一条** cat 通道按开关关闭:后续重建的通道正常服务,
+            // 用例才能验证"重建之后可持续使用"。跨通道计数会让重建出来的
+            // 通道也被立刻关掉,测的就不是自愈了。
+            const catIndex = catOpened++;
+            let catMsgs = 0;
+            stream.on('data', (d) => {
+              try { stream.write(d); } catch { /* closed */ }
+              catMsgs += 1;
+              // 测试开关:echo 完第 N 条后就结束 cat,模拟远端进程退出/通道僵死。
+              if (catCloseAfter > 0 && catIndex === 0 && catMsgs >= catCloseAfter) {
+                try { stream.exit(0); stream.end(); } catch { /* closed */ }
+              }
+            });
+            stream.on('close', () => { /* 客户端关闭通道,cat 随之结束 */ });
             return;
           }
           stream.write(`EXEC-OK:${info.command}\n`);

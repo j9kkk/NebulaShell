@@ -566,6 +566,12 @@ test('terminal state notifications refresh the real workspace split button after
     'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts',
     'focusedPaneId', 'paneOwner', 'activateSession', 'toggleBroadcastMember', 'splitMenuItems', 'hostManageItems', 'openTabList',
     'rightPanelOpen', 'rightTabShown', 'toggleRightPanel', 'toggleRightTab', 'setRightPanel']) context[name] = () => {};
+  // 本用例只验证命令注册与状态刷新,不关心主机库/密度开关的实现细节:
+  // 给它们最小适配(打开主机库、读写界面偏好、重绘侧栏)。
+  context.openHostLibrary = () => {};
+  context.renderHosts = () => {};
+  context.uiPrefs = () => ({ favoriteHostIds: [], collapsedGroups: [], hostDensity: 'comfortable' });
+  context.saveUiPrefs = () => {};
   // Execute production wiring and notifier, with adapters only for unrelated actions.
   const entrySource = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
   const terminalSource = await readFile(new URL('../src/modules/terminal.js', import.meta.url), 'utf8');

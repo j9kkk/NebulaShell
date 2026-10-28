@@ -120,7 +120,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null, stubL
     globalThis.subject = {writeSessionInput, disconnectSession, reconnectSession, runSessionConnection, makePaneEl: realMakePaneEl,
       scheduleReconnect, handleSessionStatus, writableBroadcastSessions, quickConnect, splitActive,
       isRetryableNetworkError, closeActivePane, syncPaneButtons, visibleSessions, fitActive, updateStatusbar,
-      syncPaneStatusBanner,
+      syncPaneStatusBanner, syncAllPaneStatusBanners, disconnectReasonSummary,
       getCommandBlockTarget, commandBlockTargetStatus, submitCommandBlock, feedTrusted,
       activateSession, activatePane, setActiveTabId, closeSession, createInputSession,
       consumeCommandKeys, setAltScreen, toggleSessionLog, stopSessionLog, openLogFolder};
@@ -242,16 +242,20 @@ test('status events and redraws hide fingerprint markers without altering trust 
     assert.equal(h.handleSessionStatus(event), true);
     assert.equal(s.lastError, raw);
     assert.equal(event.error, raw);
-    assert.equal(h.elements.get('#status-text').textContent, '已断开 root@example.invalid:22（跳板 bastion 失败: SSH 主机指纹不一致）');
+    // 状态栏只放一行摘要(指纹变更优先于其它分类),完整原文进 title
+    assert.equal(h.elements.get('#status-text').textContent, '已断开 root@example.invalid:22 · 主机指纹已变更');
+    assert.equal(h.elements.get('#status-text').title, '跳板 bastion 失败: SSH 主机指纹不一致');
     h.updateStatusbar(s); // Tab/broadcast redraw reads the raw lastError again.
     assert.ok(!h.elements.get('#status-text').textContent.includes('NB-FP'));
+    assert.ok(!h.elements.get('#status-text').title.includes('NB-FP'));
     assert.deepEqual(parseFpError(s.lastError), {
       key: 'example.invalid:22', stored: 'SHA256:old', current: 'SHA256:new', clean: '跳板 bastion 失败: SSH 主机指纹不一致',
     });
     assert.equal(h.scheduleReconnect(s.sessionId, s.lastError), false);
   }
   h.updateStatusbar(s, '[NB-FP example.invalid:22|SHA256:old|SHA256:new]');
-  assert.equal(h.elements.get('#status-text').textContent, '已断开 root@example.invalid:22');
+  assert.equal(h.elements.get('#status-text').textContent, '已断开 root@example.invalid:22 · 主机指纹已变更');
+  assert.equal(h.elements.get('#status-text').title, '');
   assert.equal(s.lastError, raw);
   assert.equal(h.timers.size, 0);
   assert.equal(h.notices.length, 0);
@@ -298,7 +302,9 @@ test('ordinary connection failures keep human-readable status and toast prefixes
   const h = harness({ renderStatusbar: true }), s = h.addSession();
   h.setAPI(async () => { throw new Error('跳板 bastion 失败: socket closed'); });
   assert.equal(await h.runSessionConnection(s), false);
-  assert.equal(h.elements.get('#status-text').textContent, '已断开 root@example.invalid:22（跳板 bastion 失败: socket closed）');
+  // 认不出的原因原样显示(宁可截断也不编错误的分类),原文同时进 title
+  assert.equal(h.elements.get('#status-text').textContent, '已断开 root@example.invalid:22 · 跳板 bastion 失败: socket closed');
+  assert.equal(h.elements.get('#status-text').title, '跳板 bastion 失败: socket closed');
   assert.deepEqual(h.notices, [['连接失败：跳板 bastion 失败: socket closed', 'error']]);
   assert.equal(h.confirmations.length, 0);
 });
@@ -328,8 +334,30 @@ test('manual disconnect cancels backoff and explicit remote shell exit does not 
 
 // ---- 窗格断开横幅与回车就地重连 ----
 
+test('disconnect reason summary keeps the status bar to one readable line', () => {
+  const h = harness();
+  const cases = [
+    ['All configured authentication methods failed', '认证失败'],
+    ['Permission denied (publickey,password).', '认证失败'],
+    ['network connection reset', '连接被重置'],
+    ['Connection timed out', '连接超时'],
+    ['connect: Connection refused', '连接被拒绝'],
+    ['No route to host', '主机不可达'],
+    ["nodename nor servname provided, or not known", '域名解析失败'],
+    // 指纹标记在 strip 前唯一可辨认,摘要优先按它归类
+    ['x [NB-FP example.invalid:22|a|b]', '主机指纹已变更'],
+    // 认不出的原因原样返回:宁可截断也不编一个错的分类
+    ['跳板 bastion 失败: socket closed', '跳板 bastion 失败: socket closed'],
+    ['', ''],
+  ];
+  for (const [why, want] of cases) assert.equal(h.disconnectReasonSummary(why), want, why);
+});
+
+// 活动会话由底部状态栏代言,窗格内不再挂横幅(同一句话上下相邻既重影又遮挡终端);
+// 只有分屏里用户当前没看着的窗格才亮横幅。用例统一把会话置为非活动来验证横幅本体。
 test('pane banner explains disconnect with reason and Enter hint, and clears when connected', () => {
   const h = harness(), s = h.addSession();
+  h.state.activeId = null; // 非活动窗格才该有横幅
   const banner = () => s.pane.querySelector('.pane-status-banner');
   s.lastError = 'socket reset [NB-FP host:22|aa|bb]';
   h.syncPaneStatusBanner(s, s.lastError);
@@ -358,9 +386,30 @@ test('pane banner explains disconnect with reason and Enter hint, and clears whe
   assert.equal(banner(), null);
   // 首次打开标签连接中:窗格内不展示横幅(避免与底部状态栏重复)
   const fresh = h.addSession();
+  h.state.activeId = null;
   fresh.status = 'connecting';
   h.syncPaneStatusBanner(fresh);
   assert.equal(fresh.pane.querySelector('.pane-status-banner'), null, '首次连接不创建窗格横幅');
+});
+
+test('active pane never shows a banner; switching focus moves it to the pane left behind', () => {
+  const h = harness(), s = h.addSession();
+  const banner = () => s.pane.querySelector('.pane-status-banner');
+  s.status = 'disconnected';
+  s.lastError = 'connection reset';
+  // 活动会话:横幅必须缺席,由状态栏承载
+  h.state.activeId = s.sessionId;
+  h.syncPaneStatusBanner(s, s.lastError);
+  assert.equal(banner(), null, '活动窗格不挂横幅');
+  // 切走到别的会话后,这块窗格变成"用户没看着"的分屏,横幅应补上
+  const other = h.addSession();
+  h.syncAllPaneStatusBanners();
+  assert.ok(banner(), '失去活动身份后重新挂出横幅');
+  assert.equal(other.pane.querySelector('.pane-status-banner'), null, '新的活动窗格不挂横幅');
+  // 切回来:横幅重新收起
+  h.state.activeId = s.sessionId;
+  h.syncAllPaneStatusBanners();
+  assert.equal(banner(), null, '重新成为活动窗格后横幅收起');
 });
 
 test('Enter on a disconnected pane reconnects in place; other input is dropped and connecting swallows Enter', async () => {

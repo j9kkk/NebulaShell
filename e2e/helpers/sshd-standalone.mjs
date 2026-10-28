@@ -5,7 +5,9 @@ const portFile = process.argv[2];
 const password = process.argv[3] || 'itest-pass';
 const readDelayMs = Number(process.argv[4] || 0) || 0;
 import fs from 'node:fs';
-const sshd = await startMockSshd({ password, sftpReadDelayMs: readDelayMs });
+// 第 5 个参数:catCloseAfter(常驻延迟探测通道在回显 N 条后关闭),默认关闭。
+const catCloseAfter = Number(process.argv[5] || 0) || 0;
+const sshd = await startMockSshd({ password, sftpReadDelayMs: readDelayMs, catCloseAfter });
 fs.writeFileSync(portFile, String(sshd.port));
 console.log('sshd ready on', sshd.port);
 process.on('exit', () => {});
