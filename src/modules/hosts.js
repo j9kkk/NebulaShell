@@ -18,6 +18,7 @@ export function uiPrefs() {
   return {
     favoriteHostIds: Array.isArray(ui?.favoriteHostIds) ? ui.favoriteHostIds : [],
     collapsedGroups: Array.isArray(ui?.collapsedGroups) ? ui.collapsedGroups : [],
+    customGroups: Array.isArray(ui?.customGroups) ? ui.customGroups : [],
     hostDensity: ui?.hostDensity === 'compact' ? 'compact' : 'comfortable',
   };
 }
@@ -96,6 +97,8 @@ async function healStarGroup() {
   } catch { /* 修正失败不阻塞列表;下次启动再试 */ }
 }
 
+let activeSidebarGroup = '';
+
 export function renderHosts() {
   const nav = $('#host-list');
   if (!nav) return;
@@ -103,18 +106,54 @@ export function renderHosts() {
   const keepTop = nav.scrollTop;
   const prefs = uiPrefs();
   const favorites = new Set(prefs.favoriteHostIds);
-  const collapsed = new Set(prefs.collapsedGroups);
   const density = prefs.hostDensity;
 
-  const { hosts: list, filtered } = filterHosts($('#host-search')?.value, state.hosts);
-  const groups = new Map();
-  for (const h of list) {
-    const g = groupOf(h);
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(h);
+  // 横向分组标签条渲染
+  const strip = $('#host-group-strip');
+  if (strip) {
+    strip.innerHTML = '';
+    const fav = new Set(prefs.favoriteHostIds);
+    const custom = Array.isArray(prefs.customGroups) ? prefs.customGroups : [];
+    const groupSet = new Set(custom);
+    for (const h of state.hosts || []) groupSet.add(groupOf(h));
+    const allGroupNames = [...groupSet].filter(Boolean);
+
+    const chips = [
+      { name: '', label: '全部', count: (state.hosts || []).length },
+      { name: STAR_NOTE, label: '常用', count: (state.hosts || []).filter((h) => fav.has(h.id)).length, fav: true },
+      ...allGroupNames.map((g) => ({
+        name: g,
+        label: g,
+        count: (state.hosts || []).filter((h) => groupOf(h) === g).length,
+      })),
+    ];
+
+    for (const c of chips) {
+      const chip = document.createElement('div');
+      chip.className = 'host-group-chip'
+        + (activeSidebarGroup === c.name ? ' active' : '')
+        + (c.fav ? ' fav' : '');
+      chip.innerHTML = `${c.fav ? icon('star', { size: 10 }) : ''}<span>${escapeHtml(c.label)}</span>`
+        + `<span class="chip-cnt">${c.count}</span>`;
+      chip.addEventListener('click', () => {
+        activeSidebarGroup = c.name;
+        renderHosts();
+      });
+      strip.appendChild(chip);
+    }
   }
-  // 星标置顶:查询时不插这一组(此时按相关度平铺,分组概念已让位)
-  const starred = !filtered ? state.hosts.filter((h) => favorites.has(h.id)) : [];
+
+  const { hosts: list, filtered } = filterHosts($('#host-search')?.value, state.hosts);
+
+  // 按横向分组标签筛选主机列表 (单层平铺, 无多层手风琴折叠浪费高度)
+  let displayList = list;
+  if (!filtered) {
+    if (activeSidebarGroup === STAR_NOTE) {
+      displayList = displayList.filter((h) => favorites.has(h.id));
+    } else if (activeSidebarGroup) {
+      displayList = displayList.filter((h) => groupOf(h) === activeSidebarGroup);
+    }
+  }
 
   nav.innerHTML = '';
   nav.classList.toggle('dense', density === 'compact');
@@ -122,9 +161,9 @@ export function renderHosts() {
   if (countEl) countEl.textContent = String(state.hosts.length);
   // 空窗格的主机选择器是同一份主机数据的另一个视图,必须跟着刷新
   refreshPickers();
-  if (!list.length) {
+  if (!displayList.length) {
     nav.innerHTML = '<div class="host-empty">' +
-      (filtered ? '没有匹配的主机' : '还没有主机<br />点击「新建主机」或「导入云主机」开始') +
+      (filtered ? '没有匹配的主机' : (activeSidebarGroup ? '该分组下暂无主机' : '还没有主机<br />点击「新建主机」或「导入云主机」开始')) +
       '</div>';
     nav.scrollTop = keepTop;
     return;
@@ -211,39 +250,8 @@ export function renderHosts() {
     return item;
   };
 
-  const groupHead = (name, count, { fav = false } = {}) => {
-    const head = document.createElement('button');
-    head.type = 'button';
-    head.className = 'host-group-head' + (fav ? ' fav' : '')
-      + (collapsed.has(name) ? ' collapsed' : '');
-    head.dataset.group = name;
-    head.setAttribute('aria-expanded', String(!collapsed.has(name)));
-    // 常用组的标识用 SVG 星标(与命令历史收藏按钮同款),不用文本里的 emoji ——
-    // emoji 与整套线性图标风格不一致,且宽度不可控。
-    // 常用组的标识只画一枚 SVG 星标(hg-fav-ic);名称文本不再重复画星
-    const nameHtml = `<span class="hg-name">${escapeHtml(fav ? '常用' : name)}</span>`;
-    head.innerHTML = `<span class="hg-caret">${icon('chevronDown')}</span>`
-      + (fav ? `<span class="hg-fav-ic">${icon('star')}</span>` : '')
-      + nameHtml
-      + `<span class="hg-count">${count}</span>`;
-    head.addEventListener('click', () => {
-      const next = new Set(uiPrefs().collapsedGroups);
-      if (next.has(name)) next.delete(name); else next.add(name);
-      saveUiPrefs({ collapsedGroups: [...next] });
-      renderHosts();
-    });
-    return head;
-  };
-
-  if (starred.length) {
-    nav.appendChild(groupHead(STAR_NOTE, starred.length, { fav: true }));
-    if (!collapsed.has(STAR_NOTE)) for (const h of starred) nav.appendChild(renderRow(h));
-  }
-  for (const [g, hosts] of groups) {
-    // 收藏组已经把它们列在上面了;这里仍按分组展示,避免"收藏后就从原分组消失"
-    nav.appendChild(groupHead(g, hosts.length));
-    if (collapsed.has(g)) continue;
-    for (const h of hosts) nav.appendChild(renderRow(h));
+  for (const h of displayList) {
+    nav.appendChild(renderRow(h));
   }
   nav.scrollTop = keepTop;
 }

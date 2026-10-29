@@ -171,6 +171,7 @@ async function fixture() {
     },
     '@xterm/xterm': { Terminal }, '@xterm/addon-fit': { FitAddon },
     '@xterm/addon-search': { SearchAddon: Addon }, '@xterm/addon-web-links': { WebLinksAddon: Addon }, '@xterm/addon-webgl': { WebglAddon: Addon },
+    '@xterm/addon-image': { ImageAddon: Addon },
   };
   const cache = new Map(), pending = new Map();
   function load(id) {

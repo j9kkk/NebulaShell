@@ -20,6 +20,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { ImageAddon } from '@xterm/addon-image';
 import { THEMES, TERM_THEMES, termTheme, applyTheme, v } from './theme.js';
 
 export { THEMES, TERM_THEMES, termTheme, applyTheme, v };
@@ -1637,6 +1638,29 @@ function attachWebgl(session) {
   } catch { /* WebGL 不可用:保持 DOM 渲染器 */ }
 }
 
+/// 区分「用户输入」与「终端自动应答」。xterm 的 triggerDataEvent(data, wasUserInput)
+/// 带来源标志(按键/粘贴=true,能力查询的应答=false),但该标志不透传给 onData,
+/// 监听者拿到的只是字符串。这里在外层包一层记录当前来源,onData 里回调读取。
+///
+/// 只影响命令历史采集,不影响数据发送:自动应答本来就该发往远端。
+/// 内部结构变化时返回恒真的判定,退化为"不过滤"(不影响任何输入通路)。
+function trackUserInputOrigin(term) {
+  let autoDepth = 0;
+  try {
+    const svc = term._core?.coreService;
+    if (typeof svc?.triggerDataEvent !== 'function') return { isUserInput: () => true };
+    const orig = svc.triggerDataEvent.bind(svc);
+    svc.triggerDataEvent = (data, wasUserInput) => {
+      if (wasUserInput) return orig(data, wasUserInput);
+      autoDepth += 1;
+      try { return orig(data, wasUserInput); } finally { autoDepth -= 1; }
+    };
+    return { isUserInput: () => autoDepth === 0 };
+  } catch {
+    return { isUserInput: () => true };
+  }
+}
+
 function detachWebgl(session) {
   const webgl = session?._webgl;
   if (!webgl) return;
@@ -1718,6 +1742,21 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   term.loadAddon(fit);
   term.loadAddon(search);
   term.loadAddon(new WebLinksAddon((_event, uri) => openExternalLink(uri))); // D7:链接识别,点击经主进程开系统浏览器
+  // 内联图片(D11 子集):iTerm IIP(OSC 1337)的 PNG/JPEG/GIF,渲染进 .xterm-screen
+  // 的独立 canvas 层。sixelSupport 关掉有两个目的:本期只承诺 IIP 三种格式;
+  // 且关掉后 DA1 回复与不装本 addon 完全一致(\x1b[?1;2c),远端观感零变化 ——
+  // 不会因声明 sixel(参数 4)而导致只发六图的工具把图发过来却画不出。
+  const image = new ImageAddon({
+    sixelSupport: false,
+    iipSupport: true,
+    enableSizeReports: true,
+    pixelLimit: 16 * 1024 * 1024,
+    // addon 默认 128MB(按解包后 RGBA 计)。分屏时每个终端各持一份限额,
+    // 收到 64MB 避免多开时叠成数倍占用。
+    storageLimit: 64,
+    showPlaceholder: true,
+  });
+  term.loadAddon(image);
   const surface = document.createElement('div');
   surface.className = 'term-surface';
   pane.appendChild(surface);
@@ -1732,6 +1771,13 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
   appendPaneButtons(pane, targetPaneId, tab.id);
 
   // 输入:只读拦截(D9) / 广播分发(E5) / 命令历史采集(F2) / AI 诊断素材采集
+  // 终端自动回复(DA1、XTSMGRAPHICS 等能力查询的应答)也走 onData,它必须发给
+  // 远端(否则对端等不到应答),但不是用户敲的字符,不能喂进命令行模型 ——
+  // 否则白白把当前行标脏。xterm 内部 triggerDataEvent(data, wasUserInput) 带来源
+  // 标志,却不透传给 onData,只能在外层记录。(私有 API;项目已有同类用法,
+  // 见 _selectionService。结构变化时退化为不过滤,不影响输入发送。)
+  const inputOrigin = trackUserInputOrigin(term);
+
   term.onData((d) => {
     const s = state.sessions.get(state.activeId);
     if (!s || s.sessionId !== sessionId) return;
@@ -1742,7 +1788,8 @@ export function createSession(host, paneId, tabId, dir, options = {}) {
       return;
     }
     if (s.readOnly || hasOpenModal()) return;
-    consumeCommandKeys(s, d);
+    // 自动应答只跳过历史模型,照常发往远端(协议请求必须回应)。
+    if (inputOrigin.isUserInput()) consumeCommandKeys(s, d);
     const targets = state.broadcast && state.broadcast.has(sessionId)
       ? [...state.broadcast].map((id) => state.sessions.get(id)).filter((x) => x && x.status === 'connected' && !x.readOnly)
       : [s];
@@ -2286,6 +2333,8 @@ function beginCommandCollection(session, cmd) {
   commandCollections.set(session, revision);
   session.lastCmd = cmd;
   session.lastOutput = '';
+  // 每轮采集重开都要丢弃上一轮残留的半截序列,否则会串进本轮素材
+  session.seqFilter = null;
   session.collectOutput = true;
   return revision;
 }

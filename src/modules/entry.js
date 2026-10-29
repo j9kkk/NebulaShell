@@ -1,6 +1,7 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindExternalLinks, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
+import { createSequenceFilter } from '../shared/term-text.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
@@ -537,7 +538,7 @@ function setupWorkspaceCommands() {
   const buttons = {
     'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
-    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
+    'btn-add-host': 'host.new', 'btn-host-library': 'hosts.library', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
   };
   // 元素可能不存在(按钮随设计演进被移除到菜单里):这里必须判空,
   // 否则 boot 会在一句 TypeError 上中断,后续所有连接/终端接线都注册不上。
@@ -1096,8 +1097,11 @@ export function bindEvents() {
     }
     // AI 诊断素材:只累积"最后一次命令提交之后"的输出,留尾部(报错通常在末尾)。
     // 采集窗口由 terminal.js 的 onData 在每次回车提交时重开。
+    // 先过序列过滤器:内联图片的 base64 动辄数十万字符,直接累积会把 6000 字符
+    // 的窗口全部灌满,真正的报错反而被挤出去。
     if (s.collectOutput) {
-      s.lastOutput = ((s.lastOutput || '') + data).slice(-6000);
+      s.seqFilter ||= createSequenceFilter();
+      s.lastOutput = ((s.lastOutput || '') + s.seqFilter.push(data)).slice(-6000);
     }
   });
   window.nebula.on('ssh:status', (payload) => {

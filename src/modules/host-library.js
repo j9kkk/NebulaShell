@@ -9,16 +9,18 @@
 // core/terminal/icons 三项,给它加 import 会直接 link 失败。这里反向
 // import hosts.js 是安全的(方向是 新模块 → 旧模块)。
 
-import { $, api, askConfirm, askPrompt, closeModal, copyText, openModal, state, toast } from './core.js';
+import { $, api, askConfirm, askPrompt, bindMenuButton, closeModal, copyText, openModal, state, toast } from './core.js';
 import { executeCommand } from './commands.js';
 import { icon } from '../shared/icons.js';
 import { escapeHtml, groupOf, openHostModal, refreshHosts, renderHosts, saveUiPrefs, STAR_NOTE, uiPrefs } from './hosts.js';
 import { startMouseDrag } from '../shared/drag.js';
+import { connectHost } from './terminal.js';
 
 let selected = new Set();
 let activeGroup = '';     // '' = 全部
 let keyword = '';
 let dragging = null;
+let dragEndedAt = 0;
 
 function hosts() {
   return state.hosts || [];
@@ -40,9 +42,20 @@ function toggleFavorite(id) {
 
 /* ---------------- 分组 ---------------- */
 
-/// 所有分组名(含派生分组),按首次出现顺序。
+function ensureCustomGroup(name) {
+  const custom = Array.isArray(uiPrefs().customGroups) ? uiPrefs().customGroups : [];
+  if (!custom.includes(name)) {
+    saveUiPrefs({ customGroups: [...custom, name] });
+  }
+}
+
+/// 所有分组名(含派生分组),按首次出现顺序。自建空分组持久保留。
 function allGroups() {
   const out = [];
+  const custom = Array.isArray(uiPrefs().customGroups) ? uiPrefs().customGroups : [];
+  for (const g of custom) {
+    if (g && !out.includes(g)) out.push(g);
+  }
   for (const h of hosts()) {
     const g = groupOf(h);
     if (!out.includes(g)) out.push(g);
@@ -94,9 +107,11 @@ export function openHostLibrary() {
 }
 
 function updateBatchBar() {
-  const bar = $('#hl-batch');
-  if (!bar) return;
-  bar.classList.toggle('hidden', selected.size === 0);
+  const empty = $('#hl-batch-empty');
+  const active = $('#hl-batch-active');
+  const hasSel = selected.size > 0;
+  empty?.classList.toggle('hidden', hasSel);
+  active?.classList.toggle('hidden', !hasSel);
   const n = $('#hl-sel-count');
   if (n) n.textContent = `已选 ${selected.size} 台`;
 }
@@ -130,7 +145,8 @@ function renderGroups() {
     el.dataset.group = e.name;
     el.dataset.droppable = String(!e.derived && e.name !== '');
     if (e.derived) el.title = '这是派生分组,不能作为移动目标';
-    el.innerHTML = `${icon(e.icon, { size: 12 })}<span class="hlg-name">${escapeHtml(e.label)}</span>`
+    const tagHtml = (e.derived && e.name && e.name !== STAR_NOTE) ? '<span class="hlg-tag-derived">派生</span>' : '';
+    el.innerHTML = `${icon(e.icon, { size: 12 })}<span class="hlg-name">${escapeHtml(e.label)}</span>${tagHtml}`
       + `<span class="hlg-n">${e.count}</span>`;
     el.addEventListener('click', () => {
       activeGroup = e.name;
@@ -138,6 +154,31 @@ function renderGroups() {
     });
     box.appendChild(el);
   }
+
+  // 底部常驻「＋ 新建分组」落点与动作
+  const newEl = document.createElement('div');
+  newEl.className = 'hl-group hl-group-new';
+  newEl.dataset.group = '__new__';
+  newEl.dataset.droppable = 'true';
+  newEl.title = '新建自建分组，或直接拖拽选中主机到此处';
+  newEl.innerHTML = `${icon('plus', { size: 12 })}<span class="hlg-name">新建分组…</span>`;
+  newEl.addEventListener('click', async () => {
+    const raw = await askPrompt('请输入新分组名称：', { title: '新建分组', okText: '创建' });
+    if (!raw || !raw.trim()) return;
+    const name = raw.trim();
+    if (name === STAR_NOTE) {
+      toast('「常用」为系统保留标记，不能作为分组名', 'error');
+      return;
+    }
+    ensureCustomGroup(name);
+    if (selected.size > 0) {
+      await moveToGroup([...selected], name);
+    } else {
+      activeGroup = name;
+      renderLibrary();
+    }
+  });
+  box.appendChild(newEl);
 }
 
 export function renderLibrary() {
@@ -199,8 +240,9 @@ export function renderLibrary() {
         <button class="del" data-act="del" title="删除">${icon('trash', { size: 12 })}</button>
       </div></td>`;
 
-    // 行点击 = 选中切换;操作列与拖拽把手各自 stopPropagation
+    // 行点击 = 选中切换;操作列与拖拽把手各自 stopPropagation;拖动刚结束时防误触
     tr.addEventListener('click', (e) => {
+      if (Date.now() - dragEndedAt < 300) return;
       if (e.target.closest('.hl-acts') || e.target.closest('.hl-grip')) return;
       if (selected.has(h.id)) selected.delete(h.id); else selected.add(h.id);
       renderLibrary();
@@ -263,20 +305,18 @@ function bindRowDrag(tr, host) {
 }
 
 function dragStart(ev, host, tr) {
+  // 如果当前行不在 selected 里，拖拽只针对当前行，不要强行污染 selected
   const ids = selected.has(host.id) ? [...selected] : [host.id];
-  if (!selected.has(host.id)) {
-    selected.add(host.id);
-    renderLibrary();
-    // renderLibrary 重建了 DOM,原 handle 已脱离文档;后续判定按 id 走
-  }
   const rows = [...document.querySelectorAll('#hl-tbody tr[data-id]')]
     .filter((el) => ids.includes(el.dataset.id));
   let ghost = null;
   let dropGroup = null;
-  let insertBefore = null;
+  let insertTarget = null; // { id: string, after: boolean }
 
   const clearHints = () => {
-    for (const el of document.querySelectorAll('#hl-tbody tr.insert')) el.classList.remove('insert');
+    for (const el of document.querySelectorAll('#hl-tbody tr.insert, #hl-tbody tr.insert-top, #hl-tbody tr.insert-bottom')) {
+      el.classList.remove('insert', 'insert-top', 'insert-bottom');
+    }
     for (const el of document.querySelectorAll('.hl-group.drop')) el.classList.remove('drop');
   };
 
@@ -294,7 +334,7 @@ function dragStart(ev, host, tr) {
 
       clearHints();
       dropGroup = null;
-      insertBefore = null;
+      insertTarget = null;
 
       // ① 落在左栏可接受分组 → 移动分组
       const gEl = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('.hl-group');
@@ -310,17 +350,38 @@ function dragStart(ev, host, tr) {
         const srcHost = hosts().find((h) => h.id === host.id);
         // 只有同组内才允许排序 —— 组内次序才有意义,跨组会同时改分组
         if (overHost && srcHost && !keyword.trim() && sameGroupForSort(overHost, srcHost)) {
-          overTr.classList.add('insert');
-          insertBefore = overHost.id;
+          const rect = overTr.getBoundingClientRect();
+          const isAfter = (e.clientY - rect.top) > (rect.height / 2);
+          if (isAfter) {
+            overTr.classList.add('insert-bottom');
+            insertTarget = { id: overHost.id, after: true };
+          } else {
+            overTr.classList.add('insert-top');
+            insertTarget = { id: overHost.id, after: false };
+          }
         }
       }
     },
     onEnd: () => {
+      dragEndedAt = Date.now();
       clearHints();
       ghost?.remove();
-      if (dropGroup !== null) moveToGroup(ids, dropGroup);
-      else if (insertBefore) reorderTo(ids, insertBefore);
-      else renderLibrary();
+      for (const el of rows) el.classList.remove('drag');
+      if (dropGroup === '__new__') {
+        askPrompt('创建新分组并移动选中主机：', { title: '新建分组', okText: '创建并移动' }).then((raw) => {
+          if (raw && raw.trim() && raw.trim() !== STAR_NOTE) {
+            moveToGroup(ids, raw.trim());
+          } else {
+            renderLibrary();
+          }
+        });
+      } else if (dropGroup !== null) {
+        moveToGroup(ids, dropGroup);
+      } else if (insertTarget) {
+        reorderTo(ids, insertTarget.id, insertTarget.after);
+      } else {
+        renderLibrary();
+      }
     },
   });
 }
@@ -334,6 +395,7 @@ function sameGroupForSort(a, b) {
 
 async function moveToGroup(ids, group) {
   const before = hosts().map((h) => h.id);
+  ensureCustomGroup(group);
   try {
     const r = await api('hosts:bulkUpdate', { ids, patch: { group } });
     await refreshHosts();
@@ -347,13 +409,14 @@ async function moveToGroup(ids, group) {
   }
 }
 
-async function reorderTo(ids, beforeId) {
+async function reorderTo(ids, targetId, after = false) {
   const current = hosts().map((h) => h.id);
-  const moving = ids.filter((id) => id !== beforeId);
+  const moving = ids.filter((id) => id !== targetId);
   const rest = current.filter((id) => !moving.includes(id));
-  const at = rest.indexOf(beforeId);
+  const at = rest.indexOf(targetId);
   if (at < 0) return;
-  const next = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+  const insertIndex = after ? at + 1 : at;
+  const next = [...rest.slice(0, insertIndex), ...moving, ...rest.slice(insertIndex)];
   // 乐观更新:先把本地数组排好,侧栏与弹窗一起重绘;失败再回滚
   const snapshot = state.hosts.slice();
   const byId = new Map(state.hosts.map((h) => [h.id, h]));
@@ -387,9 +450,11 @@ async function bulkDelete() {
 
 async function bulkTag() {
   if (!selected.size) return;
+  const allTags = [...new Set(hosts().flatMap((h) => h.tags || []))].filter(Boolean);
+  const tagHint = allTags.length ? `\n（已有标签：${allTags.slice(0, 8).join(', ')}${allTags.length > 8 ? '…' : ''}）` : '';
   const raw = await askPrompt(
-    '批量标签,逗号分隔;前缀 - 表示移除(例如 prod,-old)',
-    { title: '批量标签', okText: '应用' },
+    `输入标签（逗号分隔；前缀 - 表示移除，如 -old）：${tagHint}`,
+    { title: `批量标签 (已选 ${selected.size} 台)`, okText: '应用' },
   );
   if (raw === null) return;
   const addTags = [];
@@ -433,6 +498,15 @@ export function bindHostLibrary() {
   });
   $('#hl-close')?.addEventListener('click', () => closeModal('#modal-host-library'));
 
+  // Esc 优先取消选择，无选择时才关闭弹窗
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && selected.size > 0) {
+      e.stopPropagation();
+      selected.clear();
+      renderLibrary();
+    }
+  });
+
   $('#hl-check-all')?.addEventListener('click', () => {
     const rows = filterRows();
     const all = rows.length > 0 && rows.every((h) => selected.has(h.id));
@@ -444,6 +518,42 @@ export function bindHostLibrary() {
     selected.clear();
     renderLibrary();
   });
+
+  // 批量移动下拉菜单
+  bindMenuButton($('#hl-bulk-move'), () => {
+    if (!selected.size) return [];
+    const ids = [...selected];
+    const droppable = allGroups().filter((g) => droppableGroup(g));
+    const items = droppable.map((g) => ({
+      label: g,
+      icon: 'folder',
+      run: () => moveToGroup(ids, g),
+    }));
+    if (items.length) items.push('-');
+    items.push({
+      label: '＋ 新建分组并移入…',
+      icon: 'plus',
+      run: async () => {
+        const raw = await askPrompt('创建新分组并移动选中主机：', { title: '新建分组', okText: '创建并移动' });
+        if (raw && raw.trim() && raw.trim() !== STAR_NOTE) {
+          moveToGroup(ids, raw.trim());
+        }
+      },
+    });
+    return items;
+  }, { label: '移动到分组' });
+
+  // 批量连接
+  $('#hl-bulk-connect')?.addEventListener('click', () => {
+    if (!selected.size) return;
+    const ids = [...selected];
+    closeModal('#modal-host-library');
+    for (const id of ids) {
+      connectHost(id, null, { newTab: true });
+    }
+    toast(`已在新标签打开 ${ids.length} 台主机连接`, 'success');
+  });
+
   $('#hl-bulk-tag')?.addEventListener('click', bulkTag);
   $('#hl-bulk-del')?.addEventListener('click', bulkDelete);
   // 库级动作收在工具栏右侧(搜索旁),底部只留提示

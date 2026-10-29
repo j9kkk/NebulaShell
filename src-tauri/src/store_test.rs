@@ -917,6 +917,7 @@ fn settings_ui_roundtrip_and_sanitize() {
         .save_settings(&json!({ "ui": {
             "favoriteHostIds": ["a", "a", "", "b"],
             "collapsedGroups": ["生产 · 上海"],
+            "customGroups": ["group1", "group1", "group2"],
             "hostDensity": "compact"
         }}))
         .unwrap();
@@ -925,6 +926,7 @@ fn settings_ui_roundtrip_and_sanitize() {
         json!(["a", "b"]),
         "去重并丢弃空串"
     );
+    assert_eq!(s["ui"]["customGroups"], json!(["group1", "group2"]));
     assert_eq!(s["ui"]["hostDensity"], json!("compact"));
 
     // 非法密度归一为 comfortable,不报错(手改配置不该卡住保存)

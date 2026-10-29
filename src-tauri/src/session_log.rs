@@ -239,11 +239,123 @@ fn find_string_end(chars: &[char], from: usize, bel: bool) -> Option<usize> {
     None
 }
 
+/// 从 iTerm IIP 的 OSC 头还原一行可读替代文本,如 `[图片 compare.png · 1240B]`。
+/// 只解析头部字段,不碰后面的 base64 正文(它就是不能落盘的东西)。
+/// 非 IIP 序列返回 None。缺失字段相应省略。
+fn iip_placeholder(seq: &str) -> Option<String> {
+    let rest = seq.strip_prefix("\x1b]1337;File=")?;
+    let header = rest.split(':').next().unwrap_or(rest);
+    let mut name: Option<String> = None;
+    let mut size: Option<&str> = None;
+    for field in header.split(';') {
+        if let Some(v) = field.strip_prefix("name=") {
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(v) {
+                if let Ok(s) = String::from_utf8(bytes) {
+                    let s = sanitize_label(&s);
+                    if !s.is_empty() {
+                        name = Some(s);
+                    }
+                }
+            }
+        } else if let Some(v) = field.strip_prefix("size=") {
+            if v.chars().all(|c| c.is_ascii_digit()) && !v.is_empty() {
+                size = Some(v);
+            }
+        }
+    }
+    let mut note = String::from("[图片");
+    if let Some(n) = name {
+        note.push(' ');
+        note.push_str(&n);
+    }
+    if let Some(s) = size {
+        note.push_str(&format!(" · {}B", s));
+    }
+    note.push(']');
+    Some(note)
+}
+
+/// raw 模式的相同问题:原始流原样落盘,内联图片的 base64 会让文件暴涨几十倍。
+/// 保留转义序列本身(仍可 cat / less -R 回放),只把超长的私有序列载荷换成
+/// 可读占位符。判定与文案复用 TextFormatter 的同名辅助函数,避免两处漂移。
+pub(crate) struct RawFilter {
+    /// 攒住的私有序列头部:等到终止符(=短序列,原样写出)或超限(=吞弃)
+    pending: String,
+    /// 已判定超长:丢弃到终止符为止
+    discarding: bool,
+}
+
+impl RawFilter {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: String::new(),
+            discarding: false,
+        }
+    }
+
+    pub(crate) fn feed(&mut self, text: &str, out: &mut String) {
+        for c in text.chars() {
+            if self.discarding {
+                if c == '\x07' {
+                    self.discarding = false;
+                } else if c == '\x1b' {
+                    // ST 的 ESC 交回正常路径判定(它可能是下一条序列的起点)
+                    self.discarding = false;
+                    self.pending.push(c);
+                }
+                continue;
+            }
+            if self.pending.is_empty() {
+                if c == '\x1b' {
+                    self.pending.push(c);
+                } else {
+                    out.push(c);
+                }
+                continue;
+            }
+            self.pending.push(c);
+            // 只有 OSC(ESC ])与 DCS(ESC P)可能超长;其余序列(CSI/SS3/两字节)
+            // 原样立即写出,保持 raw 的字节语义,也避免无谓缓冲。
+            let second = self.pending.chars().nth(1);
+            if !matches!(second, Some(']') | Some('P')) {
+                out.push_str(&self.pending);
+                self.pending.clear();
+                continue;
+            }
+            let chars: Vec<char> = self.pending.chars().collect();
+            if let Some(end) = find_string_end(&chars, 1, true) {
+                out.extend(chars[..end].iter());
+                self.pending.clear();
+                continue;
+            }
+            if chars.len() > MAX_PENDING {
+                match iip_placeholder(&self.pending) {
+                    Some(note) => out.push_str(&note),
+                    None => out.push_str("[超长序列已省略]"),
+                }
+                self.pending.clear();
+                self.discarding = true;
+            }
+        }
+    }
+
+    /// 收尾:把攒着没超限的头部原样写出(断开/停止时调用)
+    pub(crate) fn flush(&mut self, out: &mut String) {
+        if !self.pending.is_empty() {
+            out.push_str(&self.pending);
+            self.pending.clear();
+        }
+    }
+}
+
 pub(crate) struct TextFormatter {
     cells: Vec<Cell>,
     col: usize,
     /// 跨数据块拼接的半截转义序列
     pending: String,
+    /// 正在吞弃的超长 OSC/DCS 私有序列(内联图片等):只等终止符,内容全部丢弃
+    discarding: bool,
     alt_screen: bool,
     last_date: Option<chrono::NaiveDate>,
     timestamps: bool,
@@ -255,6 +367,7 @@ impl TextFormatter {
             cells: Vec::new(),
             col: 0,
             pending: String::new(),
+            discarding: false,
             alt_screen,
             last_date: None,
             timestamps,
@@ -265,6 +378,17 @@ impl TextFormatter {
     /// 由下一条数据或事件(断开/停止)收尾。
     pub(crate) fn feed(&mut self, at: DateTime<Local>, text: &str, out: &mut String) {
         for c in text.chars() {
+            if self.discarding {
+                // 已判定丢弃的超长私有序列:只找终止符(BEL 或 ST)。
+                // ESC 交回 pending 走常规两字节序列判定,避免把 ST 的 '\' 当正文。
+                if c == '\x07' {
+                    self.discarding = false;
+                } else if c == '\x1b' {
+                    self.discarding = false;
+                    self.pending.push(c);
+                }
+                continue;
+            }
             if !self.pending.is_empty() {
                 self.feed_pending(c, at, out);
                 continue;
@@ -367,7 +491,17 @@ impl TextFormatter {
     fn feed_pending(&mut self, c: char, at: DateTime<Local>, out: &mut String) {
         self.pending.push(c);
         if self.pending.chars().count() > MAX_PENDING {
+            // 超长私有序列(典型:内联图片的 base64)不能继续缓冲,也不能让
+            // 剩余字符按正文落盘 —— 那会把几十万字符的 base64 写进日志文件。
+            // 改为:写一行可读占位符,然后吞弃到终止符。
+            if let Some(note) = iip_placeholder(&self.pending) {
+                for ch in note.chars() {
+                    self.print(ch);
+                }
+            }
+            let is_private = self.pending.starts_with("\x1b]") || self.pending.starts_with("\x1bP");
             self.pending.clear();
+            self.discarding = is_private;
             return;
         }
         let chars: Vec<char> = self.pending.chars().collect();
@@ -522,6 +656,8 @@ struct Worker {
     writer: BufWriter<std::fs::File>,
     format: LogFormat,
     state: LogFormatState,
+    /// raw 模式的超长序列过滤器(与 state 平行,text 模式不使用)
+    raw_filter: RawFilter,
     /// 已写入文件的字节(含文件头/标记)
     written: u64,
     /// 队列积压字节数(与 LogEntry.queued 共享,处理完一条减一条)
@@ -614,7 +750,11 @@ impl Worker {
                 formatter.feed(at, text, &mut out);
                 self.write_str(&out);
             }
-            LogFormatState::Raw => self.write_str(text),
+            LogFormatState::Raw => {
+                let mut out = String::new();
+                self.raw_filter.feed(text, &mut out);
+                self.write_str(&out);
+            }
         }
         self.has_content.store(true, Ordering::Relaxed);
     }
@@ -647,6 +787,9 @@ impl Worker {
                 ));
             }
             (LogFormatState::Raw, LogEvent::Stopped { reason }) => {
+                let mut tail = String::new();
+                self.raw_filter.flush(&mut tail);
+                self.write_str(&tail);
                 self.write_str(&format!(
                     "\r\n===== 记录结束 {}（{}）· {} =====\r\n",
                     at.format("%Y-%m-%d %H:%M:%S"),
@@ -727,6 +870,7 @@ impl LogEntry {
             writer: BufWriter::new(handle),
             format,
             state,
+            raw_filter: RawFilter::new(),
             written: 0,
             queued: queued.clone(),
             dropped: dropped.clone(),
@@ -973,6 +1117,75 @@ mod tests {
 
     // ---- 装饰性序列丢弃 ----
 
+    /// 内联图片的 base64 绝不能被当正文写进日志文件。超长 OSC 此前会被
+    /// `pending` 清空后逐字符走 print(),实测一张 200KB 的图会落盘 ~196K 字符。
+    #[test]
+    fn long_image_osc_is_replaced_by_placeholder() {
+        let payload = "A".repeat(200_000);
+        let seq = format!(
+            "\x1b]1337;File=inline=1;size=200000;width=10;height=5:{}\x07",
+            payload
+        );
+        let out = feed(&[(1, &format!("{}after\r\n", seq))], false);
+        assert!(
+            !out.contains("AAAA"),
+            "base64 泄漏进日志:{} 字符",
+            out.len()
+        );
+        assert!(out.contains("after"), "终止符之后的正文丢了:{:?}", out);
+        assert!(out.contains("[图片"), "缺少占位符:{:?}", out);
+        assert!(out.contains("200000B"), "占位符应带字节数:{:?}", out);
+    }
+
+    /// 占位符还原 IIP 头里的文件名(name 是 base64 的 UTF-8)。
+    #[test]
+    fn image_placeholder_includes_decoded_name() {
+        use base64::Engine;
+        let name = base64::engine::general_purpose::STANDARD.encode("compare.png".as_bytes());
+        let payload = "A".repeat(100_000);
+        let seq = format!(
+            "\x1b]1337;File=inline=1;name={};size=1234:{}\x07",
+            name, payload
+        );
+        let out = feed(&[(1, &seq)], false);
+        assert!(
+            out.contains("[图片 compare.png · 1234B]"),
+            "占位符不对:{:?}",
+            out
+        );
+    }
+
+    /// 跨数据块拼接的图片序列同样不能泄漏,且终止符后能恢复。
+    #[test]
+    fn long_image_osc_across_chunks_does_not_leak() {
+        let mut f = TextFormatter::new(false, false);
+        let mut out = String::new();
+        let payload = "A".repeat(100_000);
+        f.feed(at(1), "\x1b]1337;File=inline=1;size=100000:", &mut out);
+        f.feed(at(2), &payload, &mut out);
+        f.feed(at(3), "\x07AFTER\r\n", &mut out);
+        assert!(!out.contains("AAAA"), "跨块泄漏:{} 字符", out.len());
+        assert!(out.contains("AFTER"), "跨块后正文丢了:{:?}", out);
+    }
+
+    /// 短 OSC 行为不变:仍被完整丢弃,不影响既有语义。
+    #[test]
+    fn short_osc_keeps_old_behavior() {
+        let out = feed(&[(1, "\x1b]0;title\x07text\r\n")], false);
+        assert_eq!(out, "text\n");
+    }
+
+    /// 非 IIP 的超长私有序列也要吞弃,且不伪造图片占位符。
+    #[test]
+    fn long_non_image_osc_is_discarded() {
+        let payload = "B".repeat(50_000);
+        let seq = format!("\x1b]9;{}:note\x07AFTER\r\n", payload);
+        let out = feed(&[(1, &seq)], false);
+        assert!(!out.contains("BBBB"), "非图片超长序列泄漏:{}", out.len());
+        assert!(!out.contains("[图片"), "不应伪造图片占位符:{:?}", out);
+        assert!(out.contains("AFTER"), "后果正文丢了:{:?}", out);
+    }
+
     #[test]
     fn decorative_sequences_are_dropped() {
         let out = feed(&[(1, "\x1b[31mred\x1b[0m plain\r\n")], true);
@@ -1110,6 +1323,62 @@ mod tests {
         assert!(content.contains("连接已断开：网络中断"));
         assert!(content.contains("记录结束"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// raw 模式原样落盘,图片 base64 同样不能进文件(否则一张图几十 MB)。
+    #[test]
+    fn raw_mode_replaces_long_image_payload() {
+        let path = temp_log_path();
+        let entry = LogEntry::new(
+            path.clone(),
+            std::fs::File::create(&path).unwrap(),
+            LogFormat::Raw,
+            false,
+            false,
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let payload = "A".repeat(200_000);
+        entry
+            .record(
+                at(5),
+                &format!(
+                    "\x1b]1337;File=inline=1;size=200000:{}\x07AFTER\r\n",
+                    payload
+                ),
+            )
+            .unwrap();
+        entry.stop("手动停止").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("AAAA"),
+            "raw 模式泄漏 base64:{} 字符",
+            content.len()
+        );
+        assert!(content.contains("[图片"), "缺少占位符");
+        assert!(content.contains("AFTER"), "终止符后正文丢了");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// raw 模式的短序列必须逐字节原样保留,否则回放语义就破了。
+    #[test]
+    fn raw_mode_keeps_short_sequences_intact() {
+        let mut f = RawFilter::new();
+        let mut out = String::new();
+        f.feed("\x1b[31mred\x1b[0m\r\n\x1b]0;title\x07plain", &mut out);
+        f.flush(&mut out);
+        assert_eq!(out, "\x1b[31mred\x1b[0m\r\n\x1b]0;title\x07plain");
+    }
+
+    /// 块尾只到一半的私有序列:收尾时不能丢,也不能卡住后续输出。
+    #[test]
+    fn raw_mode_flushes_partial_sequence_at_end() {
+        let mut f = RawFilter::new();
+        let mut out = String::new();
+        f.feed("before\x1b]0;tit", &mut out);
+        f.flush(&mut out);
+        assert_eq!(out, "before\x1b]0;tit");
     }
 
     #[test]

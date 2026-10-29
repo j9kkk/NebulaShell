@@ -3169,13 +3169,26 @@ async function main() {
     `);
     // 让链接出现在终端里(走真实渲染路径,linkifier 才能识别)
     await evalJs(`window.__nbTest.write(${JSON.stringify(`echo ${linkUrl}\r`)}); return 1`);
-    await waitEval(`return window.__NB_TERM_TEXT__()`, 'platform.deepseek.com', 15000);
+    // 坐标与派发目标都必须锁定**活动会话所属窗格**。此前用
+    // `.term-pane.focused … || .term-surface .xterm-screen` 兜底:前者在平铺/多标签
+    // 场景可能不存在,后者取 DOM 里第一个 —— 那可能是另一个标签的窗格(宽度不同,
+    // 单元格尺寸也不同),于是点位落在无关终端上,点击自然打不开链接。
+    const activePane = JSON.stringify(await evalJs(`return String(window.__nbTest.workspaceState().sessions.find((s) => s.id === window.__nbTest.workspaceState().activeId)?.paneId ?? '')`));
+    const paneScreen = `document.querySelector('.term-pane[data-pane=' + ${activePane} + '] .xterm-screen')`;
+    const linkCols = Number(await evalJs(`return String(window.__nbTest.workspaceState().sessions.find((s) => s.id === window.__nbTest.workspaceState().activeId)?.cols ?? 0)`));
+    // 列数够不够决定链接会不会被 xterm 按列硬换行(它不按单词切)。放不下就明确
+    // SKIP —— 换行后整段子串在 buffer 里不存在,继续等只会白等 15 秒并中断套件。
+    if (linkCols < linkUrl.length + 4) {
+      check('T9z5 点击终端链接弹出应用内确认框 — SKIP(活动终端 ' + linkCols + ' 列,放不下 ' + linkUrl.length + ' 字符链接)', true, `cols=${linkCols}`);
+      check('T9z6 确认后把链接交给主进程 app:openExternal — SKIP(同上)', true, `cols=${linkCols}`);
+      await evalJs(`if (window.__nbExternalOrigInvoke) { window.nebula.invoke = window.__nbExternalOrigInvoke; window.__nbExternalOrigInvoke = null; } return 1`);
+    } else {
+    await waitEval(`return window.__NB_TERM_TEXT__()`, linkUrl.replace(/^https?:\/\//, '').slice(0, 12), 15000);
     // 按屏幕上该链接的实际单元格坐标派发真实鼠标事件
     const clickInfo = asObj(await evalJs(`
-      const cell = window.__NB_TERM_CELL__ ? window.__NB_TERM_CELL__('https://platform.deepseek.com/api_keys') : null;
+      const cell = window.__NB_TERM_CELL__ ? window.__NB_TERM_CELL__(${JSON.stringify(linkUrl)}) : null;
       if (!cell) return JSON.stringify({ ok: false, why: 'no-cell' });
-      const screen = document.querySelector('.term-pane.focused .term-surface .xterm-screen')
-        || document.querySelector('.term-surface .xterm-screen');
+      const screen = ${paneScreen};
       // hidden 窗口下 WebView 暂停合成,elementFromPoint 可能返回 null;此时退回到
       // .xterm-screen 派发 —— 链接识别用坐标而非元素,事件仍会被解算到单元格。
       const el = document.elementFromPoint(cell.x, cell.y) || screen;
@@ -3202,6 +3215,7 @@ async function main() {
       `));
       check('T9z6 确认后把链接交给主进程 app:openExternal(浏览器由此打开)',
         sent.open === false && sent.calls.includes(linkUrl), JSON.stringify(sent));
+    }
     }
   }
 

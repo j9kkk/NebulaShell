@@ -57,7 +57,14 @@ function harness({ renderStatusbar = false, terminal = null, clock = null, stubL
     constructor() {
       this.modes = { bracketedPasteMode: false }; this.focusCount = 0;
       this.parser = { csi: [], registerOscHandler() {}, registerCsiHandler(id, fn) { this.csi.push([id, fn]); } };
+      // 真实 xterm 有的私有通路:terminal.js 用它区分"用户输入 / 终端自动应答"。
+      // 这里保留同样的形状,供自动应答用例驱动 triggerDataEvent。
+      this._core = { coreService: { triggerDataEvent: (data) => { if (this.data) this.data(data); } } };
     }
+    /// 模拟 xterm 的能力查询应答:wasUserInput 为假
+    autoReply(data) { this._core.coreService.triggerDataEvent(data, false); }
+    /// 模拟真实按键:wasUserInput 为真
+    userInput(data) { this._core.coreService.triggerDataEvent(data, true); }
     loadAddon() {} open() {} onData(fn) { this.data = fn; } attachCustomKeyEventHandler() {}
     focus() { this.focusCount++; } dispose() {}
     paste() { throw new Error('command blocks must not use paste'); }
@@ -70,7 +77,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null, stubL
     applyTheme: (k) => theme.applyTheme(k, state),
     state, crypto: webcrypto, console, Terminal: terminal || Terminal,
     ...(clock ? { Date: class extends Date { static now() { return clock.now; } } } : {}),
-    FitAddon: Addon, SearchAddon: Addon, WebLinksAddon: Addon, WebglAddon: Addon,
+    FitAddon: Addon, SearchAddon: Addon, WebLinksAddon: Addon, WebglAddon: Addon, ImageAddon: Addon,
     window: {}, getComputedStyle: () => ({ getPropertyValue: () => '' }),
     api: async (name, payload) => { calls.push({ name, payload }); return implementation(name, payload); },
     hasOpenModal: () => modal, isAppModifier: (event) => !!event.metaKey,
@@ -855,9 +862,32 @@ test('manual onData preserves trimming, chunked history, collection, modal/reado
   assert.equal(writes(h).length, 7, 'block writes once, subsequent manual input still broadcasts');
 });
 
-// ---- 备用屏幕(alt screen)与命令采集 ----
+// ---- 终端自动应答 vs 用户输入 ----
 
-// openTerminal 注册的 DEC 私有模式 CSI 钩子(?1049/?47/?1047 的 set/reset)。
+// 内联图片 addon 会让终端开始回复能力查询(DA1、XTSMGRAPHICS)。这些应答走
+// 同一条 onData:必须发往远端(对端在等),但不能喂进命令行模型。
+test('终端自动应答照常发送但不进命令历史,用户按键仍然进', () => {
+  const h = harness();
+  const s = h.createInputSession({ id: 'host-a', host: 'example.invalid', username: 'root', port: 22 });
+  s.status = 'connected'; h.state.activeId = s.sessionId;
+  const before = writes(h).length;
+
+  s.term.autoReply('\x1b[?62;4;9;22c');
+  assert.equal(writes(h).length, before + 1, '自动应答必须发给远端');
+  assert.equal(s.histBuf, '', '自动应答不能进命令行模型');
+
+  s.term.autoReply('\x1b[?1;0;256S');
+  assert.equal(writes(h).length, before + 2);
+  assert.equal(s.histBuf, '');
+
+  // 真实按键照旧进入历史模型
+  s.term.userInput('echo hi');
+  assert.equal(s.histBuf, 'echo hi');
+  s.term.userInput('\r');
+  assert.deepEqual(histories(h).map((c) => c.payload.cmd), ['echo hi']);
+});
+
+// ---- 备用屏幕(alt screen)与命令采集 ----
 const csiHandlers = (s, final) => s.term.parser.csi
   .filter(([id]) => id.prefix === '?' && id.final === final)
   .map(([, fn]) => fn);

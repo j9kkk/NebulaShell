@@ -47,6 +47,7 @@
           <span id="host-count" class="side-count">0</span>
           <span class="side-spacer"></span>
           <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
+          <button id="btn-host-library" class="btn icon" title="主机库 (批量管理)" aria-label="主机库"><span class="mi" data-icon="listChecks"></span></button>
           <button id="btn-host-manage" class="btn icon" title="主机管理:云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
         </div>
         <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
@@ -58,6 +59,8 @@
       <!-- .side-body 包住列表:收起态整块变成浮出层(见 style.css 收起态规则),
            展开态视觉与原来一致 -->
       <div class="side-body">
+        <!-- 横向分组标签条 -->
+        <div id="host-group-strip" class="host-group-strip" role="tablist" aria-label="主机分组"></div>
         <nav id="host-list"></nav>
       </div>
     </aside>
@@ -722,6 +725,7 @@
           <input id="hl-search" class="inp" type="text" placeholder="搜索 / #标签 / @分组" aria-label="搜索主机" autocomplete="off" spellcheck="false" />
           <button id="hl-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
         </div>
+        <span class="spacer"></span>
         <button id="hl-import" class="btn small" type="button">导入…</button>
         <button id="hl-export" class="btn small" type="button">导出…</button>
         <button id="hl-new-host" class="btn small primary" type="button">新建主机</button>
@@ -746,16 +750,29 @@
           </table>
         </div>
       </div>
-      <div id="hl-batch" class="hl-batch hidden">
-        <span id="hl-sel-count" class="hl-sel">已选 0 台</span>
-        <span class="hl-tip">拖到左侧分组可批量移动</span>
-        <span class="spacer"></span>
-        <button id="hl-bulk-tag" class="btn small" type="button">批量标签…</button>
-        <button id="hl-bulk-del" class="btn small danger" type="button">删除所选</button>
-        <button id="hl-cancel-sel" class="btn small ghost" type="button">取消选择</button>
+      <div id="hl-batch" class="hl-batch">
+        <div id="hl-batch-empty" class="hl-batch-empty muted small-note">
+          <span>点击行或勾选复选框进行批量操作</span>
+          <span class="spacer"></span>
+          <span class="font-mono">拖动行首把手可排序或移动分组</span>
+        </div>
+        <div id="hl-batch-active" class="hl-batch-active hidden">
+          <span id="hl-sel-count" class="hl-sel">已选 0 台</span>
+          <button id="hl-bulk-move" class="btn small primary" type="button"><span class="mi" data-icon="folder"></span>移动到… ▾</button>
+          <button id="hl-bulk-tag" class="btn small" type="button"><span class="mi" data-icon="tag"></span>批量标签…</button>
+          <button id="hl-bulk-connect" class="btn small" type="button"><span class="mi" data-icon="play"></span>批量连接</button>
+          <span class="spacer"></span>
+          <button id="hl-bulk-del" class="btn small danger" type="button">删除所选</button>
+          <button id="hl-cancel-sel" class="btn small ghost" type="button">取消选择</button>
+        </div>
       </div>
-      <div class="modal-actions modal-foot hl-foot">
-        <span class="muted small-note">拖动行首把手排序 · 选中后拖到左侧分组即可批量移动 · 云厂商等派生分组不可作为落点</span>
+      <div class="modal-foot hl-foot">
+        <div class="hl-foot-tips">
+          <span class="muted small-note">拖动行首把手排序 · 拖拽或「移动到…」可归入自建分组 · 派生分组不可直接作为落点</span>
+        </div>
+        <div class="hl-foot-shortcuts muted small-note">
+          <span><kbd class="kbd">Esc</kbd> 取消选择</span>
+        </div>
       </div>
     </div>
   </div>
