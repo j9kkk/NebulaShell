@@ -8,8 +8,12 @@ import { connectHost, rankPickerHosts, refreshPickers } from './terminal.js';
 /// 列表里出现两个同名目录(实施首日真实发生过的 bug)。
 export const STAR_NOTE = '⭐ 常用';
 
+/// h.group 为空且非云主机时的兜底分组名。导出常量供主机库等处引用,
+/// 避免各处硬编码中文字面量。
+export const DEFAULT_GROUP = '我的主机';
+
 export function groupOf(h) {
-  return h.group || (h.cloud ? PROVIDER_LABEL[h.cloud.provider] || h.cloud.provider : '') || '我的主机';
+  return h.group || (h.cloud ? PROVIDER_LABEL[h.cloud.provider] || h.cloud.provider : '') || DEFAULT_GROUP;
 }
 
 /// 界面偏好(收藏/折叠/密度)存在 settings.ui。读写都经这里,前端各处不必判空。
@@ -37,11 +41,11 @@ export function saveUiPrefs(patch) {
   }, 400);
 }
 
-/// 分组名是否是"派生"的(不是真实目录):
-/// 云厂商分组来自 `PROVIDER_LABEL[provider]`,`我的主机`是 `h.group` 空值兜底。
-/// 这些分组不能作为拖拽落点 —— 拖进去会写入字面量分组名,与真实数据混淆。
-export function isDerivedGroup(name, hosts) {
-  if (name === '我的主机') return true;
+/// 分组名是否是「云厂商自动归类」:不在自建分组里、有成员,且所有成员都是
+/// 未显式指定 h.group 的云主机(按导入来源 provider 标签兜底归组)。
+/// 不能硬编码厂商名 —— 用户可以自建名为「阿里云」的真实分组。
+export function isCloudGroup(name, hosts, customGroups = []) {
+  if (customGroups.includes(name)) return false;
   const members = hosts.filter((h) => groupOf(h) === name);
   if (!members.length) return false;
   return members.every((h) => !h.group && h.cloud);
@@ -117,6 +121,10 @@ export function renderHosts() {
     const groupSet = new Set(custom);
     for (const h of state.hosts || []) groupSet.add(groupOf(h));
     const allGroupNames = [...groupSet].filter(Boolean);
+    // 当前侧栏分组可能已被重命名/删除,不在渲染出的分组条里了 → 回到「全部」
+    if (activeSidebarGroup && activeSidebarGroup !== STAR_NOTE && !allGroupNames.includes(activeSidebarGroup)) {
+      activeSidebarGroup = '';
+    }
 
     const chips = [
       { name: '', label: '全部', count: (state.hosts || []).length },

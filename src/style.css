@@ -206,7 +206,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* 收起态的浮出层以 left:100% 贴在本节点右缘,需要定位上下文 */
+  /* 收起态的停靠卡片以 left:calc(100% + 6px) 贴在本节点右缘,需要定位上下文 */
   position: relative;
   transition: width var(--dur) var(--ease), min-width var(--dur) var(--ease), max-width var(--dur) var(--ease);
 }
@@ -226,9 +226,20 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
    放不下(160px 内容宽 vs 约 190px 需求)。收成图标态(隐藏文字标签),并允许
    整行按 flex 压缩而不溢出 —— T64e 在 180px 档位断言按钮不得越出面板边界。 */
 .side-title .btn { flex: none; }
+/* 侧栏本体包住头部与列表:展开态占满侧栏,收起后悬停时整体变成停靠卡片(同一份 DOM)。
+   容器查询挂在这里而不是 #sidebar:两种形态共用这份 DOM,查询必须按面板实际宽度
+   评估 —— #sidebar 收起后恒为 40px,挂在它上面会让查询永远命中「窄」档,
+   卡片里的「新建」文字就没了。 */
+.side-panel {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  container-type: inline-size; container-name: sidebar;
+}
+/* 窄条与 📌 只属于收起/停靠形态,展开态一律隐藏 */
+.side-rail { display: none; }
+#btn-sidebar-pin { display: none; }
 /* 收缩档位按内容实测:标题 26 + 计数 26 + 三个按钮(含「新建」文字时约 46)+ 三个
    间距 18 ≈ 174px。180px 面板只有 160px 内容宽,必须去掉文字标签才放得下。 */
-#sidebar { container-type: inline-size; container-name: sidebar; }
 @container sidebar (max-width: 200px) {
   .side-title #btn-add-host .lbl { display: none; }
   .side-title #btn-add-host { width: 26px; height: 26px; padding: 0; }
@@ -3212,46 +3223,35 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ===== P1 批次新增 ===== */
-/* 收起态:侧栏塌缩为 40px 窄条,只留「新建」「⠇」两枚 28×28 按钮。
-   主机列表不在这里做任何"识别编码"(缩写/字母/图标都是二次编码,40px 放不下
-   可读的名字),而是整块 `.side-body` 变成悬停浮出的覆盖层:鼠标停留 120ms
-   浮出完整侧栏,移开收回。宽度必须精确 40px —— e2e T63f 断言 collapsed
-   width ≤ 44,且浮层是 absolute 不占布局,故 #main 宽度不受影响。 */
-#sidebar.collapsed { width: 40px; min-width: 40px; max-width: 40px; }
-/* overflow 必须放开:默认 hidden 会把浮出的 .side-body 裁掉 */
-#sidebar.collapsed { overflow: visible; }
-#sidebar.collapsed .side-header {
+/* 收起态:侧栏塌缩为 40px 窄条(「新建」「⠇」两枚 28×28 按钮),悬停 120ms 浮出
+   停靠卡片 —— 卡片就是展开态侧栏本身(.side-panel 同一份 DOM),标题/搜索/分组/
+   列表齐全,不做任何"识别编码"。卡片 absolute 定位不占布局,#main 宽度不受影响;
+   #sidebar 宽度必须 ≤44(e2e T63f),所以卡片绝不能参与文档流。
+   z-index 66:高于 #tabbar(64,否则标签栏压住卡片顶部),低于固定浮层(70/75)、
+   菜单(80)与弹窗(200+)。 */
+#sidebar.collapsed { width: 40px; min-width: 40px; max-width: 40px; overflow: visible; z-index: 66; }
+#sidebar.collapsed .side-rail {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 8px 6px; border-bottom: none;
+  width: 40px; flex: none; align-self: flex-start; padding: 8px 6px; box-sizing: border-box;
 }
-#sidebar.collapsed .side-title {
-  flex-direction: column; gap: 6px; margin: 0;
+#sidebar.collapsed .side-rail .btn { width: 28px; height: 28px; padding: 0; }
+/* 未悬停时整个面板不渲染:零 rect,不参与布局与命中 */
+#sidebar.collapsed .side-panel { display: none; }
+/* 停靠卡片:贴窄条右缘 6px、上下内缩 6px;宽度 --side-dock-w 取收起前的展开宽度 */
+#sidebar.collapsed.peek-open .side-panel {
+  display: flex; position: absolute; top: 6px; bottom: 6px; left: calc(100% + 6px);
+  width: var(--side-dock-w, 264px); max-width: calc(100vw - 64px);
+  background: var(--panel); border: 1px solid var(--border-hover); border-radius: 10px;
+  box-shadow: var(--card-shadow); overflow: hidden;
+  animation: side-dock-in 150ms var(--ease) both;
 }
-#sidebar.collapsed .side-title-name,
-#sidebar.collapsed .side-count,
-#sidebar.collapsed #btn-host-library,
-#sidebar.collapsed .side-spacer { display: none; }
-#sidebar.collapsed .side-title .btn { width: 28px; height: 28px; padding: 0; font-size: 15px; }
-#sidebar.collapsed .side-title .btn .lbl { display: none; }
-#sidebar.collapsed .side-header .search-field { display: none; }
-/* 收起态下 .side-body 成为贴在窄条右缘的浮层。display:none 让它不参与布局,
-   也不被 layout-audit / T64 的 getClientRects() 扫到(未悬停时零 rect)。 */
-#sidebar.collapsed .side-body {
-  display: none;
-  position: absolute; left: 100%; top: 0; bottom: 0; width: 264px;
-  background: var(--panel); border-right: 1px solid var(--border-hover);
-  box-shadow: var(--card-shadow); z-index: 35;
-  flex-direction: column;
+@keyframes side-dock-in { from { opacity: 0; transform: translateX(-6px); } }
+/* 📌 只在停靠卡片里出现:一键固定回常驻侧栏 */
+#sidebar.collapsed.peek-open #btn-sidebar-pin { display: inline-flex; }
+/* 6px 间隙的透明桥:属于 #sidebar 的伪元素,横向滑入卡片不会触发 pointerleave */
+#sidebar.collapsed.peek-open::after {
+  content: ''; position: absolute; left: 100%; top: 0; bottom: 0; width: 8px;
 }
-/* 浮层左缘的单条强调线:叠在窄条 border-right 之上,避免出现两条并排的竖线 */
-#sidebar.collapsed .side-body::before {
-  content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px;
-  background: var(--accent);
-}
-#sidebar.collapsed.peek-open .side-body { display: flex; }
-#sidebar.collapsed.peek-open .side-header { background: var(--panel); }
-/* 窄条本身在浮出时给一点反馈(指针确实在这个区域上) */
-#sidebar.collapsed.peek-open { box-shadow: inset -1px 0 0 var(--accent); }
 
 /* 分屏布局 */
 #term-stack { position: relative; }
@@ -4030,8 +4030,19 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 /* ===== 主机库弹窗(百台级批量管理) ===== */
 /* 880px 不够:名称列只剩 170px,`cache-prod-01` 会被截成 `cache-pro…`。
    960px 下名称列约 270px,所有常见主机名完整可读。
-   锁高 490px:避免主机少时弹窗被压扁成 300px 窄卡片,保证左栏新建分组沉底 */
-.hl-card { width: 960px; max-width: calc(100vw - 40px); height: 490px; min-height: 480px; max-height: calc(100vh - 60px); }
+   卡片是纵向 flex:头部/工具栏/批量栏固定,主体填满其余空间 —— 高度随视口
+   夹在 560px 内,主体不再留死空(旧版锁高 490 但 block 布局,body 的
+   flex:1 不生效,底部空出 129px)。 */
+.hl-card {
+  width: 960px; max-width: calc(100vw - 40px);
+  display: flex; flex-direction: column; overflow: hidden;
+  height: min(560px, calc(100dvh - 60px)); min-height: 0;
+}
+.hl-card .modal-head, .hl-card .modal-toolbar { flex: none; }
+/* 弹窗 chrome 不参与文字选区(拖动分组行/表头会拖蓝一片);输入框不受影响 */
+.hl-card .modal-head, .hl-groups, .hl-table, .hl-batch {
+  user-select: none; -webkit-user-select: none;
+}
 /* 搜索框不铺满整行:右侧留出导入/导出/新建一排库级动作 */
 .hl-card .search-field { flex: 1; max-width: 560px; }
 .hl-count {
@@ -4043,12 +4054,20 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   display: flex; min-height: 0; flex: 1;
   border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
 }
-/* 左栏分组:派生分组(云厂商/我的主机)置灰不可拖入 —— 拖进去会写入字面量
-   分组名,和真实云主机混在一起且外部无法区分 */
+/* 左栏分组:视图/真实分组/云厂商三段。静止态全部可点选(是筛选入口);
+   只有拖拽进行中才把不可落点项置灰,提示「现在不能拖进去」。 */
 .hl-groups {
   width: 170px; flex: none; border-right: 1px solid var(--border);
   padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px;
 }
+/* 分组段标题 */
+.hlg-sec {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 8px 4px; font-size: 10.5px; color: var(--muted);
+  letter-spacing: 0.4px;
+}
+.hlg-sec-first { padding-top: 4px; }
+.hlg-sec-note { opacity: 0.7; }
 .hl-group {
   display: flex; align-items: center; gap: 6px; padding: 6px 8px;
   border-radius: 6px; font-size: 12px; color: var(--muted); cursor: pointer;
@@ -4066,15 +4085,48 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   padding: 2px 6px; font-variant-numeric: tabular-nums;
 }
 .hl-group.on .hlg-n { color: var(--accent); }
-/* 不可落点:置灰 + 禁止光标。拖动经过时也不会出现落点高亮。 */
-.hl-group.dis { opacity: 0.32; cursor: not-allowed; }
-.hl-group.dis:hover { background: transparent; }
+/* 云厂商图标保持中性色,不随选中变色 */
+.hl-group.cloud svg { color: var(--muted); }
+/* 行内 ✎/🗑:悬停(或键盘聚焦)时替代计数出现 */
+.hlg-acts { display: none; margin-left: auto; gap: 2px; }
+.hl-group.editable:hover .hlg-acts,
+.hl-group.editable:focus-within .hlg-acts { display: inline-flex; }
+.hl-group.editable:hover .hlg-n,
+.hl-group.editable:focus-within .hlg-n { display: none; }
+.hlg-act {
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 5px;
+  background: none; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.hlg-act:hover { background: var(--border); color: var(--text); }
+.hlg-act.del:hover { background: var(--danger-hover-bg); color: var(--danger); }
+/* 拖拽进行中才置灰不可落点项(视图/云厂商);hover 也不给落点反馈 */
+.hl-card.hl-dragging .hl-group[data-droppable="false"] { opacity: 0.35; cursor: not-allowed; }
+.hl-card.hl-dragging .hl-group[data-droppable="false"]:hover { background: transparent; }
+/* 分组名原地编辑行(替代第二层弹窗);不再描边:输入框自身的 focus/invalid 边框已是指示 */
+.hl-group-edit { padding: 3px 6px; background: var(--bg2); border-color: transparent; }
+.hlg-input {
+  flex: 1; min-width: 0; height: 24px; padding: 0 6px;
+  font: inherit; font-size: 12px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--border-hover); border-radius: 5px;
+  outline: none;
+}
+.hlg-input:focus { border-color: var(--accent); }
+.hlg-input.invalid { border-color: var(--danger); }
+/* 校验错误:显示在编辑行正下方 */
+.hlg-err { font-size: 11px; color: var(--danger); padding: 2px 8px 4px 28px; }
+/* 新建成功的分组闪一下:1.2s 内背景/描边淡出 */
+@keyframes hl-just-added {
+  from { background: var(--active-bg); box-shadow: inset 0 0 0 1px var(--accent); }
+  to { background: transparent; box-shadow: inset 0 0 0 1px transparent; }
+}
+.hl-group.just-added { animation: hl-just-added 1.2s var(--ease) forwards; }
 /* 可接受的落点高亮 */
 .hl-group.drop {
   background: var(--active-bg); color: var(--accent); font-weight: 600;
   border-color: var(--accent);
 }
-.hl-table-wrap { flex: 1; min-width: 0; overflow: auto; }
+.hl-table-wrap { flex: 1; min-width: 0; overflow: auto; scrollbar-gutter: stable; }
 .hl-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; table-layout: fixed; }
 .hl-table thead th {
   position: sticky; top: 0; z-index: 1; background: var(--panel);
@@ -4145,14 +4197,34 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 .hl-acts .hl-fav.on { color: var(--warn); }
 .hl-acts .hl-fav:hover { color: var(--warn); background: var(--muted-hover-bg); }
 .hl-acts button.del:hover { background: var(--danger-hover-bg); color: var(--danger); }
-.hl-empty { color: var(--muted); text-align: center; padding: 30px 10px; font-size: 12px; }
-/* 批量栏:常驻 40px 高度槽位，勾选切换时高低恒定，高度零突变 */
+/* 空表分语境:标题 + 可选提示 + 可选动作按钮 */
+.hl-empty { color: var(--muted); text-align: center; padding: 56px 16px; }
+/* 空态 td 必须赢过上方 td 的省略号/紧凑内边距,才能留白居中并正常换行 */
+.hl-table tbody td.hl-empty {
+  padding: 56px 16px; text-align: center;
+  white-space: normal; overflow: visible; text-overflow: clip;
+}
+.hl-empty-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.hl-empty-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.hl-empty .btn { margin-top: 12px; }
+/* 批量栏:常驻 40px 高度槽位，勾选切换时高低恒定，高度零突变。
+   兼作未选择时的状态栏(共 N 台 / 显示 M / N 台)。 */
 .hl-batch {
-  height: 40px; flex: none; margin-top: 8px; border-radius: 8px; font-size: 12px;
+  display: flex; align-items: center;
+  height: 40px; flex: none; margin-top: 10px; border-radius: 8px; font-size: 12px;
   background: var(--bg2); border: 1px solid var(--border); overflow: hidden;
 }
 .hl-batch-empty {
-  display: flex; align-items: center; width: 100%; height: 100%; padding: 0 14px;
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 100%;
+  min-width: 0; padding: 0 14px; font-size: 12px; color: var(--muted);
+}
+.hl-batch-empty > * { margin: 0; }
+.hl-summary {
+  flex: none; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.hl-bar-sep { flex: none; }
+.hl-bar-hint {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .hl-batch-active {
   display: flex; align-items: center; gap: 8px; width: 100%; height: 100%; padding: 0 12px;
@@ -4164,30 +4236,25 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   background: var(--hover-bg); border: 1px solid rgba(91, 140, 255, 0.3);
   padding: 2px 8px; border-radius: 999px; font-size: 11.5px; margin-right: 4px;
 }
-.hl-foot {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 4px 2px; margin-top: 8px; width: 100%; border-top: 1px solid var(--border);
-}
-.hl-foot-tips { display: flex; align-items: center; gap: 6px; }
-.hl-foot-shortcuts { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 10.5px; }
-.hl-foot-shortcuts .kbd {
-  font-family: inherit; font-size: 10px; padding: 1px 5px; border-radius: 4px;
-  background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+/* 「取消选择 Esc」里的键位徽章(原 hl-foot 的快捷键提示并入底栏) */
+.hl-batch .kbd {
+  margin-left: 6px; font-family: var(--font-mono); font-size: 10px;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--bg2); border: 1px solid var(--border); color: var(--muted);
 }
 .hl-group-new {
-  margin-top: auto; border: 1px dashed var(--border-hover) !important;
+  border: 1px dashed var(--border-hover) !important;
   color: var(--accent) !important;
 }
 .hl-group-new:hover {
   background: var(--hover-bg) !important; border-color: var(--accent) !important;
 }
-.hl-group .hlg-tag-derived {
-  font-size: 9px; padding: 0 4px; border-radius: 3px; background: var(--bg2);
-  border: 1px solid var(--border); color: var(--muted); margin-left: 2px;
-}
-/* 拖动跟随标签:跟随光标,显示"移动 N 台"或主机名 */
+/* 拖动跟随标签:跟随光标,显示"移动 N 台"或主机名。标签整体偏移在光标右下,
+   但拖拽落点判定采样的是光标处 —— 标签必须 pointer-events:none,否则它会挡住
+   自己下方元素的 hit-test(悬停高亮、放置位判断全失效)。z-index 须压过弹窗
+   (运行时内联 z-index 200+N,见 core.js syncModalScope),但低于 toast(#toasts = 9999)。 */
 .hl-dragon {
-  position: fixed; z-index: 60; pointer-events: none;
+  position: fixed; z-index: 9000; pointer-events: none;
   padding: 4px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600;
   color: var(--accent); background: var(--panel);
   border: 1px solid var(--accent); box-shadow: var(--menu-shadow); white-space: nowrap;

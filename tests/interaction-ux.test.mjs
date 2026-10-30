@@ -395,6 +395,30 @@ test('prompt Escape cancels sensitive input and the queued prompt accepts a fres
   assert.equal((okPrompt.listeners.get('click') || []).length, 0);
 });
 
+test('prompt defaults to plain text; password must be requested explicitly', async () => {
+  const { core, input, okPrompt } = await setup();
+  // 不传 opts:分组名/标签这类普通文本,输入必须是明文
+  const plainPrompt = core.askPrompt('分组名称'); await flush();
+  assert.equal(input.type, 'text'); assert.equal(input.autocomplete, 'off');
+  input.value = '生产环境'; okPrompt.click(); assert.equal(await plainPrompt, '生产环境'); await flush();
+  // 口令类调用方显式声明后才遮蔽
+  const secret = core.askPrompt('口令', { password: true }); await flush();
+  assert.equal(input.type, 'password'); assert.equal(input.autocomplete, 'new-password');
+  okPrompt.click(); assert.equal(await secret, '');
+});
+
+test('setModalEscapeHandler consuming Escape keeps the modal open; false lets it close', async () => {
+  const { core, document, confirm } = await setup();
+  core.openModal(confirm); await flush();
+  let consumed = true;
+  core.setModalEscapeHandler('#modal-confirm', () => consumed);
+  key(document.activeElement, 'Escape');
+  assert.equal(confirm.classList.contains('hidden'), false, 'handler returning true keeps the modal open');
+  consumed = false;
+  key(document.activeElement, 'Escape');
+  assert.equal(confirm.classList.contains('hidden'), true, 'handler returning false lets the modal close');
+});
+
 test('prompt backdrop dismissal settles its promise, ignores inside clicks, and does not stall its queue', async () => {
   const { core, input, prompt, cancelPrompt, okPrompt } = await setup();
   const first = core.askPrompt('First'); const second = core.askPrompt('Second'); await flush();

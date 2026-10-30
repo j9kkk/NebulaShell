@@ -9,18 +9,20 @@
 // core/terminal/icons 三项,给它加 import 会直接 link 失败。这里反向
 // import hosts.js 是安全的(方向是 新模块 → 旧模块)。
 
-import { $, api, askConfirm, askPrompt, bindMenuButton, closeModal, copyText, openModal, state, toast } from './core.js';
+import { $, api, askConfirm, askPrompt, bindMenuButton, closeModal, openModal, setModalEscapeHandler, showCtxMenu, state, toast } from './core.js';
 import { executeCommand } from './commands.js';
 import { icon } from '../shared/icons.js';
-import { escapeHtml, groupOf, openHostModal, refreshHosts, renderHosts, saveUiPrefs, STAR_NOTE, uiPrefs } from './hosts.js';
+import { DEFAULT_GROUP, escapeHtml, groupOf, isCloudGroup, openHostModal, refreshHosts, renderHosts, saveUiPrefs, STAR_NOTE, uiPrefs } from './hosts.js';
 import { startMouseDrag } from '../shared/drag.js';
 import { connectHost } from './terminal.js';
 
 let selected = new Set();
 let activeGroup = '';     // '' = 全部
 let keyword = '';
-let dragging = null;
 let dragEndedAt = 0;
+// 分组原地编辑会话(取代第二层 askPrompt 弹窗)。渲染以它为准:任何重绘
+// (renderLibrary / nebula:hosts-changed)都从该状态恢复草稿并重新聚焦输入框。
+let editing = null; // { mode: 'create'|'rename', from, moveIds, draft, error, _focused }
 
 function hosts() {
   return state.hosts || [];
@@ -49,28 +51,45 @@ function ensureCustomGroup(name) {
   }
 }
 
-/// 所有分组名(含派生分组),按首次出现顺序。自建空分组持久保留。
-function allGroups() {
-  const out = [];
-  const custom = Array.isArray(uiPrefs().customGroups) ? uiPrefs().customGroups : [];
-  for (const g of custom) {
-    if (g && !out.includes(g)) out.push(g);
-  }
-  for (const h of hosts()) {
+/// 分组模型。real = 真实目录:customGroups(哪怕为空,保持用户排序)在前,
+/// 显式 h.group 出现的组按首次出现顺序补后 —— 含默认组「我的主机」;
+/// cloud = 云厂商自动归类:不在 customGroups 且成员全是未显式指定分组的
+/// 云主机(按导入来源兜底归组)。判定不硬编码厂商名:用户可以自建
+/// 名为「阿里云」的真实分组,那样它就是 real 而不是 cloud。
+function groupModel() {
+  const hostsArr = hosts();
+  const custom = (Array.isArray(uiPrefs().customGroups) ? uiPrefs().customGroups : [])
+    .filter((g) => g && g !== STAR_NOTE);
+  const seen = new Set(custom);
+  const extra = [];
+  for (const h of hostsArr) {
     const g = groupOf(h);
-    if (!out.includes(g)) out.push(g);
+    if (g && !seen.has(g)) { seen.add(g); extra.push(g); }
   }
-  return out;
+  const cloud = [];
+  const real = [];
+  for (const g of [...custom, ...extra]) {
+    (isCloudGroup(g, hostsArr, custom) ? cloud : real).push(g);
+  }
+  // 默认组「我的主机」是收件箱桶:固定排在「分组」段最后,不随主机出现顺序跳动
+  const di = real.indexOf(DEFAULT_GROUP);
+  if (di !== -1) real.splice(di, 1), real.push(DEFAULT_GROUP);
+  return { custom, real, cloud };
 }
 
-/// 该分组是否可作为拖拽落点。派生分组(云厂商 / 我的主机)拖进去会写入
-/// 字面量分组名,和真实数据混在一起且外部无法区分,所以一律不可落点。
-/// 注意不能硬编码中文分组名:用户完全可以自建一个叫「阿里云」的组。
-function droppableGroup(name) {
-  if (name === STAR_NOTE) return false;
-  const members = hosts().filter((h) => groupOf(h) === name);
-  if (!members.length) return false;
-  return !members.every((h) => !h.group && h.cloud);
+/// 分组名校验,返回错误文案;null = 合法。保留名与任何已有组(含云厂商组)
+/// 都不能重名,重命名时豁免自己当前的名字。
+function validateGroupName(raw, entry) {
+  const name = String(raw).trim();
+  if (!name) return '请输入分组名称';
+  if (name.length > 40) return '分组名称不能超过 40 个字符';
+  if (name === STAR_NOTE || name === '全部' || name === '常用') return `「${name}」是保留名称`;
+  const exempt = entry?.mode === 'rename' && name === entry.from;
+  if (!exempt) {
+    const { real, cloud } = groupModel();
+    if ([...real, ...cloud].includes(name)) return `已存在同名分组「${name}」`;
+  }
+  return null;
 }
 
 /* ---------------- 过滤 ---------------- */
@@ -97,6 +116,7 @@ export function openHostLibrary() {
   selected = new Set();
   activeGroup = '';
   keyword = '';
+  editing = null; // 上次可能带着未完成的编辑直接关了弹窗
   const card = $('#modal-host-library');
   if (!card) return;
   const inp = $('#hl-search');
@@ -114,6 +134,102 @@ function updateBatchBar() {
   active?.classList.toggle('hidden', !hasSel);
   const n = $('#hl-sel-count');
   if (n) n.textContent = `已选 ${selected.size} 台`;
+  const sum = $('#hl-summary');
+  if (sum) {
+    const total = hosts().length;
+    // 「全部」且无关键词 = 未筛选,直接报总数;否则报「显示 M / N 台」
+    const filtered = !!activeGroup || !!keyword.trim();
+    sum.textContent = filtered ? `显示 ${filterRows().length} / ${total} 台` : `共 ${total} 台`;
+  }
+}
+
+function groupItem({ name, label, count, icon: ic, fav = false, cloud = false, droppable, editable = false, title = '' }) {
+  const el = document.createElement('div');
+  el.className = 'hl-group'
+    + (activeGroup === name ? ' on' : '')
+    + (fav ? ' fav' : '')
+    + (cloud ? ' cloud' : '')
+    + (editable ? ' editable' : '');
+  el.dataset.group = name;
+  el.dataset.droppable = String(droppable);
+  if (title) el.title = title;
+  el.innerHTML = `${icon(ic, { size: 12 })}<span class="hlg-name">${escapeHtml(label)}</span><span class="hlg-n">${count}</span>`;
+  el.addEventListener('click', () => {
+    if (activeGroup === name) return; // 已是当前视图,不重绘
+    activeGroup = name;
+    renderLibrary();
+  });
+  if (editable) bindGroupActions(el, name);
+  return el;
+}
+
+/// 可编辑分组的 ✎/🗑 悬停动作、右键菜单与双击重命名
+function bindGroupActions(el, name) {
+  const acts = document.createElement('span');
+  acts.className = 'hlg-acts';
+  const mk = (act, cls, ic, tip) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'hlg-act' + (cls ? ` ${cls}` : '');
+    b.dataset.act = act;
+    b.title = tip;
+    b.setAttribute('aria-label', `${tip}：${name}`);
+    b.innerHTML = icon(ic, { size: 12 });
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (act === 'rename') startRename(name);
+      else deleteGroup(name);
+    });
+    acts.appendChild(b);
+  };
+  mk('rename', '', 'pencil', '重命名');
+  mk('delete', 'del', 'trash', '删除分组');
+  el.appendChild(acts);
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    // 别让窗口级 contextmenu 处理器把刚弹出的菜单立刻关掉
+    e.stopPropagation();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: '重命名…', icon: 'pencil', run: () => startRename(name) },
+      { label: '删除分组…', icon: 'trash', danger: true, run: () => deleteGroup(name) },
+    ], { trigger: el, label: '分组' });
+  });
+  el.addEventListener('dblclick', () => startRename(name));
+}
+
+/// 原地编辑行:文件夹图标 + 单行输入框(错误态类由状态决定)
+function buildEditorRow() {
+  const row = document.createElement('div');
+  row.className = 'hl-group hl-group-edit';
+  row.innerHTML = `${icon('folder', { size: 12 })}<input class="hlg-input${editing.error ? ' invalid' : ''}" type="text" maxlength="40" placeholder="分组名称" aria-label="分组名称" />`;
+  const input = row.querySelector('input');
+  input.value = editing.draft;
+  input.addEventListener('input', () => {
+    editing.draft = input.value;
+    // 一旦重新输入就撤掉错误提示,不打断打字
+    if (editing.error) {
+      editing.error = null;
+      input.classList.remove('invalid');
+      input.closest('#hl-groups')?.querySelector('.hlg-err')?.remove();
+    }
+  });
+  input.addEventListener('keydown', (e) => {
+    // Enter 提交;Esc 由 document 捕获层的弹窗 Esc 钩子接管(core.js)
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      commitEditByKey();
+    }
+  });
+  input.addEventListener('blur', () => {
+    // 延迟到 click 之后:点行内按钮(新建/重命名/删除)时先让点击走完
+    const entry = editing;
+    setTimeout(() => {
+      // 重绘换掉了输入框(isConnected=false)或编辑会话已切换 → 不是用户失焦
+      if (!input.isConnected || editing !== entry) return;
+      finishBlur(entry);
+    }, 0);
+  });
+  return row;
 }
 
 function renderGroups() {
@@ -121,64 +237,89 @@ function renderGroups() {
   if (!box) return;
   box.innerHTML = '';
   const fav = favSet();
-  const entries = [
-    { name: '', label: '全部', count: hosts().length, icon: 'listChecks' },
-    // 常用是星标集合(favoriteHostIds),不是目录:必须禁用落点,
-    // 否则拖入会写入 h.group='⭐ 常用',列表出现第二个同名「常用」目录。
-    { name: STAR_NOTE, label: '常用', count: fav.size, icon: 'star', fav: true, derived: true },
-  ];
-  for (const g of allGroups()) {
-    entries.push({
+  const model = groupModel();
+  const countOf = (g) => hosts().filter((h) => groupOf(h) === g).length;
+
+  // 视图区:全部 / ☆常用。是筛选不是目录,一律不可落点。
+  box.appendChild(groupItem({ name: '', label: '全部', count: hosts().length, icon: 'listChecks', droppable: false }));
+  // 常用是星标集合(favoriteHostIds),不是目录:必须禁用落点,
+  // 否则拖入会写入 h.group='⭐ 常用',列表出现第二个同名「常用」目录。
+  box.appendChild(groupItem({ name: STAR_NOTE, label: '常用', count: fav.size, icon: 'star', fav: true, droppable: false }));
+
+  // 「分组」段:真实目录,全部可落点;除默认组外可重命名/删除
+  const sec1 = document.createElement('div');
+  sec1.className = 'hlg-sec hlg-sec-first';
+  sec1.textContent = '分组';
+  box.appendChild(sec1);
+  for (const g of model.real) {
+    if (editing?.mode === 'rename' && editing.from === g) {
+      box.appendChild(buildEditorRow());
+      if (editing.error) box.appendChild(errNode());
+      continue;
+    }
+    box.appendChild(groupItem({
       name: g,
       label: g,
-      count: hosts().filter((h) => groupOf(h) === g).length,
+      count: countOf(g),
       icon: 'folder',
-      derived: !droppableGroup(g),
-    });
-  }
-  for (const e of entries) {
-    const el = document.createElement('div');
-    el.className = 'hl-group'
-      + (activeGroup === e.name ? ' on' : '')
-      + (e.derived ? ' dis' : '')
-      + (e.fav ? ' fav' : '');
-    el.dataset.group = e.name;
-    el.dataset.droppable = String(!e.derived && e.name !== '');
-    if (e.derived) el.title = '这是派生分组,不能作为移动目标';
-    const tagHtml = (e.derived && e.name && e.name !== STAR_NOTE) ? '<span class="hlg-tag-derived">派生</span>' : '';
-    el.innerHTML = `${icon(e.icon, { size: 12 })}<span class="hlg-name">${escapeHtml(e.label)}</span>${tagHtml}`
-      + `<span class="hlg-n">${e.count}</span>`;
-    el.addEventListener('click', () => {
-      activeGroup = e.name;
-      renderLibrary();
-    });
-    box.appendChild(el);
+      droppable: true,
+      editable: g !== DEFAULT_GROUP,
+      title: g === DEFAULT_GROUP ? '默认分组:未指定分组的主机' : '',
+    }));
   }
 
-  // 底部常驻「＋ 新建分组」落点与动作
-  const newEl = document.createElement('div');
-  newEl.className = 'hl-group hl-group-new';
-  newEl.dataset.group = '__new__';
-  newEl.dataset.droppable = 'true';
-  newEl.title = '新建自建分组，或直接拖拽选中主机到此处';
-  newEl.innerHTML = `${icon('plus', { size: 12 })}<span class="hlg-name">新建分组…</span>`;
-  newEl.addEventListener('click', async () => {
-    const raw = await askPrompt('请输入新分组名称：', { title: '新建分组', okText: '创建' });
-    if (!raw || !raw.trim()) return;
-    const name = raw.trim();
-    if (name === STAR_NOTE) {
-      toast('「常用」为系统保留标记，不能作为分组名', 'error');
-      return;
+  // 「＋ 新建分组」常驻行:点击(或拖入)进入原地输入,可携带待移入主机
+  if (editing?.mode === 'create') {
+    box.appendChild(buildEditorRow());
+    if (editing.error) box.appendChild(errNode());
+  } else {
+    const newEl = document.createElement('div');
+    newEl.className = 'hl-group hl-group-new';
+    newEl.dataset.group = '__new__';
+    newEl.dataset.droppable = 'true';
+    newEl.title = '新建自建分组，或直接拖拽选中主机到此处';
+    newEl.innerHTML = `${icon('plus', { size: 12 })}<span class="hlg-name">新建分组</span>`;
+    newEl.addEventListener('click', () => startCreate(null));
+    box.appendChild(newEl);
+  }
+
+  // 「云厂商」段:按导入来源自动归类,可点选筛选,不可落点/改名/删除
+  if (model.cloud.length) {
+    const sec2 = document.createElement('div');
+    sec2.className = 'hlg-sec';
+    sec2.innerHTML = '云厂商<span class="hlg-sec-note">自动归类</span>';
+    box.appendChild(sec2);
+    for (const g of model.cloud) {
+      box.appendChild(groupItem({
+        name: g,
+        label: g,
+        count: countOf(g),
+        icon: 'cloud',
+        cloud: true,
+        droppable: false,
+        title: '云厂商分组:按导入来源自动归类,不能拖入;把主机拖到上方分组即可自定义归属',
+      }));
     }
-    ensureCustomGroup(name);
-    if (selected.size > 0) {
-      await moveToGroup([...selected], name);
-    } else {
-      activeGroup = name;
-      renderLibrary();
+  }
+
+  // 重绘后恢复编辑焦点(草稿在 editing 里);重命名首次聚焦时全选旧名
+  if (editing) {
+    const inp = box.querySelector('input.hlg-input');
+    if (inp) {
+      inp.focus();
+      if (!editing._focused) {
+        if (editing.mode === 'rename') inp.select();
+        editing._focused = true;
+      }
     }
-  });
-  box.appendChild(newEl);
+  }
+}
+
+function errNode() {
+  const err = document.createElement('div');
+  err.className = 'hlg-err';
+  err.textContent = editing.error || '';
+  return err;
 }
 
 export function renderLibrary() {
@@ -205,11 +346,7 @@ export function renderLibrary() {
 
   tbody.innerHTML = '';
   if (!rows.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="9" class="hl-empty">${
-      hosts().length ? '没有匹配的主机' : '还没有主机,先新建一台'
-    }</td>`;
-    tbody.appendChild(tr);
+    tbody.appendChild(emptyRow());
     updateBatchBar();
     return;
   }
@@ -244,6 +381,9 @@ export function renderLibrary() {
     tr.addEventListener('click', (e) => {
       if (Date.now() - dragEndedAt < 300) return;
       if (e.target.closest('.hl-acts') || e.target.closest('.hl-grip')) return;
+      // Chromium 里 click 先于 blur 的 setTimeout 执行:先了结编辑会话再重绘,
+      // 否则这里的整库重绘会换掉输入框,失焦提交被 isConnected 守卫误判放弃
+      if (editing) finishBlur(editing);
       if (selected.has(h.id)) selected.delete(h.id); else selected.add(h.id);
       renderLibrary();
     });
@@ -289,6 +429,160 @@ export function renderLibrary() {
   updateBatchBar();
 }
 
+/// 空表按语境给出口径与下一步动作,而不是一句通用的「没有匹配」
+function emptyRow() {
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = 9;
+  td.className = 'hl-empty';
+  const title = document.createElement('div');
+  title.className = 'hl-empty-title';
+  const hint = document.createElement('div');
+  hint.className = 'hl-empty-hint';
+  let action = null;
+  if (!hosts().length) {
+    title.textContent = '还没有主机';
+    action = mkEmptyAction('新建主机', () => openHostModal(null));
+  } else if (keyword.trim()) {
+    title.textContent = `没有匹配「${keyword.trim()}」的主机`;
+    action = mkEmptyAction('清空搜索', () => {
+      keyword = '';
+      const inp = $('#hl-search');
+      if (inp) { inp.value = ''; inp.focus(); }
+      renderLibrary();
+    });
+  } else if (activeGroup === STAR_NOTE) {
+    title.textContent = '还没有常用主机';
+    hint.textContent = '点击行尾 ☆ 即可标记常用';
+  } else if (activeGroup) {
+    title.textContent = `分组「${activeGroup}」还没有主机`;
+    hint.textContent = '在「全部」里勾选主机后点「移动到…」,或把行首 ⋮⋮ 拖到左侧分组';
+    action = mkEmptyAction('查看全部', () => {
+      activeGroup = '';
+      renderLibrary();
+    });
+  }
+  td.appendChild(title);
+  if (hint.textContent) td.appendChild(hint);
+  if (action) td.appendChild(action);
+  tr.appendChild(td);
+  return tr;
+}
+
+function mkEmptyAction(label, run) {
+  const b = document.createElement('button');
+  b.id = 'hl-empty-action';
+  b.type = 'button';
+  b.className = 'btn small';
+  b.textContent = label;
+  b.addEventListener('click', run);
+  return b;
+}
+
+/* ---------------- 分组原地编辑 ---------------- */
+
+function startCreate(moveIds) {
+  editing = { mode: 'create', from: null, moveIds: moveIds?.length ? [...moveIds] : null, draft: '', error: null, _focused: false };
+  renderLibrary();
+}
+
+function startRename(from) {
+  editing = { mode: 'rename', from, moveIds: null, draft: from, error: null, _focused: false };
+  renderLibrary();
+}
+
+function cancelEdit() {
+  if (!editing) return;
+  editing = null;
+  renderLibrary();
+}
+
+/// Enter 提交:非法时保持编辑,就地显示错误(草稿不丢)
+function commitEditByKey() {
+  const entry = editing;
+  if (!entry) return;
+  const name = entry.draft.trim();
+  if (entry.mode === 'rename' && name === entry.from) { cancelEdit(); return; }
+  const error = validateGroupName(entry.draft, entry);
+  if (error) {
+    editing.error = error;
+    renderGroups(); // 从状态重绘:草稿保留、错误显示、输入重新聚焦
+    return;
+  }
+  commitEdit(name);
+}
+
+/// 失焦提交:空/未改 = 放弃;非法 = 放弃并 toast;合法且变更 = 提交
+function finishBlur(entry) {
+  if (editing !== entry) return;
+  const name = entry.draft.trim();
+  if (!name) { cancelEdit(); return; }
+  const error = validateGroupName(entry.draft, entry);
+  if (error) { cancelEdit(); toast(error, 'error'); return; }
+  if (entry.mode === 'rename' && name === entry.from) { cancelEdit(); return; }
+  commitEdit(name);
+}
+
+async function commitEdit(name) {
+  const entry = editing;
+  if (!entry) return;
+  editing = null;
+  if (entry.mode === 'create') await commitCreate(name, entry.moveIds);
+  else await commitRename(entry.from, name);
+}
+
+async function commitCreate(name, moveIds) {
+  ensureCustomGroup(name);
+  if (moveIds?.length) { await moveToGroup(moveIds, name); return; }
+  // 新建后停在当前视图,方便马上把主机拖进新组
+  renderLibrary();
+  renderHosts(); // 侧栏分组条同步出现新组
+  const el = [...($('#hl-groups')?.children || [])].find((n) => n.dataset?.group === name);
+  if (el) {
+    el.classList.add('just-added');
+    el.scrollIntoView({ block: 'nearest' });
+    setTimeout(() => el.classList.remove('just-added'), 1200);
+  }
+  toast(`已创建分组「${name}」,把主机拖到这里即可移入`, 'success');
+}
+
+async function commitRename(from, to) {
+  const ids = hosts().filter((h) => h.group === from).map((h) => h.id);
+  try {
+    if (ids.length) await api('hosts:bulkUpdate', { ids, patch: { group: to } });
+    const custom = uiPrefs().customGroups;
+    if (custom.includes(from)) saveUiPrefs({ customGroups: custom.map((g) => (g === from ? to : g)) });
+    if (activeGroup === from) activeGroup = to;
+    await refreshHosts();
+  } catch (e) {
+    toast('重命名失败：' + e.message, 'error');
+    renderLibrary();
+    return;
+  }
+  renderLibrary();
+  toast(`已重命名为「${to}」`, 'success');
+}
+
+async function deleteGroup(name) {
+  const ids = hosts().filter((h) => h.group === name).map((h) => h.id);
+  if (ids.length && !(await askConfirm(
+    `删除分组「${name}」？其中 ${ids.length} 台主机会移出该分组（归入「我的主机」或其云厂商分组），主机本身不会删除。`,
+    { title: '删除分组', okText: '删除分组' },
+  ))) return;
+  try {
+    if (ids.length) await api('hosts:bulkUpdate', { ids, patch: { group: '' } });
+  } catch (e) {
+    toast('删除分组失败：' + e.message, 'error');
+    return;
+  }
+  const custom = uiPrefs().customGroups;
+  if (custom.includes(name)) saveUiPrefs({ customGroups: custom.filter((g) => g !== name) });
+  if (activeGroup === name) activeGroup = '';
+  await refreshHosts();
+  renderLibrary();
+  toast(ids.length ? `已删除分组「${name}」，${ids.length} 台主机已移出` : `已删除空分组「${name}」`, 'success');
+}
+
 /* ---------------- 拖拽 ---------------- */
 
 /// 拖动行:已被选中的行拖动时整批移动;未选中的单行只移动自己并加入选择。
@@ -328,6 +622,8 @@ function dragStart(ev, host, tr) {
         ghost.textContent = ids.length > 1 ? `移动 ${ids.length} 台` : (host.name || host.host);
         document.body.appendChild(ghost);
         for (const el of rows) el.classList.add('drag');
+        // 拖拽真正开始才进入拖拽态:此时不可落点分组才置灰(CSS)
+        $('#modal-host-library .hl-card')?.classList.add('hl-dragging');
       }
       ghost.style.left = `${e.clientX + 14}px`;
       ghost.style.top = `${e.clientY + 10}px`;
@@ -366,15 +662,11 @@ function dragStart(ev, host, tr) {
       dragEndedAt = Date.now();
       clearHints();
       ghost?.remove();
+      $('#modal-host-library .hl-card')?.classList.remove('hl-dragging');
       for (const el of rows) el.classList.remove('drag');
       if (dropGroup === '__new__') {
-        askPrompt('创建新分组并移动选中主机：', { title: '新建分组', okText: '创建并移动' }).then((raw) => {
-          if (raw && raw.trim() && raw.trim() !== STAR_NOTE) {
-            moveToGroup(ids, raw.trim());
-          } else {
-            renderLibrary();
-          }
-        });
+        // 拖到「新建分组」= 新建并移入:原地输入,提交后整批移入
+        startCreate(ids);
       } else if (dropGroup !== null) {
         moveToGroup(ids, dropGroup);
       } else if (insertTarget) {
@@ -498,13 +790,12 @@ export function bindHostLibrary() {
   });
   $('#hl-close')?.addEventListener('click', () => closeModal('#modal-host-library'));
 
-  // Esc 优先取消选择，无选择时才关闭弹窗
-  card.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && selected.size > 0) {
-      e.stopPropagation();
-      selected.clear();
-      renderLibrary();
-    }
+  // Esc 分层:编辑中 → 取消编辑;有选择 → 清空选择;都否则交给 core 关闭弹窗。
+  // core 在 document 捕获阶段拦 Esc,这里的 handler 返回 true 即视为已消化。
+  setModalEscapeHandler(card, () => {
+    if (editing) { cancelEdit(); return true; }
+    if (selected.size) { selected.clear(); renderLibrary(); return true; }
+    return false;
   });
 
   $('#hl-check-all')?.addEventListener('click', () => {
@@ -519,12 +810,11 @@ export function bindHostLibrary() {
     renderLibrary();
   });
 
-  // 批量移动下拉菜单
+  // 批量移动下拉菜单(只列真实分组;云厂商组与视图不是目录)
   bindMenuButton($('#hl-bulk-move'), () => {
     if (!selected.size) return [];
     const ids = [...selected];
-    const droppable = allGroups().filter((g) => droppableGroup(g));
-    const items = droppable.map((g) => ({
+    const items = groupModel().real.map((g) => ({
       label: g,
       icon: 'folder',
       run: () => moveToGroup(ids, g),
@@ -533,12 +823,8 @@ export function bindHostLibrary() {
     items.push({
       label: '＋ 新建分组并移入…',
       icon: 'plus',
-      run: async () => {
-        const raw = await askPrompt('创建新分组并移动选中主机：', { title: '新建分组', okText: '创建并移动' });
-        if (raw && raw.trim() && raw.trim() !== STAR_NOTE) {
-          moveToGroup(ids, raw.trim());
-        }
-      },
+      // run 在 closeCtxMenu 恢复焦点后的微任务里执行,原地输入框聚焦安全
+      run: () => startCreate(ids),
     });
     return items;
   }, { label: '移动到分组' });

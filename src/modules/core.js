@@ -224,6 +224,9 @@ const dialogQueues = new Map();
 const modalReturns = new WeakMap();
 const modalOwners = new WeakMap();
 const modalDismiss = new WeakMap();
+// Esc 分层:弹窗内组件(多选/原地编辑)可注册自己的 Esc 处理,
+// 返回 true 表示已消化,捕获层不再关闭弹窗。
+const modalEscape = new WeakMap();
 const activeModals = new Set();
 let modalOrder = 0;
 let scopedModal = null;
@@ -259,6 +262,11 @@ function syncModalScope() {
 export function setModalDismissHandler(id, handler) {
   const modal = typeof id === 'string' ? $(id) : id;
   if (modal) modalDismiss.set(modal, handler);
+}
+
+export function setModalEscapeHandler(id, handler) {
+  const modal = typeof id === 'string' ? $(id) : id;
+  if (modal) modalEscape.set(modal, handler);
 }
 
 export function openModal(id) {
@@ -326,6 +334,13 @@ export function bindModalInteractions() {
     const context = $('#ctx-menu');
     if (context && !context.classList.contains('hidden') && context.contains(event.target)) return;
     if (event.key === 'Escape') {
+      // 弹窗内组件先接管(取消编辑/清空选择),吃掉事件后才轮到关闭弹窗
+      const intercept = modalEscape.get(top);
+      if (intercept && intercept(event) === true) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
       closeModal(top);
@@ -371,7 +386,9 @@ function runPrompt(message, opts) {
     title = '请输入',
     okText = '确定',
     hint = '',
-    password = true,
+    // 口令类输入必须显式声明;普通文本(分组名/标签)默认不遮蔽,
+    // 否则用户输入显示为圆点,无法确认自己打了什么。
+    password = false,
     placeholder = '',
     value = '',
     defaultValue = '',
@@ -389,6 +406,8 @@ function runPrompt(message, opts) {
     hintEl.textContent = hint || '';
     hintEl.style.display = hint ? 'block' : 'none';
     input.type = password ? 'password' : 'text';
+    // password 用 new-password 阻止浏览器/WebView 的自动填充与保存提示
+    input.autocomplete = password ? 'new-password' : 'off';
     input.value = initialValue;
     input.placeholder = placeholder;
     okBtn.textContent = okText;

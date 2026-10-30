@@ -208,6 +208,8 @@ function toggleSidebar() {
   const collapsed = !sb.classList.contains('collapsed');
   if (collapsed) {
     expandedSidebarWidth = sb.getBoundingClientRect().width;
+    // 停靠卡片宽度取收起前的展开宽度(夹在 240–360px):固定回常驻时不跳宽
+    sb.style.setProperty('--side-dock-w', Math.round(Math.min(360, Math.max(240, expandedSidebarWidth))) + 'px');
     sb.style.width = '';
   } else if (expandedSidebarWidth) {
     sb.style.width = Math.min(Math.max(180, expandedSidebarWidth), window.innerWidth * 0.5) + 'px';
@@ -257,6 +259,7 @@ async function exportHosts() {
         title: '导出主机',
         okText: '导出',
         hint: '口令不会保存在任何地方,请自行记牢(至少 8 位)',
+        password: true,
         validate: (v) => (v.length > 0 && v.length < 8 ? '口令至少 8 位(或留空以不含凭据导出)' : null),
       },
     );
@@ -266,6 +269,7 @@ async function exportHosts() {
     if (pass.length > 0) {
       const again = await askPrompt('请再次输入同一口令以确认。', {
         title: '确认口令', okText: '确定',
+        password: true,
         validate: (v) => (v !== pass ? '两次输入的口令不一致' : null),
       });
       if (again === null) return;
@@ -297,6 +301,7 @@ async function importHosts() {
     if (r && r.needsPassphrase) {
       const pass = await askPrompt('该导出文件包含加密凭据,请输入导出时设置的口令。', {
         title: '输入解密口令', okText: '解密导入',
+        password: true,
       });
       if (pass === null) return;
       r = await api('hosts:importFile', { passphrase: pass, path: r.path });
@@ -539,6 +544,7 @@ function setupWorkspaceCommands() {
     'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
     'btn-add-host': 'host.new', 'btn-host-library': 'hosts.library', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
+    'rail-add-host': 'host.new',
   };
   // 元素可能不存在(按钮随设计演进被移除到菜单里):这里必须判空,
   // 否则 boot 会在一句 TypeError 上中断,后续所有连接/终端接线都注册不上。
@@ -549,6 +555,9 @@ function setupWorkspaceCommands() {
   bindCommandButtons();
   bindMenuButton($('#btn-split-menu'), splitMenuItems, { label: '分屏与布局', alignRight: true });
   bindMenuButton($('#btn-host-manage'), hostManageItems, { label: '主机管理' });
+  // 窄条的 ⠇:与标题行的「主机管理」同一组菜单;假 DOM(tests/interaction-ux)里可能没有
+  const railManage = $('#rail-host-manage');
+  if (railManage) bindMenuButton(railManage, hostManageItems, { label: '主机管理' });
   document.addEventListener('nebula:state-change', refreshCommandStates);
   document.addEventListener('nebula:modal-scope', refreshCommandStates);
 }

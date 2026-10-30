@@ -37,31 +37,41 @@
     </div>
   </header>
   <div id="app">
-    <!-- 侧边栏：主机列表 -->
+    <!-- 侧边栏：主机列表。收起态窄条 + 侧栏本体(展开态=常驻侧栏,收起后悬停=停靠卡片),
+         两态共用 .side-panel 同一份 DOM -->
     <aside id="sidebar">
-      <div class="side-header">
-        <!-- 第一行:标题 + 计数 + 主动作。低频操作(云导入/导入导出/指纹/转发)收进「⠇」,
-             它们不是每次打开侧栏都要点的东西,占常驻位置会挤掉列表高度。 -->
-        <div class="side-title">
-          <span class="side-title-name">主机</span>
-          <span id="host-count" class="side-count">0</span>
-          <span class="side-spacer"></span>
-          <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
-          <button id="btn-host-library" class="btn icon" title="主机库 (批量管理)" aria-label="主机库"><span class="mi" data-icon="listChecks"></span></button>
-          <button id="btn-host-manage" class="btn icon" title="主机管理:云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
-        </div>
-        <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
-        <div class="search-field">
-          <input id="host-search" class="inp" type="text" placeholder="搜索 / #标签 / @分组" autocomplete="off" spellcheck="false" aria-label="搜索主机" />
-          <button id="host-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
-        </div>
+      <!-- 收起态窄条(只在 #sidebar.collapsed 显示)。不设 title 只用 aria-label:
+           悬停 120ms 即浮出停靠卡片,卡片标题行就是带说明的同款按钮,
+           原生 tooltip 只会压在卡片上 -->
+      <div class="side-rail" role="toolbar" aria-label="主机">
+        <button id="rail-add-host" class="btn primary icon" type="button" aria-label="新建主机"><span class="mi" data-icon="plus"></span></button>
+        <button id="rail-host-manage" class="btn icon" type="button" aria-label="主机管理"><span class="mi" data-icon="dots"></span></button>
       </div>
-      <!-- .side-body 包住列表:收起态整块变成浮出层(见 style.css 收起态规则),
-           展开态视觉与原来一致 -->
-      <div class="side-body">
-        <!-- 横向分组标签条 -->
-        <div id="host-group-strip" class="host-group-strip" role="tablist" aria-label="主机分组"></div>
-        <nav id="host-list"></nav>
+      <div class="side-panel">
+        <div class="side-header">
+          <!-- 第一行:标题 + 计数 + 主动作。低频操作(云导入/导入导出/指纹/转发)收进「⠇」,
+               它们不是每次打开侧栏都要点的东西,占常驻位置会挤掉列表高度。 -->
+          <div class="side-title">
+            <span class="side-title-name">主机</span>
+            <span id="host-count" class="side-count">0</span>
+            <span class="side-spacer"></span>
+            <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
+            <button id="btn-host-library" class="btn icon" title="主机库 (批量管理)" aria-label="主机库"><span class="mi" data-icon="listChecks"></span></button>
+            <button id="btn-host-manage" class="btn icon" title="主机管理:云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
+            <!-- 停靠卡片专属:一键固定回常驻侧栏(panel.sidebar),展开态隐藏 -->
+            <button id="btn-sidebar-pin" class="btn icon" type="button" aria-label="固定侧栏" data-title="固定侧栏(%1)" data-accel="panel.sidebar" data-command="panel.sidebar"><span class="mi" data-icon="pin"></span></button>
+          </div>
+          <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
+          <div class="search-field">
+            <input id="host-search" class="inp" type="text" placeholder="搜索 / #标签 / @分组" autocomplete="off" spellcheck="false" aria-label="搜索主机" />
+            <button id="host-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
+          </div>
+        </div>
+        <div class="side-body">
+          <!-- 横向分组标签条 -->
+          <div id="host-group-strip" class="host-group-strip" role="tablist" aria-label="主机分组"></div>
+          <nav id="host-list"></nav>
+        </div>
       </div>
     </aside>
     <div id="sidebar-resizer" class="resizer" title="拖动调整侧边栏宽度"></div>
@@ -751,10 +761,8 @@
         </div>
       </div>
       <div id="hl-batch" class="hl-batch">
-        <div id="hl-batch-empty" class="hl-batch-empty muted small-note">
-          <span>点击行或勾选复选框进行批量操作</span>
-          <span class="spacer"></span>
-          <span class="font-mono">拖动行首把手可排序或移动分组</span>
+        <div id="hl-batch-empty" class="hl-batch-empty">
+          <span id="hl-summary" class="hl-summary"></span><span class="hl-bar-sep" aria-hidden="true">·</span><span class="hl-bar-hint">点击行可多选 · 拖动 ⋮⋮ 排序,拖到左侧分组即移入</span>
         </div>
         <div id="hl-batch-active" class="hl-batch-active hidden">
           <span id="hl-sel-count" class="hl-sel">已选 0 台</span>
@@ -763,15 +771,7 @@
           <button id="hl-bulk-connect" class="btn small" type="button"><span class="mi" data-icon="play"></span>批量连接</button>
           <span class="spacer"></span>
           <button id="hl-bulk-del" class="btn small danger" type="button">删除所选</button>
-          <button id="hl-cancel-sel" class="btn small ghost" type="button">取消选择</button>
-        </div>
-      </div>
-      <div class="modal-foot hl-foot">
-        <div class="hl-foot-tips">
-          <span class="muted small-note">拖动行首把手排序 · 拖拽或「移动到…」可归入自建分组 · 派生分组不可直接作为落点</span>
-        </div>
-        <div class="hl-foot-shortcuts muted small-note">
-          <span><kbd class="kbd">Esc</kbd> 取消选择</span>
+          <button id="hl-cancel-sel" class="btn small ghost" type="button">取消选择<kbd class="kbd">Esc</kbd></button>
         </div>
       </div>
     </div>
@@ -943,7 +943,7 @@
     <div class="modal-card confirm-card">
       <h3 id="prompt-title">请输入</h3>
       <p id="prompt-message" class="confirm-message"></p>
-      <input id="prompt-input" class="inp" type="password" autocomplete="new-password" />
+      <input id="prompt-input" class="inp" type="text" autocomplete="off" />
       <label id="prompt-hint" class="muted small-note"></label>
       <div class="modal-actions">
         <button id="btn-prompt-cancel" class="btn">取消</button>
