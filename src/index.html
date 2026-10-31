@@ -41,8 +41,9 @@
          两态共用 .side-panel 同一份 DOM -->
     <aside id="sidebar">
       <!-- 收起态窄条(只在 #sidebar.collapsed 显示)。主机 / 常用命令 / 批量执行 →
-           分隔线 → 会话胶囊 → 弹性热区 → 底部管理。新建只在主机浮层/展开态里,
-           窄条不再有 +。按钮用 data-tip 自定义 tooltip;悬停主机按钮才出停靠卡片。 -->
+           分隔线 → 会话胶囊。窄条不含固定 / 展开 / 管理入口:展开走标题栏开关
+           或 ⌘B,主机列表点「主机」出停靠卡,管理在展开态标题行的 ⋯ 里。
+           按钮用 data-tip 自定义 tooltip。 -->
       <div class="side-rail" role="toolbar" aria-label="主机">
         <span id="rail-hosts-tip" class="rail-tip rail-tip-host" data-tip="主机列表" role="presentation">
           <button id="rail-hosts" class="btn icon rail-host-btn" type="button" aria-label="主机列表" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="server"></span></button>
@@ -57,10 +58,6 @@
         <span id="rail-session-tip" class="rail-tip" data-tip="0 个活动会话" role="presentation" hidden>
           <button id="rail-session-status" class="rail-status" type="button" hidden aria-label="0 个活动会话" aria-haspopup="dialog" aria-expanded="false"><span class="dot"></span><span id="rail-session-count">0</span></button>
         </span>
-        <button id="rail-open" class="rail-open" type="button" aria-label="展开主机列表"></button>
-        <span class="rail-tip" data-tip="主机管理" role="presentation">
-          <button id="rail-host-manage" class="btn icon" type="button" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
-        </span>
       </div>
       <div class="side-panel">
         <div class="side-header">
@@ -72,8 +69,6 @@
             <span class="side-spacer"></span>
             <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
             <button id="btn-host-manage" class="btn icon ghost" title="主机管理:主机库、云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
-            <!-- 停靠卡片专属:一键固定回常驻侧栏(panel.sidebar),展开态隐藏 -->
-            <button id="btn-sidebar-pin" class="btn icon ghost" type="button" aria-label="固定侧栏" data-title="固定侧栏(%1)" data-accel="panel.sidebar" data-command="panel.sidebar"><span class="mi" data-icon="pin"></span></button>
           </div>
           <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
           <div class="search-field">

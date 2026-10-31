@@ -250,8 +250,6 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .side-title .btn.ghost:hover { background: var(--surface-hover); border-color: transparent; color: var(--text); }
 #btn-add-host.btn.primary { background: var(--btn-primary-solid); border-color: transparent; box-shadow: none; }
 #btn-add-host.btn.primary:hover { filter: brightness(1.08); }
-/* 停靠卡片里的 📌：悬停用 accent 提示这是"固定"动作 */
-#btn-sidebar-pin.btn.ghost:hover { color: var(--accent); background: var(--hover-bg); }
 /* 侧栏本体包住头部与列表：展开态占满侧栏，收起后悬停时整体变成停靠卡片（同一份 DOM）。
    容器查询挂在这里而不是 #sidebar：两种形态共用这份 DOM，查询必须按面板实际宽度
    评估 —— #sidebar 收起后恒为 40px，挂在它上面会让查询永远命中「窄」档。 */
@@ -260,9 +258,8 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   display: flex; flex-direction: column;
   container-type: inline-size; container-name: sidebar;
 }
-/* 窄条与 📌 只属于收起/停靠形态，展开态一律隐藏 */
+/* 窄条只属于收起形态，展开态一律隐藏 */
 .side-rail { display: none; }
-#btn-sidebar-pin { display: none; }
 /* 收缩档位：标题 26 + 计数 26 + 两个 24px 按钮 + 间距 ≈ 26+22+24+24+18 = 114px，
    180px 面板只有 156px 内容宽，仍有余量；≤200px 时去掉「新建」文字。 */
 @container sidebar (max-width: 200px) {
@@ -3287,9 +3284,11 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 
 /* ===== P1 批次新增 ===== */
 /* 收起态：40px 窄条。
-   三段结构：展开 / 新建 → 分隔线 → 会话状态胶囊 → 弹性留白 → 管理（底部锚定）。
-   悬停空白区 220ms 浮出停靠卡片（卡片 = 展开态 .side-panel 同一份 DOM，不做主机徽标编码）。
-   卡片从 tabbar 下方开始、止于状态栏上方，height:auto；主机多时封顶后列表内部滚动。
+   内容自下而上只有两段：主机 / 常用命令 / 批量执行 → 分隔线 → 会话状态胶囊。
+   窄条里没有固定、展开与管理入口 —— 展开走标题栏开关或 ⌘B，点「主机」出停靠卡，
+   管理在展开态标题行的 ⋯ 里；空白处点按不做任何事。
+   卡片 = 展开态 .side-panel 同一份 DOM，从 tabbar 下方开始、止于状态栏上方，
+   height:auto；主机多时封顶后列表内部滚动。
    约束：#sidebar 宽度 ≤44（e2e T63f），卡片 absolute 不参与文档流，静止时不渲染（T64）。 */
 #sidebar.collapsed { width: 40px; min-width: 40px; max-width: 40px; overflow: visible; z-index: 66; }
 #sidebar.collapsed .side-rail {
@@ -3320,12 +3319,6 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 /* 主机按钮打开停靠卡时与工具按钮共用 .rail-on 激活态，不再有 hover 专属样式 */
 .rail-sep { width: 16px; height: 1px; background: var(--border); border: 0; margin: 2px 0; flex: none; }
 .rail-sep[hidden] { display: none; }
-/* 整条空白区是展开热区；不显示任何图标/水印（设计稿 v6） */
-.rail-open {
-  width: 28px; flex: 1 1 auto; min-height: 10px; padding: 0; border: 0;
-  border-radius: 8px; background: transparent; cursor: pointer;
-}
-.rail-open:hover { background: transparent; }
 /* 会话按钮：28×28 方块，和工具/主机按钮同一套 hover / 激活态；绿点 + 数量 */
 .rail-status {
   width: 28px; height: 28px; flex: none; padding: 0; border-radius: 8px;
@@ -3372,8 +3365,6 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   animation: side-dock-in 160ms var(--ease) both;
 }
 @keyframes side-dock-in { from { opacity: 0; transform: translateX(-6px); } }
-/* 📌 只在停靠卡片里出现：一键固定回常驻侧栏 */
-#sidebar.collapsed.peek-open #btn-sidebar-pin { display: inline-flex; }
 /* 4px 间隙的透明桥：属于 #sidebar 的伪元素，横向滑入卡片不会触发 pointerleave */
 #sidebar.collapsed.peek-open::after {
   content: ''; position: absolute; left: 100%; top: 0; bottom: 0; width: 8px;

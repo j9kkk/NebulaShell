@@ -7,7 +7,6 @@
 import { api, hasOpenModal, state, toast } from './core.js';
 import { escapeHtml, regionLabel, uiPrefs } from './hosts.js';
 import { icon } from '../shared/icons.js';
-import { executeCommand } from './commands.js';
 import { activateSession, feedTrusted } from './terminal.js';
 import { openSnippetsModal } from './monitor.js';
 import { batchChecked, openBatchModal, showBatchSnapshot } from './tools.js';
@@ -495,15 +494,8 @@ export function bindRailCards() {
   const sb = sidebar();
   if (!sb) return;
   bound = true;
-  const open = document.getElementById('rail-open');
-  const expand = () => executeCommand('panel.sidebar');
-  // 主机按钮的 click 由 sidebar-peek 负责开/关停靠卡；这里只保留「展开」入口。
-  open?.addEventListener('click', expand);
-  // 整条窄条（除按钮）都可点展开；工具按钮保留自己的动作
-  sb.querySelector('.side-rail')?.addEventListener('click', (e) => {
-    if (e.target.closest('button')) return;
-    expand();
-  });
+  // 主机按钮的 click 由 sidebar-peek 负责开/关停靠卡。
+  // 窄条不再有「点击展开」：空白处点按不做事，展开走标题栏开关 / ⌘B。
   document.getElementById('rail-commands')?.addEventListener('click', () => openCard('commands'));
   document.getElementById('rail-batch')?.addEventListener('click', () => openCard('batch'));
   document.getElementById('rail-session-status')?.addEventListener('click', () => openCard('session'));

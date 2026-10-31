@@ -556,9 +556,6 @@ function setupWorkspaceCommands() {
   bindCommandButtons();
   bindMenuButton($('#btn-split-menu'), splitMenuItems, { label: '分屏与布局', alignRight: true });
   bindMenuButton($('#btn-host-manage'), hostManageItems, { label: '主机管理' });
-  // 窄条的 ⠇:与标题行的「主机管理」同一组菜单;假 DOM(tests/interaction-ux)里可能没有
-  const railManage = $('#rail-host-manage');
-  if (railManage) bindMenuButton(railManage, hostManageItems, { label: '主机管理' });
   document.addEventListener('nebula:state-change', refreshCommandStates);
   document.addEventListener('nebula:modal-scope', refreshCommandStates);
 }

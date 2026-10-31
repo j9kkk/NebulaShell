@@ -1,9 +1,9 @@
 // 收起态主机按钮的停靠卡。
 //
 // v7 统一模型：窄条所有按钮 hover 只出 tooltip，click 才开/关浮层。
-// 主机按钮 click 只开关 264 停靠卡，不再自动展开侧栏；展开走卡片 pin、
-// 窄条空白区、⌘B。卡片是 `.side-panel` 本体（与展开态同一份 DOM），
-// 用 #sidebar.peek-open 控制显隐，不复制一份主机列表。
+// 主机按钮 click 只开关 264 停靠卡，不再自动展开侧栏；展开走标题栏开关或 ⌘B。
+// 卡片是 `.side-panel` 本体（与展开态同一份 DOM），用 #sidebar.peek-open 控制显隐，
+// 不复制一份主机列表。
 
 let bound = false;
 
