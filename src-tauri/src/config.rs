@@ -1749,7 +1749,12 @@ impl Store {
             if data["settings"]["ui"].is_null() || !data["settings"]["ui"].is_object() {
                 data["settings"]["ui"] = json!({ "favoriteHostIds": [], "collapsedGroups": [], "customGroups": [], "groupOrder": [], "hostDensity": "comfortable" });
             }
-            for key in ["favoriteHostIds", "collapsedGroups", "customGroups", "groupOrder"] {
+            for key in [
+                "favoriteHostIds",
+                "collapsedGroups",
+                "customGroups",
+                "groupOrder",
+            ] {
                 if let Some(arr) = ui.get(key).and_then(Value::as_array) {
                     let mut seen = std::collections::HashSet::new();
                     let cleaned: Vec<Value> = arr
