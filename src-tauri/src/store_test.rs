@@ -918,6 +918,7 @@ fn settings_ui_roundtrip_and_sanitize() {
             "favoriteHostIds": ["a", "a", "", "b"],
             "collapsedGroups": ["生产 · 上海"],
             "customGroups": ["group1", "group1", "group2"],
+            "groupOrder": ["g2", "g2", "g1", ""],
             "hostDensity": "compact"
         }}))
         .unwrap();
@@ -927,6 +928,11 @@ fn settings_ui_roundtrip_and_sanitize() {
         "去重并丢弃空串"
     );
     assert_eq!(s["ui"]["customGroups"], json!(["group1", "group2"]));
+    assert_eq!(
+        s["ui"]["groupOrder"],
+        json!(["g2", "g1"]),
+        "分组拖拽次序同样去重、丢空串并落盘(白名单漏键会静默丢序)"
+    );
     assert_eq!(s["ui"]["hostDensity"], json!("compact"));
 
     // 非法密度归一为 comfortable,不报错(手改配置不该卡住保存)

@@ -1537,7 +1537,9 @@ async function main() {
     return (async () => {
       const r = await window.nebula.invoke('hosts:list');
       const h = r.data.find((x) => x.host === '127.0.0.1');
-      return JSON.stringify({ hasPassword: h.hasPassword, marked: !document.querySelector('.host-chip') });
+      const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
+      // 「待补全凭据」从胶囊改成了名称后的 key 图标
+      return JSON.stringify({ hasPassword: h.hasPassword, marked: !it?.querySelector('.host-name .key') });
     })()`);
   const credObj = asObj(cred);
   check('T4 密码保存生效(hasPassword=true,界面无"待补全凭据")', credObj.hasPassword === true && credObj.marked === true, cred);
@@ -1877,13 +1879,13 @@ async function main() {
   // 删除确认对话框(回归:confirm 在 WKWebView 失效 → 已换应用内实现)
   await evalJs(`
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
-    it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    it.querySelector('.hi-clone').click(); return 1`);
+    it.querySelector('.hi-menu').click();
+    [...document.querySelectorAll('#ctx-menu .ctx-item')].find((x) => x.textContent.includes('克隆')).click(); return 1`);
   await waitEval(`return document.querySelector('#host-list').textContent`, '副本', 10000);
   await evalJs(`
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('副本'));
-    it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    it.querySelector('.hi-del').click(); return 1`);
+    it.querySelector('.hi-menu').click();
+    [...document.querySelectorAll('#ctx-menu .ctx-item')].find((x) => x.textContent.includes('删除')).click(); return 1`);
   // askConfirm 经 FIFO promise 队列打开,不能在 .click() 同一栈内抢读可见性。
   await waitEval(`window.__nbTest.confirmOpen()`, 'true', 10000);
   check('T7 删除弹出应用内确认框(替代失效的 confirm)', await evalJs(`return window.__nbTest.confirmOpen()`) === true);
@@ -3450,8 +3452,8 @@ async function main() {
   // 而不是被去重逻辑挡掉(同一 profile 里主机还在时会算重复)。
   await evalJs(`
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
-    it.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    it.querySelector('.hi-del').click(); return 1`);
+    it.querySelector('.hi-menu').click();
+    [...document.querySelectorAll('#ctx-menu .ctx-item')].find((x) => x.textContent.includes('删除')).click(); return 1`);
   await waitEval(`window.__nbTest.confirmOpen()`, 'true', 10000);
   await evalJs(`window.__nbTest.confirmClickOk(); return 1`);
   await sleep(800);
@@ -3464,7 +3466,7 @@ async function main() {
   // 恢复后的主机应带凭据(界面不再标记"待补全凭据")
   const restored = asObj(await evalJs(`return JSON.stringify((() => {
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
-    return { chip: !!(it && it.querySelector('.host-chip')), hosts: document.querySelectorAll('.host-item').length };
+    return { chip: !!(it && it.querySelector('.host-name .key')), hosts: document.querySelectorAll('.host-item').length };
   })())`));
   check(
     'T17 导入加密导出文件并恢复凭据',

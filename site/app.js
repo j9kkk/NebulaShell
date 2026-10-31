@@ -213,12 +213,12 @@
 
       // 直连对应安装包
       const DIRECT_URLS = {
-        'mac-arm64': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.21/NebulaShell_0.6.21_aarch64.dmg',
-        'mac-x64': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.21/NebulaShell_0.6.21_x64.dmg',
-        'win-exe': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.21/NebulaShell_0.6.21_x64-setup.exe',
-        'win-msi': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.21/NebulaShell_0.6.21_x64_en-US.msi',
-        'linux-appimage': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.21/NebulaShell_0.6.21_amd64.AppImage',
-        'linux-pkg': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.21/NebulaShell_0.6.21_amd64.deb',
+        'mac-arm64': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.22/NebulaShell_0.6.22_aarch64.dmg',
+        'mac-x64': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.22/NebulaShell_0.6.22_x64.dmg',
+        'win-exe': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.22/NebulaShell_0.6.22_x64-setup.exe',
+        'win-msi': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.22/NebulaShell_0.6.22_x64_en-US.msi',
+        'linux-appimage': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.22/NebulaShell_0.6.22_amd64.AppImage',
+        'linux-pkg': 'https://github.com/j9kkk/NebulaShell/releases/download/v0.6.22/NebulaShell_0.6.22_amd64.deb',
       };
 
       const key = `${os}-${arch || 'default'}`;

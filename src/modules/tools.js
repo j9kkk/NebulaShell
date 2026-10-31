@@ -354,6 +354,33 @@ export async function runBatch() {
   }
 }
 
+/// 收起态批量卡跑完后，把这一批结果注入现有完整面板：同一套结果表/详情/
+/// 复制导出，不再在 340px 卡片里重复造一份。只读快照：activeBatch 置空，
+/// 执行按钮仍可重新跑（表单已带上本批目标与命令）。
+export function showBatchSnapshot({ command, hostIds, results, parallel, timeout, statusText }) {
+  const ids = [...new Set(hostIds)].filter((id) => state.hosts.some((h) => h.id === id));
+  pruneChecked();
+  batchChecked.clear();
+  for (const id of ids) batchChecked.add(id);
+  batchIdentity = new Map(state.hosts.map((h) => [h.id, batchHostLabel(h)]));
+  batchResults = new Map((results || []).map((r) => [r.hostId, { ...r }]));
+  batchDetailHostId = null;
+  activeBatch = null;
+  $('#batch-cmd').value = command;
+  $('#batch-parallel').value = String(parallel);
+  $('#batch-timeout').value = String(timeout);
+  $('#batch-summary').textContent = `命令:${command} · ${ids.length} 台 · 并行 ${parallel} · 超时 ${timeout}s`;
+  $('#batch-result-detail').classList.add('hidden');
+  $('#batch-empty').classList.add('hidden');
+  $('#batch-results').classList.remove('hidden');
+  buildPendingRows({ hostIds: new Set(ids) }, ids);
+  for (const r of batchResults.values()) updateResultRow(r);
+  $('#batch-status').textContent = statusText || '已完成';
+  renderBatchHosts();
+  updateBatchUi();
+  openModal('#modal-batch');
+}
+
 /* ---------------- 指纹管理(B6) ---------------- */
 
 export let fwRules = [];

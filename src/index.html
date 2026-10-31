@@ -40,12 +40,27 @@
     <!-- 侧边栏：主机列表。收起态窄条 + 侧栏本体(展开态=常驻侧栏,收起后悬停=停靠卡片),
          两态共用 .side-panel 同一份 DOM -->
     <aside id="sidebar">
-      <!-- 收起态窄条(只在 #sidebar.collapsed 显示)。不设 title 只用 aria-label:
-           悬停 120ms 即浮出停靠卡片,卡片标题行就是带说明的同款按钮,
-           原生 tooltip 只会压在卡片上 -->
+      <!-- 收起态窄条(只在 #sidebar.collapsed 显示)。主机 / 常用命令 / 批量执行 →
+           分隔线 → 会话胶囊 → 弹性热区 → 底部管理。新建只在主机浮层/展开态里,
+           窄条不再有 +。按钮用 data-tip 自定义 tooltip;悬停主机按钮才出停靠卡片。 -->
       <div class="side-rail" role="toolbar" aria-label="主机">
-        <button id="rail-add-host" class="btn primary icon" type="button" aria-label="新建主机"><span class="mi" data-icon="plus"></span></button>
-        <button id="rail-host-manage" class="btn icon" type="button" aria-label="主机管理"><span class="mi" data-icon="dots"></span></button>
+        <span id="rail-hosts-tip" class="rail-tip rail-tip-host" data-tip="主机列表" role="presentation">
+          <button id="rail-hosts" class="btn icon rail-host-btn" type="button" aria-label="主机列表" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="server"></span></button>
+        </span>
+        <span class="rail-tip" data-tip="常用命令" role="presentation">
+          <button id="rail-commands" class="btn icon" type="button" aria-label="常用命令" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="command"></span></button>
+        </span>
+        <span class="rail-tip" data-tip="批量执行" role="presentation">
+          <button id="rail-batch" class="btn icon" type="button" aria-label="批量执行" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="zap"></span></button>
+        </span>
+        <span id="rail-sep" class="rail-sep" aria-hidden="true"></span>
+        <span id="rail-session-tip" class="rail-tip" data-tip="0 个活动会话" role="presentation" hidden>
+          <button id="rail-session-status" class="rail-status" type="button" hidden aria-label="0 个活动会话" aria-haspopup="dialog" aria-expanded="false"><span class="dot"></span><span id="rail-session-count">0</span></button>
+        </span>
+        <button id="rail-open" class="rail-open" type="button" aria-label="展开主机列表"></button>
+        <span class="rail-tip" data-tip="主机管理" role="presentation">
+          <button id="rail-host-manage" class="btn icon" type="button" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
+        </span>
       </div>
       <div class="side-panel">
         <div class="side-header">
@@ -56,23 +71,25 @@
             <span id="host-count" class="side-count">0</span>
             <span class="side-spacer"></span>
             <button id="btn-add-host" class="btn primary small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
-            <button id="btn-host-library" class="btn icon" title="主机库 (批量管理)" aria-label="主机库"><span class="mi" data-icon="listChecks"></span></button>
-            <button id="btn-host-manage" class="btn icon" title="主机管理:云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
+            <button id="btn-host-manage" class="btn icon ghost" title="主机管理:主机库、云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
             <!-- 停靠卡片专属:一键固定回常驻侧栏(panel.sidebar),展开态隐藏 -->
-            <button id="btn-sidebar-pin" class="btn icon" type="button" aria-label="固定侧栏" data-title="固定侧栏(%1)" data-accel="panel.sidebar" data-command="panel.sidebar"><span class="mi" data-icon="pin"></span></button>
+            <button id="btn-sidebar-pin" class="btn icon ghost" type="button" aria-label="固定侧栏" data-title="固定侧栏(%1)" data-accel="panel.sidebar" data-command="panel.sidebar"><span class="mi" data-icon="pin"></span></button>
           </div>
           <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
           <div class="search-field">
-            <input id="host-search" class="inp" type="text" placeholder="搜索 / #标签 / @分组" autocomplete="off" spellcheck="false" aria-label="搜索主机" />
+            <span class="mi search-ico" data-icon="search" aria-hidden="true"></span>
+            <input id="host-search" class="inp" type="text" placeholder="搜索主机…" title="支持 #标签 / @分组 语法" autocomplete="off" spellcheck="false" aria-label="搜索主机" />
             <button id="host-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
           </div>
         </div>
         <div class="side-body">
           <!-- 横向分组标签条 -->
-          <div id="host-group-strip" class="host-group-strip" role="tablist" aria-label="主机分组"></div>
+          <div id="host-group-strip" class="host-group-strip" role="group" aria-label="主机分组"></div>
           <nav id="host-list"></nav>
         </div>
       </div>
+      <!-- 收起态的工具/会话浮层：与停靠卡片同一套位置与壳，同屏只存在一个 -->
+      <div id="rail-pop" class="rail-pop" role="dialog" aria-modal="false" hidden></div>
     </aside>
     <div id="sidebar-resizer" class="resizer" title="拖动调整侧边栏宽度"></div>
 
@@ -750,8 +767,8 @@
             </colgroup>
             <thead>
               <tr>
-                <th></th>
-                <th><span id="hl-check-all" class="hl-box" role="checkbox" aria-label="全选当前列表"></span></th>
+                <th class="hl-c-h"></th>
+                <th class="hl-th-chk"><span id="hl-check-all" class="hl-box" role="checkbox" aria-label="全选当前列表"></span></th>
                 <th>名称</th><th>用户</th><th>地址</th><th>分组</th><th>标签</th><th>凭据</th>
                 <th class="hl-th-act">操作</th>
               </tr>

@@ -23,8 +23,21 @@ export function uiPrefs() {
     favoriteHostIds: Array.isArray(ui?.favoriteHostIds) ? ui.favoriteHostIds : [],
     collapsedGroups: Array.isArray(ui?.collapsedGroups) ? ui.collapsedGroups : [],
     customGroups: Array.isArray(ui?.customGroups) ? ui.customGroups : [],
+    // 分组目录的显示次序(用户拖拽的结果)。不存在 = 按创建/出现次序。
+    groupOrder: Array.isArray(ui?.groupOrder) ? ui.groupOrder : [],
     hostDensity: ui?.hostDensity === 'compact' ? 'compact' : 'comfortable',
   };
+}
+
+/// 按用户拖拽过的次序排分组名;没记录过的分组保持传入的相对次序排在后面
+/// (Array#sort 稳定,同 rank 不重排)。默认「我的主机」的兜底位置由调用方决定。
+export function sortGroupsByPref(names, order = uiPrefs().groupOrder) {
+  if (!order.length || !names.length) return [...names];
+  const rank = (g) => {
+    const i = order.indexOf(g);
+    return i === -1 ? order.length : i;
+  };
+  return [...names].sort((a, b) => rank(a) - rank(b));
 }
 
 /// 写界面偏好:乐观更新本地 state,去抖后落盘(切换密度/折叠会连续触发,
@@ -103,7 +116,85 @@ async function healStarGroup() {
 
 let activeSidebarGroup = '';
 
+/// 云地域代码 → 可读区域名。副标题空间只有一行，`ap-shanghai` 这类代码
+/// 会把「上海 / 新加坡」都截成 `ap-s…`，两台同云主机反而无法区分。
+const REGION_LABEL = {
+  'ap-shanghai': '上海', 'ap-beijing': '北京', 'ap-guangzhou': '广州', 'ap-chengdu': '成都',
+  'ap-nanjing': '南京', 'ap-hongkong': '香港', 'ap-tokyo': '东京', 'ap-seoul': '首尔',
+  'ap-bangkok': '曼谷', 'ap-jakarta': '雅加达', 'ap-singapore': '新加坡', 'ap-sydney': '悉尼',
+  'ap-mumbai': '孟买', 'na-siliconvalley': '硅谷', 'na-silicon-valley': '硅谷',
+  'eu-frankfurt': '法兰克福', 'na-ashburn': '弗吉尼亚',
+};
+export function regionLabel(region) {
+  const code = String(region || '');
+  return REGION_LABEL[code] || code;
+}
+
+/// 单台主机的连接状态：connected > connecting > error > idle。
+/// 同一台主机可能开着多个标签，取最高优先级；状态点只表达“有没有在连”。
+function hostStatus(hostId) {
+  let st = 'idle';
+  for (const s of state.sessions.values()) {
+    if (!s.host || s.host.id !== hostId) continue;
+    if (s.status === 'connected') return 'connected';
+    if (s.status === 'connecting') st = 'connecting';
+    else if (st !== 'connecting') st = 'error';
+  }
+  return st;
+}
+
+/// 窄条的会话状态胶囊：活动会话数（connected + connecting）+ 最高状态色。
+/// 0 个活动会话时整个隐藏，不占位。
+export function renderRailStatus() {
+  const hostBtn = document.getElementById('rail-hosts');
+  if (hostBtn) {
+    const hostTip = document.getElementById('rail-hosts-tip');
+    if (hostTip) hostTip.dataset.tip = `主机列表 · ${state.hosts.length} 台`;
+    hostBtn.setAttribute('aria-label', `主机列表（${state.hosts.length} 台）`);
+  }
+  const btn = document.getElementById('rail-session-status');
+  if (!btn) return;
+  let active = 0;
+  let connected = false;
+  for (const s of state.sessions.values()) {
+    if (s.status === 'connected') { active += 1; connected = true; }
+    else if (s.status === 'connecting') active += 1;
+  }
+  btn.hidden = active === 0;
+  const tip = document.getElementById('rail-session-tip');
+  if (tip) tip.hidden = active === 0;
+  // 没有活动会话时连分隔线一起收起：否则分隔线下面会挂一条没有下文的状态
+  const sep = document.getElementById('rail-sep');
+  if (sep) sep.hidden = active === 0;
+  if (!active) return;
+  const dot = btn.querySelector('.dot');
+  if (dot) dot.className = 'dot' + (connected ? '' : ' connecting');
+  const count = btn.querySelector('#rail-session-count');
+  // 窄条只有 28px，三位数会溢出；超出 99 用 99+，完整数量由 tooltip 兜底
+  if (count) count.textContent = active > 99 ? '99+' : String(active);
+  const label = `${active} 个活动会话`;
+  btn.setAttribute('aria-label', label);
+  if (tip) tip.dataset.tip = label;
+}
+
+/// 分组条溢出时才加渐隐：不能仅按固定 padding 判断，否则最后一个胶囊会被遮住
+let stripObserver = null;
+function syncStripOverflow(strip) {
+  if (!strip) return;
+  const update = () => strip.classList.toggle('is-over', strip.scrollWidth > strip.clientWidth + 1);
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(update);
+  else update();
+  if (!stripObserver && typeof ResizeObserver !== 'undefined') {
+    stripObserver = new ResizeObserver(() => {
+      const el = document.getElementById('host-group-strip');
+      if (el) el.classList.toggle('is-over', el.scrollWidth > el.clientWidth + 1);
+    });
+    stripObserver.observe(strip);
+  }
+}
+
 export function renderHosts() {
+  renderRailStatus();
   const nav = $('#host-list');
   if (!nav) return;
   // 重绘会清空 DOM,滚动位置要手动保住(否则每次输入搜索词都跳回顶部)
@@ -120,7 +211,8 @@ export function renderHosts() {
     const custom = Array.isArray(prefs.customGroups) ? prefs.customGroups : [];
     const groupSet = new Set(custom);
     for (const h of state.hosts || []) groupSet.add(groupOf(h));
-    const allGroupNames = [...groupSet].filter(Boolean);
+    // 与主机库左栏同一份次序(用户在库里拖出来的顺序)
+    const allGroupNames = sortGroupsByPref([...groupSet].filter(Boolean));
     // 当前侧栏分组可能已被重命名/删除,不在渲染出的分组条里了 → 回到「全部」
     if (activeSidebarGroup && activeSidebarGroup !== STAR_NOTE && !allGroupNames.includes(activeSidebarGroup)) {
       activeSidebarGroup = '';
@@ -140,7 +232,10 @@ export function renderHosts() {
       const chip = document.createElement('div');
       chip.className = 'host-group-chip'
         + (activeSidebarGroup === c.name ? ' active' : '')
-        + (c.fav ? ' fav' : '');
+        + (c.fav ? ' fav' : '')
+        + (c.count === 0 ? ' zero' : '');
+      chip.setAttribute('role', 'button');
+      chip.setAttribute('aria-pressed', String(activeSidebarGroup === c.name));
       chip.innerHTML = `${c.fav ? icon('star', { size: 10 }) : ''}<span>${escapeHtml(c.label)}</span>`
         + `<span class="chip-cnt">${c.count}</span>`;
       chip.addEventListener('click', () => {
@@ -149,6 +244,7 @@ export function renderHosts() {
       });
       strip.appendChild(chip);
     }
+    syncStripOverflow(strip);
   }
 
   const { hosts: list, filtered } = filterHosts($('#host-search')?.value, state.hosts);
@@ -170,39 +266,83 @@ export function renderHosts() {
   // 空窗格的主机选择器是同一份主机数据的另一个视图,必须跟着刷新
   refreshPickers();
   if (!displayList.length) {
-    nav.innerHTML = '<div class="host-empty">' +
-      (filtered ? '没有匹配的主机' : (activeSidebarGroup ? '该分组下暂无主机' : '还没有主机<br />点击「新建主机」或「导入云主机」开始')) +
-      '</div>';
+    // 三种空态共用一套结构：无主机（双出口）/ 搜索无结果（清除）/ 分组为空（查看全部）
+    const query = String($('#host-search')?.value || '').trim();
+    const searchEmpty = filtered && !!query;
+    const groupEmpty = !searchEmpty && !!activeSidebarGroup;
+    const title = searchEmpty ? '没有匹配的主机' : groupEmpty ? '该分组下暂无主机' : '还没有主机';
+    const sub = searchEmpty
+      ? '换个关键词，或试试 #标签 / @分组。'
+      : groupEmpty
+        ? '切换分组，或新建一台。'
+        : '新建一台，或从腾讯云 / 阿里云一键导入。';
+    const emptyIcon = searchEmpty ? 'search' : groupEmpty ? 'folder' : 'terminal';
+    const actions = searchEmpty
+      ? '<button class="he-link" type="button" data-clear-search>清除筛选</button>'
+      : groupEmpty
+        ? '<button class="he-link" type="button" data-all-groups>查看全部主机</button>'
+        : `<div class="he-acts">
+             <button class="btn primary" type="button" data-empty-new>${icon('plus')}新建主机</button>
+             <button class="btn" type="button" data-empty-cloud>${icon('cloud')}云导入</button>
+           </div>`;
+    nav.innerHTML = `<div class="host-empty">
+      <div class="he-ico">${icon(emptyIcon, { size: 16 })}</div>
+      <b>${title}</b>
+      <p>${sub}</p>
+      ${actions}
+    </div>`;
+    nav.querySelector('[data-clear-search]')?.addEventListener('click', () => {
+      const input = $('#host-search');
+      if (input) {
+        input.value = '';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      renderHosts();
+    });
+    nav.querySelector('[data-all-groups]')?.addEventListener('click', () => {
+      activeSidebarGroup = '';
+      renderHosts();
+    });
+    nav.querySelector('[data-empty-new]')?.addEventListener('click', () => openHostModal(null));
+    // 云导入入口仍是欢迎页那颗按钮（data-command="cloud.import"），避免 hosts 反向依赖 entry
+    nav.querySelector('[data-empty-cloud]')?.addEventListener('click', () => {
+      document.getElementById('btn-welcome-cloud')?.click();
+    });
     nav.scrollTop = keepTop;
     return;
   }
 
   const renderRow = (h) => {
     const item = document.createElement('div');
+    const st = hostStatus(h.id);
+    const isStar = favorites.has(h.id);
     item.className = 'host-item'
       + (isActiveHost(h.id) ? ' active' : '')
-      + (favorites.has(h.id) ? ' starred' : '');
+      + (isStar ? ' starred' : '');
     item.dataset.id = h.id;
+    const port = Number(h.port) === 22 ? '' : `:${h.port}`;
+    const user = h.username && h.username !== 'root' ? `${h.username}@` : '';
     const addr = `${h.username}@${h.host}:${h.port}`;
-    const sub = addr + (h.cloud && h.cloud.region ? `  ·  ${h.cloud.region}` : '');
-    // 紧凑态只留 IP(端口非 22 时补上),完整连接串仍在 title 里
-    const compactAddr = h.host + (Number(h.port) === 22 ? '' : `:${h.port}`);
-    const isStar = favorites.has(h.id);
+    const subAddr = `${user}${h.host}${port}`;
+    const regionCode = h.cloud && h.cloud.region ? h.cloud.region : '';
+    const region = regionLabel(regionCode);
+    const credMissing = !h.hasPassword && !h.hasKey;
+    // 副标题只留 用户(非 root)@主机:端口(非22) + 区域；root 与 22 是绝大多数情况，冗余
     item.innerHTML = `
-      <button class="host-star${isStar ? ' on' : ''}" type="button"
-        title="${isStar ? '取消常用' : '标记为常用'}" aria-label="${isStar ? '取消常用' : '标记为常用'}"
-        aria-pressed="${isStar}">${icon('star')}</button>
+      <span class="host-st"><i class="host-dot ${st}"></i></span>
       <div class="host-main">
-        <div class="host-name">${escapeHtml(h.name)}${!h.hasPassword && !h.hasKey ? '<span class="host-chip">待补全凭据</span>' : ''}</div>
-        <div class="host-sub">${escapeHtml(sub)}</div>
-        <div class="host-sub host-sub-compact">${escapeHtml(compactAddr)}</div>
+        <div class="host-name"><span class="t">${escapeHtml(h.name)}</span>${credMissing
+          ? `<span class="key" title="缺少凭据，编辑主机补全">${icon('key')}</span>` : ''}</div>
+        <div class="host-sub"><span class="ip">${escapeHtml(subAddr)}</span>${region
+          ? `<span class="sep">·</span><span class="reg">${escapeHtml(region)}</span>` : ''}</div>
       </div>
       <div class="host-actions">
-        <button class="hi-clone" title="克隆">${icon('copy')}</button>
-        <button class="hi-edit" title="编辑">${icon('settings')}</button>
-        <button class="hi-del" title="删除">${icon('trash')}</button>
+        <button class="hi-menu" type="button" title="主机操作" aria-label="主机操作">${icon('dots')}</button>
+        <button class="host-star${isStar ? ' on' : ''}" type="button"
+          title="${isStar ? '取消常用' : '标记为常用'}" aria-label="${isStar ? '取消常用' : '标记为常用'}"
+          aria-pressed="${isStar}">${icon('star')}</button>
       </div>`;
-    item.title = sub;
+    item.title = regionCode ? `${addr}  ·  ${regionCode}` : addr;
     // 点击或中键:直接在新标签连接(若当前停留于空白单窗格标签则就地复用)。
     item.addEventListener('click', () => {
       connectHost(h.id, null, { newTab: true });
@@ -232,15 +372,11 @@ export function renderHosts() {
       saveUiPrefs({ favoriteHostIds: [...next] });
       renderHosts();
     };
-    item.querySelector('.host-star').addEventListener('click', starThis);
-    item.querySelector('.hi-clone').addEventListener('click', (e) => { e.stopPropagation(); cloneThis(); });
-    item.querySelector('.hi-edit').addEventListener('click', (e) => { e.stopPropagation(); openHostModal(h); });
-    item.querySelector('.hi-del').addEventListener('click', (e) => { e.stopPropagation(); delThis(); });
-    item.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
-      const hasSession = [...state.sessions.values()].some((s) => s.host.id === h.id && ['connected', 'connecting'].includes(s.status));
-      showCtxMenu(e.clientX, e.clientY, [
+    // 行尾「⋯」与右键菜单共用同一份动作，避免两处文案漂移
+    const menuFor = () => {
+      const hasSession = [...state.sessions.values()].some((s) =>
+        s.host && s.host.id === h.id && ['connected', 'connecting'].includes(s.status));
+      return [
         { label: '连接', run: () => connectHost(h.id, null, { newTab: true }) },
         { label: '在新标签连接', run: () => connectHost(h.id, null, { newTab: true }) },
         ...(hasSession ? [{ label: '切换到已有标签', run: () => connectHost(h.id, null, { reuseExisting: true }) }] : []),
@@ -253,7 +389,18 @@ export function renderHosts() {
         } },
         '-',
         { label: '删除…', danger: true, run: () => delThis() },
-      ]);
+      ];
+    };
+    item.querySelector('.hi-menu').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = e.currentTarget.getBoundingClientRect();
+      showCtxMenu(r.left, r.bottom + 4, menuFor());
+    });
+    item.querySelector('.host-star').addEventListener('click', starThis);
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
+      showCtxMenu(e.clientX, e.clientY, menuFor());
     });
     return item;
   };
@@ -269,6 +416,18 @@ export function isActiveHost(hostId) {
     if (s.host.id === hostId && s.sessionId === state.activeId) return true;
   }
   return false;
+}
+
+/// 会话状态变化时刷新行状态点与窄条胶囊。连接/断开/重连会连续触发，
+/// 节流 120ms；renderHosts 内部会同时更新 #rail-session-status。
+if (typeof window !== 'undefined') {
+  let sessionStatusTimer = null;
+  window.addEventListener('nb:session-status', () => {
+    clearTimeout(sessionStatusTimer);
+    sessionStatusTimer = setTimeout(() => {
+      try { renderHosts(); } catch { /* 启动早期 DOM 尚未就绪 */ }
+    }, 120);
+  });
 }
 
 export function escapeHtml(s) {

@@ -36,7 +36,7 @@ fn defaults() -> Value {
             // 界面偏好:与主机数据无关的视图状态,单放一处避免污染 host 字段。
             // favoriteHostIds 存 id 而非写进 host —— 写进 host 要同步新建 shape /
             // merge_host 白名单 / 导出字段表 / 导入合并四处,漏任一处都是静默丢字段。
-            "ui": { "favoriteHostIds": [], "collapsedGroups": [], "customGroups": [], "hostDensity": "comfortable" },
+            "ui": { "favoriteHostIds": [], "collapsedGroups": [], "customGroups": [], "groupOrder": [], "hostDensity": "comfortable" },
             "clouds": {
                 "tencent": { "key": "", "secret": "", "endpoint": "" },
                 "aliyun": { "key": "", "secret": "", "endpoint": "" }
@@ -1457,7 +1457,7 @@ impl Store {
             "ui": if data["settings"]["ui"].is_object() {
                 data["settings"]["ui"].clone()
             } else {
-                json!({ "favoriteHostIds": [], "collapsedGroups": [], "hostDensity": "comfortable" })
+                json!({ "favoriteHostIds": [], "collapsedGroups": [], "hostDensity": "comfortable", "groupOrder": [] })
             },
             // 设置页默认目录提示用(实际取目录走 commands 的 default_log_dir,
             // 那里还要考虑测试模式隔离)
@@ -1747,9 +1747,9 @@ impl Store {
         // 无限增长只会让配置变大);hostDensity 只接受两个合法值,其余归一为默认。
         if let Some(ui) = patch["ui"].as_object() {
             if data["settings"]["ui"].is_null() || !data["settings"]["ui"].is_object() {
-                data["settings"]["ui"] = json!({ "favoriteHostIds": [], "collapsedGroups": [], "customGroups": [], "hostDensity": "comfortable" });
+                data["settings"]["ui"] = json!({ "favoriteHostIds": [], "collapsedGroups": [], "customGroups": [], "groupOrder": [], "hostDensity": "comfortable" });
             }
-            for key in ["favoriteHostIds", "collapsedGroups", "customGroups"] {
+            for key in ["favoriteHostIds", "collapsedGroups", "customGroups", "groupOrder"] {
                 if let Some(arr) = ui.get(key).and_then(Value::as_array) {
                     let mut seen = std::collections::HashSet::new();
                     let cleaned: Vec<Value> = arr

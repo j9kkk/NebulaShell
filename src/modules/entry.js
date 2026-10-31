@@ -7,6 +7,7 @@ import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, b
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
 import { bindHostLibrary, openHostLibrary } from './host-library.js';
 import { bindSidebarPeek, resetPeekOnToggle } from './sidebar-peek.js';
+import { bindRailCards, closeRailCard } from './rail-cards.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator, updateModelEffortBadge } from './ai.js';
 import {
@@ -218,6 +219,7 @@ function toggleSidebar() {
   sb.classList.remove('hidden');
   // 切换时清掉浮出态:否则展开态会带着 peek-open,收起后再悬停的判断也会错乱
   resetPeekOnToggle();
+  closeRailCard();
   $('#sidebar-resizer').classList.toggle('hidden', collapsed);
   syncSidebarToggle(collapsed);
   fitAllVisible();
@@ -543,8 +545,7 @@ function setupWorkspaceCommands() {
   const buttons = {
     'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
-    'btn-add-host': 'host.new', 'btn-host-library': 'hosts.library', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
-    'rail-add-host': 'host.new',
+    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
   };
   // 元素可能不存在(按钮随设计演进被移除到菜单里):这里必须判空,
   // 否则 boot 会在一句 TypeError 上中断,后续所有连接/终端接线都注册不上。
@@ -602,6 +603,7 @@ export function bindEvents() {
     inp.focus();
   });
   bindSidebarPeek();
+  bindRailCards();
   $('#host-auth').addEventListener('change', toggleAuthRows);
 
   // 认证方式滑块:点击分段项切换 + 键盘左右箭头支持

@@ -12,7 +12,7 @@
 import { $, api, askConfirm, askPrompt, bindMenuButton, closeModal, openModal, setModalEscapeHandler, showCtxMenu, state, toast } from './core.js';
 import { executeCommand } from './commands.js';
 import { icon } from '../shared/icons.js';
-import { DEFAULT_GROUP, escapeHtml, groupOf, isCloudGroup, openHostModal, refreshHosts, renderHosts, saveUiPrefs, STAR_NOTE, uiPrefs } from './hosts.js';
+import { DEFAULT_GROUP, escapeHtml, groupOf, isCloudGroup, openHostModal, refreshHosts, renderHosts, saveUiPrefs, sortGroupsByPref, STAR_NOTE, uiPrefs } from './hosts.js';
 import { startMouseDrag } from '../shared/drag.js';
 import { connectHost } from './terminal.js';
 
@@ -20,6 +20,7 @@ let selected = new Set();
 let activeGroup = '';     // '' = 全部
 let keyword = '';
 let dragEndedAt = 0;
+let groupDragEndedAt = 0;
 // 分组原地编辑会话(取代第二层 askPrompt 弹窗)。渲染以它为准:任何重绘
 // (renderLibrary / nebula:hosts-changed)都从该状态恢复草稿并重新聚焦输入框。
 let editing = null; // { mode: 'create'|'rename', from, moveIds, draft, error, _focused }
@@ -71,6 +72,9 @@ function groupModel() {
   for (const g of [...custom, ...extra]) {
     (isCloudGroup(g, hostsArr, custom) ? cloud : real).push(g);
   }
+  // 用户拖拽过的次序优先(settings.ui.groupOrder);没记录过的分组按原相对
+  // 次序排在后面 —— 新建/首次出现的组不会插进用户排好的队列中间。
+  real.splice(0, real.length, ...sortGroupsByPref(real));
   // 默认组「我的主机」是收件箱桶:固定排在「分组」段最后,不随主机出现顺序跳动
   const di = real.indexOf(DEFAULT_GROUP);
   if (di !== -1) real.splice(di, 1), real.push(DEFAULT_GROUP);
@@ -143,7 +147,7 @@ function updateBatchBar() {
   }
 }
 
-function groupItem({ name, label, count, icon: ic, fav = false, cloud = false, droppable, editable = false, title = '' }) {
+function groupItem({ name, label, count, icon: ic, fav = false, cloud = false, droppable, editable = false, draggable = false, title = '' }) {
   const el = document.createElement('div');
   el.className = 'hl-group'
     + (activeGroup === name ? ' on' : '')
@@ -152,14 +156,18 @@ function groupItem({ name, label, count, icon: ic, fav = false, cloud = false, d
     + (editable ? ' editable' : '');
   el.dataset.group = name;
   el.dataset.droppable = String(droppable);
+  if (draggable) el.dataset.draggable = 'true';
   if (title) el.title = title;
   el.innerHTML = `${icon(ic, { size: 12 })}<span class="hlg-name">${escapeHtml(label)}</span><span class="hlg-n">${count}</span>`;
   el.addEventListener('click', () => {
+    // 拖拽结束的余波不算点击(否则拖完顺手换掉当前筛选)
+    if (Date.now() - groupDragEndedAt < 300) return;
     if (activeGroup === name) return; // 已是当前视图,不重绘
     activeGroup = name;
     renderLibrary();
   });
   if (editable) bindGroupActions(el, name);
+  if (draggable) bindGroupDrag(el, name);
   return el;
 }
 
@@ -235,6 +243,8 @@ function buildEditorRow() {
 function renderGroups() {
   const box = $('#hl-groups');
   if (!box) return;
+  // 重绘会清空 DOM:拖拽排序/改名后不要把左栏滚回顶部
+  const keepTop = box.scrollTop;
   box.innerHTML = '';
   const fav = favSet();
   const model = groupModel();
@@ -264,7 +274,9 @@ function renderGroups() {
       icon: 'folder',
       droppable: true,
       editable: g !== DEFAULT_GROUP,
-      title: g === DEFAULT_GROUP ? '默认分组:未指定分组的主机' : '',
+      // 默认组是收件箱桶,位置由模型钉在段尾,拖动它只会"拖了没反应",禁用
+      draggable: g !== DEFAULT_GROUP,
+      title: g === DEFAULT_GROUP ? '默认分组:未指定分组的主机' : '拖动可调整分组顺序',
     }));
   }
 
@@ -301,6 +313,9 @@ function renderGroups() {
       }));
     }
   }
+
+  // 重绘后恢复滚动位置(拖拽排序后列表不应跳回顶部)
+  box.scrollTop = keepTop;
 
   // 重绘后恢复编辑焦点(草稿在 editing 里);重命名首次聚焦时全选旧名
   if (editing) {
@@ -551,7 +566,12 @@ async function commitRename(from, to) {
   try {
     if (ids.length) await api('hosts:bulkUpdate', { ids, patch: { group: to } });
     const custom = uiPrefs().customGroups;
-    if (custom.includes(from)) saveUiPrefs({ customGroups: custom.map((g) => (g === from ? to : g)) });
+    const order = uiPrefs().groupOrder;
+    // 排序表里的名字跟着改名走,否则该组会被当成"没记录过"掉到队列末尾
+    saveUiPrefs({
+      customGroups: custom.includes(from) ? custom.map((g) => (g === from ? to : g)) : custom,
+      groupOrder: order.includes(from) ? order.map((g) => (g === from ? to : g)) : order,
+    });
     if (activeGroup === from) activeGroup = to;
     await refreshHosts();
   } catch (e) {
@@ -576,7 +596,11 @@ async function deleteGroup(name) {
     return;
   }
   const custom = uiPrefs().customGroups;
-  if (custom.includes(name)) saveUiPrefs({ customGroups: custom.filter((g) => g !== name) });
+  const order = uiPrefs().groupOrder;
+  saveUiPrefs({
+    customGroups: custom.includes(name) ? custom.filter((g) => g !== name) : custom,
+    groupOrder: order.filter((g) => g !== name),
+  });
   if (activeGroup === name) activeGroup = '';
   await refreshHosts();
   renderLibrary();
@@ -596,6 +620,71 @@ function bindRowDrag(tr, host) {
     e.preventDefault();
     dragStart(e, host, tr);
   });
+}
+
+/// 分组目录排序:整行按下即待拖,位移过阈值才进入拖拽(单击仍是筛选)。
+/// 只允许「分组」段里的真实目录互相排序 —— 全部/常用是视图、云厂商是自动归类、
+/// 「新建分组」是动作行,默认组「我的主机」按设计钉在段尾,都不参与。
+function bindGroupDrag(el, name) {
+  el.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    // 行内 ✎/🗑 与重命名输入框自己处理点击
+    if (e.target.closest?.('.hlg-acts, .hlg-input')) return;
+    dragGroupStart(e, name, el);
+  });
+}
+
+function dragGroupStart(ev, name, el) {
+  const rows = [...document.querySelectorAll('#hl-groups .hl-group[data-draggable="true"]')];
+  let ghost = null;
+  let target = null; // { name, after }
+  const clearHints = () => {
+    for (const n of rows) n.classList.remove('insert-top', 'insert-bottom');
+  };
+  startMouseDrag(ev, el, {
+    onMove: (e) => {
+      if (!ghost) {
+        ghost = document.createElement('div');
+        ghost.className = 'hl-dragon';
+        ghost.textContent = name;
+        document.body.appendChild(ghost);
+        el.classList.add('dragging');
+      }
+      ghost.style.left = `${e.clientX + 12}px`;
+      ghost.style.top = `${e.clientY + 8}px`;
+      clearHints();
+      target = null;
+      const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('#hl-groups .hl-group');
+      if (over && over !== el && over.dataset.draggable === 'true') {
+        const rect = over.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        over.classList.add(after ? 'insert-bottom' : 'insert-top');
+        target = { name: over.dataset.group, after };
+      }
+    },
+    onEnd: () => {
+      groupDragEndedAt = Date.now();
+      clearHints();
+      ghost?.remove();
+      el.classList.remove('dragging');
+      if (target) reorderGroups(name, target.name, target.after);
+      else renderLibrary(); // 落在空白处 = 次序不变,但要清掉拖拽态
+    },
+  });
+}
+
+/// 把 from 插到 to 的前/后,写回 settings.ui.groupOrder。默认组固定段尾,
+/// 不进这个数组(写进去也会被 groupModel 挪回最后)。
+function reorderGroups(from, to, after) {
+  if (from === to) return;
+  const order = groupModel().real.filter((g) => g !== from && g !== DEFAULT_GROUP);
+  const at = order.indexOf(to);
+  if (at === -1) return;
+  order.splice(after ? at + 1 : at, 0, from);
+  saveUiPrefs({ groupOrder: order });
+  renderLibrary();
+  renderHosts(); // 侧栏分组条读同一份次序
+  toast(`已调整「${from}」的顺序`, 'success');
 }
 
 function dragStart(ev, host, tr) {
