@@ -31,6 +31,7 @@ import { buildNativeMenu, nativeMenuSnapshot } from './native-menu.js';
 import { bindWindowControls, toggleFullscreen } from './window-controls.js';
 import { buildMenubar, menubarSnapshot } from './menubar.js';
 import { hydrateIcons } from '../shared/icons.js';
+import { installUiContract } from './ui-contract.js';
 
 export function termFromEvent(e) {
   const paneEl = e.target && e.target.closest ? e.target.closest('.term-pane') : null;
@@ -1371,6 +1372,10 @@ export async function boot() {
 }
 
 boot();
+
+// UI 布局契约自检:只在 ?ui-contract / localStorage 开关 / 测试模式下挂载,
+// 生产默认不安装观察器(见 modules/ui-contract.js)。
+installUiContract();
 
 // 端到端测试钩子(仅 Tauri 测试桥环境注入):模拟键盘输入走完整广播/历史链路
 if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {

@@ -61,9 +61,14 @@ async function fixture() {
   const state = { cloudResults: [], hosts: [], sessions: new Map(), activeId: null };
   let fingerprints = [];
   const context = vm.createContext({
+    // hosts.js 的 refreshHosts 会 dispatchEvent 广播变更;vm 上下文里没有 DOM 的
+    // Event/document.dispatchEvent,桩上补齐,否则刷新链在 connect 之前就抛错。
+    Event: class { constructor(type) { this.type = type; } },
     document: {
       createElement: () => new Element(),
       querySelectorAll: () => $('#cloud-tbody').querySelectorAll('.cloud-check:checked'),
+      getElementById: (id) => $(`#${id}`),
+      dispatchEvent() {},
     },
   });
   const core = {
@@ -84,7 +89,7 @@ async function fixture() {
   }, { context });
   const modules = new Map([
     ['./core.js', synthetic(core)],
-    ['./terminal.js', synthetic({ connectHost: (id) => connections.push(id), refreshPickers: () => {} })],
+    ['./terminal.js', synthetic({ connectHost: (id) => connections.push(id), rankPickerHosts: (q, list) => ({ hosts: list || [], filtered: false }), refreshPickers: () => {} })],
     ['../shared/icons.js', synthetic({ icon: (name) => `<svg data-icon="${name}"></svg>` })],
   ]);
   for (const name of ['hosts', 'cloud']) {
