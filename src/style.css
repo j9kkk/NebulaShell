@@ -4560,3 +4560,368 @@ body.platform-darwin.is-fullscreen #titlebar { padding-left: 10px; }
 body.platform-darwin .tb-traffic { order: -2; }
 body.platform-darwin #btn-sidebar-toggle { order: -1; margin-right: 4px; }
 body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
+
+/* ===== 主机导入 / 导出(简化版) =====
+   两张小卡片,取代原来的 960×620 迁移工作区:
+   - 导出 460 宽:范围在入口决定,卡片里只有数量/分组/凭据说明/路径;
+   - 导入 560 宽:选文件 → 列表 → 冲突(第三张小卡)→ 一次性写入。
+   卡片本身不滚动,只有主机列表内部滚动,保证高度可预期。 */
+.modal-card.io-card {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: calc(100vh - 110px);
+}
+.modal-card.io-export { width: 520px; }
+.modal-card.io-import,
+.modal-card.io-conflict { width: 560px; }
+
+.io-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 12px 10px 16px;
+  flex: none;
+}
+.io-head h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.io-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--accent);
+}
+.io-body {
+  padding: 0 16px 4px;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.io-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  flex: none;
+}
+.io-hint {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 只读信息行(导出范围/分组/凭据) */
+.io-rows { display: flex; flex-direction: column; }
+.io-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.io-row + .io-row { border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.io-row b {
+  color: var(--text);
+  font-weight: 500;
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 导出路径:与设置页「缓存目录」同一套 .dir-field 控件(等宽输入框 + 框内文件夹按钮) */
+.io-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.io-field-label {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.io-field .dir-field { flex: 1; min-width: 0; }
+.io-field .dir-path { height: 30px; font-size: 11px; }
+
+/* 开关行:项目标准 .switch(轨道 + 滑块由 .switch-slider 提供,不用自定义外观) */
+.io-switches {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+}
+.io-switches + .io-switches { border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.io-switch-note {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.io-pass-inline {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  margin-left: 4px;
+}
+.io-pass-err {
+  min-height: 0;
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--danger, #ff6b6b);
+}
+.io-pass-err:empty { display: none; }
+
+/* 导入:拖放区 */
+.io-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+  padding: 26px 16px 24px;
+  border: 1px dashed color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: var(--radius);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.io-drop:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+.io-drop-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--muted);
+}
+.io-drop-ico .mi { display: flex; }
+.io-drop-t { font-size: 12.5px; color: var(--text); }
+.io-drop-s { font-size: 10.5px; color: var(--muted); }
+
+/* 导入:已选文件 */
+.io-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg2);
+}
+.io-file-ico { display: flex; color: var(--muted); }
+.io-file-main { flex: 1; min-width: 0; }
+.io-file-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.io-file-path .io-dir { color: var(--muted); }
+.io-file-path b { font-weight: 500; color: var(--text); }
+
+/* 导入:旧版口令 */
+.io-pass {
+  margin: 2px 0 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn-text) 35%, transparent);
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--warn-text) 7%, transparent);
+}
+.io-pass-label { margin-bottom: 8px; font-size: 11.5px; color: var(--warn-text); }
+.io-pass-row { display: flex; gap: 8px; }
+.io-pass-row .inp { flex: 1; min-width: 0; }
+
+/* 导入:主机列表 */
+.io-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.io-list-head,
+.io-item {
+  display: grid;
+  grid-template-columns: 1fr 148px 78px 32px 58px;
+  gap: 8px;
+  align-items: center;
+  padding: 0 10px;
+}
+.io-list-head {
+  height: 26px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+/* 最多只渲染 8 行(其余折叠成「还有 N 台」),所以常态不需要滚动条;
+   留 auto 只是兜底。滚动条一出现 WebKit 会让行宽算进滚动条宽度,
+   右侧状态列被裁 9px —— 用 8 行满高把这个路径从常态里去掉。 */
+.io-list-body { max-height: 272px; overflow-y: auto; overflow-x: hidden; }
+.io-item {
+  height: 34px;
+  font-size: 11.5px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+}
+.io-item:last-child { border-bottom: 0; }
+.io-r-name,
+.io-r-addr,
+.io-r-group,
+.io-r-diff { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.io-r-name { color: var(--text); }
+.io-r-addr { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+.io-r-group { font-size: 10.5px; color: var(--muted); }
+.io-r-cred { font-size: 10.5px; }
+.io-r-cred.yes { color: var(--accent2); }
+.io-r-cred.no { color: var(--muted); }
+.io-r-kind {
+  justify-self: end;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.io-r-kind.add { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.io-r-kind.credOnly { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 12%, transparent); }
+.io-r-kind.conflict { color: var(--warn-text); background: color-mix(in srgb, var(--warn-text) 12%, transparent); }
+.io-list-more {
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* 统计条 */
+.io-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0 4px;
+}
+.io-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.io-chip b { color: var(--text); font-family: var(--font-mono); font-weight: 500; }
+.io-chip.warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn-text) 40%, transparent); }
+
+/* 导入:一次性写入(不伪造逐台百分比) */
+.io-progress { padding: 6px 0 10px; }
+.io-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.io-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.io-bar i {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: io-slide 1.15s ease-in-out infinite;
+}
+@keyframes io-slide {
+  from { transform: translateX(-105%); }
+  to { transform: translateX(290%); }
+}
+.io-progress-note { margin-top: 8px; font-size: 10.5px; color: var(--muted); }
+
+/* 冲突:两选一 */
+.io-opts { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 10px; }
+.io-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--text) 2%, transparent);
+}
+.io-opt.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.io-radio {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border: 1px solid color-mix(in srgb, var(--text) 30%, transparent);
+  border-radius: 50%;
+}
+.io-opt.on .io-radio {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 3px, transparent 3.5px);
+}
+.io-opt-t { display: block; font-size: 12px; color: var(--text); }
+.io-opt-d { display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted); }
+
+.io-conflict .io-item {
+  grid-template-columns: 1fr 168px minmax(0, 1fr);
+  height: auto;
+  padding: 7px 10px;
+  align-items: start;
+}
+/* 差异最多两行:多行时不裁掉关键信息,超长再折 + title 兜底 */
+.io-r-diff {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--warn-text);
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 主机库工具栏:导出所选用强调色 + 计数徽标,和「导出全部」区分;不填色,以免与新建主机抢层级 */
+.btn.is-scoped:not(:disabled) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.btn-count {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 15px;
+}

@@ -106,12 +106,10 @@ fn import_export_roundtrip() {
         .save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "pa" }))
         .unwrap();
     // 带凭据导出必须提供口令
-    let exported = store.export_hosts(Some("correct horse battery")).unwrap();
+    let exported = store.export_hosts().unwrap();
     let text = serde_json::to_string(&exported).unwrap();
     let store2 = tmp_store("io2");
-    let r = store2
-        .import_hosts(&text, Some("correct horse battery"))
-        .unwrap();
+    let r = store2.import_hosts(&text, None).unwrap();
     assert_eq!(r["added"], json!(1));
     assert_eq!(r["withCredentials"], json!(1), "应恢复凭据");
     let list = store2.list_hosts();
@@ -119,17 +117,15 @@ fn import_export_roundtrip() {
     let full = store2.host_full(list[0]["id"].as_str().unwrap()).unwrap();
     assert_eq!(full["password"], json!("pa"));
     // 重复导入去重
-    let r2 = store2
-        .import_hosts(&text, Some("correct horse battery"))
-        .unwrap();
+    let r2 = store2.import_hosts(&text, None).unwrap();
     assert_eq!(r2["added"], json!(0));
     let _ = std::fs::remove_dir_all(&store.dir);
     let _ = std::fs::remove_dir_all(&store2.dir);
 }
 
-/// 安全回归:不带口令导出时,文件里**不得出现任何明文凭据**。
+/// 安全回归:导出文件里**不得出现任何明文凭据**,且导入后能自动恢复。
 #[test]
-fn export_without_passphrase_contains_no_credentials() {
+fn export_never_contains_plaintext_credentials() {
     let store = tmp_store("io-nocred");
     store
         .save_host(&json!({
@@ -137,72 +133,76 @@ fn export_without_passphrase_contains_no_credentials() {
             "password": "SuperSecret123", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----"
         }))
         .unwrap();
-    let exported = store.export_hosts(None).unwrap();
+    let exported = store.export_hosts().unwrap();
     let text = serde_json::to_string(&exported).unwrap();
 
-    assert!(
-        !text.contains("SuperSecret123"),
-        "导出文件泄漏了明文密码: {}",
-        text
-    );
-    assert!(
-        !text.contains("BEGIN OPENSSH PRIVATE KEY"),
-        "导出文件泄漏了明文私钥"
-    );
-    assert_eq!(exported["credentialsIncluded"], json!(false));
-    assert!(exported["credentials"].is_null());
-    // 主机信息本身仍应导出
+    assert!(!text.contains("SuperSecret123"), "导出文件泄漏了明文密码: {}", text);
+    assert!(!text.contains("BEGIN OPENSSH PRIVATE KEY"), "导出文件泄漏了明文私钥");
+    assert_eq!(exported["credentialsIncluded"], json!(true));
+    assert_eq!(exported["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
+    // 主机信息本身仍应明文可读
     assert_eq!(exported["hosts"].as_array().unwrap().len(), 1);
     assert_eq!(exported["hosts"][0]["host"], json!("10.0.0.1"));
 
-    // 导入该文件:主机到位,但凭据应缺失(需用户重填)
+    // 导入该文件:主机与凭据都到位,不需要口令
     let store2 = tmp_store("io-nocred2");
     let r = store2.import_hosts(&text, None).unwrap();
     assert_eq!(r["added"], json!(1));
-    assert_eq!(r["withCredentials"], json!(0));
+    assert_eq!(r["withCredentials"], json!(1));
     let full = store2
         .host_full(store2.list_hosts()[0]["id"].as_str().unwrap())
         .unwrap();
-    assert_eq!(full["password"], json!(""), "无凭据导出不应恢复出密码");
+    assert_eq!(full["password"], json!("SuperSecret123"));
     let _ = std::fs::remove_dir_all(&store.dir);
     let _ = std::fs::remove_dir_all(&store2.dir);
 }
 
-/// 加密导出:密文不得包含明文,且错误口令必须失败。
+/// v4:凭据自动加密(内置密钥),导入不需要口令;旧版 v3 口令文件仍走口令通道。
 #[test]
-fn encrypted_export_is_confidential_and_passphrase_checked() {
+fn v4_export_needs_no_passphrase_and_legacy_still_does() {
     let store = tmp_store("io-enc");
     store
         .save_host(&json!({ "name": "b", "host": "10.0.0.2", "password": "TopSecret!" }))
         .unwrap();
-    let exported = store.export_hosts(Some("my-passphrase-1")).unwrap();
+    let exported = store.export_hosts().unwrap();
     let text = serde_json::to_string(&exported).unwrap();
+    assert_eq!(exported["version"], json!(4));
+    assert_eq!(exported["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
     assert!(!text.contains("TopSecret!"), "加密导出不应含明文");
-    assert_eq!(exported["credentialsIncluded"], json!(true));
 
-    // 错误口令:必须报错,不能悄悄导入空凭据或 panic
-    let wrong = tmp_store("io-enc-wrong");
-    let e = wrong.import_hosts(&text, Some("not-the-passphrase"));
-    assert!(e.is_err(), "错误口令应失败,实际: {:?}", e);
-    assert!(wrong.list_hosts().is_empty(), "失败时不应写入任何主机");
-
-    // 缺失口令:也应失败并提示
-    let missing = tmp_store("io-enc-missing");
-    assert!(missing.import_hosts(&text, None).is_err());
-
-    // 正确口令:凭据完整恢复(含解密后的明文)
-    let ok = tmp_store("io-enc-ok");
-    let r = ok.import_hosts(&text, Some("my-passphrase-1")).unwrap();
+    // 同一台机器:新库不需要口令即可导入并恢复凭据
+    let fresh = tmp_store("io-enc-fresh");
+    let r = fresh.import_hosts(&text, None).unwrap();
     assert_eq!(r["added"], json!(1));
-    assert_eq!(r["withCredentials"], json!(1));
-    let full = ok
-        .host_full(ok.list_hosts()[0]["id"].as_str().unwrap())
+    let full = fresh
+        .host_full(fresh.list_hosts()[0]["id"].as_str().unwrap())
         .unwrap();
     assert_eq!(full["password"], json!("TopSecret!"));
 
+    // 旧版 v3 文件(口令加密的字符串凭据)必须仍然可用:没有口令要报特定错误
+    let legacy = json!({
+        "app": "nebulashell", "version": 3,
+        "hosts": [{ "id": "src-1", "name": "old", "host": "10.0.0.77", "port": 22, "username": "root" }],
+        "credentials": crate::config::encrypt_with_passphrase(
+            "old-pass",
+            br#"[{"id":"src-1","password":"legacy-secret"}]"#,
+        ).unwrap()
+    });
+    let legacy_text = serde_json::to_string(&legacy).unwrap();
+    let needs = tmp_store("io-legacy-needs");
+    assert_eq!(
+        needs.import_hosts(&legacy_text, None).unwrap_err(),
+        "NEEDS_PASSPHRASE"
+    );
+    let ok = tmp_store("io-legacy-ok");
+    let r = ok.import_hosts(&legacy_text, Some("old-pass")).unwrap();
+    assert_eq!(r["added"], json!(1));
+    let full = ok.host_full(ok.list_hosts()[0]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(full["password"], json!("legacy-secret"));
+
     let _ = std::fs::remove_dir_all(&store.dir);
-    let _ = std::fs::remove_dir_all(&wrong.dir);
-    let _ = std::fs::remove_dir_all(&missing.dir);
+    let _ = std::fs::remove_dir_all(&fresh.dir);
+    let _ = std::fs::remove_dir_all(&needs.dir);
     let _ = std::fs::remove_dir_all(&ok.dir);
 }
 
@@ -236,8 +236,8 @@ fn export_ciphertext_is_nondeterministic() {
     store
         .save_host(&json!({ "name": "c", "host": "10.0.0.3", "password": "pw" }))
         .unwrap();
-    let a = store.export_hosts(Some("same-passphrase")).unwrap();
-    let b = store.export_hosts(Some("same-passphrase")).unwrap();
+    let a = store.export_hosts().unwrap();
+    let b = store.export_hosts().unwrap();
     assert_ne!(
         a["credentials"], b["credentials"],
         "两次导出的密文不应相同(salt/nonce 必须随机)"
@@ -698,7 +698,7 @@ fn host_session_log_override_is_normalized() {
         .unwrap();
     assert_eq!(h3["sessionLog"], json!("default"));
     // 导出包含该字段
-    let exported = store.export_hosts(None).unwrap();
+    let exported = store.export_hosts().unwrap();
     assert_eq!(exported["hosts"][0]["sessionLog"], json!("default"));
 }
 
@@ -950,4 +950,190 @@ fn settings_ui_roundtrip_and_sanitize() {
     let again = store.get_settings();
     assert_eq!(again["ui"]["hostDensity"], json!("comfortable"));
     let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// 范围导出:只导出指定主机,并自动带上被依赖的跳板机(闭包)。
+/// 如果只导 a 而不带它的跳板机,导入端 validate_jump_graph 会报"跳板机不存在"。
+#[test]
+fn export_scope_ids_carries_jump_closure() {
+    let store = tmp_store("scope-ids");
+    let jump = store
+        .save_host(&json!({ "name": "jump-1", "host": "10.9.0.1", "username": "root", "password": "j" }))
+        .unwrap();
+    let jump_id = jump["id"].as_str().unwrap().to_string();
+    let a = store
+        .save_host(&json!({ "name": "a", "host": "10.0.0.1", "jumpIds": [jump_id.clone()], "password": "pa" }))
+        .unwrap();
+    store
+        .save_host(&json!({ "name": "b", "host": "10.0.0.2", "password": "pb" }))
+        .unwrap();
+
+    let scope = json!({ "mode": "ids", "ids": [a["id"]] });
+    let out = store.export_hosts_scoped(&scope, None, false).unwrap();
+    let names: Vec<String> = out["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(names.len(), 2, "选中 1 台 + 被依赖的跳板机 1 台,不应带 b");
+    assert!(names.contains(&"a".to_string()) && names.contains(&"jump-1".to_string()));
+    assert_eq!(out["includedJumps"], json!(1), "提示层要知道带了几台跳板机");
+    assert!(!out["credentials"]["data"].as_str().unwrap_or("").is_empty(), "凭据应自动打包");
+
+    // v4:凭据始终打包(内置密钥加密),不再取决于是否给口令
+    assert_eq!(out["credentialsIncluded"], json!(true));
+    assert_eq!(out["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
+    assert!(out["credentials"]["data"].as_str().unwrap().len() > 10);
+}
+
+#[test]
+fn export_scope_ids_rejects_empty_and_missing() {
+    let store = tmp_store("scope-bad");
+    store.save_host(&json!({ "name": "a", "host": "10.0.0.1" })).unwrap();
+    let empty = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false);
+    assert!(empty.is_err(), "空选择应报错而不是悄悄导出全量");
+    let missing = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["nope"] }), None, false);
+    assert!(missing.unwrap_err().contains("不存在"));
+    let bad_mode = store.export_hosts_scoped(&json!({ "mode": "group" }), None, false);
+    assert!(bad_mode.is_err(), "未知范围必须报错,不能退化成全量");
+}
+
+/// 预检 + 冲突决策:inspect 不写盘;apply 按 skip/overwrite 落盘,并留下备份。
+#[test]
+fn inspect_then_apply_conflict_decisions() {
+    let src = tmp_store("ui-src");
+    src.save_host(&json!({ "name": "cache", "host": "10.0.0.5", "port": 22, "username": "admin", "password": "pw-cache" }))
+        .unwrap();
+    src.save_host(&json!({ "name": "db", "host": "10.0.0.6", "port": 22, "username": "root", "password": "pw-db" }))
+        .unwrap();
+    let text = serde_json::to_string(&src.export_hosts().unwrap()).unwrap();
+
+    // 先整份导进另一个库(建立 importSourceId 关联)
+    let dst = tmp_store("ui-dst");
+    dst.import_hosts(&text, None).unwrap();
+    let cache_id = dst
+        .list_hosts()
+        .iter()
+        .find(|h| h["name"] == json!("cache"))
+        .map(|h| h["id"].as_str().unwrap().to_string())
+        .unwrap();
+    // 用户手动把端口改成了 2222 —— 再导入时源 id 仍能匹配上,字段不同 = 冲突
+    dst.save_host(&json!({ "id": cache_id, "name": "cache", "host": "10.0.0.5", "port": 2222, "username": "admin" }))
+        .unwrap();
+
+    let before = dst.list_hosts().len();
+    let plan = dst.inspect_hosts(&text, None).unwrap();
+    assert_eq!(plan["counts"]["conflict"], json!(1), "端口不同应判为冲突");
+    assert_eq!(plan["counts"]["identical"], json!(1), "另一台完全一致");
+    assert_eq!(plan["counts"]["add"], json!(0));
+    assert_eq!(dst.list_hosts().len(), before, "预检不得写盘");
+    let rows = plan["rows"].as_array().unwrap();
+    let conflict_row = rows.iter().find(|r| r["kind"] == json!("conflict")).unwrap();
+    assert!(conflict_row["diff"].as_array().unwrap().iter().any(|d| d.as_str().unwrap_or("").contains("端口")));
+    let key = conflict_row["key"].as_str().unwrap().to_string();
+
+    // 跳过:端口保持用户改后的 2222
+    let skipped = dst
+        .apply_hosts(&text, None, &json!({ key.clone(): "skip" }))
+        .unwrap();
+    assert_eq!(skipped["overwritten"], json!(0));
+    let after_skip = dst
+        .host_full(&cache_id)
+        .unwrap();
+    assert_eq!(after_skip["port"], json!(2222), "跳过时本地配置不动");
+    assert!(skipped["backup"].as_str().unwrap().contains("nebulashell-backup-"));
+
+    // 覆盖:把端口和凭据恢复成文件里的值
+    let applied = dst
+        .apply_hosts(&text, None, &json!({ key: "overwrite" }))
+        .unwrap();
+    assert_eq!(applied["overwritten"], json!(1));
+    let after_over = dst.host_full(&cache_id).unwrap();
+    assert_eq!(after_over["port"], json!(22));
+    assert_eq!(after_over["password"], json!("pw-cache"));
+
+    let _ = std::fs::remove_dir_all(&src.dir);
+    let _ = std::fs::remove_dir_all(&dst.dir);
+}
+
+/// 可选口令通道:同一个 v4 结构里,alg 决定用内置密钥还是用户口令。
+#[test]
+fn optional_passphrase_channel_roundtrip() {
+    let store = tmp_store("io-pass");
+    store
+        .save_host(&json!({ "name": "p", "host": "10.9.0.1", "password": "PassSecret!" }))
+        .unwrap();
+    let exported = store
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("correct horse battery"), false)
+        .unwrap();
+    let text = serde_json::to_string(&exported).unwrap();
+    assert_eq!(exported["version"], json!(4));
+    assert_eq!(exported["credentials"]["alg"], json!("passphrase-scrypt/v1"));
+    assert!(!text.contains("PassSecret!"), "口令导出也不得含明文");
+
+    let fresh = tmp_store("io-pass-fresh");
+    assert_eq!(
+        fresh.import_hosts(&text, None).unwrap_err(),
+        "NEEDS_PASSPHRASE",
+        "口令文件不缺口令就该要口令"
+    );
+    assert!(fresh
+        .import_hosts(&text, Some("wrong password"))
+        .unwrap_err()
+        .contains("口令错误"));
+    let r = fresh.import_hosts(&text, Some("correct horse battery")).unwrap();
+    assert_eq!(r["added"], json!(1));
+    let full = fresh.host_full(fresh.list_hosts()[0]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(full["password"], json!("PassSecret!"));
+
+    // 同一个库里,无口令导出仍走内置通道(开关默认关)
+    let plain = store.export_hosts().unwrap();
+    assert_eq!(plain["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
+
+    let _ = std::fs::remove_dir_all(&store.dir);
+    let _ = std::fs::remove_dir_all(&fresh.dir);
+}
+
+/// 可选「导出主机密钥」:私钥内容随凭据一起加密;导入时落到 keys/ 并 0600。
+#[test]
+fn optional_private_key_bundle_roundtrip() {
+    let store = tmp_store("io-key");
+    let key_path = store.dir.join("id_test_key");
+    std::fs::write(&key_path, "-----BEGIN OPENSSH PRIVATE KEY-----\nABC\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    store
+        .save_host(&json!({
+            "name": "k", "host": "10.9.1.1", "username": "root",
+            "authType": "key", "keyPath": key_path.to_string_lossy()
+        }))
+        .unwrap();
+
+    let off = store.export_hosts().unwrap();
+    assert_eq!(off["includedKeys"], json!(0), "默认不打包私钥");
+    let text_off = serde_json::to_string(&off).unwrap();
+    assert!(!text_off.contains("BEGIN OPENSSH PRIVATE KEY"));
+
+    let on = store
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true)
+        .unwrap();
+    assert_eq!(on["includedKeys"], json!(1));
+    let text_on = serde_json::to_string(&on).unwrap();
+    assert!(!text_on.contains("BEGIN OPENSSH PRIVATE KEY"), "私钥必须密文传输");
+
+    let fresh = tmp_store("io-key-fresh");
+    fresh.import_hosts(&text_on, None).unwrap();
+    let host = &fresh.list_hosts()[0];
+    let installed = host["keyPath"].as_str().unwrap();
+    assert!(installed.starts_with(&*fresh.dir.join("keys").to_string_lossy()), "应落到 keys/: {}", installed);
+    let content = std::fs::read_to_string(installed).unwrap();
+    assert!(content.contains("BEGIN OPENSSH PRIVATE KEY"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(installed).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "私钥文件必须 0600");
+    }
+
+    let _ = std::fs::remove_dir_all(&store.dir);
+    let _ = std::fs::remove_dir_all(&fresh.dir);
 }

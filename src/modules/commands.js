@@ -91,9 +91,11 @@ export function commandMenuItem(id, ctx, overrides = {}) {
   const info = commandState(id, ctx);
   if (!command || !info) return null;
   const shortcut = command.shortcut === undefined ? id : command.shortcut;
+  // 个别菜单(侧栏 ⠇)要求名称干净:不带 dialog 自动追加的「…」
+  const label = overrides.noEllipsis ? info.label.replace(/…$/, '') : info.label;
   return {
     command: id,
-    label: info.label,
+    label,
     key: shortcut ? accelOf(shortcut) : '',
     disabled: !info.enabled,
     reason: info.reason,

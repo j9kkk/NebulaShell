@@ -6,6 +6,7 @@ import { bindCommandButtons, commandMenuItem, commandState, executeCommand, list
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
 import { bindHostLibrary, openHostLibrary } from './host-library.js';
+import { openExportDialog, openImportDialog, setupTransfer } from './transfer.js';
 import { bindSidebarPeek, resetPeekOnToggle } from './sidebar-peek.js';
 import { bindRailCards, closeRailCard } from './rail-cards.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
@@ -96,16 +97,16 @@ function splitMenuItems() {
 /// 「批量执行」原先占着侧栏一个常驻按钮,频率远低于新建主机,一并下沉到这里。
 function hostManageItems() {
   return [
-    commandMenuItem('cloud.import'),
+    commandMenuItem('cloud.import', undefined, { noEllipsis: true }),
     '-',
-    commandMenuItem('hosts.library', undefined, { label: '主机库(批量管理)…' }),
-    commandMenuItem('tools.batch', undefined, { label: '批量执行…' }),
+    commandMenuItem('hosts.library', undefined, { label: '主机管理', noEllipsis: true }),
+    commandMenuItem('tools.batch', undefined, { label: '批量执行', noEllipsis: true }),
     '-',
-    commandMenuItem('hosts.import'),
-    commandMenuItem('hosts.export'),
+    commandMenuItem('hosts.import', undefined, { noEllipsis: true }),
+    commandMenuItem('hosts.export', undefined, { noEllipsis: true }),
     '-',
-    commandMenuItem('settings.fingerprints'),
-    commandMenuItem('tools.forwards', undefined, { label: '端口转发规则…' }),
+    commandMenuItem('settings.fingerprints', undefined, { noEllipsis: true }),
+    commandMenuItem('tools.forwards', undefined, { label: '端口转发规则', noEllipsis: true }),
     '-',
     commandMenuItem('view.hostDensity'),
   ];
@@ -163,7 +164,14 @@ export function bindFileDrop() {
   };
   const hintOf = (pane) => pane?.el?.querySelector?.('.file-drop-hint') || null;
   const hideHints = () => { for (const h of document.querySelectorAll('.file-drop-hint')) h.classList.add('hidden'); };
+  /// 导入弹框开着时,拖放归 transfer.js(它只接 .json 并按文件导入)。
+  /// 不在这里提前 return 的话,落点会命中弹框背后仍存在的文件面板,反之亦然。
+  const importModalOpen = () => {
+    const m = document.getElementById('modal-import');
+    return !!m && !m.classList.contains('hidden');
+  };
   cur.onDragDropEvent(({ payload }) => {
+    if (importModalOpen()) return;
     if (payload.type === 'enter' || payload.type === 'over') {
       const hit = hitPane(payload.position);
       hideHints();
@@ -252,77 +260,16 @@ async function openCloudImport() {
   }
 }
 
-async function exportHosts() {
-  try {
-    // 导出文件常被复制/同步/转发,明文密码落盘后很难收回,因此默认不含凭据。
-    // 需连同凭据迁移时,在同一步里输入口令(留空 = 只导出主机信息)。
-    const pass = await askPrompt(
-      '输入口令以加密导出凭据;留空则只导出主机信息(不含密码/私钥),导入后需重新填写。',
-      {
-        title: '导出主机',
-        okText: '导出',
-        hint: '口令不会保存在任何地方,请自行记牢(至少 8 位)',
-        password: true,
-        validate: (v) => (v.length > 0 && v.length < 8 ? '口令至少 8 位(或留空以不含凭据导出)' : null),
-      },
-    );
-    if (pass === null) return; // 取消 = 中止导出
-
-    let passphrase = null;
-    if (pass.length > 0) {
-      const again = await askPrompt('请再次输入同一口令以确认。', {
-        title: '确认口令', okText: '确定',
-        password: true,
-        validate: (v) => (v !== pass ? '两次输入的口令不一致' : null),
-      });
-      if (again === null) return;
-      passphrase = pass;
-    }
-
-    const r = await api('hosts:exportFile', {
-      includeCredentials: !!passphrase,
-      passphrase: passphrase || undefined,
-    });
-    if (r) {
-      toast(
-        passphrase
-          ? `已导出 ${r.count} 台主机（凭据已加密）到 ${r.path}`
-          : `已导出 ${r.count} 台主机（不含凭据）到 ${r.path}`,
-        'success',
-      );
-    }
-  } catch (e) {
-    toast('导出失败：' + e.message, 'error');
-  }
+async function exportHosts(ctx) {
+  // 真正的导出参数(范围 / 凭据 / 口令)与落盘在 transfer.js;这里只负责把入口
+  // 收敛到迁移工作区。库内点按钮时会带上勾选的主机(见 host-library.js)。
+  openExportDialog({ scope: ctx?.ids?.length ? 'ids' : 'all', ids: ctx?.ids || [] });
 }
 
 async function importHosts() {
-  try {
-    // 首次不带口令:文件不含凭据时一次完成;含凭据则返回 needsPassphrase,
-    // 此时弹出口令框并复用同一路径重试(不让用户重选文件)。
-    let r = await api('hosts:importFile');
-    if (r && r.needsPassphrase) {
-      const pass = await askPrompt('该导出文件包含加密凭据,请输入导出时设置的口令。', {
-        title: '输入解密口令', okText: '解密导入',
-        password: true,
-      });
-      if (pass === null) return;
-      r = await api('hosts:importFile', { passphrase: pass, path: r.path });
-    }
-    if (r) {
-      const parts = [`新增 ${r.added} 台`, `保留重复 ${r.skipped} 台`];
-      if (r.updated) parts.push(`更新 ${r.updated} 台`);
-      if (r.credentialsFilled) parts.push(`补全凭据 ${r.credentialsFilled} 台`);
-      if (r.withCredentials) parts.push(`恢复凭据 ${r.withCredentials} 台`);
-      toast(`导入完成：${parts.join('，')}`, 'success');
-      if (r.legacyPlaintext) {
-        toast('该文件是旧版明文导出,已导入;建议删除该文件并改用加密导出', 'error');
-      }
-      refreshHosts();
-    }
-  } catch (e) {
-    toast('导入失败：' + e.message, 'error');
-  }
+  // 导入是「选文件 → 预检 → 提交」两段式,口令错误留在预检页重试,
+  // 不再出现旧实现那种"选文件 + 弹口令 + toast"的一次性链路。
+  openImportDialog();
 }
 
 /// 退出与关窗:与红灯、窗口 ✕、Alt+F4 一样走窗口 close(),由 Rust 的
@@ -888,6 +835,7 @@ export function bindEvents() {
   $('#btn-fw-close').addEventListener('click', () => closeModal('#modal-forward'));
   bindBatchUi();
   bindHostLibrary();
+  setupTransfer();
 
   // 文件分屏:窗格内交互(导航/路径/新建/重命名/权限/上传/右键菜单)
   // 全部在 sftp.js buildFilePane 里按窗格闭包绑定;这里只接拖拽上传与任务中心。

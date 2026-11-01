@@ -230,7 +230,7 @@ fn scrypt_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
-fn encrypt_with_passphrase(passphrase: &str, plain: &[u8]) -> Result<String, String> {
+pub(crate) fn encrypt_with_passphrase(passphrase: &str, plain: &[u8]) -> Result<String, String> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     use base64::Engine;
@@ -290,6 +290,113 @@ fn decrypt_with_passphrase(passphrase: &str, b64: &str) -> Result<Vec<u8>, Strin
         .map_err(|_| "口令错误".to_string())
 }
 
+// ===== v4:内置密钥加密(不再让用户设口令)=====
+// 文件里的密码/私钥用产品内置种子 + 每文件随机盐派生密钥加密。
+// 这挡得住"文件被转发、丢网盘、被 grep 明文",挡不住拿到本程序二进制的人 ——
+// 所以文案只承诺"防止误传",不承诺"对抗逆向"。alg 字符串是版本兼容的分派键:
+// 未来要恢复口令或换算法,新增 alg,读端两套并存。
+const CRED_ALG_V4: &str = "builtin-aes-256-gcm/v1";
+/// 可选口令通道:alg 是版本兼容的分派键,写端选哪条,读端都各自有实现。
+/// 口令丢失 = 文件里的凭据永久不可解(没有找回入口),这点必须在 UI 上讲清楚。
+const CRED_ALG_PASS: &str = "passphrase-scrypt/v1";
+const EXPORT_SEED: &[u8] = b"nebulashell/export-seed/2026-11";
+
+fn builtin_key(salt: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(EXPORT_SEED);
+    h.update(b"|");
+    h.update(salt);
+    h.update(b"|v4");
+    let out = h.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&out[..32]);
+    key
+}
+
+fn encrypt_builtin(plain: &[u8]) -> Result<Value, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use base64::Engine;
+    use rand::RngCore;
+
+    let mut salt = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
+    {
+        let mut rng = rand::thread_rng();
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut nonce_bytes);
+    }
+    let cipher = Aes256Gcm::new_from_slice(&builtin_key(&salt)).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plain)
+        .map_err(|e| format!("加密失败: {}", e))?;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    Ok(json!({
+        "alg": CRED_ALG_V4,
+        "salt": b64.encode(salt),
+        "nonce": b64.encode(nonce_bytes),
+        "data": b64.encode(ct),
+    }))
+}
+
+fn decrypt_builtin(block: &Value) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use base64::Engine;
+
+    let alg = block["alg"].as_str().unwrap_or("");
+    if alg != CRED_ALG_V4 {
+        return Err(format!("该文件使用了更新的加密方式({}),请升级 NebulaShell", alg));
+    }
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let salt = b64.decode(block["salt"].as_str().unwrap_or("")).map_err(|_| "凭据块损坏".to_string())?;
+    let nonce_bytes = b64.decode(block["nonce"].as_str().unwrap_or("")).map_err(|_| "凭据块损坏".to_string())?;
+    let ct = b64.decode(block["data"].as_str().unwrap_or("")).map_err(|_| "凭据块损坏".to_string())?;
+    if salt.len() != 16 || nonce_bytes.len() != 12 {
+        return Err("凭据块损坏".into());
+    }
+    let cipher = Aes256Gcm::new_from_slice(&builtin_key(&salt)).map_err(|e| e.to_string())?;
+    cipher
+        .decrypt(Nonce::from_slice(&nonce_bytes), ct.as_ref())
+        .map_err(|_| "凭据解密失败,文件可能已损坏".to_string())
+}
+
+
+/// 导入分类用:item 没给的字段视为"未提供",不参与差异判定。
+fn same_str(local: &Value, item: &Value, key: &str) -> bool {
+    match item[key].as_str() {
+        Some(v) => v == local[key].as_str().unwrap_or(""),
+        None => true,
+    }
+}
+
+fn same_i64(local: &Value, item: &Value, key: &str, default: i64) -> bool {
+    match item[key].as_i64() {
+        Some(v) => v == local[key].as_i64().unwrap_or(default),
+        None => true,
+    }
+}
+
+/// 只比较"用户能看见的主机属性";跳板引用与云身份不参与(前者是源 id,后者有单独匹配规则)。
+fn fields_identical(local: &Value, item: &Value) -> bool {
+    let tags_same = match item["tags"].as_array() {
+        None => true,
+        Some(tags) => {
+            let local_tags = local["tags"].as_array().cloned().unwrap_or_default();
+            tags.len() == local_tags.len() && tags.iter().all(|t| local_tags.contains(t))
+        }
+    };
+    same_str(local, item, "name")
+        && same_i64(local, item, "port", 22)
+        && same_str(local, item, "username")
+        && same_str(local, item, "authType")
+        && same_str(local, item, "group")
+        && same_str(local, item, "keyPath")
+        && same_str(local, item, "initcmd")
+        && tags_same
+}
+
 /// 凭据与主机的对应键(导出/导入两侧必须一致)
 fn cred_key(v: &Value) -> String {
     format!(
@@ -339,7 +446,7 @@ fn validate_jump_graph(hosts: &[Value]) -> Result<(), String> {
             .filter(|id| !id.is_empty())
             .ok_or("主机 ID 无效")?;
         if graph.insert(id, host).is_some() {
-            return Err("主机 ID 重复".into());
+            return Err(format!("主机 ID 重复: {}", id));
         }
     }
     fn visit<'a>(
@@ -1152,21 +1259,104 @@ impl Store {
             .ok_or_else(|| "克隆后读取失败".to_string())
     }
 
+    /// 导出主机(全量)。
+    pub fn export_hosts(&self) -> Result<Value, String> {
+        self.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+    }
+
     /// 导出主机。
     ///
-    /// `passphrase` 为 None 时**只导出非敏感字段**(主机/端口/用户名/分组等),
-    /// 凭据一律不写入 —— 导出文件常被复制、同步或随聊天工具转发,明文密码
-    /// 一旦落盘就很难收回。需要连同凭据迁移时,调用方必须提供口令,
-    /// 此时凭据用 scrypt 派生密钥 + AES-256-GCM 加密后单独放在 credentials 里。
-    pub fn export_hosts(&self, passphrase: Option<&str>) -> Result<Value, String> {
-        // 明文凭据先取出来,随即释放锁 —— 后面的 scrypt 派生是 CPU/内存密集操作
-        // (N=2^15,debug 构建下可达数秒),若继续持锁会把**所有**其它命令一起
-        // 卡住(实测并发 settings:get 被阻塞 3.1s)。锁只用来读数据,不用来算。
-        let (hosts, creds) = {
+    /// `scope` 两种形态:`{mode:"all"}` 全量、`{mode:"ids", ids:[...]}` 只导出指定主机。
+    /// ids 模式会把被依赖的跳板机一并带进来(闭包)—— 子集导出首先得是一张自洽的图,
+    /// 否则 `validate_jump_graph` 会因为引用不到跳板机而整批失败。
+    ///
+    /// `passphrase` 为 None 时**只导出非敏感字段**;给出时凭据用 scrypt 派生密钥 +
+    /// AES-256-GCM 加密后单独放在 credentials 里。
+    pub fn export_hosts_scoped(
+        &self,
+        scope: &Value,
+        passphrase: Option<&str>,
+        with_keys: bool,
+    ) -> Result<Value, String> {
+        let wanted: Option<std::collections::HashSet<String>> =
+            match scope["mode"].as_str().unwrap_or("all") {
+                "all" => None,
+                "ids" => {
+                    let ids: Vec<String> = scope["ids"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(String::from)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if ids.is_empty() {
+                        return Err("请先选择要导出的主机".into());
+                    }
+                    Some(ids.into_iter().collect())
+                }
+                other => return Err(format!("未知的导出范围: {}", other)),
+            };
+
+        // 读锁只取数据,scrypt 派生在锁外 —— 与旧实现同样的理由:派生是秒级 CPU 操作,
+        // 持锁会把其它所有命令一起卡住。
+        let (hosts, creds, included_jumps, included_keys) = {
             let data = self.data.lock().unwrap();
-            let hosts: Vec<Value> = data["hosts"]
-                .as_array()
-                .unwrap_or(&vec![])
+            let all: Vec<Value> = data["hosts"].as_array().cloned().unwrap_or_default();
+
+            let mut keep: std::collections::HashSet<String> = match &wanted {
+                None => all
+                    .iter()
+                    .filter_map(|h| h["id"].as_str().map(String::from))
+                    .collect(),
+                Some(ids) => ids.clone(),
+            };
+            if wanted.is_some() {
+                // 跳板闭包:图是有限的,每一轮把"被选中主机引用到、但还没在集合里"的
+                // 跳板机补进来,直到不再增长。
+                loop {
+                    let mut grew = false;
+                    for h in &all {
+                        let Some(id) = h["id"].as_str() else { continue };
+                        if !keep.contains(id) {
+                            continue;
+                        }
+                        if let Some(jumps) = h["jumpIds"].as_array() {
+                            for jump in jumps {
+                                if let Some(jid) = jump.as_str() {
+                                    if !jid.is_empty() && keep.insert(jid.to_string()) {
+                                        grew = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !grew {
+                        break;
+                    }
+                }
+            }
+            let included_jumps = match &wanted {
+                None => 0usize,
+                Some(ids) => keep.len().saturating_sub(ids.len()),
+            };
+
+            let picked: Vec<&Value> = all
+                .iter()
+                .filter(|h| {
+                    h["id"]
+                        .as_str()
+                        .map(|id| keep.contains(id))
+                        .unwrap_or(false)
+                })
+                .collect();
+            if picked.is_empty() {
+                return Err("所选主机已不存在,请刷新主机库".into());
+            }
+
+            let hosts: Vec<Value> = picked
                 .iter()
                 .map(|h| {
                     json!({
@@ -1178,55 +1368,88 @@ impl Store {
                     })
                 })
                 .collect();
-            let creds: Option<Vec<Value>> = passphrase.map(|_| {
-                data["hosts"]
-                    .as_array()
-                    .unwrap_or(&vec![])
-                    .iter()
-                    .map(|h| {
-                        json!({
-                            "id": h["id"], "host": h["host"], "port": h["port"], "username": h["username"],
-                            "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
-                            "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
-                            "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
-                        })
-                    })
-                    .collect()
-            });
-            (hosts, creds)
+            // v4:凭据一律收集,由内置密钥加密后写入 credentials。
+            // 私钥文件:只有用户显式打开「导出主机密钥」才读进来。
+            // 读不到(路径失效/权限/非 UTF-8/过大)就跳过 —— 导出本身不该因为一个坏路径失败,
+            // 但要通过 includedKeys 让调用方知道少带了几个。
+            let mut creds: Vec<Value> = Vec::with_capacity(picked.len());
+            let mut included_keys = 0usize;
+            for h in &picked {
+                let mut entry = json!({
+                    "id": h["id"], "host": h["host"], "port": h["port"], "username": h["username"],
+                    "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
+                    "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
+                    "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
+                });
+                let key_path = h["keyPath"].as_str().unwrap_or("");
+                if with_keys && !key_path.is_empty() {
+                    if let Ok(bytes) = std::fs::read(key_path) {
+                        if bytes.len() <= 512 * 1024 {
+                            if let Ok(text) = String::from_utf8(bytes) {
+                                let name = std::path::Path::new(key_path)
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "id_key".to_string());
+                                entry["keyFile"] = json!({ "name": name, "content": text });
+                                included_keys += 1;
+                            }
+                        }
+                    }
+                }
+                creds.push(entry);
+            }
+            (hosts, creds, included_jumps, included_keys)
         };
 
         validate_jump_graph(&hosts)?;
-        let mut out = json!({
-            "app": "nebulashell", "version": 3,
+        let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
+        // 默认内置密钥(零输入);用户显式开了「用口令加密」才走口令通道。
+        let block = match passphrase.filter(|p| !p.trim().is_empty()) {
+            Some(pass) => json!({
+                "alg": CRED_ALG_PASS,
+                "blob": encrypt_with_passphrase(pass, plain.as_bytes())?,
+            }),
+            None => encrypt_builtin(plain.as_bytes())?,
+        };
+        let out = json!({
+            "app": "nebulashell", "version": 4,
             "exportedAt": chrono::Utc::now().to_rfc3339(),
             "hosts": hosts,
-            // 明确标记:本文件不含明文凭据
-            "credentialsIncluded": false,
+            // 非敏感字段明文;凭据只出现在 credentials 里(内置密钥加密)
+            "credentialsIncluded": true,
+            "credentials": block,
+            // 只给调用方提示用,导入端忽略该字段
+            "includedJumps": included_jumps,
+            "includedKeys": included_keys,
         });
-
-        if let Some(pass) = passphrase {
-            if pass.trim().is_empty() {
-                return Err("口令不能为空".into());
-            }
-            let creds = creds.unwrap_or_default();
-            let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
-            let blob = encrypt_with_passphrase(pass, plain.as_bytes())?;
-            out["credentialsIncluded"] = json!(true);
-            out["credentials"] = json!(blob);
-        }
         Ok(out)
     }
 
-    /// 导入 v1 明文、v2 端点凭据与 v3 完整拓扑导出。v3 先重映射 ID,
-    /// 校验所有跳板引用/循环后整体提交。重复项保留用户配置,仅补缺失凭据;
-    /// 加密凭据必须提供原导出口令。
-    pub fn import_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
+    /// 解析导出文件:v1(明文内联)/ v2、v3(口令加密)/ v4(内置密钥加密)。
+    ///
+    /// 返回 (version, items, creds, legacy_plaintext)。v4 不需要口令;v2/v3 的
+    /// credentials 是字符串,必须提供口令 —— 这条旧通道保留,否则老文件就废了。
+    fn parse_export(
+        &self,
+        text: &str,
+        passphrase: Option<&str>,
+    ) -> Result<
+        (
+            u64,
+            Vec<Value>,
+            std::collections::HashMap<String, Value>,
+            bool,
+        ),
+        String,
+    > {
         let parsed: Value =
             serde_json::from_str(text).map_err(|_| "文件不是合法 JSON".to_string())?;
         let version = parsed["version"].as_u64().unwrap_or(1);
-        if version > 3 {
-            return Err("不支持该主机导出版本".into());
+        if version > 4 {
+            return Err(format!(
+                "该文件由更新版本导出(v{}),请升级 NebulaShell",
+                version
+            ));
         }
         let items = if parsed.is_array() {
             parsed.as_array().unwrap().clone()
@@ -1250,19 +1473,51 @@ impl Store {
             }
         }
 
-        // v3 credentials are keyed by source ID; v1/v2 use host:port:user.
-        let mut creds: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        let mut creds: std::collections::HashMap<String, Value> =
+            std::collections::HashMap::new();
         let mut legacy_plaintext = false;
-
-        if !parsed["credentials"].is_null() {
-            let pass = passphrase
-                .filter(|p| !p.is_empty())
-                .ok_or("该导出文件包含凭据,请输入导出时设置的口令")?;
-            let blob = parsed["credentials"].as_str().ok_or("凭据字段格式不正确")?;
-            let plain = decrypt_with_passphrase(pass, blob)
-                .map_err(|_| "口令错误,或文件已损坏".to_string())?;
-            let list: Vec<Value> = serde_json::from_slice(&plain)
-                .map_err(|_| "凭据内容解析失败(口令是否正确?)".to_string())?;
+        let cred_value = &parsed["credentials"];
+        if !cred_value.is_null() {
+            let list: Vec<Value> = if let Some(alg) = cred_value["alg"].as_str() {
+                match alg {
+                    // 默认通道:内置密钥,零输入
+                    CRED_ALG_V4 => {
+                        let plain = decrypt_builtin(cred_value)?;
+                        serde_json::from_slice(&plain)
+                            .map_err(|_| "凭据内容解析失败".to_string())?
+                    }
+                    // 可选通道:用户口令(v4 里的口令块,结构与内置通道并存)
+                    CRED_ALG_PASS => {
+                        let pass = passphrase
+                            .filter(|p| !p.is_empty())
+                            .ok_or("NEEDS_PASSPHRASE")?;
+                        let blob = cred_value["blob"]
+                            .as_str()
+                            .ok_or("凭据块损坏")?;
+                        let plain = decrypt_with_passphrase(pass, blob)
+                            .map_err(|_| "口令错误,或文件已损坏".to_string())?;
+                        serde_json::from_slice(&plain)
+                            .map_err(|_| "凭据内容解析失败(口令是否正确?)".to_string())?
+                    }
+                    other => {
+                        return Err(format!(
+                            "该文件使用了更新的加密方式({}),请升级 NebulaShell",
+                            other
+                        ))
+                    }
+                }
+            } else if let Some(blob) = cred_value.as_str() {
+                // v2/v3:旧口令通道
+                let pass = passphrase
+                    .filter(|p| !p.is_empty())
+                    .ok_or("NEEDS_PASSPHRASE")?;
+                let plain = decrypt_with_passphrase(pass, blob)
+                    .map_err(|_| "口令错误,或文件已损坏".to_string())?;
+                serde_json::from_slice(&plain)
+                    .map_err(|_| "凭据内容解析失败(口令是否正确?)".to_string())?
+            } else {
+                return Err("凭据字段格式不正确".into());
+            };
             for c in &list {
                 let key = if version >= 3 {
                     c["id"].as_str().ok_or("凭据缺少主机 ID")?.to_owned()
@@ -1274,24 +1529,63 @@ impl Store {
                 }
             }
         }
+        for item in &items {
+            for f in ["password", "privateKey", "passphrase"] {
+                if item[f].as_str().filter(|s| !s.is_empty()).is_some() {
+                    legacy_plaintext = true;
+                }
+            }
+        }
+        Ok((version, items, creds, legacy_plaintext))
+    }
 
-        // Stage a complete transaction: resolve every ID before validating jumps,
-        // and never leave a partially imported graph after a bad file.
+    /// 本地这台主机是否完全没有凭据(三个字段都为空)。
+    fn local_creds_empty(&self, host: &Value) -> bool {
+        ["password", "privateKey", "passphrase"].iter().all(|f| {
+            self.dec(host[format!("{}Enc", f)].as_str().unwrap_or(""))
+                .is_empty()
+        })
+    }
+
+    /// 导入执行体。dry_run = 只分类、不落盘(预检)。
+    fn import_run(
+        &self,
+        text: &str,
+        passphrase: Option<&str>,
+        decisions: Option<&Value>,
+        dry_run: bool,
+    ) -> Result<Value, String> {
+        let (version, items, creds, legacy_plaintext) = self.parse_export(text, passphrase)?;
+
         let mut data = self.data.lock().unwrap();
         let mut staged = data["hosts"].as_array().ok_or("主机列表损坏")?.clone();
-        let mut remap = std::collections::HashMap::new();
+        let mut remap: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
         let mut claimed = std::collections::HashSet::new();
-        let mut plans = Vec::new();
-        let mut added = 0;
-        for item in &items {
+        let mut plans: Vec<(usize, usize, bool, String, String, bool)> = Vec::new(); // item_idx, idx, is_new, key, kind, overwrite
+        let mut rows = Vec::new();
+        let mut added = 0usize;
+
+        let decision_of = |key: &str| -> String {
+            decisions
+                .and_then(|d| d.get(key))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        for (item_idx, item) in items.iter().enumerate() {
             let source = item["id"].as_str().filter(|id| !id.is_empty());
+            let key = source
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| cred_key(item));
+
             let by_source = source.and_then(|id| {
                 staged.iter().position(|h| {
                     h["importSourceId"] == id
                         || h["id"] == id
                         || h["importSourceIds"]
                             .as_array()
-                            .map(|ids| ids.iter().any(|source| source == id))
+                            .map(|ids| ids.iter().any(|s| s == id))
                             .unwrap_or(false)
                 })
             });
@@ -1310,96 +1604,250 @@ impl Store {
                 })
                 .map(|(i, _)| i)
                 .collect();
-            // Never collapse two independent v3 cloud identities merely because
-            // they currently share an IP/login tuple.
             let by_endpoint = if endpoints.len() == 1 {
                 Some(endpoints[0])
             } else {
                 None
             };
-            let (idx, is_new) = match by_source.or(by_cloud).or(by_endpoint) {
-                Some(i) => (i, false),
-                None => {
-                    let i = staged.len();
-                    let mut payload = item.clone();
-                    payload["id"] = json!(uuid::Uuid::new_v4().to_string());
-                    payload["jumpIds"] = json!([]);
-                    payload.as_object_mut().unwrap().remove("clearSecrets");
-                    for f in ["password", "privateKey", "passphrase"] {
-                        payload.as_object_mut().unwrap().remove(f);
+            let matched = if claimed.len() < staged.len() {
+                by_source.or(by_cloud).or(by_endpoint)
+            } else {
+                by_source.or(by_cloud)
+            };
+            let matched = match matched {
+                Some(i) if claimed.contains(&i) => None,
+                other => other,
+            };
+
+            // 文件里这台主机是否带凭据
+            let file_cred = {
+                let ckey = if version >= 3 {
+                    source.unwrap_or("").to_string()
+                } else {
+                    cred_key(item)
+                };
+                let block = creds.get(&ckey);
+                let inline = ["password", "privateKey", "passphrase"].iter().any(|f| {
+                    item[f].as_str().filter(|s| !s.is_empty()).is_some()
+                });
+                inline
+                    || block
+                        .map(|c| {
+                            ["password", "privateKey", "passphrase"].iter().any(|f| {
+                                c[f].as_str().filter(|s| !s.is_empty()).is_some()
+                            })
+                        })
+                        .unwrap_or(false)
+            };
+
+            let kind = match matched {
+                None => "add",
+                Some(i) => {
+                    if !fields_identical(&staged[i], item) {
+                        "conflict"
+                    } else if self.local_creds_empty(&staged[i]) && file_cred {
+                        "credOnly"
+                    } else {
+                        "identical"
                     }
-                    let mut host = self.merge_host(&payload, None, false)?;
-                    if let Some(source) = source {
-                        host["importSourceId"] = json!(source);
-                    }
-                    staged.push(host);
-                    added += 1;
-                    (i, true)
                 }
             };
-            if let Some(source) = source {
-                remap.insert(source.to_owned(), staged[idx]["id"].clone());
-                // Remember source identity even when the first import matched a
-                // local host. Later user edits to IP/login must not create a new
-                // host when reimporting its encrypted credentials.
+            let decision = decision_of(&key);
+            let overwrite = kind == "conflict" && decision == "overwrite";
+            let skip = decision == "skip";
+
+            let (idx, is_new) = match matched {
+                Some(i) => {
+                    claimed.insert(i);
+                    (i, false)
+                }
+                None => {
+                    if dry_run {
+                        (usize::MAX, true)
+                    } else {
+                        let i = staged.len();
+                        let mut payload = item.clone();
+                        payload["id"] = json!(uuid::Uuid::new_v4().to_string());
+                        payload["jumpIds"] = json!([]);
+                        payload.as_object_mut().unwrap().remove("clearSecrets");
+                        for f in ["password", "privateKey", "passphrase"] {
+                            payload.as_object_mut().unwrap().remove(f);
+                        }
+                        let mut host = self.merge_host(&payload, None, false)?;
+                        if let Some(src) = source {
+                            host["importSourceId"] = json!(src);
+                        }
+                        staged.push(host);
+                        added += 1;
+                        (i, true)
+                    }
+                }
+            };
+
+            // 新主机也要占住 idx:同端点/同凭据的第二条不能被端点兜底误判成同一台,
+            // 否则 plans 里两行指向同一个 staged 索引 → 导入图重复 ID。
+            if !dry_run {
+                claimed.insert(idx);
+            }
+
+            if dry_run {
+                let local = matched.map(|i| {
+                    json!({
+                        "name": staged[i]["name"], "port": staged[i]["port"],
+                        "username": staged[i]["username"], "group": staged[i]["group"],
+                    })
+                });
+                let mut diff = Vec::new();
+                if let Some(i) = matched {
+                    if !same_str(&staged[i], item, "name") {
+                        diff.push(format!(
+                            "名称 {} / {}",
+                            staged[i]["name"].as_str().unwrap_or(""),
+                            item["name"].as_str().unwrap_or("")
+                        ));
+                    }
+                    if !same_i64(&staged[i], item, "port", 22) {
+                        diff.push(format!(
+                            "端口 {} → {}",
+                            staged[i]["port"].as_i64().unwrap_or(22),
+                            item["port"].as_i64().unwrap_or(22)
+                        ));
+                    }
+                    if !same_str(&staged[i], item, "username") {
+                        diff.push(format!(
+                            "用户 {} → {}",
+                            staged[i]["username"].as_str().unwrap_or(""),
+                            item["username"].as_str().unwrap_or("")
+                        ));
+                    }
+                    if !same_str(&staged[i], item, "group") {
+                        diff.push(format!(
+                            "分组 {} → {}",
+                            staged[i]["group"].as_str().unwrap_or("（空）"),
+                            item["group"].as_str().unwrap_or("（空）")
+                        ));
+                    }
+                    if kind == "credOnly" {
+                        diff.push("本地缺凭据,文件里带".into());
+                    }
+                }
+                rows.push(json!({
+                    "key": key,
+                    "name": item["name"].as_str().unwrap_or(item["host"].as_str().unwrap_or("")),
+                    "host": item["host"], "port": item["port"], "username": item["username"],
+                    "group": item["group"],
+                    "kind": kind,
+                    "local": local,
+                    "diff": diff,
+                    "hasCredentials": file_cred,
+                }));
+                continue;
+            }
+
+            // 来源身份记录:即使第一次导入匹配到本地主机,也要记住文件里的 id,
+            // 以后用户改 IP/用户名再导入凭据时不会再建一台新主机。
+            if let Some(src) = source {
+                remap.insert(src.to_owned(), staged[idx]["id"].clone());
                 if staged[idx]["importSourceIds"].is_null() {
                     staged[idx]["importSourceIds"] = json!([]);
                 }
                 let ids = staged[idx]["importSourceIds"]
                     .as_array_mut()
                     .ok_or("导入身份记录损坏")?;
-                if !ids.iter().any(|id| id == source) {
-                    ids.push(json!(source));
+                if !ids.iter().any(|id| id == src) {
+                    ids.push(json!(src));
                 }
             }
-            claimed.insert(idx);
-            plans.push((idx, is_new));
+            plans.push((
+                item_idx,
+                idx,
+                is_new,
+                key,
+                kind.to_string(),
+                overwrite,
+            ));
         }
+
+        if dry_run {
+            let count = |k: &str| rows.iter().filter(|r| r["kind"] == k).count();
+            return Ok(json!({
+                "version": version,
+                "legacyPlaintext": legacy_plaintext,
+                "counts": {
+                    "add": count("add"),
+                    "credOnly": count("credOnly"),
+                    "conflict": count("conflict"),
+                    "identical": count("identical"),
+                },
+                "rows": rows,
+            }));
+        }
+
         let mut updated_hosts = std::collections::HashSet::new();
         let mut credential_hosts = std::collections::HashSet::new();
         let mut credentials_filled = 0;
+        let mut overwritten = 0usize;
         let mut imported_graph = Vec::new();
-        for (item, (idx, is_new)) in items.iter().zip(plans) {
+        let mut result_rows = Vec::new();
+
+        for (item_idx, idx, is_new, key, kind, overwrite) in plans {
+            let item = &items[item_idx];
+            let decision = decision_of(&key);
+            let skip = decision == "skip";
+
             let mut jumps = Vec::new();
             if !item["jumpIds"].is_null() {
-                for jump in item["jumpIds"].as_array().ok_or("跳板机列表格式不正确")? {
-                    let source = jump.as_str().ok_or("跳板机 ID 无效")?;
+                for jump in item["jumpIds"]
+                    .as_array()
+                    .ok_or("跳板机列表格式不正确")?
+                {
+                    let src = jump.as_str().ok_or("跳板机 ID 无效")?;
                     jumps.push(
                         remap
-                            .get(source)
+                            .get(src)
                             .cloned()
-                            .ok_or_else(|| format!("导入文件含悬空跳板机: {}", source))?,
+                            .ok_or_else(|| format!("导入文件含悬空跳板机: {}", src))?,
                     );
                 }
             }
+
+            if overwrite {
+                let merged = self.merge_host(item, Some(&staged[idx]), false)?;
+                staged[idx] = merged;
+                overwritten += 1;
+            }
+            if is_new || overwrite || kind == "conflict" {
+                if !skip {
+                    staged[idx]["jumpIds"] = json!(jumps);
+                }
+            } else if is_new {
+                staged[idx]["jumpIds"] = json!(jumps);
+            }
+
             let mut graph_host = staged[idx].clone();
             graph_host["jumpIds"] = json!(jumps);
             imported_graph.push(graph_host);
-            if is_new {
-                staged[idx]["jumpIds"] = json!(jumps);
-            }
-            let credential_key = if version >= 3 {
+
+            let ckey = if version >= 3 {
                 item["id"].as_str().unwrap_or("").to_owned()
             } else {
                 cred_key(item)
             };
-            let encrypted = creds.get(&credential_key);
+            let block = creds.get(&ckey);
+            let mut wrote_cred = false;
             for field in ["password", "privateKey", "passphrase"] {
                 let inline = item[field].as_str().filter(|s| !s.is_empty());
-                if inline.is_some() {
-                    legacy_plaintext = true;
-                }
                 let plain = inline
-                    .or_else(|| encrypted.and_then(|c| c[field].as_str()))
+                    .or_else(|| block.and_then(|c| c[field].as_str()))
                     .unwrap_or("");
+                if plain.is_empty() || skip {
+                    continue;
+                }
                 let cipher = format!("{}Enc", field);
-                // Default repeat import only fills a missing secret. Existing
-                // credentials/preferences are never silently replaced.
-                if !plain.is_empty()
-                    && self
-                        .dec(staged[idx][&cipher].as_str().unwrap_or(""))
-                        .is_empty()
-                {
+                let local_empty = self
+                    .dec(staged[idx][&cipher].as_str().unwrap_or(""))
+                    .is_empty();
+                if is_new || overwrite || local_empty {
                     staged[idx][&cipher] = json!(self.enc(
                         plain,
                         &format!(
@@ -1408,28 +1856,119 @@ impl Store {
                             field
                         )
                     ));
+                    wrote_cred = true;
                     credential_hosts.insert(idx);
                     if !is_new {
-                        updated_hosts.insert(idx);
+                        // 计数口径沿用旧版:按「补齐的字段数」而不是主机数
                         credentials_filled += 1;
                     }
                 }
             }
+            // 私钥文件:写入应用数据目录(0600),keyPath 指过去。
+            // 只在新增/覆盖/本地没配 keyPath 时安装,避免把用户自己的路径顶掉。
+            if !skip {
+                if let Some(kf) = block.and_then(|c| c.get("keyFile")) {
+                    let local_key_empty = staged[idx]["keyPath"].as_str().unwrap_or("").trim().is_empty();
+                    if is_new || overwrite || local_key_empty {
+                        if let Some(content) = kf["content"].as_str() {
+                            let dir = self.dir.join("keys");
+                            if std::fs::create_dir_all(&dir).is_ok() {
+                                let raw = kf["name"].as_str().unwrap_or("id_key");
+                                let name: String = raw.replace(['/', '\\'], "_");
+                                let file = dir.join(format!(
+                                    "{}-{}",
+                                    staged[idx]["id"].as_str().unwrap_or("key"),
+                                    name
+                                ));
+                                if std::fs::write(&file, content).is_ok() {
+                                    #[cfg(unix)]
+                                    {
+                                        use std::os::unix::fs::PermissionsExt;
+                                        let _ = std::fs::set_permissions(
+                                            &file,
+                                            std::fs::Permissions::from_mode(0o600),
+                                        );
+                                    }
+                                    staged[idx]["keyPath"] = json!(file.to_string_lossy());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if wrote_cred && !is_new {
+                updated_hosts.insert(idx);
+            }
+
+            result_rows.push(json!({
+                "key": key,
+                "name": staged[idx]["name"],
+                "result": if skip { "skipped" }
+                          else if is_new { "written" }
+                          else if overwrite { "overwritten" }
+                          else if wrote_cred { "filled" }
+                          else { "unchanged" },
+            }));
         }
+
         validate_jump_graph(&imported_graph)?;
         validate_jump_graph(&staged)?;
-        let updated = updated_hosts.len();
+
+        // 写盘前备份当前主机库(不含凭据密文),覆盖错了还能捞回来。
+        let backup = {
+            let dir = self.dir.join("backup");
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join(format!(
+                "nebulashell-backup-{}.json",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ));
+            let snapshot = json!({
+                "app": "nebulashell", "version": 4,
+                "exportedAt": chrono::Utc::now().to_rfc3339(),
+                "hosts": data["hosts"],
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap_or_default())
+                .ok()
+                .map(|_| path.to_string_lossy().to_string())
+        };
+
         data["hosts"] = json!(staged);
         drop(data);
         self.save()?;
+
         Ok(json!({
             "added": added,
-            "updated": updated,
-            "skipped": items.len().saturating_sub(added + updated),
+            "updated": updated_hosts.len(),
+            "skipped": items
+                .len()
+                .saturating_sub(added + updated_hosts.len() + overwritten.saturating_sub(updated_hosts.len())),
             "withCredentials": credential_hosts.len(),
             "credentialsFilled": credentials_filled,
+            "overwritten": overwritten,
             "legacyPlaintext": legacy_plaintext,
+            "backup": backup,
+            "rows": result_rows,
         }))
+    }
+
+    /// 导入(默认策略:保留本地,只补缺失凭据)。保留旧签名:既有测试在用。
+    pub fn import_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
+        self.import_run(text, passphrase, None, false)
+    }
+
+    /// 预检:只分类,不写盘。
+    pub fn inspect_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
+        self.import_run(text, passphrase, None, true)
+    }
+
+    /// 按决策落盘。decisions = { "<row key>": "skip" | "overwrite" }
+    pub fn apply_hosts(
+        &self,
+        text: &str,
+        passphrase: Option<&str>,
+        decisions: &Value,
+    ) -> Result<Value, String> {
+        self.import_run(text, passphrase, Some(decisions), false)
     }
 
     pub fn get_settings(&self) -> Value {

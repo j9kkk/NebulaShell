@@ -446,6 +446,16 @@ pub async fn nebula_invoke(
             "version": env!("CARGO_PKG_VERSION"),
             "platform": std::env::consts::OS
         })),
+        // 导出卡的默认路径要显示完整绝对路径(而不是"下载文件夹"这种占位),
+        // 所以把下载目录交给前端,由它拼文件名。
+        "app:paths" => {
+            let home = dirs::home_dir();
+            ok(json!({
+                "home": home.as_ref().map(|p| p.to_string_lossy().to_string()),
+                "downloads": dirs::download_dir().or_else(|| home.clone())
+                    .map(|p| p.to_string_lossy().to_string()),
+            }))
+        }
 
         "app:openExternal" => {
             let url = payload["url"].as_str().unwrap_or("");
@@ -577,46 +587,143 @@ pub async fn nebula_invoke(
             Err(e) => err_msg(e),
         },
         "hosts:exportFile" => {
-            // includeCredentials 为真时必须带 passphrase,由 Store 用 scrypt+AES-GCM 加密;
-            // 否则导出文件不含任何凭据(明文密码落盘后很难收回)。
-            let pass: Option<String> = if payload["includeCredentials"].as_bool().unwrap_or(false) {
-                match payload["passphrase"].as_str() {
-                    Some(p) if !p.trim().is_empty() => Some(p.to_string()),
-                    _ => return err_msg("请设置导出加密口令"),
-                }
+            // v4:凭据由内置密钥自动加密,不再需要用户口令。
+            // scope 缺省 = 全量;主机库的两个导出按钮只决定传 all 还是 ids。
+            let scope = if payload["scope"].is_null() {
+                json!({ "mode": "all" })
             } else {
-                None
+                payload["scope"].clone()
             };
-            let data = match state.store.export_hosts(pass.as_deref()) {
+            let pass = payload["passphrase"].as_str().filter(|p| !p.trim().is_empty());
+            let with_keys = payload["withKeys"] == json!(true);
+            let data = match state.store.export_hosts_scoped(&scope, pass, with_keys) {
                 Ok(d) => d,
                 Err(e) => return err_msg(e),
             };
+            let included_jumps = data["includedJumps"].as_u64().unwrap_or(0);
+            let included_keys = data["includedKeys"].as_u64().unwrap_or(0);
+            let count = data["hosts"].as_array().map(|a| a.len()).unwrap_or(0);
+            let default_name = payload["filename"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        "nebulashell-hosts-{}.json",
+                        chrono::Local::now().format("%Y-%m-%d")
+                    )
+                });
+            // 新界面:dir 字段存在(可为空串)= 直接写到该目录(空串 = 下载文件夹),
+            // 不再弹系统保存框 —— 用户要确认的"数量与路径"已经在那张小卡片里确认过了。
             if state.test_mode {
                 if let Ok(p) = std::env::var("NEBULA_TEST_SAVE_PATH") {
                     std::fs::write(&p, serde_json::to_string_pretty(&data).unwrap_or_default())
                         .ok();
-                    return ok(
-                        json!({ "path": p, "count": data["hosts"].as_array().map(|a| a.len()).unwrap_or(0) }),
-                    );
+                    return ok(json!({ "path": p, "count": count, "includedJumps": included_jumps }));
                 }
             }
+            if let Some(dir) = payload.get("dir").and_then(|v| v.as_str()) {
+                let raw = dir.trim();
+                let base = if raw.is_empty() {
+                    dirs::download_dir()
+                        .or_else(dirs::home_dir)
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                } else if let Some(rest) = raw.strip_prefix("~/") {
+                    // 用户手打的 ~/... 也要能用
+                    dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join(rest)
+                } else {
+                    std::path::PathBuf::from(raw)
+                };
+                if let Err(e) = std::fs::create_dir_all(&base) {
+                    return err_msg(e.to_string());
+                }
+                let (stem, ext) = match default_name.rsplit_once('.') {
+                    Some((a, b)) => (a.to_string(), b.to_string()),
+                    None => (default_name.clone(), "json".to_string()),
+                };
+                let mut path = base.join(&default_name);
+                let mut n = 2;
+                while path.exists() {
+                    path = base.join(format!("{}-{}.{}", stem, n, ext));
+                    n += 1;
+                }
+                let path_str = path.to_string_lossy().to_string();
+                if let Err(e) =
+                    std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap_or_default())
+                {
+                    return err_msg(e.to_string());
+                }
+                return ok(json!({ "path": path_str, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }));
+            }
             let file = rfd::AsyncFileDialog::new()
-                .set_file_name("nebulashell-hosts.json")
+                .set_file_name(&default_name)
+                .add_filter("JSON", &["json"])
                 .save_file()
                 .await;
             match file {
                 Some(f) => {
                     let path = f.path().to_string_lossy().to_string();
-                    std::fs::write(
-                        &path,
-                        serde_json::to_string_pretty(&data).unwrap_or_default(),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    ok(
-                        json!({ "path": path, "count": data["hosts"].as_array().map(|a| a.len()).unwrap_or(0) }),
-                    )
+                    if let Err(e) =
+                        std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap_or_default())
+                    {
+                        return err_msg(e.to_string());
+                    }
+                    ok(json!({ "path": path, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }))
                 }
                 None => ok(json!(null)),
+            }
+        }
+        // 预检:选文件 + 解析 + 分类,不写盘。v4 不需要口令;v2/v3 需要。
+        "hosts:importInspect" => {
+            let preset = payload["path"].as_str().filter(|s| !s.is_empty());
+            let path = match preset {
+                Some(p) => Some(p.to_string()),
+                None if state.test_mode => std::env::var("NEBULA_TEST_IMPORT_PATH").ok(),
+                None => rfd::AsyncFileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .pick_file()
+                    .await
+                    .map(|f| f.path().to_string_lossy().to_string()),
+            };
+            let Some(p) = path else { return ok(json!(null)) };
+            let text = match std::fs::read_to_string(&p) {
+                Ok(t) => t,
+                Err(e) => return err_msg(e.to_string()),
+            };
+            let meta = import_file_meta(&p, &text);
+            let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
+            match state.store.inspect_hosts(&text, pass) {
+                Ok(r) => ok(json!({ "path": p, "file": meta, "inspect": r })),
+                // 旧版口令文件:先回信号,让前端在同一张卡里补口令,不要当错误
+                Err(e) if e == "NEEDS_PASSPHRASE" => {
+                    ok(json!({ "needsPassphrase": true, "path": p, "file": meta }))
+                }
+                Err(e) => err_msg(e),
+            }
+        }
+        // 按决策落盘:decisions = { "<row key>": "skip" | "overwrite" }
+        "hosts:importApply" => {
+            let Some(p) = payload["path"].as_str().filter(|s| !s.is_empty()) else {
+                return err_msg("缺少文件路径");
+            };
+            let text = match std::fs::read_to_string(p) {
+                Ok(t) => t,
+                Err(e) => return err_msg(e.to_string()),
+            };
+            let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
+            let decisions = if payload["decisions"].is_null() {
+                json!({})
+            } else {
+                payload["decisions"].clone()
+            };
+            match state.store.apply_hosts(&text, pass, &decisions) {
+                Ok(r) => ok(json!({ "path": p, "result": r })),
+                Err(e) if e == "NEEDS_PASSPHRASE" => {
+                    ok(json!({ "needsPassphrase": true, "path": p }))
+                }
+                Err(e) => err_msg(e),
             }
         }
         "hosts:importFile" => {
@@ -1839,10 +1946,39 @@ pub async fn nebula_invoke(
 
 /// 判断导出文件是否携带(加密的)凭据块。
 /// 用于决定是否需要向用户索取口令,而不把"需要口令"报成错误。
+/// 只有旧版(v2/v3)的口令文件才需要用户输入口令;v4 的 credentials 是对象,自动解密。
 fn file_has_credentials(text: &str) -> bool {
     serde_json::from_str::<Value>(text)
-        .map(|v| !v["credentials"].is_null() || v["credentialsIncluded"] == json!(true))
+        .map(|v| {
+            v["credentials"].as_str().is_some()
+                || (v["credentials"].is_null() && v["credentialsIncluded"] == json!(true))
+        })
         .unwrap_or(false)
+}
+
+/// 导入弹框显示用的文件元信息(不读进内存之外的东西)。
+fn import_file_meta(path: &str, text: &str) -> Value {
+    let parsed: Value = serde_json::from_str(text).unwrap_or_else(|_| json!({}));
+    let encrypted = if parsed["credentials"]["alg"].as_str() == Some("passphrase-scrypt/v1") {
+        "passphrase"
+    } else if parsed["credentials"]["alg"].as_str().is_some() {
+        "builtin"
+    } else if parsed["credentials"].as_str().is_some() {
+        "passphrase"
+    } else {
+        "none"
+    };
+    json!({
+        "name": std::path::Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        "bytes": text.len(),
+        "exportedAt": parsed["exportedAt"],
+        "version": parsed["version"].as_u64().unwrap_or(1),
+        "encryption": encrypted,
+        "count": parsed["hosts"].as_array().map(|a| a.len()).unwrap_or(0),
+    })
 }
 
 /// SFTP 通道死亡特征:缓存通道挂在已死/半死的子通道上时,russh-sftp 的

@@ -96,8 +96,10 @@ fn v3_full_roundtrip_remaps_forward_references_and_keeps_per_id_credentials() {
         .unwrap();
     // Same endpoint/login, independent host configuration and credentials.
     let target = s.save_host(&json!({"host":"shared.test","name":"target","password":"target-secret","jumpIds":[id(&jump)],"initcmd":"echo ready","cloud":cloud("a","r1"),"tags":["ops"]})).unwrap();
-    let mut exported = s.export_hosts(Some("migration pass")).unwrap();
-    assert_eq!(exported["version"], json!(3));
+    let mut exported = s
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("migration pass"), false)
+        .unwrap();
+    assert_eq!(exported["version"], json!(4));
     assert_eq!(exported["hosts"][1]["id"], target["id"]);
     assert!(!text(&exported).contains("target-secret"));
     exported["hosts"].as_array_mut().unwrap().reverse();
@@ -134,14 +136,24 @@ fn v3_full_roundtrip_remaps_forward_references_and_keeps_per_id_credentials() {
     assert_eq!(destination.0.list_hosts().len(), 2);
 }
 
+/// 模拟“只导主机信息”的文件:v4 默认已带凭据块,这里显式摘掉。
+fn stripped(mut v: serde_json::Value) -> String {
+    v.as_object_mut().unwrap().remove("credentials");
+    v["credentialsIncluded"] = json!(false);
+    serde_json::to_string(&v).unwrap()
+}
+
 #[test]
 fn repeated_encrypted_import_fills_only_missing_credentials_and_preserves_edits() {
     let source = Fixture::new();
     source.0.save_host(&json!({"host":"example.test","password":"import-pw","privateKey":"import-key","passphrase":"import-phrase","name":"source","initcmd":"source command"})).unwrap();
-    let public = source.0.export_hosts(None).unwrap();
-    let encrypted = source.0.export_hosts(Some("pass")).unwrap();
+    let public = source.0.export_hosts().unwrap();
+    let encrypted = source
+        .0
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass"), false)
+        .unwrap();
     let dest = Fixture::new();
-    dest.0.import_hosts(&text(&public), None).unwrap();
+    dest.0.import_hosts(&stripped(public), None).unwrap();
     let host = dest.0.list_hosts()[0].clone();
     dest.0.save_host(&json!({"id":id(&host),"host":"example.test","username":"custom-login","password":"local-pw","name":"custom","authType":"agent","group":"local","tags":["local"],"initcmd":"local command"})).unwrap();
     let r = dest
@@ -256,15 +268,18 @@ fn repeat_import_into_local_duplicate_remembers_source_after_user_changes_login(
         .0
         .save_host(&json!({"host":"local.test","password":"imported","cloud":cloud("a","r1")}))
         .unwrap();
-    let public = source.0.export_hosts(None).unwrap();
-    let encrypted = source.0.export_hosts(Some("pass")).unwrap();
+    let public = source.0.export_hosts().unwrap();
+    let encrypted = source
+        .0
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass"), false)
+        .unwrap();
     let dest = Fixture::new();
     let local = dest
         .0
         .save_host(&json!({"host":"local.test","name":"mine"}))
         .unwrap();
     assert_eq!(
-        dest.0.import_hosts(&text(&public), None).unwrap()["added"],
+        dest.0.import_hosts(&stripped(public), None).unwrap()["added"],
         json!(0)
     );
     dest.0
@@ -301,7 +316,7 @@ fn jump_validation_on_save_and_delete_cleans_references() {
         .is_err());
     f.0.delete_host(id(&jump)).unwrap();
     assert_eq!(f.0.public_host(id(&target)).unwrap()["jumpIds"], json!([]));
-    assert!(f.0.export_hosts(None).is_ok());
+    assert!(f.0.export_hosts().is_ok());
 }
 
 #[test]

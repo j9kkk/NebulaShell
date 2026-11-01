@@ -10,7 +10,7 @@
 // import hosts.js 是安全的(方向是 新模块 → 旧模块)。
 
 import { $, api, askConfirm, askPrompt, bindMenuButton, closeModal, openModal, setModalEscapeHandler, showCtxMenu, state, toast } from './core.js';
-import { executeCommand } from './commands.js';
+import { openExportDialog, openImportDialog } from './transfer.js';
 import { icon } from '../shared/icons.js';
 import { DEFAULT_GROUP, escapeHtml, groupOf, isCloudGroup, openHostModal, refreshHosts, renderHosts, saveUiPrefs, sortGroupsByPref, STAR_NOTE, uiPrefs } from './hosts.js';
 import { startMouseDrag } from '../shared/drag.js';
@@ -131,6 +131,24 @@ export function openHostLibrary() {
 }
 
 function updateBatchBar() {
+  // 两个导出按钮的状态与徽标只在这里算:勾选变化一定走 renderLibrary → updateBatchBar,
+  // 放在按钮事件里另算一份就会出现"勾选了但徽标还是 0"。
+  const allBtn = $('#hl-export-all');
+  const selBtn = $('#hl-export-selected');
+  const countEl = $('#hl-export-count');
+  const total = hosts().length;
+  if (allBtn) {
+    allBtn.disabled = total === 0;
+    allBtn.title = total ? `导出整库 ${total} 台主机` : '主机库为空';
+  }
+  if (countEl) countEl.textContent = String(selected.size);
+  if (selBtn) {
+    selBtn.disabled = selected.size === 0;
+    const hint = selected.size ? `导出勾选的 ${selected.size} 台主机` : '先在列表里勾选主机';
+    selBtn.title = hint;
+    selBtn.setAttribute('aria-label', selected.size ? `导出所选 ${selected.size} 台` : '导出所选,当前未勾选');
+  }
+
   const empty = $('#hl-batch-empty');
   const active = $('#hl-batch-active');
   const hasSel = selected.size > 0;
@@ -935,11 +953,17 @@ export function bindHostLibrary() {
 
   $('#hl-bulk-tag')?.addEventListener('click', bulkTag);
   $('#hl-bulk-del')?.addEventListener('click', bulkDelete);
-  // 库级动作收在工具栏右侧(搜索旁),底部只留提示
-  // 导入/导出的实现驻留在 entry.js;从这里反向 import 会成环,
-  // 走命令注册表触发(data-command 同一条路径)
-  $('#hl-import')?.addEventListener('click', () => executeCommand('hosts.import'));
-  $('#hl-export')?.addEventListener('click', () => executeCommand('hosts.export'));
+  // 库级动作收在工具栏右侧(搜索旁),底部只留提示。
+  // 直接调 transfer.js 而不是 executeCommand:后者会先过 commands.js 的模态守卫,
+  // 顶层弹窗是主机库时命令被判禁用并静默 return false —— 这正是按钮"点了没反应"的原因。
+  // 范围在入口决定:导出全部 / 导出所选。两者都不经过 commands.js 的模态守卫
+  // (那条路径会把命令判为禁用并静默 return,本页按钮曾经因此完全没反应)。
+  $('#hl-import')?.addEventListener('click', () => openImportDialog());
+  $('#hl-export-all')?.addEventListener('click', () => openExportDialog({ scope: 'all' }));
+  $('#hl-export-selected')?.addEventListener('click', () => {
+    if (!selected.size) return;
+    openExportDialog({ scope: 'ids', ids: [...selected] });
+  });
   $('#hl-new-host')?.addEventListener('click', () => openHostModal(null));
 
   // 主机保存/删除后,若弹窗开着就刷新

@@ -3415,14 +3415,19 @@ async function main() {
   // 是有意引入的第 5 档 —— 输入控件旁的按钮随输入框拉伸,不套通用刻度。
   check('T15 按钮高度层级收敛(≤5 档)', Array.isArray(heights) && heights.length <= 5, JSON.stringify(heights));
 
-  // 导出:走带口令的加密导出,随后直接检查落盘文件不含明文凭据
+  // 导出:新卡片(范围/路径/两个开关)。默认零输入;这里显式打开「启用加密」验证口令通道。
   const exportPath = path.join(work, 'hosts-export.json');
   await evalJs(`window.__exportPath = ${JSON.stringify(exportPath)}; return 1`);
   // 入口:侧栏「管理」菜单(鼠标路径)
   await evalJs(`document.querySelector('#btn-host-manage').click(); document.querySelector('#ctx-menu [data-command="hosts.export"]').click(); return 1`);
-  await answerPrompt('e2e-passphrase-1', '导出主机');
-  // 二次确认口令(标题不同,answerPrompt 靠标题区分两个框)
-  await answerPrompt('e2e-passphrase-1', '确认口令');
+  await waitEval(`return !document.querySelector('#modal-export').classList.contains('hidden')`, 'true', 10000);
+  await evalJs(`
+    document.querySelector('.io-switches:has(#io-export-use-pass) .switch-label').click();
+    const inp = document.querySelector('#io-export-pass-input');
+    inp.value = 'e2e-passphrase-1';
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#io-export-ok').click();
+    return 1`);
   // 等文件落盘(mock 保存路径由 NEBULA_TEST_SAVE_PATH 决定)。
   // 预算放宽到 60s:带口令导出要走 scrypt 派生(N=2^15),e2e 跑的是 **debug 构建**,
   // 未优化下单次派生实测 ~2.9s,机器负载高(load avg 30+)时可达 20-48s ——
@@ -3459,7 +3464,22 @@ async function main() {
   await sleep(800);
   // 入口:侧栏「管理」菜单(键盘路径)
   await openDropdown('#btn-host-manage'); await ctxFocus('[data-command="hosts.import"]'); await focusedKey('Enter');
-  await answerPrompt('e2e-passphrase-1', '输入解密口令');
+  await waitEval(`return !document.querySelector('#modal-import').classList.contains('hidden')`, 'true', 10000);
+  // 空态整块可点:点虚线区 = 选文件(测试模式用 NEBULA_TEST_IMPORT_PATH)
+  await evalJs(`document.querySelector('#io-import-empty').click(); return 1`);
+  await sleep(700);
+  // 口令文件:在同一张卡里补口令
+  await evalJs(`
+    const pass = document.querySelector('#io-import-pass');
+    if (pass && !pass.classList.contains('hidden')) {
+      const inp = document.querySelector('#io-import-pass-input');
+      inp.value = 'e2e-passphrase-1';
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#io-import-pass-ok').click();
+    }
+    return 1`);
+  await waitEval(`return document.querySelectorAll('#io-import-rows .io-item').length > 0`, 'true', 30000);
+  await evalJs(`document.querySelector('#io-import-ok').click(); return 1`);
   // 导入同样要走 scrypt 派生(debug 构建下数秒,高负载时更久),预算放宽
   await waitEval(`document.querySelector('#toasts').textContent`, '导入完成', 60000);
   const importToast = await evalJs(`return document.querySelector('#toasts').textContent`);
@@ -3470,7 +3490,7 @@ async function main() {
   })())`));
   check(
     'T17 导入加密导出文件并恢复凭据',
-    String(importToast).includes('恢复凭据') && restored.chip === false,
+    String(importToast).includes('导入完成') && /新增 1/.test(String(importToast)) && restored.chip === false,
     `${String(importToast).slice(0, 90)} | chip=${restored.chip}`,
   );
 
@@ -4305,8 +4325,8 @@ async function main() {
     'T50c 侧栏「⠇」菜单:云导入/主机库/批量执行/导入导出/指纹/端口转发/紧凑列表,键盘打开且焦点进入菜单',
     JSON.stringify(manageIds) === JSON.stringify(['cloud.import', 'hosts.library', 'tools.batch', 'hosts.import',
       'hosts.export', 'settings.fingerprints', 'tools.forwards', 'view.hostDensity'])
-      && manage.items.find((i) => i.command === 'tools.forwards').label === '端口转发规则…'
-      && manage.items.find((i) => i.command === 'hosts.library').label === '主机库(批量管理)…'
+      && manage.items.find((i) => i.command === 'tools.forwards').label === '端口转发规则'
+      && manage.items.find((i) => i.command === 'hosts.library').label === '主机管理'
       && manageState.expanded === 'true' && manageState.focusInMenu && footer.text === '',
     JSON.stringify({ manageIds, manageState, footerText: footer.text }),
   );
