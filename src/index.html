@@ -770,6 +770,13 @@
             </thead>
             <tbody id="hl-tbody"></tbody>
           </table>
+          <!-- 空态不走 <tr>:数据槽位只放数据行,否则行级装饰(分隔线/hover/斑马纹)
+               会落到"非数据"上。表外的兄弟节点由 flex 吃满剩余高度并居中。 -->
+          <div id="hl-empty" class="empty-state hidden">
+            <div id="hl-empty-title" class="empty-state-title"></div>
+            <div id="hl-empty-hint" class="empty-state-hint hidden"></div>
+            <button id="hl-empty-action" class="btn small hidden" type="button"></button>
+          </div>
         </div>
       </div>
       <div id="hl-batch" class="hl-batch">
@@ -797,6 +804,11 @@
         <thead><tr><th>主机</th><th>指纹(SHA256)</th><th>操作</th></tr></thead>
         <tbody id="fp-tbody"></tbody>
       </table>
+      <!-- 空态走表外原语(见 docs/ui-layout-contract.md R1):不占数据行槽位 -->
+      <div id="fp-empty" class="empty-state hidden">
+        <div class="empty-state-title">暂无记录</div>
+        <div class="empty-state-hint">首次连接新主机会记录它的指纹</div>
+      </div>
       <p class="muted small-note">TOFU 首次信任记录;主机指纹变更会被拒绝连接,此处可重置信任。</p>
       <div class="modal-actions"><button id="btn-fp-close" class="btn">关闭</button></div>
     </div>

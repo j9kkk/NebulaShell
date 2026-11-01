@@ -360,11 +360,18 @@ export function renderLibrary() {
   }
 
   tbody.innerHTML = '';
+  const tableWrap = $('#hl-table-wrap');
+  const emptyBox = $('#hl-empty');
+  tableWrap?.classList.toggle('is-empty', !rows.length);
   if (!rows.length) {
-    tbody.appendChild(emptyRow());
+    emptyBox?.classList.remove('hidden');
+    fillEmptyState();
+    // 空态恢复滚动位置无意义(内容高度为 0),但仍归零,避免下次进入时停在半截
+    if (tableWrap) tableWrap.scrollTop = 0;
     updateBatchBar();
     return;
   }
+  emptyBox?.classList.add('hidden');
 
   for (const h of rows) {
     const tr = document.createElement('tr');
@@ -444,23 +451,35 @@ export function renderLibrary() {
   updateBatchBar();
 }
 
-/// 空表按语境给出口径与下一步动作,而不是一句通用的「没有匹配」
-function emptyRow() {
-  const tr = document.createElement('tr');
-  const td = document.createElement('td');
-  td.colSpan = 9;
-  td.className = 'hl-empty';
-  const title = document.createElement('div');
-  title.className = 'hl-empty-title';
-  const hint = document.createElement('div');
-  hint.className = 'hl-empty-hint';
-  let action = null;
+/// 空表按语境给出口径与下一步动作,而不是一句通用的「没有匹配」。
+/// 填的是表格外的状态节点(见 index.html #hl-empty),不占数据行槽位 ——
+/// 否则行级装饰(分隔线/hover)会落到"非数据"上,且要对抗 td 的省略号与垂直对齐。
+function fillEmptyState() {
+  const box = $('#hl-empty');
+  if (!box) return;
+  const title = $('#hl-empty-title');
+  const hint = $('#hl-empty-hint');
+  const action = $('#hl-empty-action');
+  title.textContent = '还没有主机';
+  hint.textContent = '';
+  hint.classList.add('hidden');
+  action.classList.add('hidden');
+  // 每次重绘重设回调,避免沿用上一个空态语境的处理器
+  action.onclick = null;
+  const setAction = (label, run) => {
+    action.textContent = label;
+    action.onclick = run;
+    action.classList.remove('hidden');
+  };
+  const setHint = (text) => {
+    hint.textContent = text;
+    hint.classList.remove('hidden');
+  };
   if (!hosts().length) {
-    title.textContent = '还没有主机';
-    action = mkEmptyAction('新建主机', () => openHostModal(null));
+    setAction('新建主机', () => openHostModal(null));
   } else if (keyword.trim()) {
     title.textContent = `没有匹配「${keyword.trim()}」的主机`;
-    action = mkEmptyAction('清空搜索', () => {
+    setAction('清空搜索', () => {
       keyword = '';
       const inp = $('#hl-search');
       if (inp) { inp.value = ''; inp.focus(); }
@@ -468,30 +487,15 @@ function emptyRow() {
     });
   } else if (activeGroup === STAR_NOTE) {
     title.textContent = '还没有常用主机';
-    hint.textContent = '点击行尾 ☆ 即可标记常用';
+    setHint('点击行尾 ☆ 即可标记常用');
   } else if (activeGroup) {
     title.textContent = `分组「${activeGroup}」还没有主机`;
-    hint.textContent = '在「全部」里勾选主机后点「移动到…」,或把行首 ⋮⋮ 拖到左侧分组';
-    action = mkEmptyAction('查看全部', () => {
+    setHint('在「全部」里勾选主机后点「移动到…」,或把行首 ⋮⋮ 拖到左侧分组');
+    setAction('查看全部', () => {
       activeGroup = '';
       renderLibrary();
     });
   }
-  td.appendChild(title);
-  if (hint.textContent) td.appendChild(hint);
-  if (action) td.appendChild(action);
-  tr.appendChild(td);
-  return tr;
-}
-
-function mkEmptyAction(label, run) {
-  const b = document.createElement('button');
-  b.id = 'hl-empty-action';
-  b.type = 'button';
-  b.className = 'btn small';
-  b.textContent = label;
-  b.addEventListener('click', run);
-  return b;
 }
 
 /* ---------------- 分组原地编辑 ---------------- */

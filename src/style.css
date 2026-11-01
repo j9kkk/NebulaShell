@@ -586,14 +586,9 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .tb-btn:hover { color: var(--text); background: var(--surface-hover); }
 .tb-btn.active { color: var(--text); background: var(--surface-hover); }
 .tb-btn svg { width: 16px; height: 16px; }
-body.platform-nonmacos .tb-traffic { display: none; }
-body.platform-darwin :is(.tb-pc, #menubar) { display: none; }
-body.platform-darwin #titlebar { padding-left: 0; }
-body.platform-darwin .tb-traffic { order: -2; }
-body.platform-darwin #btn-sidebar-toggle { order: -1; margin-right: 4px; }
-body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
+/* 平台差异(红绿灯/菜单栏/窗口按钮的显隐与顺序)统一放在文件末尾「平台覆盖层」段落,
+   见契约 R5;这里只保留与平台无关的状态规则。 */
 body.is-fullscreen .tb-traffic { display: none; }
-body.platform-darwin.is-fullscreen #titlebar { padding-left: 10px; }
 
 /* 一级菜单(Windows/Linux,menubar.js):标题按钮点开下拉;打开后鼠标移到相邻
    标题即切换。下拉复用 #ctx-menu。 */
@@ -609,7 +604,7 @@ body.platform-darwin.is-fullscreen #titlebar { padding-left: 10px; }
    hover 底色块,关闭 hover 红底白字(Windows 标题栏习惯)。图标为 10px 内联 SVG,
    由 window-controls.js 注入;macOS 用原生红绿灯,整组隐藏。全屏时隐藏。 */
 #win-controls { flex: none; align-self: stretch; display: flex; align-items: stretch; }
-body.platform-darwin #win-controls, body.is-fullscreen #win-controls { display: none; }
+body.is-fullscreen #win-controls { display: none; }
 .win-ctl {
   width: 46px; border: none; background: none; cursor: pointer;
   color: var(--muted); display: flex; align-items: center; justify-content: center;
@@ -4380,7 +4375,10 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   background: var(--active-bg); color: var(--accent); font-weight: 600;
   border-color: var(--accent);
 }
-.hl-table-wrap { flex: 1; min-width: 0; overflow: auto; scrollbar-gutter: stable; }
+.hl-table-wrap { flex: 1; min-width: 0; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; }
+/* 数据槽位只放数据行(空/加载/错误态是表外的兄弟节点),因此行级装饰挂在 td 上是安全的。
+   表格本身不参与拉伸(min-height:0 让长表正常溢出滚动),剩余高度归 .empty-state。 */
+.hl-table-wrap > .hl-table { flex: 0 0 auto; }
 .hl-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; table-layout: fixed; }
 .hl-table thead th {
   position: sticky; top: 0; z-index: 1; background: var(--panel);
@@ -4456,16 +4454,18 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 .hl-acts .hl-fav.on { color: var(--warn); }
 .hl-acts .hl-fav:hover { color: var(--warn); background: var(--muted-hover-bg); }
 .hl-acts button.del:hover { background: var(--danger-hover-bg); color: var(--danger); }
-/* 空表分语境:标题 + 可选提示 + 可选动作按钮 */
-.hl-empty { color: var(--muted); text-align: center; padding: 56px 16px; }
-/* 空态 td 必须赢过上方 td 的省略号/紧凑内边距,才能留白居中并正常换行 */
-.hl-table tbody td.hl-empty {
-  padding: 56px 16px; text-align: center;
-  white-space: normal; overflow: visible; text-overflow: clip;
+/* 空态/加载态/错误态原语(R7):表/列表**外面**的兄弟节点,吃满容器剩余高度并双向居中。
+   不复用数据槽位 —— 塞进 <tr><td colspan=9> 时,要对抗行分隔线、单元格省略号、
+   紧凑内边距和垂直对齐四件事,每件都得单独打补丁(空态多出一条横线就是这么来的)。 */
+.empty-state {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 24px 16px;
+  text-align: center; color: var(--muted);
 }
-.hl-empty-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.hl-empty-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
-.hl-empty .btn { margin-top: 12px; }
+.empty-state-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.empty-state-hint { font-size: 12px; color: var(--muted); max-width: 46em; }
+.empty-state .btn { margin-top: 6px; }
 /* 批量栏:常驻 40px 高度槽位，勾选切换时高低恒定，高度零突变。
    兼作未选择时的状态栏(共 N 台 / 显示 M / N 台)。 */
 .hl-batch {
@@ -4539,3 +4539,24 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus-halo);
 }
+
+/* ================= 平台覆盖层 =================
+   契约 R5:platform-darwin / platform-nonmacos 只允许出现在这一段里。
+   其余规则一律写"平台无关的基准值",跨平台差异在这里覆盖 —— 这样
+   「这个平台到底哪里不一样」永远只有一处答案,review 和排查都不用全文件搜。
+
+   现状(均集中在标题栏,都是结构差异而非尺寸微调):
+   - macOS:原生红绿灯(不进 DOM 布局流,靠 padding-left 让位) + 隐藏菜单栏与窗口按钮
+   - Windows/Linux:隐藏红绿灯,显示菜单栏与原生风格窗口按钮(撑满行高、直角)
+   新增平台差异请补在这里,并同步 docs/ui-layout-contract.md §二 的平台差异清单。
+   守门:scripts/lint-css-contract.mjs 的 platform-section 规则会报本段之外的平台选择器。 */
+body.platform-nonmacos .tb-traffic { display: none; }
+body.platform-darwin :is(.tb-pc, #menubar) { display: none; }
+body.platform-darwin #win-controls { display: none; }
+/* 红绿灯占位:窗口化时标题栏左侧内距归零(红绿灯悬在内容之上),全屏时留 10px */
+body.platform-darwin #titlebar { padding-left: 0; }
+body.platform-darwin.is-fullscreen #titlebar { padding-left: 10px; }
+/* 红绿灯排到最左,其后依次是侧栏开关、AI 开关,故给这两个按钮补右侧间距 */
+body.platform-darwin .tb-traffic { order: -2; }
+body.platform-darwin #btn-sidebar-toggle { order: -1; margin-right: 4px; }
+body.platform-darwin #btn-ai-toggle { margin-right: 8px; }

@@ -970,10 +970,11 @@ export async function openFingerprints() {
     const tbody = $('#fp-tbody');
     tbody.innerHTML = '';
     if (!list.length) {
+      // 空态走表外原语(R1):占位 <tr> 会继承行分隔线,并在 tbody 里留下"非数据行"
       $('#fp-table').classList.add('hidden');
-      tbody.innerHTML = '<tr><td colspan="3" class="muted">暂无记录</td></tr>';
-      $('#fp-table').classList.remove('hidden');
+      $('#fp-empty').classList.remove('hidden');
     } else {
+      $('#fp-empty').classList.add('hidden');
       for (const f of list) {
         const tr = document.createElement('tr');
         const fingerprint = String(f.fp);
