@@ -399,7 +399,37 @@ fn same_i64(local: &Value, item: &Value, key: &str, default: i64) -> bool {
     }
 }
 
-/// 只比较"用户能看见的主机属性";跳板引用与云身份不参与(前者是源 id,后者有单独匹配规则)。
+/// 枚举字段比较:文件没给 = 不参与;本地缺失/空串按默认值算,避免旧配置一导入就全变冲突。
+fn same_enum(local: &Value, item: &Value, key: &str, default: &str) -> bool {
+    let Some(value) = item[key].as_str() else {
+        return true;
+    };
+    let local_value = local[key]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default);
+    value == local_value
+}
+
+/// 云身份比较:文件没给 cloud = 不参与;provider/instanceId 必须一致,
+/// accountId/region 为空视为通配(与 cloud_match 的语义一致)。
+fn cloud_identity_same(local: &Value, item: &Value) -> bool {
+    let cloud = &item["cloud"];
+    if cloud.is_null() {
+        return true;
+    }
+    if !cloud.is_object() {
+        return false;
+    }
+    ["provider", "instanceId", "accountId", "region"]
+        .iter()
+        .all(|key| {
+            let wanted = cloud[*key].as_str().unwrap_or("");
+            wanted.is_empty() || local["cloud"][*key].as_str().unwrap_or("") == wanted
+        })
+}
+
+/// 只比较"用户能看见的主机属性";跳板引用与源 ID 不参与(前者是源 id,后者有单独匹配规则)。
 fn fields_identical(local: &Value, item: &Value) -> bool {
     let tags_same = match item["tags"].as_array() {
         None => true,
@@ -409,12 +439,16 @@ fn fields_identical(local: &Value, item: &Value) -> bool {
         }
     };
     same_str(local, item, "name")
+        && same_str(local, item, "host")
         && same_i64(local, item, "port", 22)
         && same_str(local, item, "username")
         && same_str(local, item, "authType")
         && same_str(local, item, "group")
         && same_str(local, item, "keyPath")
         && same_str(local, item, "initcmd")
+        && same_enum(local, item, "sessionLog", "default")
+        && same_enum(local, item, "aiAccess", "default")
+        && cloud_identity_same(local, item)
         && tags_same
 }
 
@@ -1499,8 +1533,12 @@ impl Store {
         ),
         String,
     > {
+        let text = crate::host_io::strip_bom(text);
+        if text.len() > crate::host_io::MAX_IMPORT_BYTES {
+            return Err(crate::host_io::too_large_error(text.len()));
+        }
         let parsed: Value =
-            serde_json::from_str(text).map_err(|_| "文件不是合法 JSON".to_string())?;
+            serde_json::from_str(text).map_err(|e| crate::host_io::json_error_message(&e))?;
         let version = parsed["version"].as_u64().unwrap_or(1);
         if version > 4 {
             return Err(format!(
@@ -1516,18 +1554,11 @@ impl Store {
                 .ok_or("文件格式不对:需要 { hosts: [...] } 或主机数组")?
                 .clone()
         };
-        let mut source_ids = std::collections::HashSet::new();
-        for item in &items {
-            if !item.is_object() || item["host"].as_str().unwrap_or("").trim().is_empty() {
-                return Err("导入主机地址不能为空".into());
-            }
-            if let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) {
-                if !source_ids.insert(id.to_owned()) {
-                    return Err("导入文件主机 ID 重复".into());
-                }
-            } else if version >= 3 {
-                return Err("导入文件缺少主机 ID".into());
-            }
+        // 逐行校验:必填/格式/文件内重复主机/跳板机引用。
+        // 有任何问题就整份拒绝(全量回滚),并一次列出「第 X 行、字段 Y、原因 Z」。
+        let issues = crate::host_io::validate_items(text, &items, version);
+        if !issues.is_empty() {
+            return Err(crate::host_io::format_issues(&issues));
         }
 
         let mut creds: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -1759,6 +1790,13 @@ impl Store {
                             item["name"].as_str().unwrap_or("")
                         ));
                     }
+                    if !same_str(&staged[i], item, "host") {
+                        diff.push(format!(
+                            "地址 {} → {}",
+                            staged[i]["host"].as_str().unwrap_or(""),
+                            item["host"].as_str().unwrap_or("")
+                        ));
+                    }
                     if !same_i64(&staged[i], item, "port", 22) {
                         diff.push(format!(
                             "端口 {} → {}",
@@ -1778,6 +1816,20 @@ impl Store {
                             "分组 {} → {}",
                             staged[i]["group"].as_str().unwrap_or("（空）"),
                             item["group"].as_str().unwrap_or("（空）")
+                        ));
+                    }
+                    if !same_enum(&staged[i], item, "sessionLog", "default") {
+                        diff.push(format!(
+                            "会话日志 {} → {}",
+                            staged[i]["sessionLog"].as_str().unwrap_or("default"),
+                            item["sessionLog"].as_str().unwrap_or("default")
+                        ));
+                    }
+                    if !same_enum(&staged[i], item, "aiAccess", "default") {
+                        diff.push(format!(
+                            "AI 访问 {} → {}",
+                            staged[i]["aiAccess"].as_str().unwrap_or("default"),
+                            item["aiAccess"].as_str().unwrap_or("default")
                         ));
                     }
                     if kind == "credOnly" {

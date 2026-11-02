@@ -168,30 +168,33 @@ fn case04_roundtrip_three_generations_stable() {
 
 // ---------------------------------------------------------------- 异常输入
 
-/// AC-05 空文件 / 纯空白:给出可读错误,不写盘
+/// AC-05 空文件/纯空白:报 JSON 格式错误(带行列),库不变
 #[test]
 fn case05_empty_file_is_rejected_clearly() {
     let (s, dir) = store("c05");
     for body in ["", "   \n\t  ", "\r\n"] {
         let e = s.inspect_hosts(body, None).unwrap_err();
-        assert_eq!(e, "文件不是合法 JSON", "空文件应报格式错误,实际: {}", e);
+        assert!(
+            e.starts_with("文件不是合法 JSON"),
+            "空文件应报格式错误,实际: {}",
+            e
+        );
         let e = s.apply_hosts(body, None, &json!({})).unwrap_err();
-        assert_eq!(e, "文件不是合法 JSON");
+        assert!(e.starts_with("文件不是合法 JSON"));
     }
     assert!(s.list_hosts().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AC-06 结构合法但无主机:预检返回 0 行(界面据此禁用导入),应用不产生写入
+/// AC-06 结构合法但无主机:拒绝并说明没有可导入内容(不再静默成功 0 台)
 #[test]
 fn case06_valid_but_no_hosts() {
     let (s, dir) = store("c06");
     for body in [json!({ "hosts": [] }), json!([])] {
-        let r = s.inspect_hosts(&text_of(&body), None).unwrap();
-        assert_eq!(r["rows"].as_array().unwrap().len(), 0);
-        assert_eq!(r["counts"], json!({ "add": 0, "credOnly": 0, "conflict": 0, "identical": 0 }));
-        let applied = s.apply_hosts(&text_of(&body), None, &json!({})).unwrap();
-        assert_eq!(applied["added"], json!(0));
+        let e = s.inspect_hosts(&text_of(&body), None).unwrap_err();
+        assert!(e.contains("没有主机记录"), "实际: {}", e);
+        let e = s.apply_hosts(&text_of(&body), None, &json!({})).unwrap_err();
+        assert!(e.contains("没有主机记录"), "实际: {}", e);
     }
     assert!(s.list_hosts().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -212,7 +215,12 @@ fn case07_wrong_format_files() {
         let e = s.inspect_hosts(body, None).unwrap_err();
         assert!(!e.is_empty(), "{}: 必须有错误信息", tag);
         println!("  {} -> {}", tag, e);
-        assert_eq!(e, "文件不是合法 JSON", "{} 的错误文案应统一: {}", tag, e);
+        assert!(
+            e.starts_with("文件不是合法 JSON"),
+            "{} 的错误文案应统一: {}",
+            tag,
+            e
+        );
     }
     // 合法 JSON 但结构不对:报结构错误,而不是笼统的 JSON 错误
     for body in ["{\"app\":\"nebulashell\"}", "{\"hosts\": 42}", "42", "\"text\""] {
@@ -275,11 +283,8 @@ fn case10_duplicate_ids_rejected() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AC-11 重复主机(同一文件里同一端点出现两次)
-///
-/// 现状(代码注释标明是有意为之):同一批次里已经被占用的本地主机不再参与端点兜底,
-/// 所以同一文件内两条同端点记录会各建一台主机。这里把现状钉住,并在验收记录里
-/// 作为"观察项/待评审"列给产品,不当作已修复。
+/// AC-11 重复主机(同一文件里同一端点且同名同配置出现两次):整份拒绝并指出重复的两行,
+/// 不再各建一台;同端点但配置不同的两条(如同一台机器的跳板机与目标机)仍然允许。
 #[test]
 fn case11_duplicate_endpoint_not_duplicated() {
     let (s, dir) = store("c11");
@@ -291,15 +296,11 @@ fn case11_duplicate_endpoint_not_duplicated() {
             { "name": "web", "host": "10.9.9.9", "port": 22, "username": "root", "password": "p1" }
         ]
     });
-    let r = s.inspect_hosts(&text_of(&file), None).unwrap();
-    println!("  dup endpoint(v1) inspect: {}", r["counts"]);
-    let applied = s.apply_hosts(&text_of(&file), None, &json!({})).unwrap();
-    println!("  dup endpoint(v1) apply: added={}", applied["added"]);
-    assert_eq!(
-        s.list_hosts().len(),
-        applied["added"].as_u64().unwrap() as usize,
-        "落地主机数应与本次新增数一致"
-    );
+    let e = s.inspect_hosts(&text_of(&file), None).unwrap_err();
+    assert!(e.contains("同一主机"), "重复端点必须报错: {}", e);
+    assert!(e.contains("第 1 台"), "错误要指出重复的两条: {}", e);
+    assert_eq!(s.list_hosts().len(), 0, "重复文件不得落一半");
+    assert!(s.apply_hosts(&text_of(&file), None, &json!({})).is_err());
 
     // 已有同端点本地主机时,单行导入应命中它而不是新建
     let (s2, dir2) = store("c11-b");
@@ -317,14 +318,15 @@ fn case11_duplicate_endpoint_not_duplicated() {
     s2.apply_hosts(&text_of(&one_row), None, &json!({})).unwrap();
     assert_eq!(s2.list_hosts().len(), 1, "不应新建重复主机");
 
-    // v4:两台来自不同机器的同端点主机(不同 id)合并成一个文件 → 当前仍建两台
+    // v4:两台来自不同机器的同端点主机(不同 id)合并成一个文件 → 同样整份拒绝
     let (s3, dir3) = store("c11-c");
     let merged = json!({ "app": "nebulashell", "version": 4, "hosts": [
         { "id": "a", "name": "web", "host": "10.9.9.9", "port": 22, "username": "root" },
         { "id": "b", "name": "web", "host": "10.9.9.9", "port": 22, "username": "root" }
     ] });
-    let r3 = s3.apply_hosts(&text_of(&merged), None, &json!({})).unwrap();
-    println!("  同端点不同 id(v4) apply: added={}", r3["added"]);
+    let e3 = s3.apply_hosts(&text_of(&merged), None, &json!({})).unwrap_err();
+    assert!(e3.contains("同一主机"), "{}", e3);
+    assert_eq!(s3.list_hosts().len(), 0);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
     let _ = std::fs::remove_dir_all(&dir3);
@@ -581,11 +583,11 @@ fn case19_backup_before_import_and_prune() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AC-21 字段异常值:端口非法/缺失、名字缺失、用户名缺失,导入不崩且落到合理默认
+/// AC-21 字段异常值:端口非法/缺失、名字缺失、用户名缺失、标签类型错误
 ///
-/// 注意:这条用例当前是**红的**,它守的是"导入要校验字段"这个待修缺陷
-/// (见 reports/host-io-2026-11-03/data-layer-baseline.md 的 F1)。修好后自然转绿;
-/// 不要为了跑绿去放宽断言 —— 手工编辑器有表单兜着,导入文件没有。
+/// 修复策略:导入文件没有表单兜底,非法值一律**整批拒绝并逐行说明**
+/// (行号 + 字段 + 原因),不静默改成默认值 —— 悄悄把 70000 改成 22 会让用户
+/// 以为数据没错。断言:库不变,且错误里能定位到每个坏字段。
 #[test]
 fn case21_weird_field_values() {
     let (s, dir) = store("c21");
@@ -594,27 +596,14 @@ fn case21_weird_field_values() {
         { "id": "b", "host": "10.0.0.2", "port": "abc" },
         { "id": "c", "host": "10.0.0.3", "name": "", "tags": "not-an-array" }
     ] });
-    let r = s.apply_hosts(&text_of(&file), None, &json!({})).unwrap();
-    assert_eq!(r["added"], json!(3));
-    let list = s.list_hosts();
-    let mut bad: Vec<String> = Vec::new();
-    for h in &list {
-        let port = h["port"].as_i64().unwrap_or(-1);
-        if !(port > 0 && port < 65536) {
-            bad.push(format!("{} 端口落到 {}", h["host"], port));
-        }
-        if h["name"].as_str().unwrap_or("").is_empty() {
-            bad.push(format!("{} 名字为空", h["host"]));
-        }
-        if h["username"].as_str().unwrap_or("").is_empty() {
-            bad.push(format!("{} 用户名为空", h["host"]));
-        }
-    }
-    assert!(
-        bad.is_empty(),
-        "以下字段未做校验(期望回落默认值): {}",
-        bad.join(" / ")
-    );
+    let e = s.apply_hosts(&text_of(&file), None, &json!({})).unwrap_err();
+    assert!(e.contains("共 5 处问题"), "应一次列出全部坏字段: {}", e);
+    assert!(e.contains("字段 port") && e.contains("70000"), "{}", e);
+    assert!(e.contains("字段 username"), "{}", e);
+    assert!(e.contains("字段 name"), "{}", e);
+    assert!(e.contains("字段 tags"), "{}", e);
+    assert!(e.contains("已全部回滚"), "{}", e);
+    assert!(s.list_hosts().is_empty(), "非法文件不得写入任何主机");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

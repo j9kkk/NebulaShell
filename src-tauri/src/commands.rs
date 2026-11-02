@@ -1,6 +1,7 @@
 // IPC 统一分发:channel → 处理器,返回 {ok, data|error} 信封(与 Electron 版 IPC 契约一致)
 use crate::config::Store;
 use crate::forward::ForwardService;
+use crate::host_io;
 use crate::ssh::SshService;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -700,9 +701,9 @@ pub async fn nebula_invoke(
             let Some(p) = path else {
                 return ok(json!(null));
             };
-            let text = match std::fs::read_to_string(&p) {
+            let text = match host_io::read_import_file(&p) {
                 Ok(t) => t,
-                Err(e) => return err_msg(e.to_string()),
+                Err(e) => return err_msg(e),
             };
             let meta = import_file_meta(&p, &text);
             let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
@@ -720,9 +721,9 @@ pub async fn nebula_invoke(
             let Some(p) = payload["path"].as_str().filter(|s| !s.is_empty()) else {
                 return err_msg("缺少文件路径");
             };
-            let text = match std::fs::read_to_string(p) {
+            let text = match host_io::read_import_file(p) {
                 Ok(t) => t,
-                Err(e) => return err_msg(e.to_string()),
+                Err(e) => return err_msg(e),
             };
             let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
             let decisions = if payload["decisions"].is_null() {
@@ -755,7 +756,7 @@ pub async fn nebula_invoke(
                     .map(|f| f.path().to_string_lossy().to_string()),
             };
             match path {
-                Some(p) => match std::fs::read_to_string(&p) {
+                Some(p) => match host_io::read_import_file(&p) {
                     Ok(text) => {
                         let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
                         // 文件带凭据但未给口令:先回一个信号让前端弹口令框,
@@ -1960,7 +1961,7 @@ pub async fn nebula_invoke(
 /// 用于决定是否需要向用户索取口令,而不把"需要口令"报成错误。
 /// 只有旧版(v2/v3)的口令文件才需要用户输入口令;v4 的 credentials 是对象,自动解密。
 fn file_has_credentials(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
+    serde_json::from_str::<Value>(host_io::strip_bom(text))
         .map(|v| {
             v["credentials"].as_str().is_some()
                 || (v["credentials"].is_null() && v["credentialsIncluded"] == json!(true))
@@ -1970,7 +1971,8 @@ fn file_has_credentials(text: &str) -> bool {
 
 /// 导入弹框显示用的文件元信息(不读进内存之外的东西)。
 fn import_file_meta(path: &str, text: &str) -> Value {
-    let parsed: Value = serde_json::from_str(text).unwrap_or_else(|_| json!({}));
+    let parsed: Value =
+        serde_json::from_str(host_io::strip_bom(text)).unwrap_or_else(|_| json!({}));
     let encrypted = if parsed["credentials"]["alg"].as_str() == Some("passphrase-scrypt/v1") {
         "passphrase"
     } else if parsed["credentials"]["alg"].as_str().is_some() {
@@ -1989,7 +1991,11 @@ fn import_file_meta(path: &str, text: &str) -> Value {
         "exportedAt": parsed["exportedAt"],
         "version": parsed["version"].as_u64().unwrap_or(1),
         "encryption": encrypted,
-        "count": parsed["hosts"].as_array().map(|a| a.len()).unwrap_or(0),
+        "count": parsed["hosts"]
+            .as_array()
+            .or_else(|| parsed.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0),
     })
 }
 

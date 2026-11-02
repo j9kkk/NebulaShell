@@ -7,6 +7,7 @@ mod cloud;
 pub mod commands;
 pub mod config;
 pub mod forward;
+pub mod host_io;
 mod monitor;
 mod session_log;
 pub mod sftp;
@@ -20,6 +21,8 @@ mod win32;
 
 #[cfg(test)]
 mod cloud_test;
+#[cfg(test)]
+mod host_io_test;
 #[cfg(test)]
 mod monitor_test;
 #[cfg(test)]
