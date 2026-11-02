@@ -2430,7 +2430,7 @@ impl Store {
         self.import_run(text, passphrase, None, true, false)
     }
 
-    /// 旧签名:有坏行时把整段中文问题串作为错误返回(既有测试与 hosts:importFile 用)。
+    /// 旧签名:有坏行时把整段中文问题串作为错误返回(只给既有测试用;界面走 detailed 版本)。
     pub fn inspect_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
         let out = self.inspect_hosts_detailed(text, passphrase)?;
         if out["rejected"] == json!(true) {

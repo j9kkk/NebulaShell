@@ -2040,7 +2040,10 @@ body.is-fullscreen #win-controls { display: none; }
 .keys-row-reset:disabled { opacity: 0.3; cursor: default; }
 .keys-table kbd, .settings-sec kbd { padding: 1px 5px; font-family: var(--font-mono); font-size: 11px;
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
-.form-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 12px; align-items: center; }
+/* 标签列是「至少 110px、按内容长胖」而不是写死 110px:文案改长时(「用口令加密（推荐）」
+   自然宽 117px)标签必须保持单行,不能折成两行把该行撑高。列宽仍由同一个网格决定,
+   所以一张卡里各行标签依然对齐;其余网格现有标签最宽 107px,列宽保持 110px 不变。 */
+.form-grid { display: grid; grid-template-columns: minmax(110px, max-content) minmax(0, 1fr); gap: 10px 12px; align-items: center; }
 .form-grid > *, .form-row > * { min-width: 0; }
 .form-grid :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea) {
   width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
@@ -4641,8 +4644,9 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 /* 底栏左侧是唯一的问题提示位(口令位数不足等),危险态用危险色,不另起 toast */
 .io-hint.bad { color: var(--danger); }
 
-/* 导出卡的两列:几何不另起一套,直接复用设置页 .form-grid(110px 标签列 + 12px 列距 +
-   34px 控件),卡片里「范围/分组/保存到」与设置页各行落在同一条竖线上。 */
+/* 导出卡的两列:几何不另起一套,直接复用设置页 .form-grid(≥110px 标签列 + 12px 列距 +
+   34px 控件),卡片里「范围/分组/保存到」与设置页各行落在同一条竖线上。标签列按内容长胖,
+   这张卡的「用口令加密（推荐）」会吃掉 117px,列对齐仍在同一网格内成立。 */
 .io-grid { row-gap: 10px; grid-auto-rows: minmax(34px, auto); }
 .io-label {
   color: var(--muted);

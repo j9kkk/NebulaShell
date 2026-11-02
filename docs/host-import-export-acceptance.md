@@ -75,8 +75,8 @@
 | F-11 | P2 | **已修复** | 填 `~/Downloads` → `dir:"~/Downloads"` + 默认文件名（不再拆成 `dir:"~"`/`filename:"Downloads"`） |
 | F-12 | P2 | **已修复**（代码级） | `write_export_file` 写盘后 `set_permissions(0o600)`；未做端到端权限实测（见 §1.2） |
 | F-13 | P2 | **已修复** | 导入成功不再弹 toast（实测 `#toasts` 内可见 toast = 0），结果报告是唯一报数处；后端 `skipped` 口径未变，但界面按 `rows[]` 统计，不再出现两套数字 |
-| F-14 | P2 | **已修复**（`t_153b5212`） | `hosts:importFile` 注册分支与其独有的 `file_has_credentials` 已删除，前端只剩 `importInspect → importApply`；`grep -r hosts:importFile src/` 零命中。见 §8 |
-| F-15 | P2 | **已修复**（`t_153b5212`） | 私钥落盘名已是 `keys/<host-id>-<name>`；写盘失败不再静默——结果行 `warnings[]` 带「私钥写入失败：<原因>」，结果明细标黄、副标题报「N 个私钥写入失败」，复制报告同样带出；`case23` 用「把 keys 位置占成普通文件」逼出写失败验证。见 §8 |
+| F-14 | P2 | **已修复**（`t_153b5212`） | `hosts:importFile` 注册分支与其独有的 `file_has_credentials` 已删除，前端只剩 `importInspect → importApply`；`grep -r hosts:importFile src/` 零命中。见 §9 |
+| F-15 | P2 | **已修复**（`t_153b5212`） | 私钥落盘名已是 `keys/<host-id>-<name>`；写盘失败不再静默——结果行 `warnings[]` 带「私钥写入失败：<原因>」，结果明细标黄、副标题报「N 个私钥写入失败」，复制报告同样带出；`case28_key_install_failure_is_reported` 用「把 keys 位置占成普通文件」逼出写失败验证。见 §9 |
 | F-16 | P2 | **已修复**（性能部分，`t_153b5212`） | 匹配改索引（`MatchIndex`）：5000 台 debug apply **10.4 s → 0.44 s**，inspect 118 ms 不变，二次导入（最坏路径）0.56 s，`case16` 加了二次导入 <5 s 断言。按设计 §4.2 **不做**后台任务队列，仍是不确定进度条 |
 
 ### 2.2 体验 / 设计问题（U-01 … U-15）
@@ -247,7 +247,7 @@ node reports/host-io-acceptance-2026-11-03/acceptance.mjs webkit
 
 ## 9. 收尾批次 `t_153b5212`（已闭合）
 
-P2 打包（§5 原表里的 F-14 / F-15 / F-16 / U-10 / U-07 + 预览列表收边）已在本批次清掉，`0602ac8` 落地：
+P2 打包（§5 原表里的 F-14 / F-15 / F-16 / U-10 / U-07 + 预览列表收边）已在本批次清掉，`c1971f0` / `edbf210` / `71503fd` 落地（`71503fd` 只是文档收尾）：
 
 | # | 项 | 现在的行为 | 证据 |
 |---|---|---|---|

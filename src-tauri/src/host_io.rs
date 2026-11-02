@@ -230,7 +230,12 @@ pub fn read_import_source(path: &str) -> Result<ImportSource, String> {
     })
 }
 
-/// 只要文本的旧入口(保持兼容:hosts:importFile 等不需要指纹的通道)。
+/// 测试专用的薄封装:只要文本,不做指纹。
+///
+/// 生产通道(预检/落盘)一律走 `read_import_source` —— 它同时给出 `bytes` 与 `digest`,
+/// 供 `importInspect` 指纹核对用。「只吃文本、不带指纹」的旧导入通道已随 F-14 删除,
+/// 不要再往这里加调用方。
+#[cfg(test)]
 pub fn read_import_file(path: &str) -> Result<String, String> {
     read_import_source(path).map(|s| s.text)
 }
