@@ -222,12 +222,27 @@ const EXPORT_LOG_N: u8 = 15; // N = 2^15,约 32MB 内存开销,单次派生 ~50m
 const EXPORT_R: u32 = 8;
 const EXPORT_P: u32 = 1;
 
-fn scrypt_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
-    let params =
-        scrypt::Params::new(EXPORT_LOG_N, EXPORT_R, EXPORT_P, 32).map_err(|e| e.to_string())?;
+/// scrypt 派生:参数由调用方给定。
+///
+/// 收口成唯一实现,是因为加密与解密两侧必须用同一套参数调用 scrypt ——
+/// 写端用固定强度(EXPORT_*),读端用文件头里记的强度;实现各写一份的话
+/// 容易在改参数时只改一边,表现为"口令正确却解不开"。
+fn scrypt_key_with(
+    passphrase: &str,
+    salt: &[u8],
+    log_n: u8,
+    r: u32,
+    p: u32,
+) -> Result<[u8; 32], String> {
+    let params = scrypt::Params::new(log_n, r, p, 32).map_err(|e| e.to_string())?;
     let mut key = [0u8; 32];
     scrypt::scrypt(passphrase.as_bytes(), salt, &params, &mut key).map_err(|e| e.to_string())?;
     Ok(key)
+}
+
+/// 按当前默认强度派生(写端用)。
+fn scrypt_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
+    scrypt_key_with(passphrase, salt, EXPORT_LOG_N, EXPORT_R, EXPORT_P)
 }
 
 pub(crate) fn encrypt_with_passphrase(passphrase: &str, plain: &[u8]) -> Result<String, String> {
@@ -281,9 +296,7 @@ fn decrypt_with_passphrase(passphrase: &str, b64: &str) -> Result<Vec<u8>, Strin
     let nonce_bytes = &blob[29..41];
     let ct = &blob[41..];
 
-    let params = scrypt::Params::new(log_n, r, p, 32).map_err(|e| e.to_string())?;
-    let mut key = [0u8; 32];
-    scrypt::scrypt(passphrase.as_bytes(), salt, &params, &mut key).map_err(|e| e.to_string())?;
+    let key = scrypt_key_with(passphrase, salt, log_n, r, p)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
     cipher
         .decrypt(Nonce::from_slice(nonce_bytes), ct)
