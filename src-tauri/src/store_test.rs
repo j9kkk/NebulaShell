@@ -136,10 +136,20 @@ fn export_never_contains_plaintext_credentials() {
     let exported = store.export_hosts().unwrap();
     let text = serde_json::to_string(&exported).unwrap();
 
-    assert!(!text.contains("SuperSecret123"), "导出文件泄漏了明文密码: {}", text);
-    assert!(!text.contains("BEGIN OPENSSH PRIVATE KEY"), "导出文件泄漏了明文私钥");
+    assert!(
+        !text.contains("SuperSecret123"),
+        "导出文件泄漏了明文密码: {}",
+        text
+    );
+    assert!(
+        !text.contains("BEGIN OPENSSH PRIVATE KEY"),
+        "导出文件泄漏了明文私钥"
+    );
     assert_eq!(exported["credentialsIncluded"], json!(true));
-    assert_eq!(exported["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
+    assert_eq!(
+        exported["credentials"]["alg"],
+        json!("builtin-aes-256-gcm/v1")
+    );
     // 主机信息本身仍应明文可读
     assert_eq!(exported["hosts"].as_array().unwrap().len(), 1);
     assert_eq!(exported["hosts"][0]["host"], json!("10.0.0.1"));
@@ -167,7 +177,10 @@ fn v4_export_needs_no_passphrase_and_legacy_still_does() {
     let exported = store.export_hosts().unwrap();
     let text = serde_json::to_string(&exported).unwrap();
     assert_eq!(exported["version"], json!(4));
-    assert_eq!(exported["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
+    assert_eq!(
+        exported["credentials"]["alg"],
+        json!("builtin-aes-256-gcm/v1")
+    );
     assert!(!text.contains("TopSecret!"), "加密导出不应含明文");
 
     // 同一台机器:新库不需要口令即可导入并恢复凭据
@@ -197,7 +210,9 @@ fn v4_export_needs_no_passphrase_and_legacy_still_does() {
     let ok = tmp_store("io-legacy-ok");
     let r = ok.import_hosts(&legacy_text, Some("old-pass")).unwrap();
     assert_eq!(r["added"], json!(1));
-    let full = ok.host_full(ok.list_hosts()[0]["id"].as_str().unwrap()).unwrap();
+    let full = ok
+        .host_full(ok.list_hosts()[0]["id"].as_str().unwrap())
+        .unwrap();
     assert_eq!(full["password"], json!("legacy-secret"));
 
     let _ = std::fs::remove_dir_all(&store.dir);
@@ -958,7 +973,9 @@ fn settings_ui_roundtrip_and_sanitize() {
 fn export_scope_ids_carries_jump_closure() {
     let store = tmp_store("scope-ids");
     let jump = store
-        .save_host(&json!({ "name": "jump-1", "host": "10.9.0.1", "username": "root", "password": "j" }))
+        .save_host(
+            &json!({ "name": "jump-1", "host": "10.9.0.1", "username": "root", "password": "j" }),
+        )
         .unwrap();
     let jump_id = jump["id"].as_str().unwrap().to_string();
     let a = store
@@ -979,7 +996,10 @@ fn export_scope_ids_carries_jump_closure() {
     assert_eq!(names.len(), 2, "选中 1 台 + 被依赖的跳板机 1 台,不应带 b");
     assert!(names.contains(&"a".to_string()) && names.contains(&"jump-1".to_string()));
     assert_eq!(out["includedJumps"], json!(1), "提示层要知道带了几台跳板机");
-    assert!(!out["credentials"]["data"].as_str().unwrap_or("").is_empty(), "凭据应自动打包");
+    assert!(
+        !out["credentials"]["data"].as_str().unwrap_or("").is_empty(),
+        "凭据应自动打包"
+    );
 
     // v4:凭据始终打包(内置密钥加密),不再取决于是否给口令
     assert_eq!(out["credentialsIncluded"], json!(true));
@@ -990,10 +1010,13 @@ fn export_scope_ids_carries_jump_closure() {
 #[test]
 fn export_scope_ids_rejects_empty_and_missing() {
     let store = tmp_store("scope-bad");
-    store.save_host(&json!({ "name": "a", "host": "10.0.0.1" })).unwrap();
+    store
+        .save_host(&json!({ "name": "a", "host": "10.0.0.1" }))
+        .unwrap();
     let empty = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false);
     assert!(empty.is_err(), "空选择应报错而不是悄悄导出全量");
-    let missing = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["nope"] }), None, false);
+    let missing =
+        store.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["nope"] }), None, false);
     assert!(missing.unwrap_err().contains("不存在"));
     let bad_mode = store.export_hosts_scoped(&json!({ "mode": "group" }), None, false);
     assert!(bad_mode.is_err(), "未知范围必须报错,不能退化成全量");
@@ -1029,8 +1052,15 @@ fn inspect_then_apply_conflict_decisions() {
     assert_eq!(plan["counts"]["add"], json!(0));
     assert_eq!(dst.list_hosts().len(), before, "预检不得写盘");
     let rows = plan["rows"].as_array().unwrap();
-    let conflict_row = rows.iter().find(|r| r["kind"] == json!("conflict")).unwrap();
-    assert!(conflict_row["diff"].as_array().unwrap().iter().any(|d| d.as_str().unwrap_or("").contains("端口")));
+    let conflict_row = rows
+        .iter()
+        .find(|r| r["kind"] == json!("conflict"))
+        .unwrap();
+    assert!(conflict_row["diff"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d.as_str().unwrap_or("").contains("端口")));
     let key = conflict_row["key"].as_str().unwrap().to_string();
 
     // 跳过:端口保持用户改后的 2222
@@ -1038,11 +1068,12 @@ fn inspect_then_apply_conflict_decisions() {
         .apply_hosts(&text, None, &json!({ key.clone(): "skip" }))
         .unwrap();
     assert_eq!(skipped["overwritten"], json!(0));
-    let after_skip = dst
-        .host_full(&cache_id)
-        .unwrap();
+    let after_skip = dst.host_full(&cache_id).unwrap();
     assert_eq!(after_skip["port"], json!(2222), "跳过时本地配置不动");
-    assert!(skipped["backup"].as_str().unwrap().contains("nebulashell-backup-"));
+    assert!(skipped["backup"]
+        .as_str()
+        .unwrap()
+        .contains("nebulashell-backup-"));
 
     // 覆盖:把端口和凭据恢复成文件里的值
     let applied = dst
@@ -1065,11 +1096,18 @@ fn optional_passphrase_channel_roundtrip() {
         .save_host(&json!({ "name": "p", "host": "10.9.0.1", "password": "PassSecret!" }))
         .unwrap();
     let exported = store
-        .export_hosts_scoped(&json!({ "mode": "all" }), Some("correct horse battery"), false)
+        .export_hosts_scoped(
+            &json!({ "mode": "all" }),
+            Some("correct horse battery"),
+            false,
+        )
         .unwrap();
     let text = serde_json::to_string(&exported).unwrap();
     assert_eq!(exported["version"], json!(4));
-    assert_eq!(exported["credentials"]["alg"], json!("passphrase-scrypt/v1"));
+    assert_eq!(
+        exported["credentials"]["alg"],
+        json!("passphrase-scrypt/v1")
+    );
     assert!(!text.contains("PassSecret!"), "口令导出也不得含明文");
 
     let fresh = tmp_store("io-pass-fresh");
@@ -1082,9 +1120,13 @@ fn optional_passphrase_channel_roundtrip() {
         .import_hosts(&text, Some("wrong password"))
         .unwrap_err()
         .contains("口令错误"));
-    let r = fresh.import_hosts(&text, Some("correct horse battery")).unwrap();
+    let r = fresh
+        .import_hosts(&text, Some("correct horse battery"))
+        .unwrap();
     assert_eq!(r["added"], json!(1));
-    let full = fresh.host_full(fresh.list_hosts()[0]["id"].as_str().unwrap()).unwrap();
+    let full = fresh
+        .host_full(fresh.list_hosts()[0]["id"].as_str().unwrap())
+        .unwrap();
     assert_eq!(full["password"], json!("PassSecret!"));
 
     // 同一个库里,无口令导出仍走内置通道(开关默认关)
@@ -1100,7 +1142,11 @@ fn optional_passphrase_channel_roundtrip() {
 fn optional_private_key_bundle_roundtrip() {
     let store = tmp_store("io-key");
     let key_path = store.dir.join("id_test_key");
-    std::fs::write(&key_path, "-----BEGIN OPENSSH PRIVATE KEY-----\nABC\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    std::fs::write(
+        &key_path,
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nABC\n-----END OPENSSH PRIVATE KEY-----\n",
+    )
+    .unwrap();
     store
         .save_host(&json!({
             "name": "k", "host": "10.9.1.1", "username": "root",
@@ -1118,13 +1164,20 @@ fn optional_private_key_bundle_roundtrip() {
         .unwrap();
     assert_eq!(on["includedKeys"], json!(1));
     let text_on = serde_json::to_string(&on).unwrap();
-    assert!(!text_on.contains("BEGIN OPENSSH PRIVATE KEY"), "私钥必须密文传输");
+    assert!(
+        !text_on.contains("BEGIN OPENSSH PRIVATE KEY"),
+        "私钥必须密文传输"
+    );
 
     let fresh = tmp_store("io-key-fresh");
     fresh.import_hosts(&text_on, None).unwrap();
     let host = &fresh.list_hosts()[0];
     let installed = host["keyPath"].as_str().unwrap();
-    assert!(installed.starts_with(&*fresh.dir.join("keys").to_string_lossy()), "应落到 keys/: {}", installed);
+    assert!(
+        installed.starts_with(&*fresh.dir.join("keys").to_string_lossy()),
+        "应落到 keys/: {}",
+        installed
+    );
     let content = std::fs::read_to_string(installed).unwrap();
     assert!(content.contains("BEGIN OPENSSH PRIVATE KEY"));
     #[cfg(unix)]

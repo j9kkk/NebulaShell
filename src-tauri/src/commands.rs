@@ -594,7 +594,9 @@ pub async fn nebula_invoke(
             } else {
                 payload["scope"].clone()
             };
-            let pass = payload["passphrase"].as_str().filter(|p| !p.trim().is_empty());
+            let pass = payload["passphrase"]
+                .as_str()
+                .filter(|p| !p.trim().is_empty());
             let with_keys = payload["withKeys"] == json!(true);
             let data = match state.store.export_hosts_scoped(&scope, pass, with_keys) {
                 Ok(d) => d,
@@ -619,7 +621,9 @@ pub async fn nebula_invoke(
                 if let Ok(p) = std::env::var("NEBULA_TEST_SAVE_PATH") {
                     std::fs::write(&p, serde_json::to_string_pretty(&data).unwrap_or_default())
                         .ok();
-                    return ok(json!({ "path": p, "count": count, "includedJumps": included_jumps }));
+                    return ok(
+                        json!({ "path": p, "count": count, "includedJumps": included_jumps }),
+                    );
                 }
             }
             if let Some(dir) = payload.get("dir").and_then(|v| v.as_str()) {
@@ -650,12 +654,15 @@ pub async fn nebula_invoke(
                     n += 1;
                 }
                 let path_str = path.to_string_lossy().to_string();
-                if let Err(e) =
-                    std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap_or_default())
-                {
+                if let Err(e) = std::fs::write(
+                    &path,
+                    serde_json::to_string_pretty(&data).unwrap_or_default(),
+                ) {
                     return err_msg(e.to_string());
                 }
-                return ok(json!({ "path": path_str, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }));
+                return ok(
+                    json!({ "path": path_str, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }),
+                );
             }
             let file = rfd::AsyncFileDialog::new()
                 .set_file_name(&default_name)
@@ -665,12 +672,15 @@ pub async fn nebula_invoke(
             match file {
                 Some(f) => {
                     let path = f.path().to_string_lossy().to_string();
-                    if let Err(e) =
-                        std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap_or_default())
-                    {
+                    if let Err(e) = std::fs::write(
+                        &path,
+                        serde_json::to_string_pretty(&data).unwrap_or_default(),
+                    ) {
                         return err_msg(e.to_string());
                     }
-                    ok(json!({ "path": path, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }))
+                    ok(
+                        json!({ "path": path, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }),
+                    )
                 }
                 None => ok(json!(null)),
             }
@@ -687,7 +697,9 @@ pub async fn nebula_invoke(
                     .await
                     .map(|f| f.path().to_string_lossy().to_string()),
             };
-            let Some(p) = path else { return ok(json!(null)) };
+            let Some(p) = path else {
+                return ok(json!(null));
+            };
             let text = match std::fs::read_to_string(&p) {
                 Ok(t) => t,
                 Err(e) => return err_msg(e.to_string()),

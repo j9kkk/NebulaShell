@@ -347,12 +347,21 @@ fn decrypt_builtin(block: &Value) -> Result<Vec<u8>, String> {
 
     let alg = block["alg"].as_str().unwrap_or("");
     if alg != CRED_ALG_V4 {
-        return Err(format!("该文件使用了更新的加密方式({}),请升级 NebulaShell", alg));
+        return Err(format!(
+            "该文件使用了更新的加密方式({}),请升级 NebulaShell",
+            alg
+        ));
     }
     let b64 = base64::engine::general_purpose::STANDARD;
-    let salt = b64.decode(block["salt"].as_str().unwrap_or("")).map_err(|_| "凭据块损坏".to_string())?;
-    let nonce_bytes = b64.decode(block["nonce"].as_str().unwrap_or("")).map_err(|_| "凭据块损坏".to_string())?;
-    let ct = b64.decode(block["data"].as_str().unwrap_or("")).map_err(|_| "凭据块损坏".to_string())?;
+    let salt = b64
+        .decode(block["salt"].as_str().unwrap_or(""))
+        .map_err(|_| "凭据块损坏".to_string())?;
+    let nonce_bytes = b64
+        .decode(block["nonce"].as_str().unwrap_or(""))
+        .map_err(|_| "凭据块损坏".to_string())?;
+    let ct = b64
+        .decode(block["data"].as_str().unwrap_or(""))
+        .map_err(|_| "凭据块损坏".to_string())?;
     if salt.len() != 16 || nonce_bytes.len() != 12 {
         return Err("凭据块损坏".into());
     }
@@ -361,7 +370,6 @@ fn decrypt_builtin(block: &Value) -> Result<Vec<u8>, String> {
         .decrypt(Nonce::from_slice(&nonce_bytes), ct.as_ref())
         .map_err(|_| "凭据解密失败,文件可能已损坏".to_string())
 }
-
 
 /// 导入分类用:item 没给的字段视为"未提供",不参与差异判定。
 fn same_str(local: &Value, item: &Value, key: &str) -> bool {
@@ -1473,8 +1481,7 @@ impl Store {
             }
         }
 
-        let mut creds: std::collections::HashMap<String, Value> =
-            std::collections::HashMap::new();
+        let mut creds: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
         let mut legacy_plaintext = false;
         let cred_value = &parsed["credentials"];
         if !cred_value.is_null() {
@@ -1491,9 +1498,7 @@ impl Store {
                         let pass = passphrase
                             .filter(|p| !p.is_empty())
                             .ok_or("NEEDS_PASSPHRASE")?;
-                        let blob = cred_value["blob"]
-                            .as_str()
-                            .ok_or("凭据块损坏")?;
+                        let blob = cred_value["blob"].as_str().ok_or("凭据块损坏")?;
                         let plain = decrypt_with_passphrase(pass, blob)
                             .map_err(|_| "口令错误,或文件已损坏".to_string())?;
                         serde_json::from_slice(&plain)
@@ -1627,15 +1632,15 @@ impl Store {
                     cred_key(item)
                 };
                 let block = creds.get(&ckey);
-                let inline = ["password", "privateKey", "passphrase"].iter().any(|f| {
-                    item[f].as_str().filter(|s| !s.is_empty()).is_some()
-                });
+                let inline = ["password", "privateKey", "passphrase"]
+                    .iter()
+                    .any(|f| item[f].as_str().filter(|s| !s.is_empty()).is_some());
                 inline
                     || block
                         .map(|c| {
-                            ["password", "privateKey", "passphrase"].iter().any(|f| {
-                                c[f].as_str().filter(|s| !s.is_empty()).is_some()
-                            })
+                            ["password", "privateKey", "passphrase"]
+                                .iter()
+                                .any(|f| c[f].as_str().filter(|s| !s.is_empty()).is_some())
                         })
                         .unwrap_or(false)
             };
@@ -1654,7 +1659,6 @@ impl Store {
             };
             let decision = decision_of(&key);
             let overwrite = kind == "conflict" && decision == "overwrite";
-            let skip = decision == "skip";
 
             let (idx, is_new) = match matched {
                 Some(i) => {
@@ -1758,14 +1762,7 @@ impl Store {
                     ids.push(json!(src));
                 }
             }
-            plans.push((
-                item_idx,
-                idx,
-                is_new,
-                key,
-                kind.to_string(),
-                overwrite,
-            ));
+            plans.push((item_idx, idx, is_new, key, kind.to_string(), overwrite));
         }
 
         if dry_run {
@@ -1797,10 +1794,7 @@ impl Store {
 
             let mut jumps = Vec::new();
             if !item["jumpIds"].is_null() {
-                for jump in item["jumpIds"]
-                    .as_array()
-                    .ok_or("跳板机列表格式不正确")?
-                {
+                for jump in item["jumpIds"].as_array().ok_or("跳板机列表格式不正确")? {
                     let src = jump.as_str().ok_or("跳板机 ID 无效")?;
                     jumps.push(
                         remap
@@ -1868,7 +1862,11 @@ impl Store {
             // 只在新增/覆盖/本地没配 keyPath 时安装,避免把用户自己的路径顶掉。
             if !skip {
                 if let Some(kf) = block.and_then(|c| c.get("keyFile")) {
-                    let local_key_empty = staged[idx]["keyPath"].as_str().unwrap_or("").trim().is_empty();
+                    let local_key_empty = staged[idx]["keyPath"]
+                        .as_str()
+                        .unwrap_or("")
+                        .trim()
+                        .is_empty();
                     if is_new || overwrite || local_key_empty {
                         if let Some(content) = kf["content"].as_str() {
                             let dir = self.dir.join("keys");
@@ -1927,9 +1925,12 @@ impl Store {
                 "exportedAt": chrono::Utc::now().to_rfc3339(),
                 "hosts": data["hosts"],
             });
-            std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap_or_default())
-                .ok()
-                .map(|_| path.to_string_lossy().to_string())
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&snapshot).unwrap_or_default(),
+            )
+            .ok()
+            .map(|_| path.to_string_lossy().to_string())
         };
 
         data["hosts"] = json!(staged);
