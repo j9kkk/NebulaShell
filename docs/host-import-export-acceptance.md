@@ -177,7 +177,7 @@ P2 = F-10…F-16（7）+ U-07…U-15（9）。审计元数据里写的「P1 11 /
 ```bash
 cd code
 
-# 1) 数据层:22 条用户可见验收用例(直驱真实 Store,不启 Tauri)
+# 1) 数据层:28 条用户可见验收用例(直驱真实 Store,不启 Tauri)
 cd src-tauri && cargo test --test import_export_acceptance -- --test-threads=1 && cd ..
 
 # 2) 单元/集成
@@ -187,13 +187,12 @@ npm run test:unit
 # 3) 界面层(独立验收脚本,先重编 dist)
 node build.mjs
 node reports/host-io-acceptance-2026-11-03/acceptance.mjs chromium
-PW_PATH=/Users/joker/node_modules/playwright-core \
-  node reports/host-io-acceptance-2026-11-03/acceptance.mjs webkit
+node reports/host-io-acceptance-2026-11-03/acceptance.mjs webkit
 ```
 
 > `reports/` 在 `.gitignore` 里，脚本与截图只在本地留档（与前面几张卡一致）。
-> WebKit 需要用 1.63.0 的 `playwright-core`（本机 `~/node_modules/playwright-core`），
-> npx 里那份 1.64.1 的 webkit 二进制没装。
+> WebKit：`t_153b5212` 里补装了 npx 那份 1.64.1 playwright 的 webkit（`webkit-2370`），
+> 现在 `node …acceptance.mjs webkit` 直接可跑，不必再指定 `PW_PATH`。
 
 证据文件（`reports/host-io-acceptance-2026-11-03/`）：
 
