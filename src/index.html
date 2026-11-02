@@ -1031,7 +1031,7 @@
             </div>
 
             <div class="io-switches">
-              <label class="io-label" for="io-export-use-pass"><span class="switch-label">用口令加密</span></label>
+              <label class="io-label" for="io-export-use-pass"><span class="switch-label">用口令加密（推荐）</span></label>
               <div class="io-cell">
                 <label class="switch"><input id="io-export-use-pass" type="checkbox" /><span class="switch-slider"></span></label>
                 <!-- 口令框沿用项目统一的 .secret-input-wrap(右侧内嵌眼睛显隐),与主机弹窗、AI 密钥同款 -->
@@ -1050,7 +1050,9 @@
             </div>
 
             <span class="io-label" aria-hidden="true"></span>
-            <span id="io-export-pass-note" class="io-note hidden">口令不会写入文件;丢失后文件里的凭据无法找回</span>
+            <!-- 开关的状态说明:关 = 用内置密钥(等同明文),开 = 口令不进文件。两态互斥,
+                 由 renderExport 写内容(U-10)。关态文案常驻在这里,不靠下方警示块兜底。 -->
+            <span id="io-export-pass-note" class="io-note hidden">用内置密钥：任何拿到本 App 的人都能解开，等同明文</span>
           </div>
 
           <!-- 安全提示是常驻块,不是底栏状态位:底栏会被"口令不足/导出中"顶掉(§7.2 注) -->
@@ -1165,7 +1167,7 @@
 
           <div id="io-import-list" class="io-list">
             <div class="io-list-head"><span class="io-c-check"><span id="io-import-selectall" class="hl-box" role="checkbox" aria-checked="true" aria-label="全选可导入的主机" tabindex="0"></span></span><span>位置</span><span>主机</span><span>地址</span><span>分组</span><span>凭据</span><span>处置</span></div>
-            <div id="io-import-rows" class="io-list-body"></div>
+            <div id="io-import-rows" class="io-list-body" data-scroll-fade></div>
             <button id="io-import-more" class="io-list-more hidden" type="button"></button>
           </div>
 

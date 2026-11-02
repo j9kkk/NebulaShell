@@ -9,6 +9,8 @@
 import { $, api, closeModal, copyText, openModal, setModalDismissHandler, state, toast } from './core.js';
 import { refreshHosts, groupOf, escapeHtml } from './hosts.js';
 import { icon } from '../shared/icons.js';
+// 全局滚动容器规则(底部渐隐):导入预览列表静止时最后一行被切一半时,用它提示"还能滚"
+import { observeScrollFade } from '../shared/scroll-fade.js';
 
 const PASS_MIN = 8;
 const today = () => {
@@ -179,7 +181,15 @@ function renderExport() {
   const pass2Row = $('#io-export-pass2-row');
   if (pass2Row) pass2Row.classList.toggle('hidden', !passOn);
   const passNote = $('#io-export-pass-note');
-  if (passNote) passNote.classList.toggle('hidden', !passOn);
+  if (passNote) {
+    // 两态互斥,占同一行(U-10):关 → 用内置密钥(等同明文),开 → 口令不进文件。
+    // 关态这句是纯文案的安全披露,必须与开关同屏可见,不能只靠下面的警示块。
+    const show = ex.withCred && sum.count > 0;
+    passNote.classList.toggle('hidden', !show);
+    passNote.textContent = passOn
+      ? '文件口令不会写入文件;丢失后文件里的凭据无法找回'
+      : '用内置密钥：任何拿到本 App 的人都能解开，等同明文';
+  }
   $('#btn-reveal-export-pass')?.classList.toggle('hidden', !passOn || !ex.pass.length);
 
   const passLen = ex.pass.trim().length;
@@ -216,8 +226,12 @@ function renderExport() {
     if (ex.error) { text = ex.error; bad = true; }
     else if (ex.busy) text = '正在写入文件…';
     else if (sum.count === 0) { text = '没有可导出的主机'; bad = true; }
+    // U-07:主按钮禁用时底栏必须给原因(设计 §9.2/§7.7)。空口令与「只输了第一遍」
+    // 这两态以前没有文案 —— 禁用看着像卡住了,输第一个字符才冒出提示。
+    else if (passOn && passLen === 0) text = `请输入文件口令(至少 ${PASS_MIN} 位)`;
     else if (tooShort) { text = `文件口令至少 ${PASS_MIN} 位,当前 ${passLen} 位`; bad = true; }
     else if (mismatch) { text = '两次输入的文件口令不一致'; bad = true; }
+    else if (passOn && ex.pass2.length === 0) text = '请再次输入文件口令';
     hint.classList.toggle('bad', bad);
     hint.textContent = text;
   }
@@ -831,7 +845,12 @@ function reportText() {
     `备份: ${result.backup || '(未生成)'}`,
     '',
     '明细:',
-    ...(result.rows || []).map((r) => `  ${r.name || r.key} — ${RESULT_LABEL[r.result] || r.result}`),
+    ...(result.rows || []).map((r) => {
+      // F-15:私钥写失败的告警跟着行走,复制报告/下载明细里不能丢
+      const warns = (r.warnings || []).filter(Boolean);
+      const tail = warns.length ? `（${warns.join('；')}）` : '';
+      return `  ${r.name || r.key} — ${RESULT_LABEL[r.result] || r.result}${tail}`;
+    }),
   ].join('\n');
 }
 
@@ -913,12 +932,15 @@ function renderResult() {
   const title = $('#io-done-title');
   if (title) title.textContent = failed ? '导入失败' : `已导入 ${written} 台主机`;
   const sub = $('#io-done-sub');
+  const keyWarnings = (result?.rows || []).reduce((n, r) => n + (r.warnings?.length || 0), 0);
   if (sub) {
-    sub.textContent = failed
-      ? `本次没有写入任何主机,主机库与导入前完全一致${im.failed ? `(${im.failed})` : ''}`
-      : result?.backup
-        ? '导入前的配置已备份到本地'
-        : '主机库已更新';
+    if (failed) {
+      sub.textContent = `本次没有写入任何主机,主机库与导入前完全一致${im.failed ? `(${im.failed})` : ''}`;
+    } else {
+      // F-15:私钥写失败不再静默 —— 成功态副标题也让用户看见(逐行原因在下面明细里)
+      const base = result?.backup ? '导入前的配置已备份到本地' : '主机库已更新';
+      sub.textContent = keyWarnings ? `${base} · ${keyWarnings} 个私钥写入失败` : base;
+    }
   }
 
   const stats = $('#io-done-stats');
@@ -952,11 +974,16 @@ function renderResult() {
     list.classList.toggle('hidden', !rows.length);
     list.innerHTML = rows
       .map(
-        (r) => `<div class="io-item">
+        (r) => {
+          // F-15:私钥写入失败等落盘告警压过普通说明,并标黄(标题里带完整原因)
+          const warns = (r.warnings || []).filter(Boolean);
+          const note = warns.length ? warns.join('；') : NOTE[r.result] || '';
+          return `<div class="io-item">
         <span class="io-r-name" title="${escapeHtml(r.name || r.key || '')}">${escapeHtml(r.name || r.key || '')}</span>
-        <span class="io-r-note">${escapeHtml(NOTE[r.result] || '')}</span>
+        <span class="io-r-note${warns.length ? ' is-warn' : ''}" title="${escapeHtml(note)}">${escapeHtml(note)}</span>
         <span class="io-r-res ${r.result}">${RESULT_LABEL[r.result] || r.result}</span>
-      </div>`,
+      </div>`;
+        },
       )
       .join('');
   }
@@ -981,6 +1008,8 @@ export function setupTransfer() {
   bound = true;
   // 拖放监听在 boot 就挂上:库内拖入 .json 也要能直接进导入
   bindDrop();
+  // 行列表的底部渐隐(全局滚动容器规则):登记一次,MutationObserver 会跟着行重绘走
+  observeScrollFade(document.querySelector('#io-import-rows'));
 
   // ---- 导出
   $('#io-export-pick')?.addEventListener('click', pickExportDir);

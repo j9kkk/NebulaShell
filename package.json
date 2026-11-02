@@ -36,7 +36,7 @@
     "test:rust": "cd src-tauri && cargo test",
     "test:rust:all": "cd src-tauri && cargo test --all-targets",
     "test:web": "node e2e/ui.e2e.mjs",
-    "test:unit": "node --experimental-vm-modules --test tests/*.test.mjs src/modules/*.test.mjs e2e/*.test.mjs",
+    "test:unit": "node --experimental-vm-modules --test tests/*.test.mjs src/modules/*.test.mjs src/shared/*.test.mjs e2e/*.test.mjs",
     "lint:css": "node scripts/lint-css-contract.mjs",
     "lint:css:all": "node scripts/lint-css-contract.mjs --all",
     "bump": "node scripts/bump-version.mjs",

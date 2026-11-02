@@ -481,6 +481,20 @@ fn case16_large_file_5000_hosts() {
     // 再导一次必须判一致(大规模下的匹配逻辑不走样)
     let insp = s.inspect_hosts(&file, None).unwrap();
     assert_eq!(insp["counts"]["identical"], json!(5000), "重导分类应全一致: {}", insp["counts"]);
+
+    // F-16 回归:二次导入(全部一致)是最坏路径 —— 旧实现每台都要全量扫 staged
+    // (5000² 次 cred_key 分配),落盘 10.4s;现在走匹配索引,必须仍是线性。
+    let t = std::time::Instant::now();
+    let again = s.apply_hosts(&file, None, &json!({})).unwrap();
+    let reapply_ms = t.elapsed().as_millis();
+    eprintln!("  reapply {} ms", reapply_ms);
+    assert_eq!(again["added"], json!(0), "重导不应新增主机: {}", again["added"]);
+    assert_eq!(s.list_hosts().len(), 5000);
+    assert!(
+        reapply_ms < 5_000,
+        "5000 台重导超过 5s,实际 {}ms(匹配又退回全表扫描?)",
+        reapply_ms
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -867,4 +881,46 @@ fn case27_partial_import_rejects_jump_pointing_at_invalid_row() {
     );
     assert_eq!(s.list_hosts().len(), 0, "整批未写入");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- 落盘健壮性
+
+/// F-15 私钥写盘失败不再静默:结果行带 `warnings[]`,主机本身照常写入,
+/// `keyPath` 也不会被改成一个没写成功的路径。
+#[test]
+fn case28_key_install_failure_is_reported() {
+    // v4 的凭据块是加密的,不能手搓 —— 先造一份「含私钥文件」的真导出
+    let (src, dsrc) = store("c28-src");
+    let key_path = dsrc.join("id_rsa");
+    std::fs::write(&key_path, "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n").unwrap();
+    src.save_host(&json!({
+        "name": "keyed", "host": "10.9.9.9", "username": "root",
+        "authType": "key", "keyPath": key_path.to_string_lossy()
+    }))
+    .unwrap();
+    let out = src.export_hosts_scoped(&json!({ "mode": "all" }), None, true).unwrap();
+    assert_eq!(out["includedKeys"], json!(1), "导出应带上私钥文件内容(凭据块是密文,不能靠文本匹配)");
+    let text = text_of(&out);
+
+    // 目标库:把 keys 目录的位置占成普通文件 → 私钥写盘必然失败
+    let (dst, ddst) = store("c28-dst");
+    std::fs::write(ddst.join("keys"), b"occupied").unwrap();
+    let r = dst.apply_hosts(&text, None, &json!({})).unwrap();
+    let row = &r["rows"][0];
+    assert_eq!(row["result"], json!("written"), "私钥装不上不该阻断主机写入: {}", row);
+    let warn = row["warnings"][0].as_str().unwrap_or("");
+    assert!(
+        warn.contains("私钥写入失败"),
+        "私钥写失败必须写进结果行(warnings),实际 {}",
+        row
+    );
+    // 主机已入库,keyPath 仍是文件里给的原路径(没被换成写不进去的 keys/ 路径)
+    let host = dst
+        .list_hosts()
+        .into_iter()
+        .find(|h| h["name"] == json!("keyed"))
+        .expect("主机应已写入");
+    assert_eq!(host["keyPath"], json!(key_path.to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&dsrc);
+    let _ = std::fs::remove_dir_all(&ddst);
 }

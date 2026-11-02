@@ -3278,6 +3278,18 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* 全局:可滚行列表的底部渐隐 ----------------------------------------------------
+   容器高是定值(如导入预览 272px),行高却是 34 / 61px 两种,静止时最后一行
+   常被切一半 —— 看起来像渲染坏了。统一规则:给容器加 data-scroll-fade,只要
+   「下面还有内容」就底部 18px 渐隐提示还能滚,滚到底(或没溢出)立刻收回。
+   状态由 shared/scroll-fade.js 维护。不要为某个列表单独调容器高/行高去凑整行
+   (用户明确反对 per-component 特例)。 */
+[data-scroll-fade][data-scroll="start"],
+[data-scroll-fade][data-scroll="middle"] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 18px), transparent 100%);
+}
+
 /* ===== P1 批次新增 ===== */
 /* 收起态：40px 窄条。
    内容自下而上只有两段：主机 / 常用命令 / 批量执行 → 分隔线 → 会话状态胶囊。
@@ -5122,3 +5134,5 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 /* 结果报告里的三列(名称 / 说明 / 处置) */
 .io-report .io-item { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 62px; }
 .io-r-note { font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 落盘告警(F-15):私钥写失败这类「数据没全带上」要压过普通说明,颜色用警示色 */
+.io-r-note.is-warn { color: var(--warn-text); }

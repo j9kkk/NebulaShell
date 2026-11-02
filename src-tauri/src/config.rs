@@ -510,6 +510,18 @@ fn row_display_name(v: &Value) -> String {
         .to_string()
 }
 
+/// 云实例身份是否同一台:provider + instanceId 相同,且 accountId/region
+/// 有一侧为空(旧配置)或完全一致。
+fn cloud_same_instance(old: &Value, cloud: &Value) -> bool {
+    old["provider"] == cloud["provider"]
+        && old["instanceId"] == cloud["instanceId"]
+        && ["accountId", "region"].iter().all(|key| {
+            let a = old[*key].as_str().unwrap_or("");
+            let b = cloud[*key].as_str().unwrap_or("");
+            a.is_empty() || b.is_empty() || a == b
+        })
+}
+
 // Account + service + region + instance ID form the cloud-managed identity. Older
 // configs may lack account/region; only upgrade an unambiguous legacy match.
 fn cloud_match(hosts: &[Value], cloud: &Value) -> Result<Option<usize>, String> {
@@ -521,22 +533,124 @@ fn cloud_match(hosts: &[Value], cloud: &Value) -> Result<Option<usize>, String> 
     let matches: Vec<usize> = hosts
         .iter()
         .enumerate()
-        .filter_map(|(i, h)| {
-            let old = &h["cloud"];
-            let same = old["provider"] == cloud["provider"]
-                && old["instanceId"] == cloud["instanceId"]
-                && ["accountId", "region"].iter().all(|key| {
-                    let a = old[*key].as_str().unwrap_or("");
-                    let b = cloud[*key].as_str().unwrap_or("");
-                    a.is_empty() || b.is_empty() || a == b
-                });
-            same.then_some(i)
-        })
+        .filter_map(|(i, h)| cloud_same_instance(&h["cloud"], cloud).then_some(i))
         .collect();
     match matches.as_slice() {
         [] => Ok(None),
         [i] => Ok(Some(*i)),
         _ => Err("云实例身份不明确，请指定账号、地域或主机 ID".into()),
+    }
+}
+
+/// 导入匹配索引:身份 token / 端点 / 云实例各建一次,匹配从「每台主机扫全表」
+/// 变成 O(1) 查表。
+///
+/// 为什么需要它(F-16):落盘路径会边建边扫 —— 新主机进 `staged` 后,下一条又要
+/// 全量扫一遍(且为每台主机现算一次 `cred_key`),5000 台约 3×5000²/2 次扫描,
+/// debug 实测 apply 10.4s / inspect 118ms 的差就差在这里(dry_run 不往 staged 加
+/// 主机,所以预检没露馅)。预检与落盘共用同一份索引,语义与全表扫描完全等价。
+struct MatchIndex {
+    /// importSourceId / id / importSourceIds 里出现过的 token → 首次出现的主机下标
+    identity: std::collections::HashMap<String, usize>,
+    /// cred_key(host/port/username) → 主机下标列表(按 staged 顺序)
+    endpoints: std::collections::HashMap<String, Vec<usize>>,
+    /// (cloud.provider, cloud.instanceId) → 主机下标列表
+    cloud: std::collections::HashMap<(String, String), Vec<usize>>,
+}
+
+impl MatchIndex {
+    fn build(hosts: &[Value]) -> Self {
+        let mut idx = Self {
+            identity: std::collections::HashMap::new(),
+            endpoints: std::collections::HashMap::new(),
+            cloud: std::collections::HashMap::new(),
+        };
+        for (i, h) in hosts.iter().enumerate() {
+            idx.add(i, h);
+        }
+        idx
+    }
+
+    /// 登记一台主机。新主机 push 进 staged 后必须调用,否则后续行匹配不到它
+    /// (旧实现靠全表扫描天然看见)。
+    fn add(&mut self, i: usize, h: &Value) {
+        for token in ["importSourceId", "id"]
+            .iter()
+            .filter_map(|f| h[*f].as_str())
+            .filter(|s| !s.is_empty())
+        {
+            self.identity.entry(token.to_owned()).or_insert(i);
+        }
+        if let Some(ids) = h["importSourceIds"].as_array() {
+            for id in ids.iter().filter_map(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                self.identity.entry(id.to_owned()).or_insert(i);
+            }
+        }
+        self.endpoints.entry(cred_key(h)).or_default().push(i);
+        let c = &h["cloud"];
+        if let (Some(p), Some(inst)) = (c["provider"].as_str(), c["instanceId"].as_str()) {
+            // 与 cloud_match 口径一致:provider/instanceId 任一为空即不参与云身份匹配
+            if !p.is_empty() && !inst.is_empty() {
+                self.cloud
+                    .entry((p.to_owned(), inst.to_owned()))
+                    .or_default()
+                    .push(i);
+            }
+        }
+    }
+
+    fn by_source(&self, id: &str) -> Option<usize> {
+        self.identity.get(id).copied()
+    }
+
+    /// 端点兜底:只有「未被认领的同端点主机恰好 1 台」才算匹配,
+    /// 所以见到第二台就能收工(同端点上千台时仍是 O(1))。
+    fn by_endpoint(
+        &self,
+        item: &Value,
+        hosts: &[Value],
+        claimed: &std::collections::HashSet<usize>,
+    ) -> Option<usize> {
+        let cands = self.endpoints.get(&cred_key(item))?;
+        let mut found = None;
+        for &i in cands {
+            if claimed.contains(&i) {
+                continue;
+            }
+            // 文件里带云身份时,只跟本地没有云身份的机器做端点匹配
+            if !item["cloud"].is_null() && !hosts[i]["cloud"].is_null() {
+                continue;
+            }
+            if found.is_some() {
+                return None; // 不止一台 → 不唯一,不做端点兜底
+            }
+            found = Some(i);
+        }
+        found
+    }
+
+    /// 云身份匹配:等价于 cloud_match(含「多台命中 → 身份不明确」),但走索引。
+    fn by_cloud(&self, hosts: &[Value], cloud: &Value) -> Result<Option<usize>, String> {
+        let (Some(p), Some(inst)) = (cloud["provider"].as_str(), cloud["instanceId"].as_str())
+        else {
+            return Ok(None);
+        };
+        if p.is_empty() || inst.is_empty() {
+            return Ok(None);
+        }
+        let Some(cands) = self.cloud.get(&(p.to_owned(), inst.to_owned())) else {
+            return Ok(None);
+        };
+        let matches: Vec<usize> = cands
+            .iter()
+            .copied()
+            .filter(|&i| cloud_same_instance(&hosts[i]["cloud"], cloud))
+            .collect();
+        match matches.as_slice() {
+            [] => Ok(None),
+            [i] => Ok(Some(*i)),
+            _ => Err("云实例身份不明确，请指定账号、地域或主机 ID".into()),
+        }
     }
 }
 
@@ -1776,6 +1890,8 @@ impl Store {
         // 结果行在循环里按文件顺序累积(含 result=invalid 的坏行),所以先声明。
         let mut result_rows: Vec<Value> = Vec::new();
         let mut invalid_count = 0usize;
+        // 匹配索引建一次:预检(dry_run)与落盘共用同一套语义,不再每台扫全表(F-16)。
+        let mut match_idx = MatchIndex::build(&staged);
 
         let decision_of = |key: &str| -> String {
             decisions
@@ -1824,33 +1940,14 @@ impl Store {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| cred_key(item));
 
-            let by_source = source.and_then(|id| {
-                staged.iter().position(|h| {
-                    h["importSourceId"] == id
-                        || h["id"] == id
-                        || h["importSourceIds"]
-                            .as_array()
-                            .map(|ids| ids.iter().any(|s| s == id))
-                            .unwrap_or(false)
-                })
-            });
+            let by_source = source.and_then(|id| match_idx.by_source(id));
             let by_cloud = if by_source.is_some() {
                 None
             } else {
-                cloud_match(&staged, &item["cloud"])?
+                match_idx.by_cloud(&staged, &item["cloud"])?
             };
-            let endpoints: Vec<usize> = staged
-                .iter()
-                .enumerate()
-                .filter(|(i, h)| {
-                    !claimed.contains(i)
-                        && cred_key(h) == cred_key(item)
-                        && (item["cloud"].is_null() || h["cloud"].is_null())
-                })
-                .map(|(i, _)| i)
-                .collect();
-            let by_endpoint = if endpoints.len() == 1 {
-                Some(endpoints[0])
+            let by_endpoint = if claimed.len() < staged.len() {
+                match_idx.by_endpoint(item, &staged, &claimed)
             } else {
                 None
             };
@@ -1930,6 +2027,9 @@ impl Store {
                             host["importSourceId"] = json!(src);
                         }
                         staged.push(host);
+                        // 新主机也要登记进索引:同一份文件里后续行可能要靠身份/端点
+                        // 匹配到它(旧实现靠全表扫描天然看见)。
+                        match_idx.add(i, &staged[i]);
                         added += 1;
                         (i, true)
                     }
@@ -2109,6 +2209,8 @@ impl Store {
             let item = &items[item_idx];
             let decision = decision_of(&key);
             let skip = decision == "skip";
+            // 本行在落盘阶段的告警(目前只有私钥写失败),随行进结果(F-15)。
+            let mut warnings: Vec<String> = Vec::new();
 
             // 预览里被取消勾选的新主机:规划阶段就没有建,这里只记一条「跳过」
             if is_new && idx == usize::MAX {
@@ -2203,15 +2305,20 @@ impl Store {
                     if is_new || overwrite || local_key_empty {
                         if let Some(content) = kf["content"].as_str() {
                             let dir = self.dir.join("keys");
-                            if std::fs::create_dir_all(&dir).is_ok() {
-                                let raw = kf["name"].as_str().unwrap_or("id_key");
-                                let name: String = raw.replace(['/', '\\'], "_");
-                                let file = dir.join(format!(
-                                    "{}-{}",
-                                    staged[idx]["id"].as_str().unwrap_or("key"),
-                                    name
-                                ));
-                                if std::fs::write(&file, content).is_ok() {
+                            let raw = kf["name"].as_str().unwrap_or("id_key");
+                            let name: String = raw.replace(['/', '\\'], "_");
+                            let file = dir.join(format!(
+                                "{}-{}",
+                                staged[idx]["id"].as_str().unwrap_or("key"),
+                                name
+                            ));
+                            // F-15:写私钥失败以前是静默的(`if write(...).is_ok()` 无 else),
+                            // 结果行照样说「已导入」,用户以为私钥也带上了。现在按行记一条
+                            // 告警(设计 §9.4 E_KEY_INSTALL),结果态与报告都能看见。
+                            match std::fs::create_dir_all(&dir)
+                                .and_then(|()| std::fs::write(&file, content))
+                            {
+                                Ok(()) => {
                                     #[cfg(unix)]
                                     {
                                         use std::os::unix::fs::PermissionsExt;
@@ -2222,6 +2329,7 @@ impl Store {
                                     }
                                     staged[idx]["keyPath"] = json!(file.to_string_lossy());
                                 }
+                                Err(e) => warnings.push(format!("私钥写入失败：{}({})", e, name)),
                             }
                         }
                     }
@@ -2239,6 +2347,7 @@ impl Store {
                           else if overwrite { "overwritten" }
                           else if wrote_cred { "filled" }
                           else { "unchanged" },
+                "warnings": warnings,
             }));
         }
 

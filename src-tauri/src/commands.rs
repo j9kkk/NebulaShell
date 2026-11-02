@@ -733,46 +733,6 @@ pub async fn nebula_invoke(
                 Err(e) => err_msg(e),
             }
         }
-        "hosts:importFile" => {
-            // 允许复用已选路径:文件含加密凭据时,前端需要二次调用并带上口令,
-            // 不能要求用户重选一次文件。
-            let preset = payload["path"].as_str().filter(|s| !s.is_empty());
-            let path = match preset {
-                Some(p) => Some(p.to_string()),
-                // 测试模式:优先用专用的导入路径变量,避免与 SFTP 选文件的
-                // NEBULA_TEST_PICK_PATHS 抢同一个值(两者会同时出现在 e2e 里)。
-                None if state.test_mode => std::env::var("NEBULA_TEST_IMPORT_PATH")
-                    .ok()
-                    .or_else(|| std::env::var("NEBULA_TEST_PICK_PATHS").ok()),
-                None => rfd::AsyncFileDialog::new()
-                    .pick_file()
-                    .await
-                    .map(|f| f.path().to_string_lossy().to_string()),
-            };
-            match path {
-                Some(p) => match host_io::read_import_file(&p) {
-                    Ok(text) => {
-                        let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
-                        // 文件带凭据但未给口令:先回一个信号让前端弹口令框,
-                        // 不要把"需要口令"当成错误(前端 api() 会把错误当失败抛掉)。
-                        if pass.is_none() && file_has_credentials(&text) {
-                            return ok(json!({ "needsPassphrase": true, "path": p }));
-                        }
-                        match state.store.import_hosts(&text, pass) {
-                            Ok(r) => ok(json!({
-                                "path": p, "added": r["added"], "skipped": r["skipped"],
-                                "withCredentials": r["withCredentials"],
-                                "updated": r["updated"], "credentialsFilled": r["credentialsFilled"],
-                                "legacyPlaintext": r["legacyPlaintext"],
-                            })),
-                            Err(e) => err_msg(e),
-                        }
-                    }
-                    Err(e) => err_msg(e),
-                },
-                None => ok(json!(null)),
-            }
-        }
 
         "ssh:connect" | "ssh:connectQuick" => {
             let host = if channel == "ssh:connect" {
@@ -1949,18 +1909,6 @@ pub async fn nebula_invoke(
 
         _ => err_msg(format!("IPC 通道未授权: {}", channel)),
     }
-}
-
-/// 判断导出文件是否携带(加密的)凭据块。
-/// 用于决定是否需要向用户索取口令,而不把"需要口令"报成错误。
-/// 只有旧版(v2/v3)的口令文件才需要用户输入口令;v4 的 credentials 是对象,自动解密。
-fn file_has_credentials(text: &str) -> bool {
-    serde_json::from_str::<Value>(host_io::strip_bom(text))
-        .map(|v| {
-            v["credentials"].as_str().is_some()
-                || (v["credentials"].is_null() && v["credentialsIncluded"] == json!(true))
-        })
-        .unwrap_or(false)
 }
 
 /// `hosts:importInspect` 的数据层时序:读一次文件 → 算指纹 → 预检。
