@@ -4903,6 +4903,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-stat.add .io-stat-v { color: var(--accent); }
 .io-stat.overwrite .io-stat-v { color: var(--accent2); }
 .io-stat.skip .io-stat-v { color: var(--warn-text); }
+.io-stat.invalid .io-stat-v { color: var(--danger); }
 
 .io-report {
   border: 1px solid var(--line);
@@ -5003,6 +5004,8 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-preview.is-loading { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease); }
 .io-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); padding: 2px 0; }
 .io-sum-item b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
+.io-sum-item.bad { color: var(--danger); }
+.io-sum-item.bad b { color: var(--danger); }
 .io-sum-sep { color: color-mix(in srgb, var(--text) 25%, transparent); }
 
 /* 预览表:位置 / 勾选 / 主机 / 地址 / 分组 / 凭据 / 处置 */
@@ -5022,6 +5025,40 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   font-size: 10.5px;
 }
 .io-item.is-out { opacity: 0.45; }
+.io-r-diffrow.bad { color: color-mix(in srgb, var(--danger) 85%, var(--muted)); }
+
+/* ---------- 问题区(F-09):结构化坏行 + 「只导有效行」开关 ---------- */
+.io-issuebox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+.io-issuebox-head { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; }
+.io-issuebox-head b { color: var(--danger); font-weight: 600; }
+.io-issuebox-ico { flex: none; display: inline-flex; color: var(--danger); align-self: center; }
+.io-issuebox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.io-issuebox-list li { font-size: 10.5px; line-height: 1.5; color: var(--text); word-break: break-word; }
+.io-issuebox-list li .io-issue-loc { color: var(--danger); font-family: var(--font-mono); }
+.io-issuebox-list li .io-issue-name { color: var(--muted); }
+.io-issuebox-partial {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 2px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 22%, transparent);
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.io-issuebox-partial .hl-box { width: 14px; height: 14px; flex: none; }
+.io-issuebox-note { color: var(--muted); font-size: 10.5px; }
+.io-r-kind.invalid { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 
 /* 冲突段:整段在预览卡里,不再开第二张弹窗 */
 .io-conflict-seg {

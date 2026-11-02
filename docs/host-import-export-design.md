@@ -652,28 +652,30 @@ P0 的改动只有：`withCredentials:false` 时省略 `credentials` 并置 `cre
 // 请求：{ "path": "…", "passphrase": "…" }（path 空 = 弹系统文件框）
 // 响应 A：需要口令
 { "needsPassphrase": true, "path": "…", "file": { "name":"…", "size":12345, "format":"json" } }
-// 响应 B：成功
+// 响应 B：成功（有坏行时同样成功返回,靠 rejected/invalidRows 区分）
 {
   "path": "…",
+  "bytes": 12345,                           // 文件字节数(与 digest 同一份读入)
   "digest": "sha256:9f2c…",                 // 落盘校验用（F-04）
-  "file": { "name":"a.json", "size":12345, "mtimeMs": 1793637104000,
-            "format":"json", "version":4, "encryption":"builtin", "encoding":"utf-8" },
+  "file": { "name":"a.json", "bytes":12345, "exportedAt":"…",
+            "version":4, "encryption":"builtin", "count":12 },
   "inspect": {
-    "counts": { "total":12, "add":7, "credOnly":1, "conflict":1, "identical":0, "invalid":3 },
-    "columns": null, "ignoredColumns": [], "mapping": null,   // P1 CSV 才有
+    "counts": { "add":7, "credOnly":1, "conflict":1, "identical":0, "invalid":3 },
     "rows": [{
-      "row": 2, "key": "…", "name":"…", "host":"…", "port":22, "username":"root",
-      "group":"…", "kind":"add",                 // add|credOnly|conflict|identical|invalid
-      "defaults": ["port","username"],            // 文件未提供、走默认值的字段（S-05）
+      "key": "…", "name":"…", "host":"…", "port":22, "username":"root",
+      "group":"…", "kind":"add",                    // add|credOnly|conflict|identical|invalid
       "local": null, "diff": [], "hasCredentials": true,
-      "errors": []
+      "errors": []                                  // kind=invalid 时带该行问题
     }],
-    "errors": [{ "row":12, "field":"port", "code":"E_PORT",
-                 "message":"端口必须是 1–65535 的整数（当前 70000）" }]
+    "rejected": true,                               // 有坏行但未全部收敛(F-09)
+    "code": "E_INVALID_PRESENT",                    // rejected 时给出错误码
+    "message": "导入文件校验失败（共 3 处问题）…",     // 人话摘要(问题区折叠用)
+    "invalidRows": [{ "index":3, "line":9, "name":"坏行 db",
+                      "field":"port", "code":"E_PORT", "reason":"端口必须…70000" }]
   }
 }
 // 响应 C：用户取消 → null
-// 响应 D：文件级错误 → 调用失败；message = 中文文案（含 code），禁止 io/serde 原文
+// 响应 D：文件级错误(编码/JSON/版本/口令/空文件/超上限) → 调用失败；message = 中文文案（含 code），禁止 io/serde 原文
 ```
 
 - **逐行收集**，不在第一个坏行返回（F-09）。
@@ -686,14 +688,15 @@ P0 的改动只有：`withCredentials:false` 时省略 `credentials` 并置 `cre
 // 请求
 {
   "path": "…", "passphrase": "…",
-  "digest": "sha256:9f2c…",                  // 必填；与当前文件不符 → E_FILE_CHANGED
-  "decisions": { "<row key>": "skip" | "overwrite" | "new" },   // 覆盖所有行
-  "skipInvalid": true                        // UI 默认 true；有坏行未 skip 时拒绝
+  "digest": "sha256:9f2c…",                  // 必填；缺失或不符 → E_FILE_CHANGED
+  "decisions": { "<row key>": "skip" | "overwrite" },   // 覆盖所有行
+  "allowPartial": false                      // 默认 false=整份拒绝；true 才跳过坏行
 }
 // 响应
 {
   "result": {
     "added": 8, "overwritten": 1, "filled": 0, "skipped": 3, "unchanged": 0,
+    "invalid": 1,                            // 被跳过的问题行数（allowPartial 时 >0）
     "updated": 1,                            // = filled，兼容既有断言
     "withCredentials": 10, "credentialsFilled": 0,
     "backup": "/…/backup/nebulashell-backup-20261103-0102.json",
@@ -711,9 +714,13 @@ P0 的改动只有：`withCredentials:false` 时省略 `credentials` 并置 `cre
 5. 写临时文件 `hosts.json.tmp` → `rename` 覆盖正式文件（成功后内存才替换为 `staged`）。
 6. 任何一步失败：内存保持导入前；返回 `E_WRITE` + 中文原因。
 
-- 决策语义：`skip` 对任何行都有效（add 行被排除时计 `skipped/未选中`）；`new` 只对冲突行有意义，新建名 `原名 副本`（重名再 ` 副本 2`）。
+- 决策语义：`skip` 对任何行都有效（add 行被排除时计 `skipped/未选中`）；冲突行只有「跳过 / 覆盖」两种处置（`new` 未落地）。
 - 私钥安装：`keys/<hostid>-<n>-<name>`，`0600`；失败写 `E_KEY_INSTALL`（F-15）。
-- 结果 `rows[].result` 只有五值（与前端 `RESULT_LABEL` 一致）；坏行跳过时 `result:"skipped", reason:"校验失败：端口…"`。
+- 结果 `rows[].result` 六值（与前端 `RESULT_LABEL` 一致）：`written / overwritten / filled / skipped / unchanged / invalid`；
+  坏行在 `allowPartial: true` 时记 `result:"invalid"` + `reason:"端口必须在 1–65535 之间…"`。
+- `digest` 是 `sha256:` + sha256 前 16 字节十六进制；**缺省视为不符**（否则省略指纹就能绕过 TOCTOU）。
+- 预检（`hosts:importInspect`）在有坏行时**不返回错误**，而是 `rejected: true` + `code:"E_INVALID_PRESENT"`
+  + `invalidRows`（结构见 §10.2），并照常给出有效行的 `rows`（坏行 `kind:"invalid"`，前端禁用勾选）。
 
 ### 10.4 新增 `hosts:importReport`
 

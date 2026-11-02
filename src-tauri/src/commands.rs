@@ -708,29 +708,17 @@ pub async fn nebula_invoke(
             let Some(p) = path else {
                 return ok(json!(null));
             };
-            let text = match host_io::read_import_file(&p) {
-                Ok(t) => t,
-                Err(e) => return err_msg(e),
-            };
-            let meta = import_file_meta(&p, &text);
             let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
-            match state.store.inspect_hosts(&text, pass) {
-                Ok(r) => ok(json!({ "path": p, "file": meta, "inspect": r })),
-                // 旧版口令文件:先回信号,让前端在同一张卡里补口令,不要当错误
-                Err(e) if e == "NEEDS_PASSPHRASE" => {
-                    ok(json!({ "needsPassphrase": true, "path": p, "file": meta }))
-                }
+            match import_inspect_path(&state.store, &p, pass) {
+                Ok(v) => ok(v),
                 Err(e) => err_msg(e),
             }
         }
         // 按决策落盘:decisions = { "<row key>": "skip" | "overwrite" }
+        // digest 必填:预检时用户确认的那份文件必须就是这里读到的那份(F-04)。
         "hosts:importApply" => {
             let Some(p) = payload["path"].as_str().filter(|s| !s.is_empty()) else {
                 return err_msg("缺少文件路径");
-            };
-            let text = match host_io::read_import_file(p) {
-                Ok(t) => t,
-                Err(e) => return err_msg(e),
             };
             let pass = payload["passphrase"].as_str().filter(|s| !s.is_empty());
             let decisions = if payload["decisions"].is_null() {
@@ -738,11 +726,10 @@ pub async fn nebula_invoke(
             } else {
                 payload["decisions"].clone()
             };
-            match state.store.apply_hosts(&text, pass, &decisions) {
-                Ok(r) => ok(json!({ "path": p, "result": r })),
-                Err(e) if e == "NEEDS_PASSPHRASE" => {
-                    ok(json!({ "needsPassphrase": true, "path": p }))
-                }
+            let allow_partial = payload["allowPartial"] == json!(true);
+            let digest = payload["digest"].as_str();
+            match import_apply_path(&state.store, p, pass, &decisions, allow_partial, digest) {
+                Ok(v) => ok(v),
                 Err(e) => err_msg(e),
             }
         }
@@ -1974,6 +1961,59 @@ fn file_has_credentials(text: &str) -> bool {
                 || (v["credentials"].is_null() && v["credentialsIncluded"] == json!(true))
         })
         .unwrap_or(false)
+}
+
+/// `hosts:importInspect` 的数据层时序:读一次文件 → 算指纹 → 预检。
+///
+/// 抽成函数只是为了让验收用例能驱动真实时序(预检之后文件被换掉),而不是只测
+/// 读文件/算指纹两个纯函数 —— TOCTOU 的现场就在这条命令里。
+pub fn import_inspect_path(
+    store: &Store,
+    path: &str,
+    passphrase: Option<&str>,
+) -> Result<Value, String> {
+    let src = host_io::read_import_source(path)?;
+    let base = json!({
+        "path": path,
+        // F-04:落盘时要把这个指纹原样带回来,不一致就拒绝写入。
+        "digest": src.digest,
+        "bytes": src.bytes_len(),
+        "file": import_file_meta(path, &src.text),
+    });
+    match store.inspect_hosts_detailed(&src.text, passphrase) {
+        Ok(inspect) => {
+            let mut out = base;
+            out["inspect"] = inspect;
+            Ok(out)
+        }
+        // 旧版口令文件:先回信号,让前端在同一张卡里补口令,不要当错误
+        Err(e) if e == "NEEDS_PASSPHRASE" => {
+            let mut out = base;
+            out["needsPassphrase"] = json!(true);
+            Ok(out)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `hosts:importApply` 的数据层时序(设计 §10.3 第 1 步):
+/// 先真的再读一次文件(前端缓存的内容永远不信任),再核对指纹,
+/// 最后在 Store 里按决策落盘。指纹不符 → `E_FILE_CHANGED`,库一个字节都不动。
+pub fn import_apply_path(
+    store: &Store,
+    path: &str,
+    passphrase: Option<&str>,
+    decisions: &Value,
+    allow_partial: bool,
+    digest: Option<&str>,
+) -> Result<Value, String> {
+    let src = host_io::read_import_source(path)?;
+    host_io::verify_digest(digest, &src.bytes)?;
+    match store.apply_hosts_with(&src.text, passphrase, decisions, allow_partial) {
+        Ok(r) => Ok(json!({ "path": path, "result": r })),
+        Err(e) if e == "NEEDS_PASSPHRASE" => Ok(json!({ "needsPassphrase": true, "path": path })),
+        Err(e) => Err(e),
+    }
 }
 
 /// 导入弹框显示用的文件元信息(不读进内存之外的东西)。

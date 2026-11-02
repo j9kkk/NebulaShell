@@ -500,6 +500,16 @@ fn cred_key(v: &Value) -> String {
     )
 }
 
+/// 行的显示名:名称优先,没有就用地址(与预览列表一致)。
+fn row_display_name(v: &Value) -> String {
+    v["name"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| v["host"].as_str().filter(|s| !s.trim().is_empty()))
+        .unwrap_or("")
+        .to_string()
+}
+
 // Account + service + region + instance ID form the cloud-managed identity. Older
 // configs may lack account/region; only upgrade an unambiguous legacy match.
 fn cloud_match(hosts: &[Value], cloud: &Value) -> Result<Option<usize>, String> {
@@ -576,6 +586,18 @@ fn validate_jump_graph(hosts: &[Value]) -> Result<(), String> {
         visit(id, &graph, &mut active, &mut done)?;
     }
     Ok(())
+}
+
+/// 解析结果。`issues` 非空表示有坏行;`invalid` 是「0-based 记录下标 → 该行问题」
+/// 的索引,`allow_invalid` 时才带出来(预检/用户勾了「只导有效行」)。
+/// 文件级问题(空文件、超上限)永远整份拒绝,不进 `invalid`。
+struct ParsedExport {
+    version: u64,
+    items: Vec<Value>,
+    creds: std::collections::HashMap<String, Value>,
+    legacy_plaintext: bool,
+    issues: Vec<crate::host_io::ImportIssue>,
+    invalid: std::collections::HashMap<usize, Vec<crate::host_io::ImportIssue>>,
 }
 
 impl Store {
@@ -1582,19 +1604,16 @@ impl Store {
     ///
     /// 返回 (version, items, creds, legacy_plaintext)。v4 不需要口令;v2/v3 的
     /// credentials 是字符串,必须提供口令 —— 这条旧通道保留,否则老文件就废了。
+    ///
+    /// `allow_invalid` = 有坏行时不整份拒绝,而是把坏行挑出来交给调用方决定
+    /// (预检要展示问题行;显式「只导有效行」时跳过它们)。默认 false 保持
+    /// 「安全默认:整份拒绝」。
     fn parse_export(
         &self,
         text: &str,
         passphrase: Option<&str>,
-    ) -> Result<
-        (
-            u64,
-            Vec<Value>,
-            std::collections::HashMap<String, Value>,
-            bool,
-        ),
-        String,
-    > {
+        allow_invalid: bool,
+    ) -> Result<ParsedExport, String> {
         let text = crate::host_io::strip_bom(text);
         if text.len() > crate::host_io::MAX_IMPORT_BYTES {
             return Err(crate::host_io::too_large_error(text.len()));
@@ -1618,9 +1637,22 @@ impl Store {
         };
         // 逐行校验:必填/格式/文件内重复主机/跳板机引用。
         // 有任何问题就整份拒绝(全量回滚),并一次列出「第 X 行、字段 Y、原因 Z」。
+        // 例外:`allow_invalid`(预检/用户已明确「只导有效行」)时把坏行挑出来,
+        // 文件级问题(record == 0:空文件、超上限)仍然无条件整份拒绝。
         let issues = crate::host_io::validate_items(text, &items, version);
+        let file_level = issues.iter().any(|i| i.record == 0);
+        let mut invalid: std::collections::HashMap<usize, Vec<crate::host_io::ImportIssue>> =
+            std::collections::HashMap::new();
         if !issues.is_empty() {
-            return Err(crate::host_io::format_issues(&issues));
+            if !allow_invalid || file_level {
+                return Err(crate::host_io::format_issues(&issues));
+            }
+            for issue in &issues {
+                invalid
+                    .entry(issue.record.saturating_sub(1))
+                    .or_default()
+                    .push(issue.clone());
+            }
         }
 
         let mut creds: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -1683,7 +1715,14 @@ impl Store {
                 }
             }
         }
-        Ok((version, items, creds, legacy_plaintext))
+        Ok(ParsedExport {
+            version,
+            items,
+            creds,
+            legacy_plaintext,
+            issues,
+            invalid,
+        })
     }
 
     /// 本地这台主机是否完全没有凭据(三个字段都为空)。
@@ -1695,14 +1734,37 @@ impl Store {
     }
 
     /// 导入执行体。dry_run = 只分类、不落盘(预检)。
+    /// `allow_partial` = 用户已明确「跳过问题行,只导入有效行」;默认 false 整份拒绝。
     fn import_run(
         &self,
         text: &str,
         passphrase: Option<&str>,
         decisions: Option<&Value>,
         dry_run: bool,
+        allow_partial: bool,
     ) -> Result<Value, String> {
-        let (version, items, creds, legacy_plaintext) = self.parse_export(text, passphrase)?;
+        // 预检必须能看见问题行,所以 dry_run 一律按「允许坏行」解析;写盘时才看
+        // allow_partial。文件级错误(空文件/超上限)在两条路径上都会 Err。
+        let parsed = self.parse_export(text, passphrase, dry_run || allow_partial)?;
+        let ParsedExport {
+            version,
+            items,
+            creds,
+            legacy_plaintext,
+            issues,
+            invalid,
+        } = parsed;
+        let invalid_rows: Vec<Value> = issues
+            .iter()
+            .map(|issue| {
+                let name = invalid
+                    .get(&issue.record.saturating_sub(1))
+                    .and_then(|_| items.get(issue.record.saturating_sub(1)))
+                    .map(row_display_name)
+                    .unwrap_or_default();
+                issue.to_json(&name)
+            })
+            .collect();
 
         let mut data = self.data.lock().unwrap();
         let mut staged = data["hosts"].as_array().ok_or("主机列表损坏")?.clone();
@@ -1711,6 +1773,9 @@ impl Store {
         let mut plans: Vec<(usize, usize, bool, String, String, bool)> = Vec::new(); // item_idx, idx, is_new, key, kind, overwrite
         let mut rows = Vec::new();
         let mut added = 0usize;
+        // 结果行在循环里按文件顺序累积(含 result=invalid 的坏行),所以先声明。
+        let mut result_rows: Vec<Value> = Vec::new();
+        let mut invalid_count = 0usize;
 
         let decision_of = |key: &str| -> String {
             decisions
@@ -1721,6 +1786,39 @@ impl Store {
         };
 
         for (item_idx, item) in items.iter().enumerate() {
+            // 坏行:预检里作为「问题行」展示(kind=invalid,不可勾选),写盘时跳过并
+            // 在结果行里记 result=invalid。跳板/凭据都不碰它。
+            if let Some(errs) = invalid.get(&item_idx) {
+                let key = item["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| cred_key(item));
+                let name = row_display_name(item);
+                if dry_run {
+                    rows.push(json!({
+                        "key": key,
+                        "name": name,
+                        "host": item["host"], "port": item["port"], "username": item["username"],
+                        "group": item["group"],
+                        "kind": "invalid",
+                        "local": null,
+                        "diff": [],
+                        "hasCredentials": false,
+                        "errors": errs.iter().map(|e| e.to_json(&row_display_name(item))).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    invalid_count += 1;
+                    result_rows.push(json!({
+                        "key": key,
+                        "name": name,
+                        "result": "invalid",
+                        "reason": errs.first().map(|e| e.reason.clone()).unwrap_or_default(),
+                    }));
+                }
+                continue;
+            }
+
             let source = item["id"].as_str().filter(|id| !id.is_empty());
             let key = source
                 .map(|s| s.to_string())
@@ -1983,8 +2081,15 @@ impl Store {
                     "credOnly": count("credOnly"),
                     "conflict": count("conflict"),
                     "identical": count("identical"),
+                    "invalid": count("invalid"),
                 },
                 "rows": rows,
+                // F-04/F-09:整份拒绝时调用方仍要能拿到结构化问题行,前端才可
+                // 勾选「只导有效行」;没有问题时这两个字段分别是 false / []。
+                "rejected": !issues.is_empty(),
+                "code": if issues.is_empty() { Value::Null } else { json!("E_INVALID_PRESENT") },
+                "message": if issues.is_empty() { Value::Null } else { json!(crate::host_io::format_issues(&issues)) },
+                "invalidRows": invalid_rows,
             }));
         }
 
@@ -1993,7 +2098,6 @@ impl Store {
         let mut credentials_filled = 0;
         let mut overwritten = 0usize;
         let mut imported_graph = Vec::new();
-        let mut result_rows = Vec::new();
 
         for (item_idx, idx, is_new, key, kind, overwrite) in plans {
             let item = &items[item_idx];
@@ -2174,9 +2278,10 @@ impl Store {
         Ok(json!({
             "added": added,
             "updated": updated_hosts.len(),
+            "invalid": invalid_count,
             "skipped": items
                 .len()
-                .saturating_sub(added + updated_hosts.len() + overwritten.saturating_sub(updated_hosts.len())),
+                .saturating_sub(added + updated_hosts.len() + overwritten.saturating_sub(updated_hosts.len()) + invalid_count),
             "withCredentials": credential_hosts.len(),
             "credentialsFilled": credentials_filled,
             "overwritten": overwritten,
@@ -2189,12 +2294,32 @@ impl Store {
 
     /// 导入(默认策略:保留本地,只补缺失凭据)。保留旧签名:既有测试在用。
     pub fn import_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
-        self.import_run(text, passphrase, None, false)
+        self.import_run(text, passphrase, None, false, false)
     }
 
     /// 预检:只分类,不写盘。
+    ///
+    /// 有坏行时**不**返回 Err,而是给出 `rejected: true` + 结构化的 `invalidRows`
+    /// 和可预览的 `rows`(坏行 kind=invalid)。这样前端才能把问题行列出来,并让
+    /// 用户明确选择「只导有效行」—— 默认仍是整份拒绝。
+    pub fn inspect_hosts_detailed(
+        &self,
+        text: &str,
+        passphrase: Option<&str>,
+    ) -> Result<Value, String> {
+        self.import_run(text, passphrase, None, true, false)
+    }
+
+    /// 旧签名:有坏行时把整段中文问题串作为错误返回(既有测试与 hosts:importFile 用)。
     pub fn inspect_hosts(&self, text: &str, passphrase: Option<&str>) -> Result<Value, String> {
-        self.import_run(text, passphrase, None, true)
+        let out = self.inspect_hosts_detailed(text, passphrase)?;
+        if out["rejected"] == json!(true) {
+            return Err(out["message"]
+                .as_str()
+                .unwrap_or("导入文件校验失败")
+                .to_string());
+        }
+        Ok(out)
     }
 
     /// 按决策落盘。decisions = { "<row key>": "skip" | "overwrite" }
@@ -2204,7 +2329,19 @@ impl Store {
         passphrase: Option<&str>,
         decisions: &Value,
     ) -> Result<Value, String> {
-        self.import_run(text, passphrase, Some(decisions), false)
+        self.apply_hosts_with(text, passphrase, decisions, false)
+    }
+
+    /// 按决策落盘,`allow_partial` 时跳过校验失败的行(结果行里记 result=invalid)。
+    /// 默认 false:有坏行一律整份拒绝(安全默认)。
+    pub fn apply_hosts_with(
+        &self,
+        text: &str,
+        passphrase: Option<&str>,
+        decisions: &Value,
+        allow_partial: bool,
+    ) -> Result<Value, String> {
+        self.import_run(text, passphrase, Some(decisions), false, allow_partial)
     }
 
     pub fn get_settings(&self) -> Value {

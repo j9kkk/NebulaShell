@@ -1143,6 +1143,23 @@
         <div id="io-import-preview" class="io-preview hidden" aria-busy="false">
           <div id="io-import-summary" class="io-summary"></div>
 
+          <!-- 问题区(F-09):坏行结构化列出,可展开;默认整份拒绝,
+               必须由用户明确勾选「只导有效行」才启用部分导入 -->
+          <div id="io-import-errorbox" class="io-issuebox hidden" role="region" aria-label="无法导入的行">
+            <div class="io-issuebox-head">
+              <span class="io-issuebox-ico"><span class="mi" data-icon="alert"></span></span>
+              <b id="io-issuebox-title">0 行无法导入</b>
+              <span class="spacer"></span>
+              <button id="io-issuebox-more" class="btn small hidden" type="button"></button>
+            </div>
+            <ul id="io-issuebox-list" class="io-issuebox-list"></ul>
+            <div class="io-issuebox-partial" id="io-issuebox-partial-row">
+              <span id="io-issuebox-partial" class="hl-box" role="checkbox" tabindex="0" aria-checked="false" aria-label="跳过问题行，只导入有效行"></span>
+              <span class="io-issuebox-partial-t">跳过这些问题行，只导入有效行</span>
+              <span id="io-issuebox-partial-note" class="io-issuebox-note"></span>
+            </div>
+          </div>
+
           <div id="io-import-list" class="io-list">
             <div class="io-list-head"><span class="io-c-check"><span id="io-import-selectall" class="hl-box" role="checkbox" aria-checked="true" aria-label="全选可导入的主机" tabindex="0"></span></span><span>位置</span><span>主机</span><span>地址</span><span>分组</span><span>凭据</span><span>处置</span></div>
             <div id="io-import-rows" class="io-list-body"></div>

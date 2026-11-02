@@ -5,6 +5,7 @@
 // 用例编号与 docs/host-import-export-acceptance.md 的表格一一对应。
 //
 // 运行:cargo test --test import_export_acceptance -- --nocapture
+use nebulashell_lib::commands::{import_apply_path, import_inspect_path};
 use nebulashell_lib::config::Store;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -82,7 +83,7 @@ fn case02_roundtrip_full_to_empty_store() {
 
     let (b, db) = store("c02-b");
     let r = b.inspect_hosts(&text, None).unwrap();
-    assert_eq!(r["counts"], json!({ "add": 3, "credOnly": 0, "conflict": 0, "identical": 0 }));
+    assert_eq!(r["counts"], json!({ "add": 3, "credOnly": 0, "conflict": 0, "identical": 0, "invalid": 0 }));
     let applied = b.apply_hosts(&text, None, &json!({})).unwrap();
     assert_eq!(applied["added"], json!(3));
     assert_eq!(applied["withCredentials"], json!(3));
@@ -684,4 +685,164 @@ fn case20_adjacent_features_intact() {
     assert_eq!(b.list_hosts().len(), 1);
     let _ = std::fs::remove_dir_all(&da);
     let _ = std::fs::remove_dir_all(&db);
+}
+
+// ---------------------------------------------------------------- F-04 文件指纹
+
+/// AC-23 预检 → 落盘之间文件被替换:apply 必须拒绝,且主机库一个字节都不动。
+/// 走的是命令层的真实时序(commands::import_inspect_path / import_apply_path),
+/// 不是只测摘要函数。
+#[test]
+fn case23_file_changed_between_inspect_and_apply_is_rejected() {
+    let (src, dsrc) = store("c23-src");
+    seed_three(&src);
+    let good = text_of(&src.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap());
+
+    let (dst, ddst) = store("c23-dst");
+    let file = ddst.join("import.json");
+    std::fs::write(&file, &good).unwrap();
+    let p = file.to_string_lossy().to_string();
+
+    // 1) 预检:返回内容指纹 + 字节数,用户看到的 rows 就是这份文件的
+    let inspected = import_inspect_path(&dst, &p, None).unwrap();
+    let digest = inspected["digest"].as_str().unwrap().to_string();
+    assert!(digest.starts_with("sha256:"), "指纹要带算法前缀: {}", digest);
+    assert_eq!(digest.len(), "sha256:".len() + 32, "sha256 前 16 字节 = 32 位十六进制");
+    assert_eq!(inspected["bytes"], json!(good.len()));
+    assert_eq!(inspected["inspect"]["rows"].as_array().unwrap().len(), 3);
+
+    // 2) 用户确认之后,同一个路径的文件被换成另一份(模拟导出文件被覆盖/同步工具改写)
+    let mut other = src.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    other["hosts"][0]["host"] = json!("10.9.9.9");
+    std::fs::write(&file, text_of(&other)).unwrap();
+
+    // 3) 拿旧指纹落盘 → E_FILE_CHANGED,库保持为空
+    let e = import_apply_path(&dst, &p, None, &json!({}), false, Some(&digest)).unwrap_err();
+    assert!(e.starts_with("E_FILE_CHANGED"), "应返回文件已变化: {}", e);
+    assert_eq!(dst.list_hosts().len(), 0, "指纹不符时不允许写入任何主机");
+
+    // 不带指纹同样拒绝:允许省略就等于给 TOCTOU 留后门
+    let e2 = import_apply_path(&dst, &p, None, &json!({}), false, None).unwrap_err();
+    assert!(e2.starts_with("E_FILE_CHANGED"), "缺少指纹也要拒绝: {}", e2);
+    assert_eq!(dst.list_hosts().len(), 0);
+
+    // 4) 重新校验 → 新指纹生效,写入的是「现在这份」的内容
+    let again = import_inspect_path(&dst, &p, None).unwrap();
+    let digest2 = again["digest"].as_str().unwrap().to_string();
+    assert_ne!(digest, digest2, "文件换了,指纹必须变");
+    let r = import_apply_path(&dst, &p, None, &json!({}), false, Some(&digest2)).unwrap();
+    assert_eq!(r["result"]["added"], json!(3));
+    let hosts = dst.list_hosts();
+    assert_eq!(hosts.len(), 3);
+    assert!(hosts.iter().any(|h| h["host"] == json!("10.9.9.9")), "写入的应是修改后的那份文件");
+
+    let _ = std::fs::remove_dir_all(&dsrc);
+    let _ = std::fs::remove_dir_all(&ddst);
+}
+
+// ---------------------------------------------------------------- F-09 问题行
+
+/// 一份「两条有效 + 一条端口越界」的文件(pretty 打印,行号稳定)
+fn mixed_file() -> String {
+    serde_json::to_string_pretty(&json!({
+        "app": "nebulashell", "version": 4,
+        "hosts": [
+            { "id": "a", "name": "好行1", "host": "10.0.0.1", "port": 22, "username": "root" },
+            { "id": "b", "name": "坏行", "host": "10.0.0.2", "port": 70000, "username": "root" },
+            { "id": "c", "name": "好行2", "host": "10.0.0.3", "port": 22, "username": "root" },
+        ],
+    }))
+    .unwrap()
+}
+
+/// AC-24 预检返回结构化问题行;默认行为仍是「整份拒绝」
+#[test]
+fn case24_invalid_rows_are_structured_and_default_rejects() {
+    let (s, dir) = store("c24");
+    let text = mixed_file();
+
+    // 旧通道(hosts:importFile / 既有断言):整段中文问题串
+    let e = s.inspect_hosts(&text, None).unwrap_err();
+    assert!(e.contains("导入文件校验失败") && e.contains("端口"), "{}", e);
+
+    // 结构化预检:不 Err,给出 invalidRows + 可预览的 rows
+    let insp = s.inspect_hosts_detailed(&text, None).unwrap();
+    assert_eq!(insp["rejected"], json!(true));
+    assert_eq!(insp["code"], json!("E_INVALID_PRESENT"));
+    let invalid = insp["invalidRows"].as_array().unwrap();
+    assert_eq!(invalid.len(), 1, "只有 1 行端口越界");
+    assert_eq!(invalid[0]["index"], json!(2), "index 是 1-based 记录序号");
+    assert_eq!(invalid[0]["name"], json!("坏行"));
+    assert_eq!(invalid[0]["field"], json!("port"));
+    assert_eq!(invalid[0]["code"], json!("E_PORT"));
+    assert!(invalid[0]["reason"].as_str().unwrap().contains("70000"));
+    // 行号必须指向文件里那一条记录(记录起始行,不是记录序号)
+    let line_no = invalid[0]["line"].as_u64().expect("行号应有值") as usize;
+    let record_text = text
+        .lines()
+        .skip(line_no - 1)
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        record_text.contains("坏行"),
+        "第 {} 行起的记录应包含问题行: {}",
+        line_no,
+        record_text
+    );
+
+    // 预览行:两条有效 + 一条问题行(kind=invalid,前端不可勾选)
+    let rows = insp["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.iter().filter(|r| r["kind"] == json!("invalid")).count(), 1);
+    assert_eq!(rows.iter().filter(|r| r["kind"] == json!("add")).count(), 2);
+    assert_eq!(insp["counts"]["invalid"], json!(1));
+
+    // 默认落盘 = 整份拒绝,库不变
+    let e = s.apply_hosts(&text, None, &json!({})).unwrap_err();
+    assert!(e.contains("端口"), "{}", e);
+    assert_eq!(s.list_hosts().len(), 0, "默认必须整份拒绝");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// AC-25 用户明确「只导有效行」:好行写入,坏行进结果行(result=invalid)
+#[test]
+fn case25_allow_partial_writes_valid_rows_and_reports_invalid() {
+    let (s, dir) = store("c25");
+    let text = mixed_file();
+
+    let r = s.apply_hosts_with(&text, None, &json!({}), true).unwrap();
+    assert_eq!(r["added"], json!(2));
+    assert_eq!(r["invalid"], json!(1));
+    let rows = r["rows"].as_array().unwrap();
+    let bad = rows.iter().find(|row| row["result"] == json!("invalid")).unwrap();
+    assert_eq!(bad["name"], json!("坏行"));
+    assert!(bad["reason"].as_str().unwrap().contains("端口"), "结果行要带原因: {}", bad);
+    assert_eq!(rows.iter().filter(|row| row["result"] == json!("written")).count(), 2);
+
+    let hosts = s.list_hosts();
+    assert_eq!(hosts.len(), 2, "只有有效行落库");
+    assert!(hosts.iter().all(|h| h["name"] != json!("坏行")));
+    assert!(hosts.iter().any(|h| h["host"] == json!("10.0.0.3")));
+
+    // 再导一次(仍 allow_partial)应幂等:一致行不重复写
+    let again = s.apply_hosts_with(&text, None, &json!({}), true).unwrap();
+    assert_eq!(again["added"], json!(0));
+    assert_eq!(s.list_hosts().len(), 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// AC-26 文件级问题(空主机列表)不受 allow_partial 影响,仍然整份拒绝
+#[test]
+fn case26_file_level_issues_ignore_allow_partial() {
+    let (s, dir) = store("c26");
+    let text = serde_json::to_string(&json!({ "version": 4, "hosts": [] })).unwrap();
+    let e = s.apply_hosts_with(&text, None, &json!({}), true).unwrap_err();
+    assert!(e.contains("没有主机记录"), "空文件即使 allowPartial 也要拒绝: {}", e);
+    let insp = s.inspect_hosts_detailed(&text, None).unwrap_err();
+    assert!(insp.contains("没有主机记录"), "预检也要整份拒绝: {}", insp);
+    assert_eq!(s.list_hosts().len(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
 }

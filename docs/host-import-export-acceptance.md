@@ -227,3 +227,21 @@ PW_PATH=/Users/joker/node_modules/playwright-core \
 - 清单 31 条**全部完成验证**，每条都有可复核证据；P0 全闭合，P1 11/13 修复、1 条部分（F-09）、1 条未修复（F-04，有跟进卡）。
 - 往返导入导出数据一致（全库/子集/三代往返/幂等重导），无新增回归；相邻功能（列表、分组筛选、搜索）实测未被破坏。
 - **建议上线**，同时把 F-04（文件指纹）作为下一个迭代的 P1 处理，不阻断本次发布。
+
+---
+
+## 8. 后续闭环（2026-11-03，卡 `t_9e44ae71`）
+
+§5 的跟进卡 ① 已完成，F-04 与 F-09 的剩余部分（结构化问题行 + 只导有效行）同时落地；
+本节的结论替代 §7 中「F-04 未修复 / F-09 部分」的表述，§1–§7 保留为当时的验收记录。
+
+| 项 | 原状态 | 现在 | 证据 |
+|---|---|---|---|
+| F-04 预检→落盘 TOCTOU | 未修复 | **已修复** | `inspect` 返回 `digest`（`sha256:` + sha256 前 16 字节）+ `bytes`；`apply` 必带 `digest`，先真读一次文件再核对，不符/缺失 → `E_FILE_CHANGED`，一个字节都不写。用例 `case23_file_changed_between_inspect_and_apply_is_rejected` |
+| F-09 问题行不可勾选 | 部分修复 | **已修复** | `inspect` 有坏行时返回 `rejected + code + invalidRows[{index,line,name,field,code,reason}]`，并照常给出有效行 `rows`（坏行 `kind:"invalid"` 禁用勾选）；`apply` 支持 `allowPartial`，坏行记 `result:"invalid"`。默认仍整份拒绝。用例 `case24`/`case25`/`case26` |
+
+- 契约细节写进设计 §10.2 / §10.3（含 `digest` 缺省视为不符、`rows[].result` 增加第六值 `invalid`）。
+- 界面定点验证：`reports/host-io-f04-f09-2026-11-03/verify.mjs`，Chromium 25/25、WebKit 25/25
+  （文件被改 → 退回步骤 1、路径保留、文案可操作；问题行不可勾选；勾选「只导有效行」后主按钮台数随勾选变化）。
+- 回归：`cargo test --test import_export_acceptance` 26 通过、`cargo test --lib` 218 通过、
+  `host_config_ux` 10 通过、`npm run test:unit` 520 通过、上一轮界面验收脚本 83/83 仍全绿。

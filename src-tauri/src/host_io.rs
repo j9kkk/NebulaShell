@@ -56,6 +56,61 @@ impl ImportIssue {
             (r, None) => format!("第 {} 台", r),
         }
     }
+
+    /// 错误码(设计 §9.4)。后端只发 `code + 中文文案`,前端按码定位;这里按
+    /// 字段/原因做只读映射,不改变既有中文文案(那批断言已经在验收用例里)。
+    pub fn code(&self) -> &'static str {
+        let contains = |needle: &str| self.reason.contains(needle);
+        match self.field {
+            "hosts" => {
+                if contains("没有主机记录") {
+                    "E_NO_HOSTS"
+                } else {
+                    "E_ROW_LIMIT"
+                }
+            }
+            "主机记录" => "E_ROW",
+            "host" => {
+                if contains("重复") {
+                    "E_HOST_DUP"
+                } else if contains("空格") || contains("控制字符") {
+                    "E_HOST_SPACE"
+                } else {
+                    "E_HOST_EMPTY"
+                }
+            }
+            "port" => "E_PORT",
+            "username" => "E_USER",
+            "name" => "E_NAME",
+            "authType" => "E_AUTH",
+            "sessionLog" | "aiAccess" => "E_ENUM",
+            "tags" => "E_TAGS",
+            "password" | "privateKey" | "passphrase" => "E_CRED",
+            "cloud" => "E_CLOUD",
+            "id" => {
+                if contains("重复") {
+                    "E_ID_DUP"
+                } else {
+                    "E_ID_MISSING"
+                }
+            }
+            "jumpIds" => "E_JUMP_UNKNOWN",
+            _ => "E_ROW",
+        }
+    }
+
+    /// 前端可勾选/定位的结构化形态。`name` 取该行主机的显示名(没有就空串),
+    /// 让问题区能直接写「第 8 行 · web-01 · 端口:…」。
+    pub fn to_json(&self, name: &str) -> Value {
+        serde_json::json!({
+            "index": self.record,
+            "line": self.line,
+            "name": name,
+            "field": self.field,
+            "code": self.code(),
+            "reason": self.reason,
+        })
+    }
 }
 
 /// 去掉 UTF-8 BOM。BOM 会让 serde_json 在「第 1 行第 1 列」报错,
@@ -128,8 +183,25 @@ fn file_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// 读一次导入文件得到的全部东西:解码后的文本、原始字节(算指纹用)、指纹。
+/// `inspect` 与 `apply` 各自读一次文件,靠 `digest` 把两次读数钉在一起(F-04)。
+pub struct ImportSource {
+    /// 解码后的文本(已去 BOM),解析与校验都用它。
+    pub text: String,
+    /// 原始文件字节。指纹必须基于磁盘上的字节,不能基于解码结果。
+    pub bytes: Vec<u8>,
+    /// 内容指纹:`sha256:` + sha256 前 16 字节的十六进制。
+    pub digest: String,
+}
+
+impl ImportSource {
+    pub fn bytes_len(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
 /// 读取并解码导入文件。先看文件大小,避免把超大文件整个读进内存。
-pub fn read_import_file(path: &str) -> Result<String, String> {
+pub fn read_import_source(path: &str) -> Result<ImportSource, String> {
     let resolved = match path.strip_prefix("~/") {
         Some(rest) => dirs::home_dir()
             .map(|home| home.join(rest))
@@ -149,7 +221,55 @@ pub fn read_import_file(path: &str) -> Result<String, String> {
     }
     let bytes =
         std::fs::read(&resolved).map_err(|e| format!("读取导入文件「{}」失败：{}", path, e))?;
-    decode_import_bytes(path, &bytes)
+    let digest = digest_of(&bytes);
+    let text = decode_import_bytes(path, &bytes)?;
+    Ok(ImportSource {
+        text,
+        bytes,
+        digest,
+    })
+}
+
+/// 只要文本的旧入口(保持兼容:hosts:importFile 等不需要指纹的通道)。
+pub fn read_import_file(path: &str) -> Result<String, String> {
+    read_import_source(path).map(|s| s.text)
+}
+
+/// 文件内容指纹:sha256 前 16 字节,前缀标明算法。
+///
+/// 只用于「用户确认过的这份 == 落盘时这份」,不是安全边界(16 字节足够防替换,
+/// 32 字节也没必要把指纹文本框塞满)。`apply` 仍要真的读文件、重新解析 ——
+/// 前端缓存的内容永远不被信任。
+pub fn digest_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let full = Sha256::digest(bytes);
+    let mut out = String::with_capacity(7 + 32);
+    out.push_str("sha256:");
+    for byte in &full[..16] {
+        out.push_str(&format!("{:02x}", byte));
+    }
+    out
+}
+
+/// 文件指纹不符/缺失时的错误串。命令层是纯字符串错误通道,所以把错误码放在
+/// 前缀里(`E_FILE_CHANGED:`),前端据此把卡片退回步骤 1 并保留路径。
+pub fn file_changed_error() -> String {
+    format!(
+        "{}:文件在确认后被修改或无法确认是同一份,请重新校验后再导入（已保留文件路径）",
+        E_FILE_CHANGED
+    )
+}
+
+pub const E_FILE_CHANGED: &str = "E_FILE_CHANGED";
+
+/// 写前校验:确认「现在这份」就是预检时用户确认的那份。
+/// 缺少指纹也拒绝 —— 允许省略就等于给 TOCTOU 留了后门。
+pub fn verify_digest(expected: Option<&str>, bytes: &[u8]) -> Result<(), String> {
+    let want = expected.map(str::trim).filter(|s| !s.is_empty());
+    match want {
+        Some(d) if d == digest_of(bytes) => Ok(()),
+        _ => Err(file_changed_error()),
+    }
 }
 
 /// JSON 语法错误:serde 自带行列,之前被整句丢掉,用户只看到「文件不是合法 JSON」。

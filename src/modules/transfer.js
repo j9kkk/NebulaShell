@@ -19,11 +19,11 @@ const today = () => {
 const defaultName = () => `nebulashell-hosts-${today()}.json`;
 
 /// 处置结果 → 报告用中文;后端 rows[].result 只有这五种取值(config.rs import_run)。
-const RESULT_LABEL = { written: '新增', overwritten: '覆盖', filled: '补凭据', skipped: '跳过', unchanged: '未改动' };
-const KIND_LABEL = { add: '新增', credOnly: '补凭据', conflict: '冲突', identical: '一致' };
+const RESULT_LABEL = { written: '新增', overwritten: '覆盖', filled: '补凭据', skipped: '跳过', unchanged: '未改动', invalid: '问题行' };
+const KIND_LABEL = { add: '新增', credOnly: '补凭据', conflict: '冲突', identical: '一致', invalid: '问题行' };
 
 function tallyResult(rows) {
-  const t = { written: 0, overwritten: 0, filled: 0, skipped: 0, unchanged: 0 };
+  const t = { written: 0, overwritten: 0, filled: 0, skipped: 0, unchanged: 0, invalid: 0 };
   for (const r of rows || []) if (Object.hasOwn(t, r?.result)) t[r.result] += 1;
   return t;
 }
@@ -367,6 +367,12 @@ const im = {
   perRow: {},
   excluded: new Set(),
   showAll: false,
+  // F-04:预检拿到的文件指纹,写入时原样带回;不符则整批拒绝
+  digest: '',
+  // F-09:结构化问题行 + 用户是否明确同意「只导有效行」(默认 false = 整份拒绝)
+  invalid: [],
+  partial: false,
+  showAllIssues: false,
 };
 let bound = false;
 let dropBound = false;
@@ -391,6 +397,10 @@ export function openImportDialog() {
   im.perRow = {};
   im.excluded = new Set();
   im.showAll = false;
+  im.digest = '';
+  im.invalid = [];
+  im.partial = false;
+  im.showAllIssues = false;
   const pass = $('#io-import-pass-input');
   if (pass) pass.value = '';
   const pathInput = $('#io-import-path-input');
@@ -405,8 +415,13 @@ export function openImportDialog() {
 const conflictRows = () => (im.inspect?.rows || []).filter((r) => r.kind === 'conflict');
 const effectiveDecision = (row) => im.perRow[row.key] || (row.kind === 'conflict' ? im.decision : '');
 const isExcluded = (row) => im.excluded.has(row.key);
-/// 会真正写盘的行:未排除、且不是「一致」。
-const writableRows = () => (im.inspect?.rows || []).filter((r) => !isExcluded(r) && r.kind !== 'identical');
+/// 问题行:校验没通过,永远不勾选、永远不写盘(F-09)。
+const isInvalid = (row) => row.kind === 'invalid';
+/// 会真正写盘的行:未排除、不是「一致」、也不是问题行。
+const writableRows = () =>
+  (im.inspect?.rows || []).filter((r) => !isExcluded(r) && r.kind !== 'identical' && !isInvalid(r));
+/// 有坏行且用户还没勾「只导有效行」:主按钮不可点,默认整份拒绝。
+const partialBlocked = () => im.invalid.length > 0 && !im.partial;
 
 function renderImport() {
   const rows = im.inspect?.rows || [];
@@ -477,14 +492,16 @@ function renderImport() {
 
   if (im.step === 2 && rows.length) {
     renderSummary();
+    renderIssuebox();
     renderRows();
     renderConflictSegment();
-    // 表头全选:只在「有可勾选行」时可用(一致行永远不勾)
+    // 表头全选:只在「有可勾选行」时可用(一致行/问题行永远不勾)
     const selAll = $('#io-import-selectall');
     if (selAll) {
-      const pickable = rows.filter((r) => r.kind !== 'identical');
+      const pickable = rows.filter((r) => r.kind !== 'identical' && !isInvalid(r));
       const picked = pickable.filter((r) => !isExcluded(r)).length;
-      const state = picked === 0 ? 'false' : picked === pickable.length ? 'true' : 'mixed';
+      selAll.classList.toggle('disabled', pickable.length === 0);
+      const state = picked === 0 || pickable.length === 0 ? 'false' : picked === pickable.length ? 'true' : 'mixed';
       selAll.classList.toggle('on', picked === pickable.length && picked > 0);
       selAll.setAttribute('aria-checked', state);
       selAll.innerHTML = state === 'false' ? '' : state === 'mixed' ? '–' : icon('check', { size: 9 });
@@ -500,6 +517,7 @@ function renderImport() {
   const reveal = $('#io-import-reveal');
   if (ok) {
     const writable = writableRows().length;
+    const blocked = partialBlocked();
     const overwriteCount = (im.inspect?.rows || []).filter(
       (r) => !isExcluded(r) && r.kind === 'conflict' && effectiveDecision(r) === 'overwrite',
     ).length;
@@ -510,18 +528,24 @@ function renderImport() {
           ? '返回预览'
           : im.busy
             ? '导入中…'
-            : overwriteCount
-              ? `覆盖 ${overwriteCount} 台并导入`
-              : `导入 ${writable} 台`;
-    ok.disabled = im.busy || im.checking || (stage !== 'done' && stage !== 'failed' && writable === 0);
+            : blocked
+              ? '先处理问题行'
+              : im.invalid.length
+                ? `只导有效行（${writable} 台）`
+                : overwriteCount
+                  ? `覆盖 ${overwriteCount} 台并导入`
+                  : `导入 ${writable} 台`;
+    ok.disabled = im.busy || im.checking || (stage !== 'done' && stage !== 'failed' && (writable === 0 || blocked));
     ok.title =
       stage === 'done'
         ? '关闭结果报告'
         : stage === 'failed'
           ? '写入没有发生,回到预览可以重试'
-          : writable === 0
-            ? '没有选中任何主机'
-            : '';
+          : blocked
+            ? `文件里有 ${im.invalid.length} 行问题数据;勾选「跳过这些问题行」后才能导入其余主机`
+            : writable === 0
+              ? '没有选中任何主机'
+              : '';
   }
   cancel?.classList.toggle('hidden', stage === 'done');
   if (cancel) cancel.textContent = stage === 'failed' ? '关闭' : '取消';
@@ -545,6 +569,10 @@ function renderImport() {
     else if (im.checking) hint.textContent = '正在读取文件…';
     else if (locked) hint.textContent = '该文件用口令加密,请输入文件口令';
     else if (!hasFile) hint.textContent = '';
+    else if (im.invalid.length)
+      hint.textContent = im.partial
+        ? `将跳过 ${im.invalid.length} 行问题数据,只导入有效行`
+        : `有 ${im.invalid.length} 行无法导入:修正文件后重新校验,或勾选「只导有效行」`;
     else if (im.inspect?.legacyPlaintext) hint.textContent = '该文件含明文凭据,导入后建议重新导出一份';
     else if (im.meta?.encryption === 'builtin') hint.textContent = '凭据用内置密钥加密:同一版本的 App 都能解开,等同明文,请按密码本对待';
     else hint.textContent = '导入前会自动备份当前主机库';
@@ -558,11 +586,17 @@ function renderSummary() {
   const box = $('#io-import-summary');
   if (!box) return;
   const picked = writableRows().length;
+  const invalid = im.invalid.length;
   box.innerHTML = [
     `<span class="io-sum-item">共 <b>${rows.length}</b> 台</span>`,
     `<span class="io-sum-sep" aria-hidden="true">·</span>`,
     `<span class="io-sum-item">将导入 <b>${picked}</b> 台</span>`,
-    `<span class="io-sum-sep" aria-hidden="true">·</span>`,
+    ...(invalid
+      ? [
+          `<span class="io-sum-sep" aria-hidden="true">·</span>`,
+          `<span class="io-sum-item bad">${invalid} 行有问题</span>`,
+        ]
+      : []),
     `<span class="io-chip add">新增 <b>${counts.add || 0}</b></span>`,
     `<span class="io-chip cred">补凭据 <b>${counts.credOnly || 0}</b></span>`,
     `<span class="io-chip warn">冲突 <b>${counts.conflict || 0}</b></span>`,
@@ -572,7 +606,7 @@ function renderSummary() {
 
 function renderRows() {
   const rows = im.inspect?.rows || [];
-  const order = { conflict: 0, credOnly: 1, add: 2, identical: 3 };
+  const order = { conflict: 0, credOnly: 1, add: 2, identical: 3, invalid: 4 };
   const sorted = [...rows].sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
   const limit = im.showAll ? sorted.length : 10;
   const visible = sorted.slice(0, limit);
@@ -582,18 +616,24 @@ function renderRows() {
   body.innerHTML = visible
     .map((r) => {
       const diff = r.kind === 'conflict' ? (r.diff || []).filter(Boolean) : [];
-      const diffRow = diff.length
-        ? `<div class="io-r-diffrow" title="${escapeHtml(diff.join(' · '))}">${escapeHtml(diff.slice(0, 2).join(' · '))}${diff.length > 2 ? ' …' : ''}</div>`
+      // 问题行:第二行显示第一条原因(剩下的在问题区里),让列表本身也能定位
+      const issueLine = isInvalid(r)
+        ? [r.errors?.[0] ? `${r.errors[0].field}：${r.errors[0].reason}` : '校验失败']
+        : [];
+      const noteRow = diff.length || issueLine.length
+        ? `<div class="io-r-diffrow${isInvalid(r) ? ' bad' : ''}" title="${escapeHtml((diff.length ? diff : issueLine).join(' · '))}">${escapeHtml((diff.length ? diff : issueLine).slice(0, 2).join(' · '))}${(diff.length || issueLine.length) > 2 ? ' …' : ''}</div>`
         : '';
-      const disabled = r.kind === 'identical';
+      const disabled = r.kind === 'identical' || isInvalid(r);
       const checked = !isExcluded(r) && !disabled;
-      const dec = r.kind === 'conflict'
-        ? `<select class="io-mini-sel" data-key="${escapeHtml(r.key)}" aria-label="第 ${posOf.get(r.key)} 台的处置">
+      const dec = isInvalid(r)
+        ? `<span class="io-r-kind invalid">${KIND_LABEL.invalid}</span>`
+        : r.kind === 'conflict'
+          ? `<select class="io-mini-sel" data-key="${escapeHtml(r.key)}" aria-label="第 ${posOf.get(r.key)} 台的处置">
              <option value="skip"${effectiveDecision(r) === 'overwrite' ? '' : ' selected'}>跳过</option>
              <option value="overwrite"${effectiveDecision(r) === 'overwrite' ? ' selected' : ''}>覆盖</option>
            </select>`
-        : `<span class="io-r-kind ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`;
-      return `<div class="io-item k-${r.kind}${diff.length ? ' has-diff' : ''}${isExcluded(r) ? ' is-out' : ''}">
+          : `<span class="io-r-kind ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`;
+      return `<div class="io-item k-${r.kind}${diff.length || issueLine.length ? ' has-diff' : ''}${isExcluded(r) ? ' is-out' : ''}">
         <span class="io-c-check"><span class="hl-box${checked ? ' on' : ''}" role="checkbox" tabindex="${disabled ? -1 : 0}"
           aria-checked="${checked}" aria-label="第 ${posOf.get(r.key)} 台 ${escapeHtml(r.name || '')}"
           data-key="${escapeHtml(r.key)}" data-disabled="${disabled}">${checked ? icon('check', { size: 9 }) : ''}</span></span>
@@ -603,7 +643,7 @@ function renderRows() {
         <span class="io-r-group">${escapeHtml(r.group || '—')}</span>
         <span class="io-r-cred ${r.hasCredentials ? 'yes' : 'no'}">${r.hasCredentials ? '有' : '无'}</span>
         <span class="io-r-dec">${dec}</span>
-        ${diffRow}
+        ${noteRow}
       </div>`;
     })
     .join('');
@@ -616,6 +656,50 @@ function renderRows() {
     more.setAttribute('aria-expanded', im.showAll ? 'true' : 'false');
   }
   if (rest > 0 && !im.showAll) more?.setAttribute('title', sorted.slice(10).map((r) => r.name || r.host).join('、'));
+}
+
+/// 问题区(F-09):坏行结构化列出(位置 · 主机 · 字段:原因),可展开;
+/// 「只导有效行」必须由用户明确勾选 —— 默认整份拒绝是安全默认。
+function renderIssuebox() {
+  const box = $('#io-import-errorbox');
+  if (!box) return;
+  const issues = im.invalid || [];
+  box.classList.toggle('hidden', issues.length === 0);
+  if (!issues.length) return;
+  const valid = writableRows().length;
+  const title = $('#io-issuebox-title');
+  if (title) title.textContent = `${issues.length} 行无法导入`;
+  const list = $('#io-issuebox-list');
+  if (list) {
+    const limit = im.showAllIssues ? issues.length : 3;
+    list.innerHTML = issues
+      .slice(0, limit)
+      .map((it) => {
+        const loc = it.line ? `第 ${it.line} 行` : `第 ${it.index} 台`;
+        return `<li><span class="io-issue-loc">${escapeHtml(loc)}</span>${
+          it.name ? ` <span class="io-issue-name">${escapeHtml(it.name)}</span>` : ''
+        } · ${escapeHtml(it.field)}：${escapeHtml(it.reason)}</li>`;
+      })
+      .join('');
+  }
+  const more = $('#io-issuebox-more');
+  if (more) {
+    more.classList.toggle('hidden', issues.length <= 3);
+    more.textContent = im.showAllIssues ? '收起' : `查看全部 ${issues.length} 行`;
+    more.setAttribute('aria-expanded', im.showAllIssues ? 'true' : 'false');
+  }
+  const chk = $('#io-issuebox-partial');
+  if (chk) {
+    chk.classList.toggle('on', im.partial);
+    chk.setAttribute('aria-checked', im.partial ? 'true' : 'false');
+    chk.innerHTML = im.partial ? icon('check', { size: 9 }) : '';
+  }
+  const note = $('#io-issuebox-partial-note');
+  if (note) {
+    note.textContent = im.partial
+      ? `将跳过这 ${issues.length} 行,导入其余 ${valid} 台`
+      : '不勾选则整份文件都不导入';
+  }
 }
 
 function renderConflictSegment() {
@@ -652,6 +736,9 @@ async function inspect(path) {
     im.error = e?.message || '读取文件失败';
     im.inspect = null;
     im.meta = null;
+    im.digest = '';
+    im.invalid = [];
+    im.partial = false;
     if (!im.passphrase) im.encrypted = false;
     im.done = null;
     im.step = 1;
@@ -670,7 +757,11 @@ async function inspect(path) {
   }
   im.path = res.path || path || '';
   im.meta = res.file || null;
+  im.digest = res.digest || '';
   im.inspect = res.needsPassphrase ? null : res.inspect;
+  im.invalid = res.needsPassphrase ? [] : res.inspect?.invalidRows || [];
+  im.partial = false;
+  im.showAllIssues = false;
   im.encrypted = !!res.needsPassphrase || im.meta?.encryption === 'passphrase';
   im.error = '';
   im.perRow = {};
@@ -744,8 +835,10 @@ function reportText() {
 
 async function runApply() {
   if (im.busy || !im.path || !im.inspect?.rows?.length) return;
+  if (partialBlocked()) return; // 有坏行且用户没勾「只导有效行」:默认整份拒绝
   const decisions = {};
   for (const row of im.inspect.rows) {
+    if (isInvalid(row)) continue;
     if (isExcluded(row)) decisions[row.key] = 'skip';
     else if (row.kind === 'conflict') decisions[row.key] = effectiveDecision(row) === 'overwrite' ? 'overwrite' : 'skip';
   }
@@ -759,11 +852,32 @@ async function runApply() {
       path: im.path,
       passphrase: im.passphrase,
       decisions,
+      // F-04:预检时确认的那份文件指纹;后端读写各一次,靠它把两次钉在一起
+      digest: im.digest,
+      // F-09:只有用户明确勾选才允许跳过问题行
+      allowPartial: im.partial && im.invalid.length > 0,
     });
   } catch (e) {
+    const msg = String(e?.message || '');
+    // 文件在确认后被改过:写入没有发生,把卡片退回步骤 1 并保留路径让用户重新校验
+    if (msg.startsWith('E_FILE_CHANGED')) {
+      im.busy = false;
+      im.step = 1;
+      im.error = msg.replace(/^E_FILE_CHANGED:\s*/, '');
+      im.inspect = null;
+      im.invalid = [];
+      im.partial = false;
+      im.meta = null;
+      im.digest = '';
+      im.failed = '';
+      im.done = null;
+      renderImport();
+      setTimeout(() => $('#io-import-error')?.scrollIntoView?.({ block: 'nearest' }), 0);
+      return;
+    }
     // 写入是整批原子:失败 = 什么都没写。留在卡里,失败原因写在结果态横幅里。
     im.busy = false;
-    im.failed = e?.message || '导入失败,请检查文件后重试';
+    im.failed = msg || '导入失败,请检查文件后重试';
     renderImport();
     return;
   }
@@ -815,6 +929,7 @@ function renderResult() {
           ['补凭据', t.filled, ''],
           ['跳过', t.skipped, 'skip'],
           ['未改动', t.unchanged, ''],
+          ...(t.invalid ? [['问题行', t.invalid, 'invalid']] : []),
         ]
           .filter(([, v]) => v > 0 || true)
           .map(([k, v, tone]) => `<div class="io-stat ${tone}"><span class="io-stat-k">${k}</span><span class="io-stat-v">${v}</span></div>`)
@@ -827,6 +942,7 @@ function renderResult() {
     filled: '已补全凭据',
     skipped: '按决策跳过,本地保留',
     unchanged: '与本地一致',
+    invalid: '校验失败,未导入',
   };
   const list = $('#io-done-rows');
   if (list) {
@@ -969,11 +1085,29 @@ export function setupTransfer() {
     im.showAll = !im.showAll;
     renderRows();
   });
-  // 表头全选 / 全不选(只作用于可勾选行)
+  // 问题区:展开全部问题行
+  $('#io-issuebox-more')?.addEventListener('click', () => {
+    im.showAllIssues = !im.showAllIssues;
+    renderIssuebox();
+  });
+  // 「只导有效行」必须由用户明确勾选(默认整份拒绝是安全默认)
+  const togglePartial = () => {
+    if (im.busy) return;
+    im.partial = !im.partial;
+    renderImport();
+  };
+  $('#io-issuebox-partial-row')?.addEventListener('click', togglePartial);
+  $('#io-issuebox-partial')?.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      togglePartial();
+    }
+  });
+  // 表头全选 / 全不选(只作用于可勾选行;问题行永远不勾)
   const toggleAll = () => {
     if (im.busy) return;
-    const pickable = (im.inspect?.rows || []).filter((r) => r.kind !== 'identical');
-    const allPicked = pickable.every((r) => !isExcluded(r));
+    const pickable = (im.inspect?.rows || []).filter((r) => r.kind !== 'identical' && !isInvalid(r));
+    const allPicked = pickable.length > 0 && pickable.every((r) => !isExcluded(r));
     if (allPicked) pickable.forEach((r) => im.excluded.add(r.key));
     else im.excluded.clear();
     renderImport();
