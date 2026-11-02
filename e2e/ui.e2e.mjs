@@ -3426,6 +3426,9 @@ async function main() {
     const inp = document.querySelector('#io-export-pass-input');
     inp.value = 'e2e-passphrase-1';
     inp.dispatchEvent(new Event('input', { bubbles: true }));
+    const inp2 = document.querySelector('#io-export-pass2');
+    inp2.value = 'e2e-passphrase-1';
+    inp2.dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#io-export-ok').click();
     return 1`);
   // 等文件落盘(mock 保存路径由 NEBULA_TEST_SAVE_PATH 决定)。
@@ -3452,6 +3455,9 @@ async function main() {
     exportObj.credentialsIncluded === true && !!exportObj.credentials && !hasPlainCredField && !leaksValue,
     `included=${exportObj.credentialsIncluded} plainField=${hasPlainCredField} leakedValue=${leaksValue}`,
   );
+  // 导出后停在结果态(设计 §7.5):点「完成」关卡片,后续用例才点得到侧栏
+  await evalJs(`document.querySelector('#io-export-ok').click(); return 1`);
+  await sleep(250);
 
   // 导入验证:先删掉该主机,再从导出文件导回 —— 这样能真正检验"凭据被恢复",
   // 而不是被去重逻辑挡掉(同一 profile 里主机还在时会算重复)。
@@ -3465,24 +3471,26 @@ async function main() {
   // 入口:侧栏「管理」菜单(键盘路径)
   await openDropdown('#btn-host-manage'); await ctxFocus('[data-command="hosts.import"]'); await focusedKey('Enter');
   await waitEval(`return !document.querySelector('#modal-import').classList.contains('hidden')`, 'true', 10000);
-  // 空态整块可点:点虚线区 = 选文件(测试模式用 NEBULA_TEST_IMPORT_PATH)
-  await evalJs(`document.querySelector('#io-import-empty').click(); return 1`);
+  // 唯一的选择入口是「选择文件」按钮(虚线区只接拖放,设计 D13)
+  await evalJs(`document.querySelector('#io-import-pick').click(); return 1`);
   await sleep(700);
-  // 口令文件:在同一张卡里补口令
+  // 口令文件:在「文件口令」行里输入即自动预检
   await evalJs(`
-    const pass = document.querySelector('#io-import-pass');
-    if (pass && !pass.classList.contains('hidden')) {
-      const inp = document.querySelector('#io-import-pass-input');
+    const inp = document.querySelector('#io-import-pass-input');
+    if (inp && !inp.disabled) {
       inp.value = 'e2e-passphrase-1';
       inp.dispatchEvent(new Event('input', { bubbles: true }));
-      document.querySelector('#io-import-pass-ok').click();
     }
     return 1`);
   await waitEval(`return document.querySelectorAll('#io-import-rows .io-item').length > 0`, 'true', 30000);
   await evalJs(`document.querySelector('#io-import-ok').click(); return 1`);
-  // 导入同样要走 scrypt 派生(debug 构建下数秒,高负载时更久),预算放宽
-  await waitEval(`document.querySelector('#toasts').textContent`, '导入完成', 60000);
-  const importToast = await evalJs(`return document.querySelector('#toasts').textContent`);
+  // 导入同样要走 scrypt 派生(debug 构建下数秒,高负载时更久),预算放宽。
+  // 成功后停在结果态(设计 D8:导入不弹 toast,结果态是唯一报数处)。
+  await waitEval(`return document.querySelector('#io-done-title')?.textContent || ''`, '已导入', 60000);
+  const importTitle = await evalJs(`return document.querySelector('#io-done-title').textContent`);
+  // 「完成」关掉结果卡,后面的用例才点得到侧栏
+  await evalJs(`document.querySelector('#io-import-ok').click(); return 1`);
+  await sleep(300);
   // 恢复后的主机应带凭据(界面不再标记"待补全凭据")
   const restored = asObj(await evalJs(`return JSON.stringify((() => {
     const it = [...document.querySelectorAll('.host-item')].find((x) => x.textContent.includes('ui-a'));
@@ -3490,8 +3498,8 @@ async function main() {
   })())`));
   check(
     'T17 导入加密导出文件并恢复凭据',
-    String(importToast).includes('导入完成') && /新增 1/.test(String(importToast)) && restored.chip === false,
-    `${String(importToast).slice(0, 90)} | chip=${restored.chip}`,
+    /已导入 1 台主机/.test(String(importTitle)) && restored.chip === false,
+    `${String(importTitle).slice(0, 90)} | chip=${restored.chip}`,
   );
 
   // 指纹变更(B6):预置的记录与服务器实际出示的指纹不符 → 连接被拒,

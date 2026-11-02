@@ -1369,6 +1369,18 @@ impl Store {
         passphrase: Option<&str>,
         with_keys: bool,
     ) -> Result<Value, String> {
+        self.export_hosts_with(scope, passphrase, with_keys, true)
+    }
+
+    /// 导出主机。`with_credentials = false` 时不收集、不写 `credentials`,
+    /// 文件只能恢复主机结构(导入后需重填密码/私钥)—— 界面「包含凭据」开关的落点。
+    pub fn export_hosts_with(
+        &self,
+        scope: &Value,
+        passphrase: Option<&str>,
+        with_keys: bool,
+        with_credentials: bool,
+    ) -> Result<Value, String> {
         let wanted: Option<std::collections::HashSet<String>> =
             match scope["mode"].as_str().unwrap_or("all") {
                 "all" => None,
@@ -1493,21 +1505,27 @@ impl Store {
         };
 
         validate_jump_graph(&hosts)?;
-        let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
-        // 默认内置密钥(零输入);用户显式开了「用口令加密」才走口令通道。
-        let block = match passphrase.filter(|p| !p.trim().is_empty()) {
-            Some(pass) => json!({
-                "alg": CRED_ALG_PASS,
-                "blob": encrypt_with_passphrase(pass, plain.as_bytes())?,
-            }),
-            None => encrypt_builtin(plain.as_bytes())?,
+        // 「包含凭据」关闭:不写 credentials 块,导入端会提示需要重填 —— 界面开关的落点
+        let (block, credentials_included) = if with_credentials {
+            let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
+            // 默认内置密钥(零输入);用户显式开了「用口令加密」才走口令通道。
+            let block = match passphrase.filter(|p| !p.trim().is_empty()) {
+                Some(pass) => json!({
+                    "alg": CRED_ALG_PASS,
+                    "blob": encrypt_with_passphrase(pass, plain.as_bytes())?,
+                }),
+                None => encrypt_builtin(plain.as_bytes())?,
+            };
+            (json!(block), true)
+        } else {
+            (Value::Null, false)
         };
         let out = json!({
             "app": "nebulashell", "version": 4,
             "exportedAt": chrono::Utc::now().to_rfc3339(),
             "hosts": hosts,
-            // 非敏感字段明文;凭据只出现在 credentials 里(内置密钥加密)
-            "credentialsIncluded": true,
+            // 非敏感字段明文;凭据只在 credentials 里(内置密钥或口令加密)
+            "credentialsIncluded": credentials_included,
             "credentials": block,
             // 只给调用方提示用,导入端忽略该字段
             "includedJumps": included_jumps,
@@ -1740,6 +1758,14 @@ impl Store {
             let decision = decision_of(&key);
             let overwrite = kind == "conflict" && decision == "overwrite";
 
+            // 逐行排除(设计 D7):预览里取消勾选的新主机不创建。
+            // 已存在的主机在写循环里按 decision == "skip" 跳过;新主机必须在建之前拦下,
+            // 否则它已经被 push 进 staged,再 skip 也删不掉。
+            if !dry_run && matched.is_none() && decision == "skip" {
+                plans.push((item_idx, usize::MAX, true, key, kind.to_string(), false));
+                continue;
+            }
+
             let (idx, is_new) = match matched {
                 Some(i) => {
                     claimed.insert(i);
@@ -1892,6 +1918,16 @@ impl Store {
             let item = &items[item_idx];
             let decision = decision_of(&key);
             let skip = decision == "skip";
+
+            // 预览里被取消勾选的新主机:规划阶段就没有建,这里只记一条「跳过」
+            if is_new && idx == usize::MAX {
+                result_rows.push(json!({
+                    "key": key,
+                    "name": item["name"],
+                    "result": "skipped",
+                }));
+                continue;
+            }
 
             let mut jumps = Vec::new();
             if !item["jumpIds"].is_null() {

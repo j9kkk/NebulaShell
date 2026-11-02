@@ -414,6 +414,17 @@ fn err_msg(e: impl std::fmt::Display) -> Result<Value, String> {
     Ok(json!({ "ok": false, "error": e.to_string() }))
 }
 
+/// 导出文件一律 0600:里面即使是加密过的凭据,也不该让同机其它用户读到。
+fn write_export_file(path: &Path, data: &Value) -> std::io::Result<()> {
+    std::fs::write(path, serde_json::to_string_pretty(data).unwrap_or_default())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 fn uid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -599,7 +610,9 @@ pub async fn nebula_invoke(
                 .as_str()
                 .filter(|p| !p.trim().is_empty());
             let with_keys = payload["withKeys"] == json!(true);
-            let data = match state.store.export_hosts_scoped(&scope, pass, with_keys) {
+            // 「包含凭据」缺省开(向后兼容);显式 false 时文件里没有 credentials 块
+            let with_cred = payload["withCredentials"] != json!(false);
+            let data = match state.store.export_hosts_with(&scope, pass, with_keys, with_cred) {
                 Ok(d) => d,
                 Err(e) => return err_msg(e),
             };
@@ -655,10 +668,7 @@ pub async fn nebula_invoke(
                     n += 1;
                 }
                 let path_str = path.to_string_lossy().to_string();
-                if let Err(e) = std::fs::write(
-                    &path,
-                    serde_json::to_string_pretty(&data).unwrap_or_default(),
-                ) {
+                if let Err(e) = write_export_file(&path, &data) {
                     return err_msg(e.to_string());
                 }
                 return ok(
@@ -673,10 +683,7 @@ pub async fn nebula_invoke(
             match file {
                 Some(f) => {
                     let path = f.path().to_string_lossy().to_string();
-                    if let Err(e) = std::fs::write(
-                        &path,
-                        serde_json::to_string_pretty(&data).unwrap_or_default(),
-                    ) {
+                    if let Err(e) = write_export_file(std::path::Path::new(&path), &data) {
                         return err_msg(e.to_string());
                     }
                     ok(

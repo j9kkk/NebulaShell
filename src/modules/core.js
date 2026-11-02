@@ -315,8 +315,10 @@ export function openModal(id) {
 export function closeModal(id) {
   const modal = typeof id === 'string' ? $(id) : id;
   if (!modal || modal._closing || (modal.classList.contains('hidden') && !activeModals.has(modal))) return;
-  modal._closing = true;
-  try { modalDismiss.get(modal)?.(); } finally { modal._closing = false; }
+  // 关闭闸门(D4):X / Esc / 遮罩 / 代码关闭都先问 dismiss handler,
+  // 它返回 false 就不关 —— 写入中(导入/导出)不能再被任何路径关掉。
+  const canClose = modalDismiss.get(modal);
+  if (canClose && canClose() === false) return;
   activeModals.delete(modal);
   modal.classList.add('hidden');
   if (modal.tagName === 'DIALOG' && modal.open) modal.close();
@@ -332,15 +334,25 @@ export function closeModal(id) {
   else if (top) top.focus();
 }
 
-export function bindModalInteractions() {
-  if (bindModalInteractions._bound) return;
-  bindModalInteractions._bound = true;
-  for (const label of document.querySelectorAll('.form-grid label')) {
+/// 给表单里的「裸标签」补 for:标签自己不带控件、也没有 for 时,指向同一行的控件。
+///
+/// 包裹式标签必须跳过 —— `.switch` 就是 `<label>` 里直接包着 checkbox,它的可标注
+/// 控件是自己内部那个 input。这里再给它写个 for 指向同行另一个输入框(导出的口令框),
+/// 点击就会转发到那个输入框,switch 永远打不开。隐式关联优先于这个补全。
+export function linkFormGridLabels(root = document) {
+  for (const label of root.querySelectorAll('.form-grid label')) {
     if (label.htmlFor) continue;
+    if (label.querySelector('input, select, textarea')) continue;
     const next = label.nextElementSibling;
     const input = next?.matches('input, select, textarea') ? next : next?.querySelector('input:not([type="hidden"]), select, textarea');
     if (input?.id) label.htmlFor = input.id;
   }
+}
+
+export function bindModalInteractions() {
+  if (bindModalInteractions._bound) return;
+  bindModalInteractions._bound = true;
+  linkFormGridLabels(document);
   document.addEventListener('mousedown', (event) => {
     const top = topModal();
     if (top && event.target === top) closeModal(top);

@@ -131,24 +131,8 @@ export function openHostLibrary() {
 }
 
 function updateBatchBar() {
-  // 两个导出按钮的状态与徽标只在这里算:勾选变化一定走 renderLibrary → updateBatchBar,
-  // 放在按钮事件里另算一份就会出现"勾选了但徽标还是 0"。
-  const allBtn = $('#hl-export-all');
-  const selBtn = $('#hl-export-selected');
-  const countEl = $('#hl-export-count');
-  const total = hosts().length;
-  if (allBtn) {
-    allBtn.disabled = total === 0;
-    allBtn.title = total ? `导出整库 ${total} 台主机` : '主机库为空';
-  }
-  if (countEl) countEl.textContent = String(selected.size);
-  if (selBtn) {
-    selBtn.disabled = selected.size === 0;
-    const hint = selected.size ? `导出勾选的 ${selected.size} 台主机` : '先在列表里勾选主机';
-    selBtn.title = hint;
-    selBtn.setAttribute('aria-label', selected.size ? `导出所选 ${selected.size} 台` : '导出所选,当前未勾选');
-  }
-
+  // 勾选只影响「导出主机」的默认范围(设计 D2),不再有独立的导出按钮;
+  // 状态在 renderLibrary → updateBatchBar 一处算,避免出现第二份勾选口径。
   const empty = $('#hl-batch-empty');
   const active = $('#hl-batch-active');
   const hasSel = selected.size > 0;
@@ -478,10 +462,14 @@ function fillEmptyState() {
   const title = $('#hl-empty-title');
   const hint = $('#hl-empty-hint');
   const action = $('#hl-empty-action');
+  const importBtn = $('#hl-empty-import');
   title.textContent = '还没有主机';
   hint.textContent = '';
   hint.classList.add('hidden');
   action.classList.add('hidden');
+  // 「从文件导入」只在空库语境出现:它是「新建主机」的替代路径,不是常驻入口
+  importBtn?.classList.add('hidden');
+  if (importBtn) importBtn.onclick = null;
   // 每次重绘重设回调,避免沿用上一个空态语境的处理器
   action.onclick = null;
   const setAction = (label, run) => {
@@ -495,6 +483,10 @@ function fillEmptyState() {
   };
   if (!hosts().length) {
     setAction('新建主机', () => openHostModal(null));
+    if (importBtn) {
+      importBtn.classList.remove('hidden');
+      importBtn.onclick = () => openImportDialog();
+    }
   } else if (keyword.trim()) {
     title.textContent = `没有匹配「${keyword.trim()}」的主机`;
     setAction('清空搜索', () => {
@@ -958,11 +950,13 @@ export function bindHostLibrary() {
   // 顶层弹窗是主机库时命令被判禁用并静默 return false —— 这正是按钮"点了没反应"的原因。
   // 范围在入口决定:导出全部 / 导出所选。两者都不经过 commands.js 的模态守卫
   // (那条路径会把命令判为禁用并静默 return,本页按钮曾经因此完全没反应)。
+  // 范围在卡内可改(设计 D2):这里只给默认值 —— 有勾选用勾选,有筛选用筛选,否则全部
   $('#hl-import')?.addEventListener('click', () => openImportDialog());
-  $('#hl-export-all')?.addEventListener('click', () => openExportDialog({ scope: 'all' }));
-  $('#hl-export-selected')?.addEventListener('click', () => {
-    if (!selected.size) return;
-    openExportDialog({ scope: 'ids', ids: [...selected] });
+  $('#hl-export')?.addEventListener('click', () => {
+    const ids = [...selected];
+    const filteredIds = filterRows().map((h) => h.id);
+    const scope = ids.length ? 'ids' : filteredIds.length !== hosts().length ? 'filtered' : 'all';
+    openExportDialog({ scope, ids, filteredIds });
   });
   $('#hl-new-host')?.addEventListener('click', () => openHostModal(null));
 

@@ -165,14 +165,10 @@ export function bindFileDrop() {
   };
   const hintOf = (pane) => pane?.el?.querySelector?.('.file-drop-hint') || null;
   const hideHints = () => { for (const h of document.querySelectorAll('.file-drop-hint')) h.classList.add('hidden'); };
-  /// 导入弹框开着时,拖放归 transfer.js(它只接 .json 并按文件导入)。
-  /// 不在这里提前 return 的话,落点会命中弹框背后仍存在的文件面板,反之亦然。
-  const importModalOpen = () => {
-    const m = document.getElementById('modal-import');
-    return !!m && !m.classList.contains('hidden');
-  };
+  /// 有弹窗时拖放归弹窗(导入卡 / 主机库自己接 .json),而不是穿到背后仍存在的文件面板:
+  /// 以前只看几何,工作区或导入卡开着时拖文件会同时触发 SFTP 上传。
   cur.onDragDropEvent(({ payload }) => {
-    if (importModalOpen()) return;
+    if (hasOpenModal()) return;
     if (payload.type === 'enter' || payload.type === 'over') {
       const hit = hitPane(payload.position);
       hideHints();
@@ -500,7 +496,7 @@ function setupWorkspaceCommands() {
   const buttons = {
     'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
-    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-welcome-cloud': 'cloud.import',
+    'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-welcome-import': 'hosts.import', 'btn-welcome-cloud': 'cloud.import',
   };
   // 元素可能不存在(按钮随设计演进被移除到菜单里):这里必须判空,
   // 否则 boot 会在一句 TypeError 上中断,后续所有连接/终端接线都注册不上。

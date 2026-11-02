@@ -112,8 +112,9 @@
           <h2>欢迎使用 NebulaShell 星云终端</h2>
           <p>跨平台 SSH 客户端 · 内置 AI 助手 · 腾讯云 / 阿里云主机自动发现</p>
           <div class="welcome-actions">
-            <button id="btn-welcome-add" class="btn primary">＋ 新建主机连接</button>
-            <button id="btn-welcome-cloud" class="btn">☁ 从云端导入服务器</button>
+            <button id="btn-welcome-add" class="btn primary"><span class="mi" data-icon="plus"></span>新建主机</button>
+            <button id="btn-welcome-import" class="btn"><span class="mi" data-icon="import"></span>导入主机</button>
+            <button id="btn-welcome-cloud" class="btn"><span class="mi" data-icon="cloud"></span>从云导入</button>
           </div>
         </div>
         <div id="layout-root"></div>
@@ -748,11 +749,8 @@
           <button id="hl-search-clear" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索"><span class="mi" data-icon="x"></span></button>
         </div>
         <span class="spacer"></span>
-        <button id="hl-import" class="btn small" type="button">导入…</button>
-        <button id="hl-export-all" class="btn small" type="button" title="导出整库主机">导出全部</button>
-        <button id="hl-export-selected" class="btn small is-scoped" type="button" disabled title="先在列表里勾选主机">
-          导出所选<span id="hl-export-count" class="btn-count">0</span>
-        </button>
+        <button id="hl-import" class="btn small" type="button" title="从导出的 JSON 文件导入主机">导入主机</button>
+        <button id="hl-export" class="btn small" type="button" title="导出主机到 JSON 文件">导出主机</button>
         <button id="hl-new-host" class="btn small primary" type="button">新建主机</button>
       </div>
       <div class="hl-body">
@@ -778,7 +776,11 @@
           <div id="hl-empty" class="empty-state hidden">
             <div id="hl-empty-title" class="empty-state-title"></div>
             <div id="hl-empty-hint" class="empty-state-hint hidden"></div>
-            <button id="hl-empty-action" class="btn small hidden" type="button"></button>
+            <div class="empty-state-actions">
+              <button id="hl-empty-action" class="btn small hidden" type="button"></button>
+              <!-- 空库时「导入主机」是比新建更省事的下一步:设计 §1「侧栏空态」同款第三颗按钮 -->
+              <button id="hl-empty-import" class="btn small hidden" type="button">导入主机</button>
+            </div>
           </div>
         </div>
       </div>
@@ -979,134 +981,219 @@
     </div>
   </div>
 
-  <!-- 导出:460 宽小弹框。范围在入口(主机库两个按钮)决定,这里只确认数量与路径。 -->
-  <div id="modal-export" class="modal hidden" aria-label="导出主机">
+  <!-- 导出:560 宽单卡,配置态 + 结果态。
+       设计 docs/host-import-export-design.md §7:范围在卡内可改(入口只给默认值)、
+       凭据打包是必须被看见的事实(「附带跳板机」「包含凭据」「内置密钥等同明文」),
+       口令要输两遍。左右两列复用设置页 .form-grid 的几何。 -->
+  <div id="modal-export" class="modal modal-stack hidden" aria-label="导出主机">
     <div class="modal-card io-card io-export">
       <div class="io-head">
-        <h3>导出主机</h3>
+        <h3 id="io-export-title" tabindex="-1">导出主机</h3>
         <span id="io-export-count" class="io-badge">0 台</span>
         <span class="spacer"></span>
         <button id="io-export-close" class="btn icon" type="button" title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
       </div>
       <div class="io-body">
-        <div class="io-rows">
-          <div class="io-row"><span>范围</span><b id="io-export-scope">全部主机</b></div>
-          <div class="io-row"><span>分组</span><b id="io-export-groups">—</b></div>
-          <div class="io-row"><span>凭据</span><b id="io-export-cred">随文件打包(内置密钥)</b></div>
-        </div>
-        <div class="io-field">
-          <label class="io-field-label" for="io-export-dir">保存到</label>
-          <div class="dir-field">
-            <input id="io-export-dir" class="inp dir-path" type="text" placeholder="下载文件夹(默认)" spellcheck="false" autocomplete="off" />
-            <button id="io-export-pick" class="btn icon dir-pick" type="button" title="选择目录" aria-label="选择导出目录"><span class="mi" data-icon="folder"></span></button>
+        <div id="io-export-config">
+          <div class="form-grid io-grid">
+            <label class="io-label" for="io-export-scope">范围</label>
+            <div class="io-cell">
+              <select id="io-export-scope" class="inp"></select>
+            </div>
+
+            <span class="io-label">附带</span>
+            <span id="io-export-extra" class="io-value">不含跳板机</span>
+
+            <span class="io-label">格式</span>
+            <span id="io-export-format" class="io-value">JSON 备份</span>
+
+            <!-- display:contents 让标签与控件各自成为网格列,.io-switches 只作行容器/选择器锚点 -->
+            <div class="io-switches">
+              <label class="io-label" for="io-export-with-cred"><span class="switch-label">包含凭据</span></label>
+              <div class="io-cell">
+                <label class="switch"><input id="io-export-with-cred" type="checkbox" checked /><span class="switch-slider"></span></label>
+                <span id="io-export-cred-note" class="io-switch-note">文件内含主机密码/私钥</span>
+              </div>
+            </div>
+
+            <label class="io-label" for="io-export-dir">保存到</label>
+            <div class="dir-field">
+              <input id="io-export-dir" class="inp dir-path" type="text" placeholder="下载文件夹(默认)" spellcheck="false" autocomplete="off" />
+              <button id="io-export-pick" class="btn icon dir-pick" type="button" title="选择目录" aria-label="选择导出目录"><span class="mi" data-icon="folder"></span></button>
+            </div>
+
+            <div class="io-switches" id="io-export-keys-row">
+              <label class="io-label" for="io-export-with-keys"><span class="switch-label">包含私钥文件</span></label>
+              <div class="io-cell">
+                <label class="switch"><input id="io-export-with-keys" type="checkbox" /><span class="switch-slider"></span></label>
+                <span id="io-export-keys-note" class="io-switch-note">不带私钥文件,只记录路径</span>
+              </div>
+            </div>
+
+            <div class="io-switches">
+              <label class="io-label" for="io-export-use-pass"><span class="switch-label">用口令加密</span></label>
+              <div class="io-cell">
+                <label class="switch"><input id="io-export-use-pass" type="checkbox" /><span class="switch-slider"></span></label>
+                <!-- 口令框沿用项目统一的 .secret-input-wrap(右侧内嵌眼睛显隐),与主机弹窗、AI 密钥同款 -->
+                <div class="secret-input-wrap io-pass-wrap">
+                  <input id="io-export-pass-input" class="inp io-pass-inline hidden" type="password" placeholder="设置文件口令(至少 8 位)" autocomplete="new-password" spellcheck="false" />
+                  <button id="btn-reveal-export-pass" class="btn icon btn-reveal-secret hidden" type="button" title="显示口令" aria-label="显示口令"><span class="mi" data-icon="eyeOff"></span></button>
+                </div>
+              </div>
+            </div>
+
+            <div id="io-export-pass2-row" class="io-switches hidden">
+              <label class="io-label" for="io-export-pass2">再次输入</label>
+              <div class="io-cell">
+                <input id="io-export-pass2" class="inp io-pass-inline" type="password" placeholder="再次输入文件口令" autocomplete="new-password" spellcheck="false" />
+              </div>
+            </div>
+
+            <span class="io-label" aria-hidden="true"></span>
+            <span id="io-export-pass-note" class="io-note hidden">口令不会写入文件;丢失后文件里的凭据无法找回</span>
+          </div>
+
+          <!-- 安全提示是常驻块,不是底栏状态位:底栏会被"口令不足/导出中"顶掉(§7.2 注) -->
+          <div id="io-export-warn" class="io-warn">
+            <span class="io-warn-ico" aria-hidden="true">!</span>
+            <span class="io-warn-t">文件里是真实凭据:内置密钥只能防误读,不能防人。设一个文件口令再发出去。</span>
+            <button id="io-export-warn-set" class="btn small" type="button">设置文件口令</button>
           </div>
         </div>
-        <div class="io-switches">
-          <label class="switch">
-            <input id="io-export-with-keys" type="checkbox" />
-            <span class="switch-slider"></span>
-            <span class="switch-label">导出主机密钥</span>
-          </label>
-          <span id="io-export-keys-note" class="io-switch-note">不打包私钥文件</span>
-        </div>
-        <div class="io-switches">
-          <label class="switch">
-            <input id="io-export-use-pass" type="checkbox" />
-            <span class="switch-slider"></span>
-            <span class="switch-label">启用加密</span>
-          </label>
-          <input id="io-export-pass-input" class="inp io-pass-inline hidden" type="password" placeholder="设置口令(至少 8 位)" autocomplete="new-password" spellcheck="false" />
+
+        <div id="io-export-done" class="io-done hidden">
+          <div class="io-banner">
+            <span id="io-export-done-ico" class="io-banner-ico"></span>
+            <div class="io-banner-txt">
+              <b id="io-export-done-title"></b>
+              <span id="io-export-done-sub"></span>
+            </div>
+          </div>
+          <div class="io-backup">
+            <span class="io-backup-k">文件路径</span>
+            <span id="io-export-done-path" class="io-backup-p"></span>
+          </div>
         </div>
       </div>
       <div class="io-foot">
-        <span id="io-export-hint" class="io-hint">文件可直接发给同事,对方导入时不需要口令</span>
+        <span id="io-export-hint" class="io-hint" role="status" aria-live="polite"></span>
         <span class="spacer"></span>
+        <button id="io-export-reveal" class="btn hidden" type="button">在文件夹中显示</button>
+        <button id="io-export-copy" class="btn hidden" type="button">复制路径</button>
+        <button id="io-export-again" class="btn hidden" type="button">再导出一份</button>
         <button id="io-export-cancel" class="btn" type="button">取消</button>
         <button id="io-export-ok" class="btn primary" type="button">导出</button>
       </div>
     </div>
   </div>
 
-  <!-- 导入:选文件 → 列表 → 冲突 → 写入 -->
-  <div id="modal-import" class="modal hidden" aria-label="导入主机">
+  <!-- 导入:一张卡三步(选择文件 → 校验预览 → 完成),没有第二层弹窗。
+       设计 docs/host-import-export-design.md §6:选择文件只有「选择文件」+ 拖放两个入口,
+       路径框只读;冲突策略是步骤 2 里的一段,不再单独开卡(U-03/U-11)。 -->
+  <div id="modal-import" class="modal modal-stack hidden" aria-label="导入主机">
     <div class="modal-card io-card io-import">
       <div class="io-head">
-        <h3>导入主机</h3>
+        <h3 id="io-import-title" tabindex="-1">导入主机</h3>
+        <ol id="io-steps" class="io-steps" aria-label="导入步骤">
+          <li data-step="1" aria-current="step">选择文件</li>
+          <li data-step="2">校验预览</li>
+          <li data-step="3">完成</li>
+        </ol>
         <span class="spacer"></span>
         <button id="io-import-close" class="btn icon" type="button" title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
       </div>
       <div class="io-body">
-        <div id="io-import-empty" class="io-drop" role="button" tabindex="0" aria-label="选择要导入的 .json 文件">
-          <span class="io-drop-ico"><span class="mi" data-icon="import"></span></span>
-          <div class="io-drop-t">把导出的 .json 文件拖到这里,或点击选择</div>
-        </div>
-
-        <div id="io-import-file" class="io-file hidden">
-          <span class="io-file-ico"><span class="mi" data-icon="file"></span></span>
-          <div class="io-file-main">
-            <div id="io-import-path" class="io-file-path mono"></div>
+        <div class="form-grid io-grid">
+          <label class="io-label" for="io-import-path-input">文件路径</label>
+          <div class="io-cell io-file-row">
+            <input id="io-import-path-input" class="inp dir-path" type="text" placeholder="尚未选择文件" spellcheck="false" autocomplete="off" readonly />
+            <button id="io-import-pick" class="btn" type="button">选择文件</button>
           </div>
-          <button id="io-import-repick" class="btn small" type="button">重选</button>
-        </div>
 
-        <div id="io-import-pass" class="io-pass hidden">
-          <div class="io-pass-label">该文件用口令加密,请输入导出时设置的口令</div>
-          <div class="io-pass-row">
-            <input id="io-import-pass-input" class="inp" type="password" placeholder="输入口令" autocomplete="new-password" spellcheck="false" />
-            <button id="io-import-pass-ok" class="btn small" type="button">解密</button>
+          <span class="io-label" aria-hidden="true"></span>
+          <span id="io-import-formats" class="io-note">支持 .json 完整备份(含凭据)</span>
+
+          <!-- 口令行只在文件确实用口令加密时才出现(v4 文件零输入):默认整行隐藏 -->
+          <div id="io-import-pass-row" class="io-pass-row hidden">
+            <label class="io-label" for="io-import-pass-input">文件口令</label>
+            <div class="io-cell">
+              <div class="secret-input-wrap io-pass-wrap">
+                <input id="io-import-pass-input" class="inp io-pass-inline" type="password" placeholder="输入文件口令" autocomplete="new-password" spellcheck="false" />
+                <button id="btn-reveal-import-pass" class="btn icon btn-reveal-secret hidden" type="button" title="显示口令" aria-label="显示口令"><span class="mi" data-icon="eyeOff"></span></button>
+              </div>
+              <span id="io-import-pass-note" class="io-switch-note">只用于解开文件,不会保存</span>
+            </div>
           </div>
-          <div id="io-import-pass-err" class="io-pass-err"></div>
         </div>
 
-        <div id="io-import-list" class="io-list hidden">
-          <div class="io-list-head"><span>主机</span><span>地址</span><span>分组</span><span>凭据</span><span>状态</span></div>
-          <div id="io-import-rows" class="io-list-body"></div>
-          <div id="io-import-more" class="io-list-more hidden"></div>
+        <!-- 文件级错误(不是 JSON / 版本过高 / 口令错 / 磁盘失败)统一走这一块:图标 + 文本 + 重新选择 -->
+        <div id="io-import-error" class="io-err hidden" role="alert">
+          <span class="io-err-ico"><span class="mi" data-icon="alert"></span></span>
+          <div class="io-err-body">
+            <span id="io-import-error-t" class="io-err-t"></span>
+            <button id="io-import-reselect" class="btn small" type="button">重新选择</button>
+          </div>
         </div>
 
-        <div id="io-import-summary" class="io-summary hidden"></div>
+        <!-- 虚线区只是拖放目标(D13):点击不再触发选择,入口只有上面的「选择文件」 -->
+        <div id="io-import-drop" class="io-drop io-drop-slim" aria-label="拖放导入文件">
+          <div class="io-drop-t">把导出的 .json 文件拖到这里</div>
+        </div>
+
+        <div id="io-import-preview" class="io-preview hidden" aria-busy="false">
+          <div id="io-import-summary" class="io-summary"></div>
+
+          <div id="io-import-list" class="io-list">
+            <div class="io-list-head"><span class="io-c-check"><span id="io-import-selectall" class="hl-box" role="checkbox" aria-checked="true" aria-label="全选可导入的主机" tabindex="0"></span></span><span>位置</span><span>主机</span><span>地址</span><span>分组</span><span>凭据</span><span>处置</span></div>
+            <div id="io-import-rows" class="io-list-body"></div>
+            <button id="io-import-more" class="io-list-more hidden" type="button"></button>
+          </div>
+
+          <div id="io-import-conflicts" class="io-conflict-seg hidden">
+            <div class="io-conflict-head">
+              <b id="io-conflict-count">0 台与本地配置不同</b>
+              <span>只影响这些主机</span>
+            </div>
+            <div id="io-import-decisions" class="io-seg-row" role="radiogroup" aria-label="冲突处理方式">
+              <button type="button" class="io-seg on" data-decision="skip" role="radio" aria-checked="true">跳过</button>
+              <button type="button" class="io-seg" data-decision="overwrite" role="radio" aria-checked="false">覆盖</button>
+            </div>
+            <div id="io-import-overwrite-scope" class="io-warn-text hidden">会改:地址、端口、用户、认证方式、私钥路径、分组、标签、初始命令、凭据</div>
+            <div class="io-hint">新增与补凭据的主机总会导入;取消勾选才能排除。</div>
+          </div>
+        </div>
 
         <div id="io-import-progress" class="io-progress hidden">
           <div class="io-progress-label"><span>写入主机配置</span><span>一次性写入</span></div>
           <div class="io-bar"><i></i></div>
-          <div class="io-progress-note">写入是整批的:要么全部生效,要么完全不动。</div>
+          <div class="io-progress-note">写入是整批的:要么全部生效,要么完全不动;完成后自动显示结果。</div>
+        </div>
+
+        <!-- 结果报告:写入是整批原子,所以报告按「整批结果 + 逐条处置」而不是伪造进度 -->
+        <div id="io-import-done" class="io-done hidden">
+          <div id="io-done-banner" class="io-banner">
+            <span id="io-done-ico" class="io-banner-ico"></span>
+            <div class="io-banner-txt">
+              <b id="io-done-title"></b>
+              <span id="io-done-sub"></span>
+            </div>
+          </div>
+          <div id="io-done-stats" class="io-stats"></div>
+          <div id="io-done-rows" class="io-report"></div>
+          <div id="io-done-backup" class="io-backup hidden">
+            <span class="io-backup-k">导入前的配置已备份</span>
+            <span id="io-done-backup-path" class="io-backup-p mono"></span>
+          </div>
         </div>
       </div>
       <div class="io-foot">
-        <span id="io-import-hint" class="io-hint"></span>
+        <span id="io-import-hint" class="io-hint" role="status" aria-live="polite"></span>
         <span class="spacer"></span>
+        <button id="io-import-back" class="btn hidden" type="button">重新选择</button>
+        <button id="io-import-copy" class="btn hidden" type="button">复制报告</button>
+        <button id="io-import-reveal" class="btn hidden" type="button">在文件夹中显示</button>
         <button id="io-import-cancel" class="btn" type="button">取消</button>
         <button id="io-import-ok" class="btn primary" type="button" disabled>导入</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 冲突确认:只影响上面列出的主机 -->
-  <div id="modal-import-conflict" class="modal hidden" aria-label="导入冲突">
-    <div class="modal-card io-card io-conflict">
-      <div class="io-head">
-        <h3 id="io-conflict-title">发现冲突主机</h3>
-        <span class="spacer"></span>
-        <button id="io-conflict-close" class="btn icon" type="button" title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
-      </div>
-      <div class="io-body">
-        <div id="io-conflict-rows" class="io-rows"></div>
-        <div class="io-opts">
-          <div class="io-opt on" data-decision="skip" role="radio" tabindex="0" aria-checked="true">
-            <span class="io-radio"></span>
-            <span><span class="io-opt-t">跳过这些主机</span><span class="io-opt-d">本地配置保持不变,只导入其余主机</span></span>
-          </div>
-          <div class="io-opt" data-decision="overwrite" role="radio" tabindex="0" aria-checked="false">
-            <span class="io-radio"></span>
-            <span><span class="io-opt-t">用文件覆盖</span><span class="io-opt-d">名称、端口、分组、凭据都以文件为准</span></span>
-          </div>
-        </div>
-        <div class="io-hint">这个选择只影响上面列出的冲突主机。</div>
-      </div>
-      <div class="io-foot">
-        <span class="spacer"></span>
-        <button id="io-conflict-back" class="btn" type="button">返回</button>
-        <button id="io-conflict-ok" class="btn primary" type="button">继续导入</button>
       </div>
     </div>
   </div>

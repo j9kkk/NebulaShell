@@ -967,6 +967,72 @@ fn settings_ui_roundtrip_and_sanitize() {
     let _ = std::fs::remove_dir_all(&store.dir);
 }
 
+/// 「包含凭据」关闭:文件里不能有 credentials 块,且要明确告诉导入端没有凭据。
+/// 这是 F-01 的界面开关落点 —— 以前导出恒含全部凭据,卡片却一字未提。
+#[test]
+fn export_without_credentials_omits_block() {
+    let store = tmp_store("no-cred");
+    store
+        .save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "SuperSecret123" }))
+        .unwrap();
+
+    let on = store.export_hosts_with(&json!({ "mode": "all" }), None, false, true).unwrap();
+    assert_eq!(on["credentialsIncluded"], json!(true));
+    assert!(on["credentials"]["data"].as_str().is_some(), "默认仍带加密凭据块");
+
+    let off = store.export_hosts_with(&json!({ "mode": "all" }), None, false, false).unwrap();
+    assert_eq!(off["credentialsIncluded"], json!(false));
+    assert!(off["credentials"].is_null(), "不含凭据时不应有 credentials 块");
+    assert_eq!(off["hosts"].as_array().unwrap().len(), 1, "主机字段仍要导出");
+    let text = serde_json::to_string(&off).unwrap();
+    assert!(!text.contains("SuperSecret123"), "明文密码不能出现在文件里");
+    assert!(
+        !text.contains("\"credentials\": {") && !text.contains("\"credentials\":{"),
+        "整个凭据块都不写(credentialsIncluded 字段保留)"
+    );
+
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// 逐行排除(设计 D7):预览里取消勾选的新主机必须真的不写入。
+/// 这是最容易"界面看起来跳过了、其实已经建了"的地方 —— 规划阶段就得拦下。
+#[test]
+fn apply_skip_excludes_new_host() {
+    let store = tmp_store("row-skip");
+    store
+        .save_host(&json!({ "name": "keep-me", "host": "10.0.0.1", "password": "p" }))
+        .unwrap();
+    let file = json!({
+        "app": "nebulashell", "version": 4,
+        "hosts": [
+            { "id": "src-a", "name": "new-a", "host": "10.0.0.10", "username": "root", "port": 22 },
+            { "id": "src-b", "name": "new-b", "host": "10.0.0.11", "username": "root", "port": 22 }
+        ]
+    })
+    .to_string();
+
+    let decisions = json!({ "src-a": "skip" });
+    let out = store.apply_hosts(&file, None, &decisions).unwrap();
+    assert_eq!(out["added"], json!(1), "只应写入未排除的那台");
+    let names: Vec<String> = store
+        .list_hosts()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(names.contains(&"new-b".to_string()));
+    assert!(!names.contains(&"new-a".to_string()), "被排除的新主机不能出现在库里");
+    let skipped: Vec<&serde_json::Value> = out["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["result"] == "skipped")
+        .collect();
+    assert_eq!(skipped.len(), 1, "结果里要能看出被排除的那台");
+    assert_eq!(skipped[0]["name"], json!("new-a"));
+
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
 /// 范围导出:只导出指定主机,并自动带上被依赖的跳板机(闭包)。
 /// 如果只导 a 而不带它的跳板机,导入端 validate_jump_graph 会报"跳板机不存在"。
 #[test]

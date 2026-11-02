@@ -275,7 +275,7 @@ export function renderHosts() {
       ? '换个关键词，或试试 #标签 / @分组。'
       : groupEmpty
         ? '切换分组，或新建一台。'
-        : '新建一台，或从腾讯云 / 阿里云一键导入。';
+        : '新建一台，或从文件 / 云账号导入。';
     const emptyIcon = searchEmpty ? 'search' : groupEmpty ? 'folder' : 'terminal';
     const actions = searchEmpty
       ? '<button class="he-link" type="button" data-clear-search>清除筛选</button>'
@@ -283,8 +283,9 @@ export function renderHosts() {
         ? '<button class="he-link" type="button" data-all-groups>查看全部主机</button>'
         : `<div class="he-acts">
              <button class="btn primary" type="button" data-empty-new>${icon('plus')}新建主机</button>
-             <button class="btn" type="button" data-empty-cloud>${icon('cloud')}云导入</button>
-           </div>`;
+             <button class="btn" type="button" data-empty-cloud>${icon('cloud')}从云导入</button>
+           </div>
+           <button class="he-link" type="button" data-empty-import>${icon('import')}导入主机</button>`;
     nav.innerHTML = `<div class="host-empty">
       <div class="he-ico">${icon(emptyIcon, { size: 16 })}</div>
       <b>${title}</b>
@@ -304,6 +305,11 @@ export function renderHosts() {
       renderHosts();
     });
     nav.querySelector('[data-empty-new]')?.addEventListener('click', () => openHostModal(null));
+    // 文件导入走欢迎页那颗按钮(data-command="hosts.import"),与云导入同一套转发方式,
+    // 避免 hosts 反向依赖 entry / transfer。
+    nav.querySelector('[data-empty-import]')?.addEventListener('click', () => {
+      document.getElementById('btn-welcome-import')?.click();
+    });
     // 云导入入口仍是欢迎页那颗按钮（data-command="cloud.import"），避免 hosts 反向依赖 entry
     nav.querySelector('[data-empty-cloud]')?.addEventListener('click', () => {
       document.getElementById('btn-welcome-cloud')?.click();
