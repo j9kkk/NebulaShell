@@ -846,3 +846,25 @@ fn case26_file_level_issues_ignore_allow_partial() {
     assert_eq!(s.list_hosts().len(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// AC-27 只导有效行时,被跳板引用的坏行必须明确拒绝(不能静默丢掉跳板关系)
+#[test]
+fn case27_partial_import_rejects_jump_pointing_at_invalid_row() {
+    let (s, dir) = store("c27");
+    let text = serde_json::to_string(&json!({
+        "version": 4,
+        "hosts": [
+            { "id": "j1", "name": "跳板", "host": "10.0.0.1", "port": 70000 },
+            { "id": "t1", "name": "目标", "host": "10.0.0.2", "jumpIds": ["j1"] },
+        ],
+    }))
+    .unwrap();
+    let e = s.apply_hosts_with(&text, None, &json!({}), true).unwrap_err();
+    assert!(
+        e.contains("所在的行校验失败"),
+        "应指出跳板所在行校验失败,而不是含糊的悬空跳板: {}",
+        e
+    );
+    assert_eq!(s.list_hosts().len(), 0, "整批未写入");
+    let _ = std::fs::remove_dir_all(&dir);
+}

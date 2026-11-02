@@ -2098,6 +2098,12 @@ impl Store {
         let mut credentials_filled = 0;
         let mut overwritten = 0usize;
         let mut imported_graph = Vec::new();
+        // allowPartial 时,坏行里的 id 不在 remap 里;被别的行当跳板引用时要给出
+        // 「那一行本身校验失败」,而不是含糊的「悬空跳板机」。
+        let invalid_ids: std::collections::HashSet<&str> = invalid
+            .keys()
+            .filter_map(|i| items.get(*i)?.get("id")?.as_str())
+            .collect();
 
         for (item_idx, idx, is_new, key, kind, overwrite) in plans {
             let item = &items[item_idx];
@@ -2118,12 +2124,17 @@ impl Store {
             if !item["jumpIds"].is_null() {
                 for jump in item["jumpIds"].as_array().ok_or("跳板机列表格式不正确")? {
                     let src = jump.as_str().ok_or("跳板机 ID 无效")?;
-                    jumps.push(
-                        remap
-                            .get(src)
-                            .cloned()
-                            .ok_or_else(|| format!("导入文件含悬空跳板机: {}", src))?,
-                    );
+                    let id = match remap.get(src) {
+                        Some(id) => id.clone(),
+                        None if invalid_ids.contains(src) => {
+                            return Err(format!(
+                                "跳板机 {} 所在的行校验失败,不能作为跳板导入",
+                                src
+                            ))
+                        }
+                        None => return Err(format!("导入文件含悬空跳板机: {}", src)),
+                    };
+                    jumps.push(id);
                 }
             }
 
