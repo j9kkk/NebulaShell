@@ -26,23 +26,23 @@ export const MENU_SPEC = [
   { submenu: '编辑', items: [
     pre('Undo', '撤销'), pre('Redo', '重做'), SEP,
     pre('Cut', '剪切'), pre('Copy', '拷贝'), pre('Paste', '粘贴'), pre('SelectAll', '全选'),
-    cmd('term.copy', { only: 'pc' }), cmd('term.paste', { only: 'pc' }), SEP,
+    cmd('term.copy', { only: 'pc' }), cmd('term.paste', { only: 'pc' }), cmd('term.selectAll', { only: 'pc' }), SEP,
     cmd('session.search'), cmd('session.clear'), SEP,
     cmd('session.history'),
   ] },
   { submenu: '视图', items: [
     cmd('palette.open'), SEP,
     cmd('panel.sidebar'), cmd('panel.tools'), SEP,
-    cmd('ai.newThread', { accelerator: false }), cmd('ai.cycleEffort', { accelerator: false }), SEP,
+    cmd('ai.newThread'), cmd('ai.cycleEffort'), SEP,
     cmd('tabs.list'), cmd('workspace.tile'), cmd('pane.reflow'), cmd('pane.zoom'), SEP,
-    cmd('view.hostDensity'), SEP,
     pre('Fullscreen', '进入全屏'), cmd('window.fullscreen', { only: 'pc' }),
   ] },
   { submenu: '主机', items: [
     cmd('host.new'), cmd('cloud.import'), SEP,
     cmd('hosts.library'), SEP,
     cmd('hosts.import'), cmd('hosts.export'), SEP,
-    cmd('settings.fingerprints'), cmd('tools.forwards'), cmd('tools.batch'),
+    cmd('settings.fingerprints'), cmd('tools.forwards'), cmd('tools.batch'), SEP,
+    cmd('view.hostDensity'),
   ] },
   { submenu: '会话', items: [
     cmd('session.reconnect'), cmd('session.disconnect'), SEP,
@@ -54,7 +54,7 @@ export const MENU_SPEC = [
     pre('BringAllToFront', '前置全部窗口'),
   ] },
   { submenu: '帮助', role: 'help', items: [
-    cmd('palette.open', { text: '命令与快捷键…', accelerator: false, alias: 'help' }), SEP,
+    cmd('palette.open', { alias: 'help' }), SEP,
     cmd('app.about', { only: 'pc' }),
   ] },
 ];

@@ -223,7 +223,7 @@ export function buildFilePane(pane) {
     const allPicked = total > 0 && (pane.selectedNames || []).length === total;
     return [
       folded('.fp-forward') && { label: '前进', disabled: !(pane.histIdx < (pane.hist || []).length - 1), reason: '没有可前进的目录', run: () => fileNavForward(pane) },
-      { label: '新建文件夹', run: () => q('.fp-mkdir').click() },
+      { label: '新建文件夹…', run: () => q('.fp-mkdir').click() },
       { label: allPicked ? '全不选' : '全选', disabled: !total, reason: '当前目录为空', run: () => selectAllBtn.click() },
       { label: '反选', disabled: !total, reason: '当前目录为空', run: () => invertSelection(pane) },
     ];
@@ -627,12 +627,13 @@ export function openFileCtxMenu(x, y, en, pane) {
     ...(en.dir ? [{ label: '打开目录', disabled: !connected, run: guarded((p) => loadFileDir(p, full)) }] : []),
     { label: group ? `下载${batchLabel}…` : '下载…', disabled: !connected, run: guarded((p) => downloadEntry(en, p, group)) },
     '-',
-    { label: group ? `复制到…${batchLabel}` : '复制到…', disabled: !connected, run: guarded((p) => copyEntriesToHost(group || [en], p)) },
+    { label: group ? `复制到${batchLabel}…` : '复制到…', disabled: !connected, run: guarded((p) => copyEntriesToHost(group || [en], p)) },
     ...(group || en.dir ? [] : [{ label: '创建副本', disabled: !connected, run: guarded((p) => duplicateEntry(en, p)) }]),
     '-',
     { label: '重命名…', disabled: !connected || !!group, run: guarded((p) => startRename(en, p)) },
     { label: '权限…', disabled: !connected || !!group, run: guarded((p) => startChmod(en, p)) },
-    ...(group ? [{ label: `全选(${accelOf('files.selectAll')} 范围内)`, run: () => selectAllEntries(pane) }] : []),
+    // 名称与键位同源:名称取 canonical(全选文件),键位进专用列(S4)
+    ...(group ? [{ label: '全选文件', key: accelOf('files.selectAll'), run: () => selectAllEntries(pane) }] : []),
     { label: '反选', run: () => invertSelection(pane) },
     '-',
     { label: '复制名称', run: () => { const names = group ? group.map((g) => g.name) : [en.name]; copyText(names.join('\n')).then((ok) => toast(ok ? `已复制 ${names.length} 个名称` : '复制失败', ok ? 'success' : 'error')); } },

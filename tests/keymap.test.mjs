@@ -170,7 +170,7 @@ test('accelOf renders per platform', async () => {
     assert.equal(keymap.accelOf('pane.zoom'), mac ? '⌘⇧↵' : 'Ctrl+Shift+Enter', platform);
     assert.equal(keymap.accelOf('tab.new'), mac ? '⌘T' : 'Ctrl+Shift+T', platform);
     assert.equal(keymap.accelOf('workspace.close'), mac ? '⌘W' : 'Ctrl+Shift+W', platform);
-    assert.equal(keymap.accelOf('tab.switch'), mac ? '⌘1..9' : 'Ctrl+1..9', platform);
+    assert.equal(keymap.accelOf('tab.switch'), mac ? '⌘1…⌘9' : 'Ctrl+1…Ctrl+9', platform);
     assert.equal(keymap.accelOf('term.selectAll'), mac ? '⌘A' : 'Ctrl+Shift+A', platform);
     assert.equal(keymap.accelOf('no.such.action'), '', platform);
   }
@@ -217,13 +217,13 @@ test('applyAccelTitles 填充 data-accel-text 元素的文本;未绑定键位时
   document.body.appendChild(badge);
   document.body.appendChild(empty);
   core.applyAccelTitles(document);
-  assert.equal(badge.textContent, '⌘T');
+  assert.equal(badge.textContent, '⌘⌥E');
   // 无 data-accel-text 的元素只写 title,不写文本(兼容既有调用方)
   assert.equal(empty.textContent, undefined);
 });
 
 test('applyAccelTitles 给 data-accel-text 徽章补 title(省略号时可查看完整键位)', async () => {
-  for (const [platform, expected] of [['darwin', '⌘T'], ['windows', 'Ctrl+T']]) {
+  for (const [platform, expected] of [['darwin', '⌘⌥E'], ['windows', 'Ctrl+Shift+Alt+E']]) {
     const { core, keymap, document } = await setup(platform);
     core.applyAccelTitles._accelSpec = keymap.accelSpec;
     const badge = document.createElement('kbd');
@@ -283,7 +283,7 @@ test('阶段 1 新快捷键:命令面板 ⇧⌘P / Ctrl+Shift+P,设置 ⌘, / Ct
   assert.equal(mac.accelOf('settings.open'), '⌘,');
 });
 
-test('0.3.0 面板开关与全屏:⌘B / ⌥⌘B;Ctrl+Shift+B / Ctrl+Shift+Alt+B;F11 只在 Windows/Linux', async () => {
+test('0.3.0 面板开关与全屏:⌘B / ⌘⌥B;Ctrl+Shift+B / Ctrl+Shift+Alt+B;F11 只在 Windows/Linux', async () => {
   const mac = (await setup('darwin')).keymap;
   assert.equal(mac.appShortcutOf(evt('b', { metaKey: true, code: 'KeyB' })), 'panel.sidebar');
   // ⌥ 组合在 macOS 上 event.key 是变音字符(∫),按物理键位命中
@@ -291,7 +291,7 @@ test('0.3.0 面板开关与全屏:⌘B / ⌥⌘B;Ctrl+Shift+B / Ctrl+Shift+Alt+B
   assert.equal(mac.appShortcutOf(evt('b', { ctrlKey: true, code: 'KeyB' })), '', 'macOS 的 Ctrl+B 属于 shell');
   assert.equal(mac.appShortcutOf(evt('F11', { code: 'F11' })), '', 'macOS 用系统的进入全屏');
   assert.equal(mac.accelOf('panel.sidebar'), '⌘B');
-  assert.equal(mac.accelOf('panel.tools'), '⌥⌘B');
+  assert.equal(mac.accelOf('panel.tools'), '⌘⌥B', '修饰键按平台惯例排序(⌘ 在 ⌥ 前)');
   assert.equal(mac.toAccelerator(mac.specOf('panel.tools')), 'Alt+CmdOrCtrl+B');
   for (const platform of ['windows', 'linux']) {
     const km = (await setup(platform)).keymap;

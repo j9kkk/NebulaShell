@@ -4,7 +4,7 @@ import { accelOf } from './keymap.js';
 const commands = new Map();
 
 /// 命令分类:命令面板按此分组,也是检索词之一。
-export const CATEGORY_LABEL = { app: '应用', layout: '标签与分屏', panel: '面板', session: '会话', host: '主机' };
+export const CATEGORY_LABEL = { app: '应用', layout: '标签与文件', panel: '面板', session: '会话', host: '主机' };
 
 /// 命令面板自身也是模态,但不应让面板里的命令全部显示为禁用。
 export const PALETTE_MODAL_ID = 'modal-palette';
@@ -20,7 +20,9 @@ const SWITCHABLE_MODAL_IDS = new Set(['modal-history', 'modal-snippets']);
 ///   category  app / layout / panel / session / host
 ///   keywords  英文别名 + 拼音首字母,供命令面板检索
 ///   shortcut  keymap 动作名(缺省同 id),提示和菜单栏加速键都从 keymap 读
-///   kind      action / toggle / dialog;dialog 的名称自动加"…"
+///   kind      action / toggle / dialog;dialog = 需要用户输入或选择才能完成
+///             (菜单面的名称由 menuLabelOf 追加「…」,命令面板与设置页不带)
+///   asks      显式声明「是否向用户要东西」,布尔或 (ctx) => 布尔;缺省由 kind 推导
 ///   enabled / reason / checked / run  均可接收 ctx = { tabId, paneId, sessionId },
 ///             缺省为当前焦点;窗格工具条和右键菜单传入显式目标。
 ///             checked 返回 undefined 表示该目标下不是开关(不打 ✓)
@@ -29,9 +31,20 @@ export function registerCommand(id, definition) { commands.set(id, definition); 
 
 const evaluate = (value, ctx) => (typeof value === 'function' ? value(ctx) : value);
 
-function labelOf(command, ctx) {
+/// 动作是否正在向用户要数据/选择(规则 E2):显式 asks 优先,否则看 kind。
+function asksForInput(command, ctx) {
+  if (typeof command.asks === 'function') return !!command.asks(ctx);
+  if (typeof command.asks === 'boolean') return command.asks;
+  return (command.kind || (command.checked ? 'toggle' : 'action')) === 'dialog';
+}
+
+/// 菜单面用的文案:canonical + 需要输入时补一个「…」(U+2026)。
+/// 标签里永不手写省略号 —— 一处追加,所有菜单面(菜单栏/右键/下拉/面板)一致。
+export function menuLabelOf(id, ctx) {
+  const command = commands.get(id);
+  if (!command) return id;
   const label = evaluate(command.label, ctx) || '';
-  return command.kind === 'dialog' && label && !label.endsWith('…') ? label + '…' : label;
+  return label && asksForInput(command, ctx) ? label + '…' : label;
 }
 
 function blockedByModal(id, command) {
@@ -52,7 +65,8 @@ export function commandState(id, ctx) {
   if (!enabled) reason = modal ? '请先关闭对话框' : evaluate(command.reason, ctx) || '当前状态不可执行';
   const checked = command.checked ? command.checked(ctx) : undefined;
   return {
-    label: labelOf(command, ctx),
+    // 裸 canonical:命令面板、设置页快捷键表、按钮提示都取这一份,不带「…」
+    label: evaluate(command.label, ctx) || '',
     enabled,
     checked: checked === undefined ? undefined : !!checked,
     reason,
@@ -84,24 +98,24 @@ export async function executeCommand(id, ctx) {
 }
 
 /// 右键菜单 / 下拉菜单项:名称、快捷键、禁用原因、勾选态都取自注册表,
-/// 执行走 executeCommand(id, ctx)。overrides 只用于就近语境下更顺口的名称
-/// (如分屏下拉里的「终端分屏」)和 danger 样式。
+/// 执行走 executeCommand(id, ctx)。overrides 只用于就近语境下的 danger
+/// 样式、图标与提示 —— 名称不接受覆盖(菜单不得自带文案,规则 N4/I2)。
 export function commandMenuItem(id, ctx, overrides = {}) {
   const command = commands.get(id);
   const info = commandState(id, ctx);
   if (!command || !info) return null;
   const shortcut = command.shortcut === undefined ? id : command.shortcut;
-  // 个别菜单(侧栏 ⠇)要求名称干净:不带 dialog 自动追加的「…」
-  const label = overrides.noEllipsis ? info.label.replace(/…$/, '') : info.label;
+  // 名称只能来自注册表 + 渲染层按 asks 追加的「…」;label / noEllipsis 一律忽略
+  const { label: _label, noEllipsis: _noEllipsis, ...rest } = overrides;
   return {
     command: id,
-    label,
+    label: menuLabelOf(id, ctx),
     key: shortcut ? accelOf(shortcut) : '',
     disabled: !info.enabled,
     reason: info.reason,
     checked: info.checked,
     run: () => executeCommand(id, ctx),
-    ...overrides,
+    ...rest,
   };
 }
 

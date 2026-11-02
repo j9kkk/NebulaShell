@@ -26,7 +26,7 @@
     <!-- 一级菜单(Windows/Linux):menubar.js 按 shared/menu-spec.js 渲染;macOS 用系统菜单栏 -->
     <nav id="menubar" class="tb-pc" role="menubar" aria-label="主菜单"></nav>
     <div class="tb-drag" data-tauri-drag-region></div>
-    <button id="btn-ai-toggle" class="tb-btn" type="button" aria-label="右侧工具栏" data-title="右侧工具栏(%1)" data-accel="panel.tools"><span class="mi" data-icon="panelRight"></span></button>
+    <button id="btn-ai-toggle" class="tb-btn" type="button" aria-label="AI 助手" data-title="AI 助手(%1)" data-accel="panel.tools"><span class="mi" data-icon="panelRight"></span></button>
     <span class="tb-sep tb-pc" aria-hidden="true"></span>
     <!-- 窗口控制(Windows/Linux):图标由 window-controls.js 按最大化状态写入;
          macOS 用原生红绿灯,CSS 隐藏本组 -->
@@ -99,11 +99,11 @@
       <div id="tabbar">
         <div id="tabs"></div>
         <!-- 全部标签:仅在标签条溢出时显示,数字是标签数(terminal.js bindTabStrip) -->
-        <button id="btn-tab-list" class="btn icon-tb hidden" type="button" title="全部标签" aria-label="全部标签"><span class="tab-count">0</span><span class="mi" data-icon="chevronDown"></span></button>
-        <button id="btn-newtab" class="btn icon-tb" data-title="新建标签页(%1)" data-accel="tab.new">＋</button>
+        <button id="btn-tab-list" class="btn icon-tb hidden" type="button" title="全部标签" data-title="全部标签(%1)" data-accel="tabs.list" aria-label="全部标签"><span class="tab-count">0</span><span class="mi" data-icon="chevronDown"></span></button>
+        <button id="btn-newtab" class="btn icon-tb" data-title="新建标签(%1)" data-accel="tab.new">＋</button>
         <div class="split-group" role="group" aria-label="分屏">
-          <button id="btn-split" class="btn icon-tb" data-title="分屏(自动最优布局)(%1)" data-accel="pane.split">⛶</button>
-          <button id="btn-split-menu" class="btn icon-tb split-caret" title="分屏与布局" aria-label="分屏与布局"><span class="mi" data-icon="chevronDown"></span></button>
+          <button id="btn-split" class="btn icon-tb" data-title="分屏(%1)" data-accel="pane.split">⛶</button>
+          <button id="btn-split-menu" class="btn icon-tb split-caret" title="布局" aria-label="布局"><span class="mi" data-icon="chevronDown"></span></button>
         </div>
       </div>
       <div id="term-stack">
@@ -198,7 +198,7 @@
         </button>
         <button id="ai-target-action" class="btn small primary ai-target-action hidden" type="button"></button>
         <span class="spacer"></span>
-        <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建对话" data-title="新建对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
+        <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建 AI 对话" data-title="新建 AI 对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
         <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
         <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
       </div>
@@ -945,7 +945,7 @@
 
   <!-- 终端搜索条 -->
   <div id="term-search" class="hidden">
-    <input id="term-search-input" type="text" placeholder="在终端中搜索…" />
+    <input id="term-search-input" type="text" placeholder="在终端中查找…" />
     <span id="term-search-count" class="muted"></span>
     <button id="term-search-prev" class="btn icon" title="上一个">↑</button>
     <button id="term-search-next" class="btn icon" title="下一个">↓</button>
@@ -1147,7 +1147,7 @@
       <div id="ai-reasoning-ticks" class="ai-reasoning-ticks"></div>
     </div>
     <div class="ai-model-menu-sep"></div>
-    <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型</button>
+    <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型…</button>
   </div>
   <!-- 会话菜单浮层 -->
   <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" aria-label="切换对话">

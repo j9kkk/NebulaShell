@@ -610,7 +610,7 @@ test('terminal state notifications refresh the real workspace split button after
   assert.equal(tile.getAttribute('aria-description'), '需要至少 2 个标签');
   assert.equal(tile.getAttribute('aria-checked'), 'false');
   assert.equal(tile.querySelector('.mm-label').textContent, '标签平铺');
-  assert.equal(commands.commandState('pane.reflow').label, '整理当前标签分屏');
+  assert.equal(commands.commandState('pane.reflow').label, '整理标签分屏');
   assert.equal(await commands.executeCommand('workspace.tile'), false);
   state.tabs.set('second', {}); vm.runInContext('notifyTerminalStateChange()', context);
   assert.equal(tileOff(), false);
@@ -714,7 +714,10 @@ test('command palette modal does not block commands; other modals do, except all
   commands.registerCommand('plain', { label: 'Plain', run: () => { runs++; } });
   commands.registerCommand('dlg', { label: 'Settings', kind: 'dialog', run: () => {} });
   commands.registerCommand('quit', { label: 'Quit', allowInModal: true, run: () => { runs++; } });
-  assert.equal(commands.commandState('dlg').label, 'Settings…', 'dialog commands get an ellipsis');
+  // 省略号只在菜单面由 menuLabelOf 追加,canonical(面板/设置页)始终是裸文案
+  assert.equal(commands.commandState('dlg').label, 'Settings', 'canonical label stays bare');
+  assert.equal(commands.menuLabelOf('dlg'), 'Settings…', 'menu labels append one ellipsis for dialog commands');
+  assert.equal(commands.menuLabelOf('plain'), 'Plain', 'plain actions never get an ellipsis');
   core.openModal(palette);
   assert.equal(commands.commandState('plain').enabled, true, 'the palette itself never disables commands');
   core.closeModal(palette);
@@ -841,9 +844,9 @@ test('menu bar renders the Windows/Linux titles only, and each menu lists regist
   assert.deepEqual(h.items().map((i) => [i.label, i.disabled]), [['在终端中查找', true]], 'disabled items stay listed with their reason');
   h.ctx.querySelector('.ctx-item').click();
   assert.equal(h.blockedRuns(), 0, 'an unavailable item cannot run');
-  // 帮助菜单:命令面板显示为「命令与快捷键…」,并带「关于」
+  // 帮助菜单:命令面板与注册表同名(菜单面按 asks 追加「…」),并带「关于」
   h.title('帮助').click();
-  assert.deepEqual(h.items().map((i) => i.label), ['命令与快捷键…', '关于 NebulaShell']);
+  assert.deepEqual(h.items().map((i) => i.label), ['命令面板…', '关于 NebulaShell']);
   assert.deepEqual(plain(h.menubar.menubarSnapshot().titles.map((t) => t.text)), ['文件', '编辑', '视图', '主机', '会话', '帮助']);
 });
 

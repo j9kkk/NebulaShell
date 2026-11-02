@@ -55,7 +55,7 @@ const pendingConflicts = [];
 let conflictOpen = false;
 let lastDragEnd = 0;
 let dragActive = false;
-/// 最近一次写出了内容的下载:{ path, isDir }。「打开最近下载位置」用,清除任务记录不影响它。
+/// 最近一次写出了内容的下载:{ path, isDir }。「在文件夹中显示最近下载」用,清除任务记录不影响它。
 let lastDownload = null;
 
 function sessionLabel(sessionId) {

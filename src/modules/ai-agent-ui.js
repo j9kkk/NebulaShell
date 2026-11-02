@@ -430,7 +430,7 @@ const MODE_HELP = {
       text: '完全托管等于把主机交给 AI 连续操作：没有确认卡，也没有「跳过」的机会，误删数据、改坏配置都会立即生效。仅在你信任这次任务、且这台主机可以重建时使用；换主机或换链接方式会自动退回手动确认。',
     },
   },
-  footnote: '这个对话作用于哪些主机，请在顶栏的主机下拉里选择（对话模式 / 跟随命令窗口 / 多主机）。',
+  footnote: '这个对话作用于哪些主机，请在顶栏的主机下拉里选择（对话模式 / 跟随模式 / 多主机）。',
   security: [
     { icon: 'terminal', text: '命令只会发送到本对话已链接的主机（服务端二次校验，模型无法指定其他会话）。' },
     { icon: 'key', text: 'sudo 密码与 SSH 登录凭据不会发送给 AI。' },
@@ -835,7 +835,7 @@ export function renderTargetMenu(menuData, handlers = {}, { focusMode, focusHost
   const followDesc = data.follow?.hostLabel
     ? `已链接 ${data.follow.hostLabel}`
     : '跟随当前命令窗口的主机';
-  list.append(modeRow('follow', 'terminal', '跟随命令窗口', followDesc));
+  list.append(modeRow('follow', 'terminal', '跟随模式', followDesc));
 
   // 3. 多主机模式(启用后才展开清单)
   list.append(modeRow(

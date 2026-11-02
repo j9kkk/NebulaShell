@@ -36,11 +36,12 @@ function captureOpener() {
 }
 
 /// 菜单项:命令项取注册表的名称、快捷键、勾选与禁用原因;未注册的命令不显示。
+/// 名称只有注册表一处来源(菜单面按 asks 追加「…」),菜单表不再存 text 覆盖;
+/// accelerator: false 仅用于平台缺键(S7),只清空键位槽不改名称。
 export function menuItems(menu) {
   return menu.items.map((entry) => {
     if (entry === SEP) return '-';
     const overrides = {};
-    if (entry.text) overrides.label = entry.text;
     if (entry.accelerator === false) overrides.key = '';
     return commandMenuItem(entry.cmd, undefined, overrides);
   });

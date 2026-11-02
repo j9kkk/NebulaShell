@@ -208,7 +208,7 @@ function bindGroupActions(el, name) {
     });
     acts.appendChild(b);
   };
-  mk('rename', '', 'pencil', '重命名');
+  mk('rename', '', 'pencil', '重命名分组');
   mk('delete', 'del', 'trash', '删除分组');
   el.appendChild(acts);
   el.addEventListener('contextmenu', (e) => {
@@ -216,8 +216,8 @@ function bindGroupActions(el, name) {
     // 别让窗口级 contextmenu 处理器把刚弹出的菜单立刻关掉
     e.stopPropagation();
     showCtxMenu(e.clientX, e.clientY, [
-      { label: '重命名…', icon: 'pencil', run: () => startRename(name) },
-      { label: '删除分组…', icon: 'trash', danger: true, run: () => deleteGroup(name) },
+      { label: '重命名分组…', icon: 'pencil', run: () => startRename(name) },
+      { label: '删除分组', icon: 'trash', danger: true, run: () => deleteGroup(name) },
     ], { trigger: el, label: '分组' });
   });
   el.addEventListener('dblclick', () => startRename(name));
@@ -411,7 +411,7 @@ export function renderLibrary() {
       <td class="hl-c-tags">${tags}</td>
       <td class="hl-c-cred${needCred ? ' warn' : ''}">${needCred ? '待补全' : '已存'}</td>
       <td class="hl-c-act"><div class="hl-acts">
-        <button class="hl-fav${isFav ? ' on' : ''}" data-act="fav" title="${isFav ? '取消常用' : '标记为常用'}" aria-pressed="${isFav}">${icon('star', { size: 12 })}</button>
+        <button class="hl-fav${isFav ? ' on' : ''}" data-act="fav" title="${isFav ? '取消常用' : '设为常用'}" aria-pressed="${isFav}">${icon('star', { size: 12 })}</button>
         <button data-act="edit" title="编辑">${icon('pencil', { size: 12 })}</button>
         <button data-act="clone" title="复制">${icon('copy', { size: 12 })}</button>
         <button class="del" data-act="del" title="删除">${icon('trash', { size: 12 })}</button>
@@ -932,7 +932,7 @@ export function bindHostLibrary() {
     }));
     if (items.length) items.push('-');
     items.push({
-      label: '＋ 新建分组并移入…',
+      label: '新建分组并移入…',
       icon: 'plus',
       // run 在 closeCtxMenu 恢复焦点后的微任务里执行,原地输入框聚焦安全
       run: () => startCreate(ids),

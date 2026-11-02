@@ -3,7 +3,7 @@
 // 结构是 combobox(输入框)+ listbox(结果),aria-activedescendant 指向当前项,
 // 焦点始终留在输入框。执行时先关面板(焦点回到打开前的位置),再执行 ——
 // 命令若打开弹窗,弹窗记下的归还目标就是原位置。
-import { $, accel, closeCtxMenu, closeModal, IS_MAC, openModal, state, toast, topModal } from './core.js';
+import { $, closeCtxMenu, closeModal, IS_MAC, openModal, state, toast, topModal } from './core.js';
 import { CATEGORY_LABEL, executeCommand, listCommands, PALETTE_MODAL_ID } from './commands.js';
 import { accelOf } from './keymap.js';
 import { activateTab, connectHost, quickConnect } from './terminal.js';
@@ -116,8 +116,9 @@ function rowElement(row, index) {
   category.textContent = row.type === 'command' ? row.category : '';
   const key = document.createElement('span');
   key.className = 'pal-key';
-  key.textContent = row.type === 'command' ? row.key
-    : row.type === 'host' ? `↵ 连接　${accel(IS_MAC ? 'cmd+Enter' : 'ctrl+Enter')} 新标签` : '';
+  // 键位列只放一个提示:组合键「⌘↵ / Ctrl+Enter」属于页脚的「在新标签中连接」,
+  // 一个槽位塞两个键位会让右对齐的列宽来回跳(S3/S4)
+  key.textContent = row.type === 'command' ? row.key : row.type === 'host' ? '↵ 连接' : '';
   el.append(check, text, category, key);
   return el;
 }
@@ -212,7 +213,7 @@ export function bindPalette() {
   const input = $('#palette-input');
   const list = $('#palette-list');
   if (!input || !list) return;
-  $('#palette-foot').textContent = `↑↓ 选择 · ↵ 执行 · ${accel(IS_MAC ? 'cmd+Enter' : 'ctrl+Enter')} 在新标签连接 · Esc 关闭`;
+  $('#palette-foot').textContent = `↑↓ 选择 · ↵ 连接 · ${accelOf('palette.connectNewTab')} 在新标签中连接 · Esc 关闭`;
   input.addEventListener('input', render);
   input.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;

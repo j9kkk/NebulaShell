@@ -118,17 +118,34 @@ export const isAppModifier = (event) => matchAppModifier(event, PLATFORM);
 const MAC_KEY = { mod: '⌘', cmd: '⌘', meta: '⌘', ctrl: '⌃', shift: '⇧', alt: '⌥', enter: '↵', tab: '⇥', space: 'Space', esc: 'Esc' };
 const PC_KEY = { mod: 'Ctrl', cmd: 'Win', meta: 'Win', ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', enter: 'Enter', tab: 'Tab', space: 'Space', esc: 'Esc' };
 
+/// 修饰键的显示顺序(与 spec 的书写顺序无关):macOS 惯例 ⌘ ⌃ ⌥ ⇧,
+/// Windows/Linux 惯例 Ctrl Shift Alt Win。spec 里写 'alt+cmd+B' 也渲染成 ⌘⌥B。
+const MAC_MOD_ORDER = { cmd: 0, mod: 0, meta: 0, ctrl: 1, alt: 2, shift: 3 };
+const PC_MOD_ORDER = { ctrl: 0, mod: 0, shift: 1, alt: 2, cmd: 3, meta: 3 };
+
 /// 把规范化的快捷键写法('mod+shift+D')渲染成当前平台的显示形式。
 /// macOS 惯例是不加连接符(⌘⇧D),Windows/Linux 用 +(Ctrl+Shift+D)。
+/// 范围写法 'cmd+1..9' 渲染成两端式 '⌘1…⌘9'(菜单不支持范围键,由页面分发)。
 export function accel(spec) {
   const parts = String(spec || '').split('+').map((s) => s.trim()).filter(Boolean);
-  const out = parts.map((p) => {
-    const k = p.toLowerCase();
-    const named = (IS_MAC ? MAC_KEY : PC_KEY)[k];
-    if (named) return named;
-    return p.length === 1 ? p.toUpperCase() : p;
-  });
-  return IS_MAC ? out.join('') : out.join('+');
+  if (!parts.length) return '';
+  const table = IS_MAC ? MAC_KEY : PC_KEY;
+  const order = IS_MAC ? MAC_MOD_ORDER : PC_MOD_ORDER;
+  const mods = [];
+  let key = '';
+  for (const part of parts) {
+    const k = part.toLowerCase();
+    if (order[k] !== undefined) mods.push(k);
+    else key = part;
+  }
+  mods.sort((a, b) => order[a] - order[b]);
+  const render = (name) => {
+    const label = table[name.toLowerCase()] || (name.length === 1 ? name.toUpperCase() : name);
+    const out = [...mods.map((m) => table[m]), label];
+    return IS_MAC ? out.join('') : out.join('+');
+  };
+  if (key === '1..9') return `${render('1')}…${render('9')}`;
+  return key ? render(key) : mods.map((m) => table[m]).join(IS_MAC ? '' : '+');
 }
 
 /// 按平台重写带快捷键的元素标题。

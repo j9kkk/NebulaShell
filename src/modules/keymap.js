@@ -23,13 +23,13 @@ const pc = (spec) => ({ win: spec, linux: spec });
 /// 内置默认键位。'1..9' 是 tab.switch 的范围写法:匹配任一数字键 1-9,
 /// 具体序号由 digitOf(event) 取。
 export const DEFAULT_KEYMAP = {
-  'tab.new':         { mac: 'cmd+T',           ...pc('ctrl+shift+T'),     label: '新建标签页' },
-  'workspace.close': { mac: 'cmd+W',           ...pc('ctrl+shift+W'),     label: '关闭当前窗格或标签' },
-  'session.search':  { mac: 'cmd+F',           ...pc('ctrl+shift+F'),     label: '在终端中搜索' },
-  'pane.split':      { mac: 'cmd+D',           ...pc('ctrl+shift+D'),     label: '分屏(自动最优布局)' },
-  'pane.zoom':       { mac: 'cmd+shift+Enter', ...pc('ctrl+shift+Enter'), label: '放大/还原当前窗格' },
-  'tab.switch':      { mac: 'cmd+1..9',        ...pc('ctrl+1..9'),        label: '切换到第 N 个标签' },
-  'files.selectAll': { mac: 'cmd+A',           ...pc('ctrl+A'),           label: '全选(焦点文件分屏内)' },
+  'tab.new':         { mac: 'cmd+T',           ...pc('ctrl+shift+T'),     label: '新建标签' },
+  'workspace.close': { mac: 'cmd+W',           ...pc('ctrl+shift+W'),     label: '关闭窗格或标签' },
+  'session.search':  { mac: 'cmd+F',           ...pc('ctrl+shift+F'),     label: '在终端中查找' },
+  'pane.split':      { mac: 'cmd+D',           ...pc('ctrl+shift+D'),     label: '分屏' },
+  'pane.zoom':       { mac: 'cmd+shift+Enter', ...pc('ctrl+shift+Enter'), label: '放大或还原窗格' },
+  'tab.switch':      { mac: 'cmd+1..9',        ...pc('ctrl+1..9'),        label: '切换到指定标签' },
+  'files.selectAll': { mac: 'cmd+A',           ...pc('ctrl+A'),           label: '全选文件' },
   // 有选区时 Ctrl+C 复制、无选区发 SIGINT(Windows Terminal 规则),仅 Win/Linux;
   // macOS 的 Ctrl+C 一律是 SIGINT。
   'term.copy':       { mac: 'cmd+C', win: ['ctrl+C', 'ctrl+shift+C'], linux: ['ctrl+shift+C', 'ctrl+C'], label: '复制' },
@@ -46,7 +46,8 @@ export const DEFAULT_KEYMAP = {
   'panel.tools':     { mac: 'alt+cmd+B',       ...pc('ctrl+shift+alt+B'), label: 'AI 助手' },
   // ⌘N 保留给 AI 对话(既有习惯),新建主机用 ⇧⌘N
   'ai.newThread':    { mac: 'cmd+N',           ...pc('ctrl+shift+N'),     label: '新建 AI 对话' },
-  'ai.cycleEffort':  { mac: 'cmd+T',           ...pc('ctrl+T'),           label: '切换思考强度' },
+  // ⌘⌥E / Ctrl+Shift+Alt+E:⌘T 归还 tab.new(两个动作曾同时占用 ⌘T)
+  'ai.cycleEffort':  { mac: 'alt+cmd+E',       ...pc('ctrl+shift+alt+E'), label: '切换思考强度' },
   'session.history': { mac: 'cmd+shift+H',     ...pc('ctrl+shift+H'),     label: '命令历史' },
   'tools.snippets':  { mac: 'cmd+shift+S',     ...pc('ctrl+shift+S'),     label: '常用命令' },
   // F11 全屏(Windows Terminal 惯例);macOS 用系统的「进入全屏」(⌃⌘F)
@@ -61,16 +62,19 @@ export const DEFAULT_KEYMAP = {
   'tab.file.add':    { mac: 'cmd+shift+E',     ...pc('ctrl+shift+E'),     label: '新增文件分屏' },
   'tabs.list':       { mac: 'alt+cmd+L',       ...pc('ctrl+shift+alt+L'), label: '全部标签' },
   'workspace.tile':  { mac: 'alt+cmd+T',       ...pc('ctrl+shift+alt+T'), label: '标签平铺' },
-  'pane.reflow':     { mac: 'alt+cmd+R',       ...pc('ctrl+shift+alt+R'), label: '整理当前标签分屏' },
-  'session.reconnect': { mac: 'cmd+shift+R',   ...pc('ctrl+shift+R'),     label: '重连当前会话' },
+  'pane.reflow':     { mac: 'alt+cmd+R',       ...pc('ctrl+shift+alt+R'), label: '整理标签分屏' },
+  'session.reconnect': { mac: 'cmd+shift+R',   ...pc('ctrl+shift+R'),     label: '重新连接' },
   'session.readonly': { mac: 'cmd+shift+L',    ...pc('ctrl+shift+L'),     label: '只读模式' },
-  'session.log':     { mac: 'cmd+shift+J',     ...pc('ctrl+shift+J'),     label: '记录会话日志' },
-  'session.diagnose': { mac: 'alt+cmd+D',      ...pc('ctrl+shift+alt+D'), label: 'AI 诊断报错' },
+  'session.log':     { mac: 'cmd+shift+J',     ...pc('ctrl+shift+J'),     label: '会话日志' },
+  'session.diagnose': { mac: 'alt+cmd+D',      ...pc('ctrl+shift+alt+D'), label: '用 AI 诊断报错' },
   'tools.broadcast': { mac: 'cmd+shift+G',     ...pc('ctrl+shift+G'),     label: '广播输入' },
   'tools.forwards':  { mac: 'alt+cmd+F',       ...pc('ctrl+shift+alt+F'), label: '端口转发' },
+  // 命令面板内的主机行:修饰键 + Enter 在新标签中连接。进 COMPONENT_ACTIONS,
+  // 不进全局分发 —— 否则会吃掉终端里 shell 自己的 Ctrl+Enter。
+  'palette.connectNewTab': { mac: 'cmd+Enter',  ...pc('ctrl+Enter'),      label: '在新标签中连接' },
   // 以下两项只由 macOS 菜单栏的加速键触发(页面不拦截,模态打开时也可用)
   'window.close':    { mac: 'cmd+shift+W',                                label: '关闭窗口' },
-  'app.quit':        { mac: 'cmd+Q',                                      label: '退出' },
+  'app.quit':        { mac: 'cmd+Q',                                      label: '退出 NebulaShell' },
 };
 
 /// 应用级动作:无论焦点在哪(包括终端内)都归应用处理,由全局分发执行。
@@ -82,8 +86,10 @@ export const DEFAULT_KEYMAP = {
 ///   - 仅菜单栏动作:window.close / app.quit 只由 macOS 菜单加速键触发,
 ///     页面不拦截(⌘Q 必须落到原生菜单,否则弹窗里按 ⌘Q 关不掉应用);
 ///   - 面板内动作:ai.newThread 只在焦点位于 AI 面板时生效(见 entry.js 的
-///     专用分支),菜单项也刻意不带加速键,不在全局分发里抢按键。
-const COMPONENT_ACTIONS = ['term.copy', 'term.paste', 'term.selectAll', 'files.selectAll'];
+///     专用分支),菜单项也刻意不带加速键,不在全局分发里抢按键;
+///   - 面板内修饰键:palette.connectNewTab 只由命令面板消费,不能进全局分发,
+///     否则终端里的 Ctrl+Enter 会被应用吞掉、shell 收不到。
+const COMPONENT_ACTIONS = ['term.copy', 'term.paste', 'term.selectAll', 'files.selectAll', 'palette.connectNewTab'];
 const MENU_ONLY_ACTIONS = ['window.close', 'app.quit'];
 const PANEL_SCOPED_ACTIONS = ['ai.newThread', 'ai.cycleEffort'];
 export const APP_ACTIONS = Object.keys(DEFAULT_KEYMAP)

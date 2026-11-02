@@ -8,7 +8,7 @@
 // 编辑菜单保留预定义的撤销/重做/剪切/拷贝/粘贴/全选:WKWebView 里输入框的
 // 这些快捷键依赖它们。
 import { state } from './core.js';
-import { commandState, executeCommand } from './commands.js';
+import { commandState, executeCommand, menuLabelOf } from './commands.js';
 import { specOf, toAccelerator } from './keymap.js';
 import { closePalette, isPaletteOpen } from './palette.js';
 import { menuCommandIds, SEP, specFor } from '../shared/menu-spec.js';
@@ -35,8 +35,9 @@ function runFromMenu(id, record) {
   executeCommand(id).finally(scheduleSync);
 }
 
-function textOf(entry, info) {
-  return entry.text || info.label || entry.cmd;
+/// 菜单项文案只来自注册表(菜单面按 asks 追加「…」),菜单表不存第二份名字。
+function textOf(entry) {
+  return menuLabelOf(entry.cmd, undefined) || entry.cmd;
 }
 
 async function makeItem(api, entry) {
@@ -52,7 +53,7 @@ async function makeItem(api, entry) {
   }
   const info = commandState(entry.cmd) || { label: entry.cmd, enabled: false };
   const accelerator = accelFor(entry);
-  const record = { entry, item: null, applied: { enabled: info.enabled, checked: info.checked, accel: accelerator, text: textOf(entry, info) } };
+  const record = { entry, item: null, applied: { enabled: info.enabled, checked: info.checked, accel: accelerator, text: textOf(entry) } };
   const options = {
     id: `cmd:${entry.cmd}${entry.alias ? ':' + entry.alias : ''}`,
     text: record.applied.text,
@@ -84,7 +85,7 @@ export function scheduleSync() {
     for (const record of tracked) {
       const info = commandState(record.entry.cmd);
       if (!info) continue;
-      const text = textOf(record.entry, info);
+      const text = textOf(record.entry);
       const accel = accelFor(record.entry);
       const { applied, item } = record;
       if (applied.enabled !== info.enabled) { applied.enabled = info.enabled; item.setEnabled(info.enabled).catch(() => {}); }

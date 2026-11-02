@@ -266,7 +266,7 @@ async function tabTilingRegressions() {
     check('T70b 平铺在分屏下拉有勾选入口并进命令面板/两种菜单栏,整理明确限于当前标签,无常驻图标',
       menu.persistentButtons === 0 && menu.inPalette && menu.inMenuBar && menu.inPcMenuBar
       && JSON.stringify(splitIds) === JSON.stringify(['pane.split', 'tab.file.add', 'pane.reflow', 'pane.zoom', 'workspace.tile'])
-      && splitMenu.items[0].label === '终端分屏' && splitMenu.items[2].label === '整理当前标签分屏'
+      && splitMenu.items[0].label === '分屏' && splitMenu.items[2].label === '整理标签分屏'
       && splitMenu.items[4].checked === 'true', JSON.stringify(menu));
     const tileChrome = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('.workspace-tile-header')].map(header => ({
       title: header.querySelector('.workspace-tile-title')?.textContent || '', connected: !!header.querySelector('.tab-dot.connected'),
@@ -4325,8 +4325,8 @@ async function main() {
     'T50c 侧栏「⠇」菜单:云导入/主机库/批量执行/导入导出/指纹/端口转发/紧凑列表,键盘打开且焦点进入菜单',
     JSON.stringify(manageIds) === JSON.stringify(['cloud.import', 'hosts.library', 'tools.batch', 'hosts.import',
       'hosts.export', 'settings.fingerprints', 'tools.forwards', 'view.hostDensity'])
-      && manage.items.find((i) => i.command === 'tools.forwards').label === '端口转发规则'
-      && manage.items.find((i) => i.command === 'hosts.library').label === '主机管理'
+      && manage.items.find((i) => i.command === 'tools.forwards').label === '端口转发…'
+      && manage.items.find((i) => i.command === 'hosts.library').label === '主机库…'
       && manageState.expanded === 'true' && manageState.focusInMenu && footer.text === '',
     JSON.stringify({ manageIds, manageState, footerText: footer.text }),
   );
@@ -4693,11 +4693,11 @@ async function main() {
   const tabHas = (l) => tabCtx.find((i) => i.label === l);
   check(
     'T58 标签右键菜单:关闭/关闭其他/关闭右侧/重命名/复制地址/新建',
-    !!tabHas('关闭标签') && !!tabHas('关闭其他标签') && !!tabHas('关闭右侧标签') && !!tabHas('重命名…') && !!tabHas('复制主机地址') && !!tabHas('新建标签'),
+    !!tabHas('关闭标签') && !!tabHas('关闭其他标签') && !!tabHas('关闭右侧标签') && !!tabHas('重命名标签…') && !!tabHas('复制主机地址') && !!tabHas('新建标签'),
     JSON.stringify(tabCtx),
   );
   // 重命名走应用内输入框(prompt 在 WKWebView 下不返回),留空可恢复默认
-  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === '重命名…').click(); return 1`);
+  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === '重命名标签…').click(); return 1`);
   await sleep(200);
   const renameOpen = asObj(await evalJs(`return JSON.stringify({ open: window.__nbTest.promptOpen(), title: window.__nbTest.promptTitle() })`));
   await evalJs(`window.__nbTest.promptFill('生产机'); window.__nbTest.promptClickOk(); return 1`);
@@ -4714,7 +4714,7 @@ async function main() {
     tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8 }));
     return 1`);
   await sleep(150);
-  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === '重命名…').click(); return 1`);
+  await evalJs(`[...document.querySelectorAll('#ctx-menu .ctx-item')].find((b) => b.querySelector('.ctx-label').textContent === '重命名标签…').click(); return 1`);
   await sleep(150);
   await evalJs(`window.__nbTest.promptFill(''); window.__nbTest.promptClickOk(); return 1`);
   await sleep(150);
@@ -4729,8 +4729,9 @@ async function main() {
     return [...document.querySelectorAll('#ctx-menu .ctx-item')].map((b) => b.querySelector('.ctx-label').textContent);
   })())`));
   check(
-    'T59 主机右键菜单:连接/新标签连接/编辑/克隆/复制/删除',
-    hostCtx.includes('连接') && hostCtx.includes('在新标签连接') && hostCtx.includes('编辑…') && hostCtx.includes('克隆') && hostCtx.includes('复制 user@host') && hostCtx.includes('删除…'),
+    'T59 主机右键菜单:在新标签中连接/编辑主机/克隆主机/复制主机地址/删除主机',
+    hostCtx.includes('在新标签中连接') && hostCtx.includes('编辑主机…') && hostCtx.includes('克隆主机') && hostCtx.includes('复制主机地址') && hostCtx.includes('删除主机')
+      && hostCtx.every((label) => label !== '连接'),
     JSON.stringify(hostCtx),
   );
   // 收起右键菜单,避免影响后续
@@ -5224,8 +5225,8 @@ async function main() {
     check('T92 窗格工具条:文件/端口转发/广播 + ✕⤢,按钮带显式目标并从注册表取名称,已连接时不显示重连',
       toolbar.kind === 'term' && toolbar.conn === 'connected' && toolbar.role === 'toolbar'
       && toolbar.buttons.every((b) => b.pane === B.paneId && b.command)
-      && tb('pane-tb-file').title === '新增文件分屏' && tb('pane-tb-forward').title === '端口转发…' && tb('pane-tb-broadcast').title === '广播输入…'
-      && tb('pane-close-btn').title === '关闭该窗格' && tb('pane-zoom-btn').title === '放大该窗格'
+      && tb('pane-tb-file').title === '新增文件分屏' && tb('pane-tb-forward').title === '端口转发' && tb('pane-tb-broadcast').title === '广播输入'
+      && tb('pane-close-btn').title === '关闭窗格' && tb('pane-zoom-btn').title === '放大窗格'
       && tb('pane-tb-reconnect').shown === false && tb('pane-tb-file').shown, JSON.stringify(toolbar));
 
     // 端口转发:从 B 的工具条打开,预选 B 的主机,活动会话不变

@@ -339,11 +339,11 @@ export function renderHosts() {
       <div class="host-actions">
         <button class="hi-menu" type="button" title="主机操作" aria-label="主机操作">${icon('dots')}</button>
         <button class="host-star${isStar ? ' on' : ''}" type="button"
-          title="${isStar ? '取消常用' : '标记为常用'}" aria-label="${isStar ? '取消常用' : '标记为常用'}"
+          title="${isStar ? '取消常用' : '设为常用'}" aria-label="${isStar ? '取消常用' : '设为常用'}"
           aria-pressed="${isStar}">${icon('star')}</button>
       </div>`;
     item.title = regionCode ? `${addr}  ·  ${regionCode}` : addr;
-    // 点击或中键:直接在新标签连接(若当前停留于空白单窗格标签则就地复用)。
+    // 点击或中键:直接在新标签中连接(若当前停留于空白单窗格标签则就地复用)。
     item.addEventListener('click', () => {
       connectHost(h.id, null, { newTab: true });
     });
@@ -377,18 +377,18 @@ export function renderHosts() {
       const hasSession = [...state.sessions.values()].some((s) =>
         s.host && s.host.id === h.id && ['connected', 'connecting'].includes(s.status));
       return [
-        { label: '连接', run: () => connectHost(h.id, null, { newTab: true }) },
-        { label: '在新标签连接', run: () => connectHost(h.id, null, { newTab: true }) },
+        // 「连接」与「在新标签中连接」行为完全相同,只保留后者(P1-1)
+        { label: '在新标签中连接', run: () => connectHost(h.id, null, { newTab: true }) },
         ...(hasSession ? [{ label: '切换到已有标签', run: () => connectHost(h.id, null, { reuseExisting: true }) }] : []),
         '-',
-        { label: isStar ? '取消常用' : '标记为常用', run: () => starThis({ stopPropagation() {} }) },
-        { label: '编辑…', run: () => openHostModal(h) },
-        { label: '克隆', run: () => cloneThis() },
-        { label: '复制 user@host', run: () => {
+        { label: isStar ? '取消常用' : '设为常用', run: () => starThis({ stopPropagation() {} }) },
+        { label: '编辑主机…', run: () => openHostModal(h) },
+        { label: '克隆主机', run: () => cloneThis() },
+        { label: '复制主机地址', run: () => {
           copyText(addr).then((ok) => toast(ok ? '已复制' : '复制失败', ok ? 'success' : 'error'));
         } },
         '-',
-        { label: '删除…', danger: true, run: () => delThis() },
+        { label: '删除主机', danger: true, run: () => delThis() },
       ];
     };
     item.querySelector('.hi-menu').addEventListener('click', (e) => {

@@ -96,11 +96,12 @@ export function openTabCtxMenu(x, y, tabId) {
   const idx = ids.indexOf(tabId);
   const firstSession = [...state.sessions.values()].find((s) => s.tabId === tabId);
   showCtxMenu(x, y, [
-    { label: '关闭标签', key: accelOf('workspace.close'), danger: true, run: () => closeTab(tabId) },
+    // 键位属于「活动标签」而不是右键的这个标签,所以这里只给名称不给键位(S6)
+    { label: '关闭标签', danger: true, run: () => closeTab(tabId) },
     { label: '关闭其他标签', disabled: ids.length <= 1, run: () => { for (const id of ids) if (id !== tabId) closeTab(id); } },
     { label: '关闭右侧标签', disabled: idx >= ids.length - 1, run: () => { for (const id of ids.slice(idx + 1)) closeTab(id); } },
     '-',
-    commandMenuItem('tab.rename', { tabId }, { label: '重命名…' }),
+    commandMenuItem('tab.rename', { tabId }),
     {
       label: '复制主机地址', disabled: !firstSession, run: () => {
         const h = firstSession.host;
@@ -582,10 +583,10 @@ export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
   sep.className = 'pane-tb-sep';
   const closeBtn = paneToolButton('pane-close-btn', 'workspace.close', paneId, tabId, () => closeActivePane(paneId, tabId));
   closeBtn.innerHTML = icon('x');
-  closeBtn.title = '关闭该窗格';
+  closeBtn.title = '关闭窗格';
   const zoomBtn = paneToolButton('pane-zoom-btn', 'pane.zoom', paneId, tabId, () => togglePaneZoom(paneId, tabId));
   zoomBtn.innerHTML = icon('zoom');
-  zoomBtn.title = '放大该窗格';
+  zoomBtn.title = '放大窗格';
   for (const child of [extra, sep, closeBtn, zoomBtn]) bar.appendChild(child);
   // 文件分屏:✕⤢ 放进文件工具栏行尾。悬浮在右上角会盖住窄窗格里的工具按钮
   const host = el.classList?.contains?.('file-pane') ? el.querySelector('.file-toolbar') || el : el;
@@ -615,7 +616,7 @@ export function syncPaneButtons(tab = activeTab()) {
       chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'zoom-chip';
-      chip.title = `还原分屏布局(${accelOf('pane.zoom')})`;
+      chip.title = `还原窗格(${accelOf('pane.zoom')})`;
       chip.textContent = '已放大 · 还原';
       chip.addEventListener('mousedown', (e) => e.stopPropagation());
       chip.addEventListener('click', (e) => { e.stopPropagation(); togglePaneZoom(pane.id, tab.id); });
