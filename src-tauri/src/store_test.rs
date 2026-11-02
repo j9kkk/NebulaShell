@@ -1088,6 +1088,91 @@ fn inspect_then_apply_conflict_decisions() {
     let _ = std::fs::remove_dir_all(&dst.dir);
 }
 
+/// 备份保留策略:只留最近 N 份,最旧的先走;同目录里别人的文件一律不碰。
+#[test]
+fn backup_retention_keeps_newest_and_leaves_foreign_files() {
+    let store = tmp_store("backup-retain");
+    let dir = store.dir.join("backup");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..25 {
+        std::fs::write(
+            dir.join(format!("nebulashell-backup-20240101-0000{:02}.json", i)),
+            "{}",
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("notes.json"), "keep me").unwrap();
+    std::fs::write(dir.join("nebulashell-backup-manual.txt"), "keep me too").unwrap();
+
+    let pruned = store.prune_backups(20);
+    assert_eq!(pruned, 5, "25 份留 20 份,应删 5 份");
+
+    let left: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(left.len(), 22, "20 份快照 + 2 个外来文件");
+    assert!(
+        !left.contains(&"nebulashell-backup-20240101-000000.json".to_string()),
+        "最旧的先删"
+    );
+    assert!(
+        left.contains(&"nebulashell-backup-20240101-000024.json".to_string()),
+        "最新的必须留着"
+    );
+    assert!(
+        left.contains(&"notes.json".to_string())
+            && left.contains(&"nebulashell-backup-manual.txt".to_string()),
+        "非本程序快照的文件不该被清理"
+    );
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// 导入链路自带收敛:备份攒到 30 份时导入一次,回到 20 份,且刚写的那份不会被删。
+#[test]
+fn import_prunes_old_backups() {
+    let store = tmp_store("backup-import");
+    let dir = store.dir.join("backup");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..30 {
+        std::fs::write(
+            dir.join(format!("nebulashell-backup-20200101-0000{:02}.json", i)),
+            "{}",
+        )
+        .unwrap();
+    }
+    let text = serde_json::to_string(&json!({
+        "app": "nebulashell",
+        "version": 4,
+        "hosts": [{ "id": "11111111-1111-1111-1111-111111111111", "name": "n1", "host": "10.1.0.1", "port": 22 }],
+    }))
+    .unwrap();
+
+    let out = store.apply_hosts(&text, None, &json!({})).unwrap();
+    let backup_path = out["backup"].as_str().unwrap().to_string();
+    assert!(
+        std::path::Path::new(&backup_path).exists(),
+        "新备份照常落盘"
+    );
+    assert_eq!(out["backupPruned"], json!(11), "30 旧 + 1 新 = 31,删到 20");
+    assert!(
+        !backup_path.contains("20200101"),
+        "刚写的备份不能被自己清掉"
+    );
+
+    let count = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("nebulashell-backup-") && n.ends_with(".json")
+        })
+        .count();
+    assert_eq!(count, 20, "导入后备份目录封顶 20 份");
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
 /// 可选口令通道:同一个 v4 结构里,alg 决定用内置密钥还是用户口令。
 #[test]
 fn optional_passphrase_channel_roundtrip() {

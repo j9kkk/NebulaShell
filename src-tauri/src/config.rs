@@ -803,6 +803,42 @@ impl Store {
         std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
     }
 
+    /// backup/ 里最多留多少份导入前快照。导入是低频动作,20 份足够回滚,
+    /// 单份几十 KB 也就几 MB;再往前翻基本都是没人会看的旧备份。
+    pub const BACKUP_KEEP: usize = 20;
+
+    /// 清理 backup/ 里的旧快照,只保留最近 `keep` 份,返回删掉的份数。
+    ///
+    /// 只碰自己写的那种文件名(`nebulashell-backup-<时间戳>.json`),目录里
+    /// 用户自己放的文件一律不动;清理失败也算成功——备份本身已落盘,
+    /// 删旧备份不该让整次导入失败。
+    pub(crate) fn prune_backups(&self, keep: usize) -> usize {
+        let dir = self.dir.join("backup");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return 0;
+        };
+        let mut files: Vec<(String, PathBuf)> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let ours = name.starts_with("nebulashell-backup-") && name.ends_with(".json");
+                ours.then(|| (name, e.path()))
+            })
+            .collect();
+        if files.len() <= keep {
+            return 0;
+        }
+        // 文件名里就是 %Y%m%d-%H%M%S,字典序即时间序,不用再 stat 一次。
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let stale = files.len() - keep;
+        files
+            .into_iter()
+            .take(stale)
+            .filter(|(_, path)| std::fs::remove_file(path).is_ok())
+            .count()
+    }
+
     /// 标记配置已变更,交由后台去抖任务延迟落盘。
     ///
     /// 用于高频小写入(典型是命令历史:每敲一条命令都要更新)。旧实现每写一条
@@ -1925,7 +1961,7 @@ impl Store {
         validate_jump_graph(&imported_graph)?;
         validate_jump_graph(&staged)?;
 
-        // 写盘前备份当前主机库(不含凭据密文),覆盖错了还能捞回来。
+        // 写盘前备份当前主机库(明文密码/私钥/口令置空,但保留 *Enc 密文——恢复时凭据还能用)。
         let backup = {
             let dir = self.dir.join("backup");
             let _ = std::fs::create_dir_all(&dir);
@@ -1945,6 +1981,13 @@ impl Store {
             .ok()
             .map(|_| path.to_string_lossy().to_string())
         };
+        // 备份不封顶会一直涨:本次备份确实落盘了,再删最旧的几份,只留最近 20 份。
+        // 备份写失败时不清理——那正是最需要旧备份兜底的时候。
+        let pruned = if backup.is_some() {
+            self.prune_backups(Self::BACKUP_KEEP)
+        } else {
+            0
+        };
 
         data["hosts"] = json!(staged);
         drop(data);
@@ -1961,6 +2004,7 @@ impl Store {
             "overwritten": overwritten,
             "legacyPlaintext": legacy_plaintext,
             "backup": backup,
+            "backupPruned": pruned,
             "rows": result_rows,
         }))
     }
