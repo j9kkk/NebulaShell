@@ -411,6 +411,44 @@ fn same_enum(local: &Value, item: &Value, key: &str, default: &str) -> bool {
     value == local_value
 }
 
+/// 数组字段的中文摘要(标签/跳板用):空数组与缺失都当「（空）」,避免 diff 里出现 []。
+fn list_summary(value: &Value, unit: &str) -> String {
+    let items: Vec<String> = value
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if items.is_empty() {
+        "（空）".to_string()
+    } else if unit.is_empty() {
+        items.join("、")
+    } else {
+        format!("{} {}", items.len(), unit)
+    }
+}
+
+/// 空串/缺失显示成「（无）」,避免 diff 里出现 `私钥路径  → /x`。
+fn text_or_none(value: &Value) -> String {
+    match value.as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => "（无）".to_string(),
+    }
+}
+
+/// 认证方式的 diff 文案:存的是枚举,用户看的是中文。
+fn auth_label(value: &Value) -> &'static str {
+    match value.as_str().unwrap_or("") {
+        "key" => "私钥",
+        "password" => "密码",
+        "none" | "" => "无",
+        _ => "自定义",
+    }
+}
+
 /// 云身份比较:文件没给 cloud = 不参与;provider/instanceId 必须一致,
 /// accountId/region 为空视为通配(与 cloud_match 的语义一致)。
 fn cloud_identity_same(local: &Value, item: &Value) -> bool {
@@ -830,9 +868,15 @@ impl Store {
 
     pub fn save(&self) -> Result<(), String> {
         let data = self.data.lock().unwrap();
-        let file = self.dir.join("nebulashell-config.json");
-        let tmp = self.dir.join("nebulashell-config.json.tmp");
-        let body = serde_json::to_string_pretty(&*data).map_err(|e| e.to_string())?;
+        Self::write_data_at(&self.dir, &data)
+    }
+
+    /// 把给定快照写到磁盘(先 tmp 再 rename,避免半写)。与 `save()` 分离,
+    /// 是为了让「先写盘成功、再换内存」的路径复用同一份序列化逻辑(F-05)。
+    fn write_data_at(dir: &std::path::Path, data: &Value) -> Result<(), String> {
+        let file = dir.join("nebulashell-config.json");
+        let tmp = dir.join("nebulashell-config.json.tmp");
+        let body = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
         std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
     }
@@ -1858,6 +1902,43 @@ impl Store {
                             item["aiAccess"].as_str().unwrap_or("default")
                         ));
                     }
+                    // F-07:merge_host 会连带覆盖认证方式/私钥路径/初始化命令/标签/跳板,
+                    // 这些也必须出现在「覆盖后会发生什么」里,否则用户看不见。
+                    if !same_str(&staged[i], item, "authType") {
+                        diff.push(format!(
+                            "认证方式 {} → {}",
+                            auth_label(&staged[i]["authType"]),
+                            auth_label(&item["authType"])
+                        ));
+                    }
+                    if !same_str(&staged[i], item, "keyPath") {
+                        diff.push(format!(
+                            "私钥路径 {} → {}",
+                            text_or_none(&staged[i]["keyPath"]),
+                            text_or_none(&item["keyPath"])
+                        ));
+                    }
+                    if !same_str(&staged[i], item, "initcmd") {
+                        diff.push(format!(
+                            "初始命令 {} → {}",
+                            text_or_none(&staged[i]["initcmd"]),
+                            text_or_none(&item["initcmd"])
+                        ));
+                    }
+                    if item["tags"].is_array() && item["tags"] != staged[i]["tags"] {
+                        diff.push(format!(
+                            "标签 {} → {}",
+                            list_summary(&staged[i]["tags"], ""),
+                            list_summary(&item["tags"], "")
+                        ));
+                    }
+                    if item["jumpIds"].is_array() && item["jumpIds"] != staged[i]["jumpIds"] {
+                        diff.push(format!(
+                            "跳板机 {} → {}",
+                            list_summary(&staged[i]["jumpIds"], "台"),
+                            list_summary(&item["jumpIds"], "台")
+                        ));
+                    }
                     if kind == "credOnly" {
                         diff.push("本地缺凭据,文件里带".into());
                     }
@@ -2077,9 +2158,18 @@ impl Store {
             0
         };
 
-        data["hosts"] = json!(staged);
-        drop(data);
-        self.save()?;
+        // F-05:先写盘成功再换内存。此前是「改内存 → save()?」,save 失败时
+        // 磁盘没变但进程内已是导入后的状态,下一次任何 save() 都会把它落盘 -
+        // 界面说的「本次没有写入任何主机」就不成立了。
+        // 写盘与换内存都留在锁内:否则两个并发导入会各自基于同一旧快照规划,
+        // 后写的一方把先写的一方覆盖掉(concurrent_import_of_same_file_creates_no_duplicates)。
+        let next = {
+            let mut d = (*data).clone();
+            d["hosts"] = json!(staged);
+            d
+        };
+        Self::write_data_at(&self.dir, &next)?;
+        *data = next;
 
         Ok(json!({
             "added": added,

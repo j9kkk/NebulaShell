@@ -1341,3 +1341,42 @@ fn optional_private_key_bundle_roundtrip() {
     let _ = std::fs::remove_dir_all(&store.dir);
     let _ = std::fs::remove_dir_all(&fresh.dir);
 }
+
+#[test]
+fn import_diff_covers_every_field_overwrite_would_change() {
+    // F-07:merge_host 会连带覆盖认证方式/标签/初始命令/私钥路径/跳板机,
+    // 预检的 diff 必须把这些都摆出来,否则「覆盖」等于让用户签一张看不见内容的单。
+    let store = tmp_store("diff-fields");
+    store
+        .save_host(&json!({
+            "name": "web", "host": "10.9.0.1", "port": 22, "username": "root",
+            "authType": "password", "tags": ["prod"], "initcmd": "echo old",
+            "keyPath": "/tmp/old-key", "password": "pw"
+        }))
+        .unwrap();
+    let id = store.list_hosts()[0]["id"].as_str().unwrap().to_string();
+    let file = json!({ "app": "nebulashell", "version": 4, "hosts": [{
+        "id": id, "name": "web", "host": "10.9.0.1", "port": 22, "username": "root",
+        "authType": "key", "tags": ["prod", "new"], "initcmd": "echo new",
+        "keyPath": "/tmp/new-key"
+    }]});
+    let plan = store
+        .inspect_hosts(&serde_json::to_string(&file).unwrap(), None)
+        .unwrap();
+    assert_eq!(plan["counts"]["conflict"], json!(1));
+    let diff: Vec<String> = plan["rows"][0]["diff"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap_or("").to_string())
+        .collect();
+    for needle in ["认证方式", "标签", "初始命令", "私钥路径"] {
+        assert!(
+            diff.iter().any(|d| d.contains(needle)),
+            "diff 缺少 {}: {:?}",
+            needle,
+            diff
+        );
+    }
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

@@ -546,7 +546,7 @@ function renderImport() {
     else if (locked) hint.textContent = '该文件用口令加密,请输入文件口令';
     else if (!hasFile) hint.textContent = '';
     else if (im.inspect?.legacyPlaintext) hint.textContent = '该文件含明文凭据,导入后建议重新导出一份';
-    else if (im.meta?.encryption === 'builtin') hint.textContent = '凭据用内置密钥保护,请按密码本对待';
+    else if (im.meta?.encryption === 'builtin') hint.textContent = '凭据用内置密钥加密:同一版本的 App 都能解开,等同明文,请按密码本对待';
     else hint.textContent = '导入前会自动备份当前主机库';
   }
 }

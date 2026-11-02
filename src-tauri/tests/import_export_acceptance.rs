@@ -552,7 +552,14 @@ fn case18_readonly_dir_save_failure() {
         before,
         "失败时配置文件必须保持原样(不能半写)"
     );
-    println!("  内存主机数 {} -> {}(磁盘未变)", mem_before, mem_after);
+    // F-05:写盘失败时内存态也不能改 —— 否则下一次任何 save() 都会把失败的那批落盘,
+    // 界面说的「本次没有写入任何主机」就不成立。
+    assert_eq!(
+        mem_after, mem_before,
+        "落盘失败后内存主机数必须保持 {},实际 {}",
+        mem_before, mem_after
+    );
+    println!("  内存主机数 {} -> {}(磁盘与内存都未变)", mem_before, mem_after);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
