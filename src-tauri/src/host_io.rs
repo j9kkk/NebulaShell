@@ -10,10 +10,10 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// 单次导入文件字节上限(导出 10000 台主机约 3–5 MB,16 MiB 留足余量)。
+/// 单次导入文件字节上限(导出 5000 台主机约 2–3 MB,16 MiB 留足余量)。
 pub const MAX_IMPORT_BYTES: usize = 16 * 1024 * 1024;
-/// 单次导入主机数量上限。
-pub const MAX_IMPORT_HOSTS: usize = 10_000;
+/// 单次导入主机数量上限(与界面方案 D9/F-16 的 5000 台一致)。
+pub const MAX_IMPORT_HOSTS: usize = 5_000;
 
 #[derive(Debug, Clone)]
 pub struct ImportIssue {
