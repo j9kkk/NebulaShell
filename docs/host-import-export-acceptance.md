@@ -241,7 +241,7 @@ PW_PATH=/Users/joker/node_modules/playwright-core \
 | F-09 问题行不可勾选 | 部分修复 | **已修复** | `inspect` 有坏行时返回 `rejected + code + invalidRows[{index,line,name,field,code,reason}]`，并照常给出有效行 `rows`（坏行 `kind:"invalid"` 禁用勾选）；`apply` 支持 `allowPartial`，坏行记 `result:"invalid"`。默认仍整份拒绝。用例 `case24`/`case25`/`case26` |
 
 - 契约细节写进设计 §10.2 / §10.3（含 `digest` 缺省视为不符、`rows[].result` 增加第六值 `invalid`）。
-- 界面定点验证：`reports/host-io-f04-f09-2026-11-03/verify.mjs`，Chromium 25/25、WebKit 25/25
-  （文件被改 → 退回步骤 1、路径保留、文案可操作；问题行不可勾选；勾选「只导有效行」后主按钮台数随勾选变化）。
-- 回归：`cargo test --test import_export_acceptance` 26 通过、`cargo test --lib` 218 通过、
+- 界面定点验证：`reports/host-io-f04-f09-2026-11-03/verify.mjs`，Chromium 27/27、WebKit 27/27
+  （文件被改 → 退回步骤 1、路径保留、一键「重新校验」回到步骤 2；问题行不可勾选；勾选「只导有效行」后主按钮台数随勾选变化）。
+- 回归：`cargo test --test import_export_acceptance` 27 通过、`cargo test --lib` 218 通过、
   `host_config_ux` 10 通过、`npm run test:unit` 520 通过、上一轮界面验收脚本 83/83 仍全绿。

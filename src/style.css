@@ -4860,6 +4860,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 }
 .io-err-ico { flex: none; display: inline-flex; color: var(--danger); }
 .io-err-t { min-width: 0; word-break: break-word; }
+.io-err-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* ---------- 结果报告 ---------- */
 .io-done { display: flex; flex-direction: column; gap: 10px; padding: 2px 0 2px; }

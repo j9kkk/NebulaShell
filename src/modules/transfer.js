@@ -461,6 +461,8 @@ function renderImport() {
   errBox?.classList.toggle('hidden', !im.error);
   const errText = $('#io-import-error-t');
   if (errText) errText.textContent = im.error;
+  // 路径还在时给一个一键「重新校验」:文件被改后不必重新打开系统文件框
+  $('#io-import-recheck')?.classList.toggle('hidden', !(im.error && hasFile));
 
   const pick = $('#io-import-pick');
   if (pick) {
@@ -1075,6 +1077,11 @@ export function setupTransfer() {
   };
   $('#io-import-pick')?.addEventListener('click', pickFile);
   $('#io-import-reselect')?.addEventListener('click', pickFile);
+  // 文件被改后的一键重校:用保留的路径再读一次,不弹系统文件框
+  $('#io-import-recheck')?.addEventListener('click', () => {
+    if (im.busy || im.checking || !im.path) return;
+    inspect(im.path);
+  });
   $('#io-import-back')?.addEventListener('click', () => {
     if (im.busy) return;
     im.step = 1;
