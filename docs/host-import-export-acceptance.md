@@ -260,7 +260,15 @@ P2 打包（§5 原表里的 F-14 / F-15 / F-16 / U-10 / U-07 + 预览列表收�
 
 F-16 的「真实百分比进度」按设计 §4.2 **不采纳**（不做后台任务队列），仍是不确定进度条 + 说明"在等什么"。
 
-复跑（断言数 83 → **92**，Chromium/WebKit 各 92）：
+### 9.1 审查轮修正（`5e6c64c`）
+
+| 问题 | 修法 | 证据 |
+|---|---|---|
+| U-10 改文案带出的视觉回归：`用口令加密（推荐）` 自然宽 **117 px**，`.form-grid` 标签列写死 110 px，标签折成两行（label 高 **40 px**，第二行只剩「荐）」），该行被撑高、与「包含私钥文件」错位 | 落在**全局**网格规则上：`.form-grid` 标签列由 `110px` 改为 `minmax(110px, max-content)`（列宽仍由同一网格统一决定，卡内各行照旧对齐；不给单卡加宽、不改行高） | 修复后 label 高 **20 px**、导出卡行距全部 **44 px**（34 px 行 + 10 px 行距），标签列 117 px；全站 9 个 `.form-grid` 里**只有导出卡**列宽 110→117 px，其余 8 个（新建主机/设置×3/编辑模型配置/端口转发/导入卡）列宽零变化（`measure-form-grids.mjs` 前后对比） |
+| 验收记录回溯错误 | §5 F-14/F-15 的「见 §8」改为 §9（§8 是 F-04/F-09）；F-15 用例名 `case23` → `case28_key_install_failure_is_reported`；§9 开头失效 SHA `0602ac8` → `c1971f0`/`edbf210`/`71503fd` | `0602ac8` 是 rebase 后不可达的残留对象（`git log --all` 无此提交，`git cat-file -t` 才有），落地提交见 §9 开头 |
+| 死通道残留注释 | `read_import_file` 标 `#[cfg(test)]` 并改写注释（只给 `host_io_test` 用，生产走 `read_import_source`）；`inspect_hosts` 注释不再提已删除的导入通道 | `grep -r hosts:importFile src/` 零命中 |
+
+复跑（断言数 83 → **94**，Chromium/WebKit 各 94）：新增两条 U-10 几何断言（标签单行、行距一致），把「改文案也要量几何」这条固化成回归。
 
 ```bash
 node build.mjs
@@ -269,4 +277,4 @@ node reports/host-io-acceptance-2026-11-03/acceptance.mjs webkit
 cd src-tauri && cargo test --lib && cargo test --test import_export_acceptance
 ```
 
-新增证据：`F1-import-key-warning.png`（私钥写失败告警）、`F2-list-fade-640.png`（静止渐隐）、`F3-list-fade-middle-640.png`（滚动中过渡帧）。
+新增证据：`F1-import-key-warning.png`（私钥写失败告警）、`F2-list-fade-640.png`（静止渐隐）、`F3-list-fade-middle-640.png`（滚动中过渡帧）、`G1-export-label-640.png`（标签单行·默认态）、`G2-export-label-transition-640.png`（开启口令的过渡帧）、`G3-export-label-pass-640.png`（开启口令态）；量测脚本 `measure-label.mjs`、`measure-form-grids.mjs`、`shots-label.mjs`。
