@@ -976,14 +976,28 @@ fn export_without_credentials_omits_block() {
         .save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "SuperSecret123" }))
         .unwrap();
 
-    let on = store.export_hosts_with(&json!({ "mode": "all" }), None, false, true).unwrap();
+    let on = store
+        .export_hosts_with(&json!({ "mode": "all" }), None, false, true)
+        .unwrap();
     assert_eq!(on["credentialsIncluded"], json!(true));
-    assert!(on["credentials"]["data"].as_str().is_some(), "默认仍带加密凭据块");
+    assert!(
+        on["credentials"]["data"].as_str().is_some(),
+        "默认仍带加密凭据块"
+    );
 
-    let off = store.export_hosts_with(&json!({ "mode": "all" }), None, false, false).unwrap();
+    let off = store
+        .export_hosts_with(&json!({ "mode": "all" }), None, false, false)
+        .unwrap();
     assert_eq!(off["credentialsIncluded"], json!(false));
-    assert!(off["credentials"].is_null(), "不含凭据时不应有 credentials 块");
-    assert_eq!(off["hosts"].as_array().unwrap().len(), 1, "主机字段仍要导出");
+    assert!(
+        off["credentials"].is_null(),
+        "不含凭据时不应有 credentials 块"
+    );
+    assert_eq!(
+        off["hosts"].as_array().unwrap().len(),
+        1,
+        "主机字段仍要导出"
+    );
     let text = serde_json::to_string(&off).unwrap();
     assert!(!text.contains("SuperSecret123"), "明文密码不能出现在文件里");
     assert!(
@@ -1020,7 +1034,10 @@ fn apply_skip_excludes_new_host() {
         .map(|h| h["name"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(names.contains(&"new-b".to_string()));
-    assert!(!names.contains(&"new-a".to_string()), "被排除的新主机不能出现在库里");
+    assert!(
+        !names.contains(&"new-a".to_string()),
+        "被排除的新主机不能出现在库里"
+    );
     let skipped: Vec<&serde_json::Value> = out["rows"]
         .as_array()
         .unwrap()

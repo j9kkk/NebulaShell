@@ -33,22 +33,33 @@ fn shape(h: &Value) -> Value {
 
 fn shapes(v: &[Value]) -> Vec<Value> {
     let mut out: Vec<Value> = v.iter().map(shape).collect();
-    out.sort_by_key(|h| (h["host"].as_str().unwrap_or("").to_string(), h["port"].as_i64().unwrap_or(22)));
+    out.sort_by_key(|h| {
+        (
+            h["host"].as_str().unwrap_or("").to_string(),
+            h["port"].as_i64().unwrap_or(22),
+        )
+    });
     out
 }
 
 fn seed_three(store: &Store) {
     store
-        .save_host(&json!({ "name": "web-1", "host": "10.0.0.1", "port": 22, "username": "root",
-            "group": "生产", "tags": ["web"], "password": "pw-1" }))
+        .save_host(
+            &json!({ "name": "web-1", "host": "10.0.0.1", "port": 22, "username": "root",
+            "group": "生产", "tags": ["web"], "password": "pw-1" }),
+        )
         .unwrap();
     store
-        .save_host(&json!({ "name": "库", "host": "10.0.0.2", "port": 2222, "username": "dba",
+        .save_host(
+            &json!({ "name": "库", "host": "10.0.0.2", "port": 2222, "username": "dba",
             "group": "生产", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nxx\n",
-            "passphrase": "kp-2" }))
+            "passphrase": "kp-2" }),
+        )
         .unwrap();
     store
-        .save_host(&json!({ "name": "跳板", "host": "10.0.0.3", "username": "jump", "password": "pw-3" }))
+        .save_host(
+            &json!({ "name": "跳板", "host": "10.0.0.3", "username": "jump", "password": "pw-3" }),
+        )
         .unwrap();
 }
 
@@ -59,7 +70,9 @@ fn seed_three(store: &Store) {
 fn case01_export_shape_and_no_plaintext() {
     let (s, dir) = store("c01");
     seed_three(&s);
-    let out = s.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let out = s
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
     let text = text_of(&out);
     assert_eq!(out["version"], json!(4));
     assert_eq!(out["app"], json!("nebulashell"));
@@ -79,19 +92,33 @@ fn case01_export_shape_and_no_plaintext() {
 fn case02_roundtrip_full_to_empty_store() {
     let (a, da) = store("c02-a");
     seed_three(&a);
-    let text = text_of(&a.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap());
+    let text = text_of(
+        &a.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+            .unwrap(),
+    );
 
     let (b, db) = store("c02-b");
     let r = b.inspect_hosts(&text, None).unwrap();
-    assert_eq!(r["counts"], json!({ "add": 3, "credOnly": 0, "conflict": 0, "identical": 0, "invalid": 0 }));
+    assert_eq!(
+        r["counts"],
+        json!({ "add": 3, "credOnly": 0, "conflict": 0, "identical": 0, "invalid": 0 })
+    );
     let applied = b.apply_hosts(&text, None, &json!({})).unwrap();
     assert_eq!(applied["added"], json!(3));
     assert_eq!(applied["withCredentials"], json!(3));
 
     let list = b.list_hosts();
-    assert_eq!(shapes(&list), shapes(&a.list_hosts()), "往返后主机属性应一致");
+    assert_eq!(
+        shapes(&list),
+        shapes(&a.list_hosts()),
+        "往返后主机属性应一致"
+    );
     let by_host = |st: &Store, h: &str| -> Value {
-        let id = st.list_hosts().into_iter().find(|x| x["host"] == json!(h)).unwrap()["id"]
+        let id = st
+            .list_hosts()
+            .into_iter()
+            .find(|x| x["host"] == json!(h))
+            .unwrap()["id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -102,7 +129,10 @@ fn case02_roundtrip_full_to_empty_store() {
     assert_eq!(full["name"], json!("web-1"));
     assert_eq!(full["group"], json!("生产"));
     let full = by_host(&b, "10.0.0.2");
-    assert!(full["privateKey"].as_str().unwrap().contains("BEGIN OPENSSH"));
+    assert!(full["privateKey"]
+        .as_str()
+        .unwrap()
+        .contains("BEGIN OPENSSH"));
     assert_eq!(full["passphrase"], json!("kp-2"));
     let _ = std::fs::remove_dir_all(&da);
     let _ = std::fs::remove_dir_all(&db);
@@ -113,10 +143,18 @@ fn case02_roundtrip_full_to_empty_store() {
 fn case03_reimport_same_store_is_idempotent() {
     let (s, dir) = store("c03");
     seed_three(&s);
-    let text = text_of(&s.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap());
+    let text = text_of(
+        &s.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+            .unwrap(),
+    );
 
     let insp = s.inspect_hosts(&text, None).unwrap();
-    assert_eq!(insp["counts"]["identical"], json!(3), "同库重导应全部判一致: {}", insp);
+    assert_eq!(
+        insp["counts"]["identical"],
+        json!(3),
+        "同库重导应全部判一致: {}",
+        insp
+    );
     assert_eq!(insp["counts"]["conflict"], json!(0));
     let r = s.apply_hosts(&text, None, &json!({})).unwrap();
     assert_eq!(r["added"], json!(0));
@@ -135,11 +173,15 @@ fn case03_reimport_same_store_is_idempotent() {
 fn case04_roundtrip_three_generations_stable() {
     let (a, da) = store("c04-a");
     seed_three(&a);
-    let gen1 = a.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let gen1 = a
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
 
     let (b, db) = store("c04-b");
     b.apply_hosts(&text_of(&gen1), None, &json!({})).unwrap();
-    let gen2 = b.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let gen2 = b
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
     assert_eq!(
         shapes(gen1["hosts"].as_array().unwrap()),
         shapes(gen2["hosts"].as_array().unwrap()),
@@ -148,14 +190,20 @@ fn case04_roundtrip_three_generations_stable() {
 
     let (c, dc) = store("c04-c");
     c.apply_hosts(&text_of(&gen2), None, &json!({})).unwrap();
-    let gen3 = c.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let gen3 = c
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
     assert_eq!(
         shapes(gen2["hosts"].as_array().unwrap()),
         shapes(gen3["hosts"].as_array().unwrap())
     );
     // 凭据也要跨代保持
     let pw = |st: &Store| {
-        let id = st.list_hosts().into_iter().find(|h| h["host"] == json!("10.0.0.1")).unwrap()["id"]
+        let id = st
+            .list_hosts()
+            .into_iter()
+            .find(|h| h["host"] == json!("10.0.0.1"))
+            .unwrap()["id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -194,7 +242,9 @@ fn case06_valid_but_no_hosts() {
     for body in [json!({ "hosts": [] }), json!([])] {
         let e = s.inspect_hosts(&text_of(&body), None).unwrap_err();
         assert!(e.contains("没有主机记录"), "实际: {}", e);
-        let e = s.apply_hosts(&text_of(&body), None, &json!({})).unwrap_err();
+        let e = s
+            .apply_hosts(&text_of(&body), None, &json!({}))
+            .unwrap_err();
         assert!(e.contains("没有主机记录"), "实际: {}", e);
     }
     assert!(s.list_hosts().is_empty());
@@ -210,7 +260,10 @@ fn case07_wrong_format_files() {
         ("tsv", "name\thost\nweb\t10.0.0.1\n"),
         ("yaml", "hosts:\n  - name: web\n    host: 10.0.0.1\n"),
         ("html", "<html><body>not a config</body></html>"),
-        ("truncated", "{\"hosts\": [{\"name\": \"a\", \"host\": \"10.0.0.1\"}"),
+        (
+            "truncated",
+            "{\"hosts\": [{\"name\": \"a\", \"host\": \"10.0.0.1\"}",
+        ),
     ];
     for (tag, body) in cases {
         let e = s.inspect_hosts(body, None).unwrap_err();
@@ -224,7 +277,12 @@ fn case07_wrong_format_files() {
         );
     }
     // 合法 JSON 但结构不对:报结构错误,而不是笼统的 JSON 错误
-    for body in ["{\"app\":\"nebulashell\"}", "{\"hosts\": 42}", "42", "\"text\""] {
+    for body in [
+        "{\"app\":\"nebulashell\"}",
+        "{\"hosts\": 42}",
+        "42",
+        "\"text\"",
+    ] {
         let e = s.inspect_hosts(body, None).unwrap_err();
         println!("  {} -> {}", body, e);
         assert!(!e.is_empty());
@@ -237,7 +295,8 @@ fn case07_wrong_format_files() {
 #[test]
 fn case08_bad_row_rejects_whole_batch() {
     let (s, dir) = store("c08");
-    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1" })).unwrap();
+    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1" }))
+        .unwrap();
     let before = s.list_hosts();
 
     let bad = json!({
@@ -257,7 +316,8 @@ fn case08_bad_row_rejects_whole_batch() {
 #[test]
 fn case09_dangling_jump_rejected() {
     let (s, dir) = store("c09");
-    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1" })).unwrap();
+    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1" }))
+        .unwrap();
     let bad = json!({
         "app": "nebulashell", "version": 4,
         "hosts": [{ "id": "a", "name": "a", "host": "10.2.2.2", "jumpIds": ["nope"] }]
@@ -311,12 +371,14 @@ fn case11_duplicate_endpoint_not_duplicated() {
         "hosts": [{ "name": "web", "host": "10.9.9.9", "port": 22, "username": "root", "password": "p1" }] });
     let insp = s2.inspect_hosts(&text_of(&one_row), None).unwrap();
     assert_eq!(
-        insp["counts"]["conflict"].as_u64().unwrap() + insp["counts"]["identical"].as_u64().unwrap(),
+        insp["counts"]["conflict"].as_u64().unwrap()
+            + insp["counts"]["identical"].as_u64().unwrap(),
         1,
         "同端点应命中原有主机: {}",
         insp["counts"]
     );
-    s2.apply_hosts(&text_of(&one_row), None, &json!({})).unwrap();
+    s2.apply_hosts(&text_of(&one_row), None, &json!({}))
+        .unwrap();
     assert_eq!(s2.list_hosts().len(), 1, "不应新建重复主机");
 
     // v4:两台来自不同机器的同端点主机(不同 id)合并成一个文件 → 同样整份拒绝
@@ -325,7 +387,9 @@ fn case11_duplicate_endpoint_not_duplicated() {
         { "id": "a", "name": "web", "host": "10.9.9.9", "port": 22, "username": "root" },
         { "id": "b", "name": "web", "host": "10.9.9.9", "port": 22, "username": "root" }
     ] });
-    let e3 = s3.apply_hosts(&text_of(&merged), None, &json!({})).unwrap_err();
+    let e3 = s3
+        .apply_hosts(&text_of(&merged), None, &json!({}))
+        .unwrap_err();
     assert!(e3.contains("同一主机"), "{}", e3);
     assert_eq!(s3.list_hosts().len(), 0);
     let _ = std::fs::remove_dir_all(&dir);
@@ -341,7 +405,9 @@ fn case12_conflict_skip_and_overwrite() {
     let (src, dsrc) = store("c12-src");
     src.save_host(&json!({ "name": "改后名字", "host": "10.0.0.1", "username": "root", "password": "new-pw" }))
         .unwrap();
-    let src_out = src.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let src_out = src
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
     let src_id = src.list_hosts()[0]["id"].as_str().unwrap().to_string();
 
     // 本地同名 id、不同名字
@@ -354,14 +420,23 @@ fn case12_conflict_skip_and_overwrite() {
     assert_eq!(insp["counts"]["conflict"], json!(1));
     let rows = insp["rows"].as_array().unwrap();
     assert_eq!(rows[0]["kind"], json!("conflict"));
-    assert!(rows[0]["diff"].to_string().contains("名称"), "diff 应指出哪个字段不同");
-    assert_eq!(dst.list_hosts()[0]["name"], json!("本地名字"), "预检不得写盘");
+    assert!(
+        rows[0]["diff"].to_string().contains("名称"),
+        "diff 应指出哪个字段不同"
+    );
+    assert_eq!(
+        dst.list_hosts()[0]["name"],
+        json!("本地名字"),
+        "预检不得写盘"
+    );
 
     // skip
     let key = rows[0]["key"].as_str().unwrap().to_string();
     let mut decisions = serde_json::Map::new();
     decisions.insert(key.clone(), json!("skip"));
-    let r = dst.apply_hosts(&text, None, &Value::Object(decisions.clone())).unwrap();
+    let r = dst
+        .apply_hosts(&text, None, &Value::Object(decisions.clone()))
+        .unwrap();
     assert_eq!(r["skipped"], json!(1));
     assert_eq!(dst.list_hosts()[0]["name"], json!("本地名字"));
     let id = dst.list_hosts()[0]["id"].as_str().unwrap().to_string();
@@ -369,7 +444,9 @@ fn case12_conflict_skip_and_overwrite() {
 
     // overwrite
     decisions.insert(key, json!("overwrite"));
-    let r = dst.apply_hosts(&text, None, &Value::Object(decisions)).unwrap();
+    let r = dst
+        .apply_hosts(&text, None, &Value::Object(decisions))
+        .unwrap();
     assert_eq!(r["overwritten"], json!(1));
     assert_eq!(dst.list_hosts()[0]["name"], json!("改后名字"));
     assert_eq!(dst.host_full(&id).unwrap()["password"], json!("new-pw"));
@@ -384,12 +461,17 @@ fn case13_credentials_only_fill() {
     let (src, dsrc) = store("c13-src");
     src.save_host(&json!({ "name": "web-1", "host": "10.0.0.1", "username": "root", "password": "from-file" }))
         .unwrap();
-    let text = text_of(&src.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap());
+    let text = text_of(
+        &src.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+            .unwrap(),
+    );
     let src_id = src.list_hosts()[0]["id"].as_str().unwrap().to_string();
 
     let (dst, ddst) = store("c13-dst");
-    dst.save_host(&json!({ "id": src_id, "name": "web-1", "host": "10.0.0.1", "username": "root" }))
-        .unwrap();
+    dst.save_host(
+        &json!({ "id": src_id, "name": "web-1", "host": "10.0.0.1", "username": "root" }),
+    )
+    .unwrap();
     let insp = dst.inspect_hosts(&text, None).unwrap();
     assert_eq!(insp["counts"]["credOnly"], json!(1), "实际: {}", insp);
     let r = dst.apply_hosts(&text, None, &json!({})).unwrap();
@@ -407,19 +489,26 @@ fn case13_credentials_only_fill() {
 #[test]
 fn case14_passphrase_channel() {
     let (src, dsrc) = store("c14-src");
-    src.save_host(&json!({ "name": "web", "host": "10.0.0.1", "password": "hidden-pw" })).unwrap();
-    let out = src.export_hosts_scoped(&json!({ "mode": "all" }), Some("pass-123456"), false).unwrap();
+    src.save_host(&json!({ "name": "web", "host": "10.0.0.1", "password": "hidden-pw" }))
+        .unwrap();
+    let out = src
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass-123456"), false)
+        .unwrap();
     assert_eq!(out["credentials"]["alg"], json!("passphrase-scrypt/v1"));
     let text = text_of(&out);
     assert!(!text.contains("hidden-pw"));
 
     let (dst, ddst) = store("c14-dst");
-    assert_eq!(dst.inspect_hosts(&text, None).unwrap_err(), "NEEDS_PASSPHRASE");
+    assert_eq!(
+        dst.inspect_hosts(&text, None).unwrap_err(),
+        "NEEDS_PASSPHRASE"
+    );
     let e = dst.inspect_hosts(&text, Some("wrong-pass")).unwrap_err();
     assert!(e.contains("口令错误") || e.contains("损坏"), "实际: {}", e);
     let r = dst.inspect_hosts(&text, Some("pass-123456")).unwrap();
     assert_eq!(r["counts"]["add"], json!(1));
-    dst.apply_hosts(&text, Some("pass-123456"), &json!({})).unwrap();
+    dst.apply_hosts(&text, Some("pass-123456"), &json!({}))
+        .unwrap();
     let id = dst.list_hosts()[0]["id"].as_str().unwrap().to_string();
     assert_eq!(dst.host_full(&id).unwrap()["password"], json!("hidden-pw"));
     let _ = std::fs::remove_dir_all(&dsrc);
@@ -440,7 +529,10 @@ fn case15_encoding_and_line_endings() {
     assert_eq!(s.list_hosts()[0]["name"], json!("生产-网关"));
 
     // UTF-8 BOM:Windows 记事本另存常见,当前行为要记录在案
-    let bom = format!("\u{feff}{}", json!({ "version": 4, "hosts": [{ "id": "b", "host": "10.5.5.5" }] }));
+    let bom = format!(
+        "\u{feff}{}",
+        json!({ "version": 4, "hosts": [{ "id": "b", "host": "10.5.5.5" }] })
+    );
     let bom_err = s.inspect_hosts(&bom, None);
     println!("  UTF-8 BOM -> {:?}", bom_err.as_ref().err());
 
@@ -457,9 +549,11 @@ fn case15_encoding_and_line_endings() {
 fn case16_large_file_5000_hosts() {
     let (s, dir) = store("c16");
     let hosts: Vec<Value> = (0..5000)
-        .map(|i| json!({ "id": format!("src-{}", i), "name": format!("h-{}", i),
+        .map(|i| {
+            json!({ "id": format!("src-{}", i), "name": format!("h-{}", i),
             "host": format!("10.{}.{}.{}", i / 65536 % 256, i / 256 % 256, i % 256),
-            "port": 22, "username": "root", "group": format!("g-{}", i % 20) }))
+            "port": 22, "username": "root", "group": format!("g-{}", i % 20) })
+        })
         .collect();
     let file = text_of(&json!({ "app": "nebulashell", "version": 4, "hosts": hosts }));
     eprintln!("  fixture: {} KB / 5000 hosts", file.len() / 1024);
@@ -476,11 +570,20 @@ fn case16_large_file_5000_hosts() {
     assert_eq!(r["added"], json!(5000));
     assert_eq!(s.list_hosts().len(), 5000);
     assert!(apply_ms < 60_000, "5000 台落盘超过 60s,实际 {}ms", apply_ms);
-    assert!(inspect_ms < 30_000, "5000 台预检超过 30s,实际 {}ms", inspect_ms);
+    assert!(
+        inspect_ms < 30_000,
+        "5000 台预检超过 30s,实际 {}ms",
+        inspect_ms
+    );
 
     // 再导一次必须判一致(大规模下的匹配逻辑不走样)
     let insp = s.inspect_hosts(&file, None).unwrap();
-    assert_eq!(insp["counts"]["identical"], json!(5000), "重导分类应全一致: {}", insp["counts"]);
+    assert_eq!(
+        insp["counts"]["identical"],
+        json!(5000),
+        "重导分类应全一致: {}",
+        insp["counts"]
+    );
 
     // F-16 回归:二次导入(全部一致)是最坏路径 —— 旧实现每台都要全量扫 staged
     // (5000² 次 cred_key 分配),落盘 10.4s;现在走匹配索引,必须仍是线性。
@@ -488,7 +591,12 @@ fn case16_large_file_5000_hosts() {
     let again = s.apply_hosts(&file, None, &json!({})).unwrap();
     let reapply_ms = t.elapsed().as_millis();
     eprintln!("  reapply {} ms", reapply_ms);
-    assert_eq!(again["added"], json!(0), "重导不应新增主机: {}", again["added"]);
+    assert_eq!(
+        again["added"],
+        json!(0),
+        "重导不应新增主机: {}",
+        again["added"]
+    );
     assert_eq!(s.list_hosts().len(), 5000);
     assert!(
         reapply_ms < 5_000,
@@ -504,24 +612,45 @@ fn case16_large_file_5000_hosts() {
 #[test]
 fn case17_export_scope_and_jump_closure() {
     let (s, dir) = store("c17");
-    let jump = s.save_host(&json!({ "name": "跳板", "host": "10.0.0.3", "username": "jump" })).unwrap();
+    let jump = s
+        .save_host(&json!({ "name": "跳板", "host": "10.0.0.3", "username": "jump" }))
+        .unwrap();
     s.save_host(&json!({ "name": "web", "host": "10.0.0.1",
         "jumpIds": [jump["id"].as_str().unwrap()] }))
         .unwrap();
-    s.save_host(&json!({ "name": "db", "host": "10.0.0.2" })).unwrap();
+    s.save_host(&json!({ "name": "db", "host": "10.0.0.2" }))
+        .unwrap();
 
     // 全部
-    let all = s.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let all = s
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
     assert_eq!(all["hosts"].as_array().unwrap().len(), 3);
 
     // 选中:只选 web,跳板机应被闭包带进来,db 不带
-    let web_id = s.list_hosts().into_iter().find(|h| h["name"] == json!("web")).unwrap()["id"]
+    let web_id = s
+        .list_hosts()
+        .into_iter()
+        .find(|h| h["name"] == json!("web"))
+        .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let sel = s.export_hosts_scoped(&json!({ "mode": "ids", "ids": [web_id] }), None, false).unwrap();
-    let names: Vec<&str> = sel["hosts"].as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap()).collect();
-    assert_eq!(sel["hosts"].as_array().unwrap().len(), 2, "选中导出应带跳板闭包: {:?}", names);
+    let sel = s
+        .export_hosts_scoped(&json!({ "mode": "ids", "ids": [web_id] }), None, false)
+        .unwrap();
+    let names: Vec<&str> = sel["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        sel["hosts"].as_array().unwrap().len(),
+        2,
+        "选中导出应带跳板闭包: {:?}",
+        names
+    );
     assert!(names.contains(&"跳板") && names.contains(&"web") && !names.contains(&"db"));
     assert_eq!(sel["includedJumps"], json!(1));
 
@@ -529,13 +658,21 @@ fn case17_export_scope_and_jump_closure() {
     let (dst, ddst) = store("c17-dst");
     dst.apply_hosts(&text_of(&sel), None, &json!({})).unwrap();
     assert_eq!(dst.list_hosts().len(), 2);
-    let web = dst.list_hosts().into_iter().find(|h| h["name"] == json!("web")).unwrap();
+    let web = dst
+        .list_hosts()
+        .into_iter()
+        .find(|h| h["name"] == json!("web"))
+        .unwrap();
     assert_eq!(web["jumpIds"].as_array().unwrap().len(), 1);
 
     // 空选择 / 失效选择
-    let e = s.export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false).unwrap_err();
+    let e = s
+        .export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false)
+        .unwrap_err();
     assert!(e.contains("请先选择"), "实际: {}", e);
-    let e = s.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["gone"] }), None, false).unwrap_err();
+    let e = s
+        .export_hosts_scoped(&json!({ "mode": "ids", "ids": ["gone"] }), None, false)
+        .unwrap_err();
     assert!(e.contains("已不存在"), "实际: {}", e);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&ddst);
@@ -549,7 +686,8 @@ fn case17_export_scope_and_jump_closure() {
 fn case18_readonly_dir_save_failure() {
     use std::os::unix::fs::PermissionsExt;
     let (s, dir) = store("c18");
-    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1" })).unwrap();
+    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1" }))
+        .unwrap();
     let file = dir.join("nebulashell-config.json");
     let before = std::fs::read_to_string(&file).unwrap();
     let mem_before = s.list_hosts().len();
@@ -574,7 +712,10 @@ fn case18_readonly_dir_save_failure() {
         "落盘失败后内存主机数必须保持 {},实际 {}",
         mem_before, mem_after
     );
-    println!("  内存主机数 {} -> {}(磁盘与内存都未变)", mem_before, mem_after);
+    println!(
+        "  内存主机数 {} -> {}(磁盘与内存都未变)",
+        mem_before, mem_after
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -582,26 +723,37 @@ fn case18_readonly_dir_save_failure() {
 #[test]
 fn case19_backup_before_import_and_prune() {
     let (s, dir) = store("c19");
-    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1", "password": "plain-secret" })).unwrap();
+    s.save_host(&json!({ "name": "keep", "host": "10.1.1.1", "password": "plain-secret" }))
+        .unwrap();
     let backup_dir = dir.join("backup");
     // 先造 25 份"旧"备份,验证封顶清理
     std::fs::create_dir_all(&backup_dir).unwrap();
     for i in 0..25 {
         std::fs::write(
-            backup_dir.join(format!("nebulashell-backup-202001{:02}-000000.json", i % 31 + 1)),
+            backup_dir.join(format!(
+                "nebulashell-backup-202001{:02}-000000.json",
+                i % 31 + 1
+            )),
             "{\"hosts\":[]}",
         )
         .unwrap();
     }
     let text = text_of(&json!({ "version": 4, "hosts": [{ "id": "new", "host": "10.7.7.7" }] }));
     let r = s.apply_hosts(&text, None, &json!({})).unwrap();
-    let backup = r["backup"].as_str().expect("应写出一份导入前备份").to_string();
+    let backup = r["backup"]
+        .as_str()
+        .expect("应写出一份导入前备份")
+        .to_string();
     let body = std::fs::read_to_string(&backup).unwrap();
     assert!(body.contains("10.1.1.1"), "备份应含导入前主机");
     assert!(!body.contains("plain-secret"), "备份不应含明文口令");
     let left = std::fs::read_dir(&backup_dir).unwrap().count();
     eprintln!("  backups kept: {} (pruned {})", left, r["backupPruned"]);
-    assert!(left <= Store::BACKUP_KEEP + 1, "备份应封顶在 20 份左右,实际 {}", left);
+    assert!(
+        left <= Store::BACKUP_KEEP + 1,
+        "备份应封顶在 20 份左右,实际 {}",
+        left
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -618,7 +770,9 @@ fn case21_weird_field_values() {
         { "id": "b", "host": "10.0.0.2", "port": "abc" },
         { "id": "c", "host": "10.0.0.3", "name": "", "tags": "not-an-array" }
     ] });
-    let e = s.apply_hosts(&text_of(&file), None, &json!({})).unwrap_err();
+    let e = s
+        .apply_hosts(&text_of(&file), None, &json!({}))
+        .unwrap_err();
     assert!(e.contains("共 5 处问题"), "应一次列出全部坏字段: {}", e);
     assert!(e.contains("字段 port") && e.contains("70000"), "{}", e);
     assert!(e.contains("字段 username"), "{}", e);
@@ -647,16 +801,30 @@ fn case22_export_private_key_bundle() {
         "authType": "key", "keyPath": dir.join("missing").to_string_lossy() }))
         .unwrap();
 
-    let out = s.export_hosts_scoped(&json!({ "mode": "all" }), None, true).unwrap();
-    assert_eq!(out["includedKeys"], json!(1), "只应打包读得到且 ≤512KB 的私钥");
+    let out = s
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true)
+        .unwrap();
+    assert_eq!(
+        out["includedKeys"],
+        json!(1),
+        "只应打包读得到且 ≤512KB 的私钥"
+    );
     let text = text_of(&out);
 
     // 带私钥文件导入:keyFile 落到应用数据目录,0600
     let (dst, ddst) = store("c22-b");
     dst.apply_hosts(&text, None, &json!({})).unwrap();
-    let key_host = dst.list_hosts().into_iter().find(|h| h["name"] == json!("with-key")).unwrap();
+    let key_host = dst
+        .list_hosts()
+        .into_iter()
+        .find(|h| h["name"] == json!("with-key"))
+        .unwrap();
     let installed = key_host["keyPath"].as_str().unwrap_or("").to_string();
-    assert!(PathBuf::from(&installed).exists(), "私钥文件应已落地: {}", installed);
+    assert!(
+        PathBuf::from(&installed).exists(),
+        "私钥文件应已落地: {}",
+        installed
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -671,11 +839,18 @@ fn case22_export_private_key_bundle() {
 #[test]
 fn case20_adjacent_features_intact() {
     let (a, da) = store("c20-a");
-    let j = a.save_host(&json!({ "name": "跳板", "host": "10.0.0.3" })).unwrap();
-    a.save_host(&json!({ "name": "web", "host": "10.0.0.1", "group": "生产", "tags": ["web", "核心"],
-        "jumpIds": [j["id"].as_str().unwrap()] }))
+    let j = a
+        .save_host(&json!({ "name": "跳板", "host": "10.0.0.3" }))
         .unwrap();
-    let file = text_of(&a.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap());
+    a.save_host(
+        &json!({ "name": "web", "host": "10.0.0.1", "group": "生产", "tags": ["web", "核心"],
+        "jumpIds": [j["id"].as_str().unwrap()] }),
+    )
+    .unwrap();
+    let file = text_of(
+        &a.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+            .unwrap(),
+    );
 
     let (b, db) = store("c20-b");
     b.apply_hosts(&file, None, &json!({})).unwrap();
@@ -685,13 +860,22 @@ fn case20_adjacent_features_intact() {
     assert_eq!(web["group"], json!("生产"));
     assert_eq!(web["tags"], json!(["web", "核心"]));
     assert_eq!(web["jumpIds"].as_array().unwrap().len(), 1);
-    let jump_id = list.iter().find(|h| h["name"] == json!("跳板")).unwrap()["id"].as_str().unwrap().to_string();
-    assert_eq!(web["jumpIds"][0], json!(jump_id), "跳板引用应重映射到本机 ID");
+    let jump_id = list.iter().find(|h| h["name"] == json!("跳板")).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        web["jumpIds"][0],
+        json!(jump_id),
+        "跳板引用应重映射到本机 ID"
+    );
 
     // 导入后的主机照样能改、能删、能重排
     let web_id = web["id"].as_str().unwrap().to_string();
-    b.save_host(&json!({ "id": web_id, "name": "web-renamed", "host": "10.0.0.1", "group": "测试" }))
-        .unwrap();
+    b.save_host(
+        &json!({ "id": web_id, "name": "web-renamed", "host": "10.0.0.1", "group": "测试" }),
+    )
+    .unwrap();
     assert_eq!(b.host_full(&web_id).unwrap()["name"], json!("web-renamed"));
     b.reorder_hosts(&[web_id.clone(), jump_id.clone()]).unwrap();
     assert_eq!(b.list_hosts()[0]["id"], json!(web_id));
@@ -710,7 +894,10 @@ fn case20_adjacent_features_intact() {
 fn case23_file_changed_between_inspect_and_apply_is_rejected() {
     let (src, dsrc) = store("c23-src");
     seed_three(&src);
-    let good = text_of(&src.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap());
+    let good = text_of(
+        &src.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+            .unwrap(),
+    );
 
     let (dst, ddst) = store("c23-dst");
     let file = ddst.join("import.json");
@@ -720,13 +907,23 @@ fn case23_file_changed_between_inspect_and_apply_is_rejected() {
     // 1) 预检:返回内容指纹 + 字节数,用户看到的 rows 就是这份文件的
     let inspected = import_inspect_path(&dst, &p, None).unwrap();
     let digest = inspected["digest"].as_str().unwrap().to_string();
-    assert!(digest.starts_with("sha256:"), "指纹要带算法前缀: {}", digest);
-    assert_eq!(digest.len(), "sha256:".len() + 32, "sha256 前 16 字节 = 32 位十六进制");
+    assert!(
+        digest.starts_with("sha256:"),
+        "指纹要带算法前缀: {}",
+        digest
+    );
+    assert_eq!(
+        digest.len(),
+        "sha256:".len() + 32,
+        "sha256 前 16 字节 = 32 位十六进制"
+    );
     assert_eq!(inspected["bytes"], json!(good.len()));
     assert_eq!(inspected["inspect"]["rows"].as_array().unwrap().len(), 3);
 
     // 2) 用户确认之后,同一个路径的文件被换成另一份(模拟导出文件被覆盖/同步工具改写)
-    let mut other = src.export_hosts_scoped(&json!({ "mode": "all" }), None, false).unwrap();
+    let mut other = src
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .unwrap();
     other["hosts"][0]["host"] = json!("10.9.9.9");
     std::fs::write(&file, text_of(&other)).unwrap();
 
@@ -748,7 +945,10 @@ fn case23_file_changed_between_inspect_and_apply_is_rejected() {
     assert_eq!(r["result"]["added"], json!(3));
     let hosts = dst.list_hosts();
     assert_eq!(hosts.len(), 3);
-    assert!(hosts.iter().any(|h| h["host"] == json!("10.9.9.9")), "写入的应是修改后的那份文件");
+    assert!(
+        hosts.iter().any(|h| h["host"] == json!("10.9.9.9")),
+        "写入的应是修改后的那份文件"
+    );
 
     let _ = std::fs::remove_dir_all(&dsrc);
     let _ = std::fs::remove_dir_all(&ddst);
@@ -777,7 +977,11 @@ fn case24_invalid_rows_are_structured_and_default_rejects() {
 
     // 旧通道(hosts:importFile / 既有断言):整段中文问题串
     let e = s.inspect_hosts(&text, None).unwrap_err();
-    assert!(e.contains("导入文件校验失败") && e.contains("端口"), "{}", e);
+    assert!(
+        e.contains("导入文件校验失败") && e.contains("端口"),
+        "{}",
+        e
+    );
 
     // 结构化预检:不 Err,给出 invalidRows + 可预览的 rows
     let insp = s.inspect_hosts_detailed(&text, None).unwrap();
@@ -808,7 +1012,12 @@ fn case24_invalid_rows_are_structured_and_default_rejects() {
     // 预览行:两条有效 + 一条问题行(kind=invalid,前端不可勾选)
     let rows = insp["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
-    assert_eq!(rows.iter().filter(|r| r["kind"] == json!("invalid")).count(), 1);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r["kind"] == json!("invalid"))
+            .count(),
+        1
+    );
     assert_eq!(rows.iter().filter(|r| r["kind"] == json!("add")).count(), 2);
     assert_eq!(insp["counts"]["invalid"], json!(1));
 
@@ -830,10 +1039,22 @@ fn case25_allow_partial_writes_valid_rows_and_reports_invalid() {
     assert_eq!(r["added"], json!(2));
     assert_eq!(r["invalid"], json!(1));
     let rows = r["rows"].as_array().unwrap();
-    let bad = rows.iter().find(|row| row["result"] == json!("invalid")).unwrap();
+    let bad = rows
+        .iter()
+        .find(|row| row["result"] == json!("invalid"))
+        .unwrap();
     assert_eq!(bad["name"], json!("坏行"));
-    assert!(bad["reason"].as_str().unwrap().contains("端口"), "结果行要带原因: {}", bad);
-    assert_eq!(rows.iter().filter(|row| row["result"] == json!("written")).count(), 2);
+    assert!(
+        bad["reason"].as_str().unwrap().contains("端口"),
+        "结果行要带原因: {}",
+        bad
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["result"] == json!("written"))
+            .count(),
+        2
+    );
 
     let hosts = s.list_hosts();
     assert_eq!(hosts.len(), 2, "只有有效行落库");
@@ -853,8 +1074,14 @@ fn case25_allow_partial_writes_valid_rows_and_reports_invalid() {
 fn case26_file_level_issues_ignore_allow_partial() {
     let (s, dir) = store("c26");
     let text = serde_json::to_string(&json!({ "version": 4, "hosts": [] })).unwrap();
-    let e = s.apply_hosts_with(&text, None, &json!({}), true).unwrap_err();
-    assert!(e.contains("没有主机记录"), "空文件即使 allowPartial 也要拒绝: {}", e);
+    let e = s
+        .apply_hosts_with(&text, None, &json!({}), true)
+        .unwrap_err();
+    assert!(
+        e.contains("没有主机记录"),
+        "空文件即使 allowPartial 也要拒绝: {}",
+        e
+    );
     let insp = s.inspect_hosts_detailed(&text, None).unwrap_err();
     assert!(insp.contains("没有主机记录"), "预检也要整份拒绝: {}", insp);
     assert_eq!(s.list_hosts().len(), 0);
@@ -873,7 +1100,9 @@ fn case27_partial_import_rejects_jump_pointing_at_invalid_row() {
         ],
     }))
     .unwrap();
-    let e = s.apply_hosts_with(&text, None, &json!({}), true).unwrap_err();
+    let e = s
+        .apply_hosts_with(&text, None, &json!({}), true)
+        .unwrap_err();
     assert!(
         e.contains("所在的行校验失败"),
         "应指出跳板所在行校验失败,而不是含糊的悬空跳板: {}",
@@ -898,8 +1127,14 @@ fn case28_key_install_failure_is_reported() {
         "authType": "key", "keyPath": key_path.to_string_lossy()
     }))
     .unwrap();
-    let out = src.export_hosts_scoped(&json!({ "mode": "all" }), None, true).unwrap();
-    assert_eq!(out["includedKeys"], json!(1), "导出应带上私钥文件内容(凭据块是密文,不能靠文本匹配)");
+    let out = src
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true)
+        .unwrap();
+    assert_eq!(
+        out["includedKeys"],
+        json!(1),
+        "导出应带上私钥文件内容(凭据块是密文,不能靠文本匹配)"
+    );
     let text = text_of(&out);
 
     // 目标库:把 keys 目录的位置占成普通文件 → 私钥写盘必然失败
@@ -907,7 +1142,12 @@ fn case28_key_install_failure_is_reported() {
     std::fs::write(ddst.join("keys"), b"occupied").unwrap();
     let r = dst.apply_hosts(&text, None, &json!({})).unwrap();
     let row = &r["rows"][0];
-    assert_eq!(row["result"], json!("written"), "私钥装不上不该阻断主机写入: {}", row);
+    assert_eq!(
+        row["result"],
+        json!("written"),
+        "私钥装不上不该阻断主机写入: {}",
+        row
+    );
     let warn = row["warnings"][0].as_str().unwrap_or("");
     assert!(
         warn.contains("私钥写入失败"),

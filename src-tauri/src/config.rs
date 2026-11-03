@@ -582,7 +582,11 @@ impl MatchIndex {
             self.identity.entry(token.to_owned()).or_insert(i);
         }
         if let Some(ids) = h["importSourceIds"].as_array() {
-            for id in ids.iter().filter_map(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            for id in ids
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 self.identity.entry(id.to_owned()).or_insert(i);
             }
         }
@@ -2229,10 +2233,7 @@ impl Store {
                     let id = match remap.get(src) {
                         Some(id) => id.clone(),
                         None if invalid_ids.contains(src) => {
-                            return Err(format!(
-                                "跳板机 {} 所在的行校验失败,不能作为跳板导入",
-                                src
-                            ))
+                            return Err(format!("跳板机 {} 所在的行校验失败,不能作为跳板导入", src))
                         }
                         None => return Err(format!("导入文件含悬空跳板机: {}", src)),
                     };

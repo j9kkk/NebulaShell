@@ -612,7 +612,10 @@ pub async fn nebula_invoke(
             let with_keys = payload["withKeys"] == json!(true);
             // 「包含凭据」缺省开(向后兼容);显式 false 时文件里没有 credentials 块
             let with_cred = payload["withCredentials"] != json!(false);
-            let data = match state.store.export_hosts_with(&scope, pass, with_keys, with_cred) {
+            let data = match state
+                .store
+                .export_hosts_with(&scope, pass, with_keys, with_cred)
+            {
                 Ok(d) => d,
                 Err(e) => return err_msg(e),
             };
