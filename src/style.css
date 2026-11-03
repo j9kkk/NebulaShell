@@ -3871,6 +3871,9 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   color: var(--muted); font-size: 14px; line-height: 1;
 }
 :is(#ctx-menu, #ctx-sub) .ctx-parent[aria-disabled="true"] .ctx-sub-arrow { opacity: 0.6; }
+/* 二级菜单展开期间父项保持高亮:鼠标已经移到右边,若只靠 :hover,
+   父项会在子菜单开着时掉色,看起来像"没选中就展开了"(macOS 系统菜单一直是亮的)。 */
+:is(#ctx-menu, #ctx-sub) .ctx-parent[aria-expanded="true"] { background: var(--hover-bg); }
 
 /* 窗格工具条(terminal.js appendPaneButtons):右上角一条,右对齐,只有两个
    「本窗格框架」动作 —— [✕ 关闭窗格][⤢ 放大窗格]。悬停/焦点窗格时浮现,
