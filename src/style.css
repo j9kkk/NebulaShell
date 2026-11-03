@@ -51,6 +51,7 @@
   --tab-active-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   --tab-inactive-bg: rgba(19, 26, 38, 0.6);
   --radius: 10px;
+  --radius-tab: 8px;   /* 标签上圆角:.tab / .tab-ghost / .tab-home 共用 */
   /* 字体规范:UI 界面走 --font-ui(无衬线),终端命令/代码/路径等机器文本一律 --font-mono,
      各模块不得自行内联等宽栈(历史上有三种写法导致弹窗间字体不一致)。 */
   --font-ui: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
@@ -441,7 +442,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   user-select: none; -webkit-user-select: none;
 }
 #tabbar::-webkit-scrollbar { height: 0; }
-#tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
+#tabs { display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto; }
 .tab {
   position: relative;
   display: flex; align-items: center; gap: 6px;
@@ -449,7 +450,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   background: var(--tab-inactive-bg);
   border: 1px solid var(--border);
   border-bottom: none;
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-tab) var(--radius-tab) 0 0;
   cursor: pointer;
   font-size: 12px;
   color: var(--muted);
@@ -501,7 +502,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   background: linear-gradient(var(--drag-accent), var(--drag-accent)), var(--tab-active-bg) !important;
   border: 1px solid var(--accent);
   border-bottom: none;
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-tab) var(--radius-tab) 0 0;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   font-weight: 600;
   cursor: grabbing;
@@ -3780,7 +3781,23 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 /* 标签条不显示滚动条:#tabs 带窗口拖拽属性,Tauri 把点在滚动条上算作点在元素自身,
    拖滚动条会变成拖窗口。改用滚轮横向滚动、活动标签自动滚入、溢出时右端淡出 +
    「全部标签」按钮(见 terminal.js bindTabStrip)。 */
-#tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+/* 标签条不再撑满整行:＋ 要跟在最后一个标签右侧(见 index.html)。标签多到超过
+   可用宽度时 #tabs 收缩并横向滚动,＋ 停在行尾始终可点。 */
+#tabs { flex: 0 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tb-gap { flex: 1 1 auto; min-width: 8px; }
+/* 首页标签:未连接(还没有任何标签)时出现在最左。与 .tab 同高同圆角,只放图标、
+   没有标题与关闭 —— 它不是标签,是"这里就是首页"的锚点。有标签即 [hidden]。 */
+.tab-home {
+  flex: none; align-self: center; display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 26px;
+  /* 与 .tab 同形:上圆角、下沿贴标签行底边 */
+  border-radius: var(--radius-tab) var(--radius-tab) 0 0;
+  background: var(--tab-active-bg); border: 1px solid var(--tab-active-border); border-bottom: none;
+  color: var(--muted);
+}
+.tab-home[hidden] { display: none; }
+.tab-home .mi { display: inline-flex; }
+.tab-home svg { width: 14px; height: 14px; }
 #tabs::-webkit-scrollbar { display: none; }
 #tabs.overflowing:not(.at-end) {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
@@ -3790,12 +3807,21 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 #btn-tab-list .tab-count { font-variant-numeric: tabular-nums; }
 #btn-tab-list svg { width: 12px; height: 12px; }
 .tab { flex: 0 0 auto; max-width: 190px; }
+/* ＋ 紧跟最后一个标签:与标签同高、同节奏(标签 gap 4),且不画描边/底色 ——
+   它挨着的是"底部敞开的标签",再套一圈完整边框会像一颗甩在外面的悬浮按钮。
+   悬停/聚焦时才浮出底色,与标签的 hover 语言一致。 */
+#btn-newtab {
+  width: 26px; height: 26px; margin-left: -4px;
+  border: 1px solid transparent; background: none; color: var(--muted);
+  border-radius: var(--radius-tab);
+}
+#btn-newtab:hover { background: var(--surface-hover); color: var(--text); }
 .tab-title { display: inline-block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .icon-tb { --ctl-h: 28px; width: var(--ctl-h); padding: 0; font-size: 15px; flex: 0 0 auto; }
 .icon-tb.active { border-color: var(--accent); color: var(--accent); }
-/* 分体按钮:主按钮 + 右侧窄条 ▾(标签行的分屏、文件分屏的书签)。两者包在 .split-group 里,
-   不吃外层 gap;箭头 -1px 与主按钮共用一条分隔线,悬停/聚焦的一侧提到上层,
-   描边不被相邻按钮压住。 */
+/* 分体按钮(主按钮 + 右侧窄条 ▾):文件工具栏的书签组还在用
+   (.split-group.fp-bookmark-group)。标签行的分屏组已于 2026-11 下线,这里保留
+   规则本身 —— 删掉它会让书签组失去圆角缝合与负 margin,整行被撑到下一行。 */
 .split-group { display: inline-flex; flex: 0 0 auto; }
 .split-group > .btn:is(:hover, :focus-visible) { position: relative; z-index: 1; }
 .split-group > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -3804,7 +3830,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .split-group > .btn.split-caret svg { width: 12px; height: 12px; }
 .icon-tb .mi { display: inline-flex; align-items: center; justify-content: center; }
 /* 终端右键菜单(替代 WebView 原生菜单) */
-#ctx-menu {
+:is(#ctx-menu, #ctx-sub) {
   position: fixed; z-index: 80; min-width: min(168px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px);
@@ -3813,83 +3839,104 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: var(--menu-shadow);
 }
-#ctx-menu.hidden { display: none; }
-#ctx-menu .ctx-item {
+:is(#ctx-menu, #ctx-sub).hidden { display: none; }
+:is(#ctx-menu, #ctx-sub) .ctx-item {
   display: flex; align-items: center; gap: 8px;
   flex: none; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 6px;
   background: none; color: var(--text); font-size: 12px; text-align: left;
   cursor: pointer;
 }
-#ctx-menu .ctx-item:not([aria-disabled="true"]):is(:hover, :focus-visible) { background: var(--hover-bg); }
-#ctx-menu .ctx-label { min-width: 0; overflow-wrap: anywhere; }
+:is(#ctx-menu, #ctx-sub) .ctx-item:not([aria-disabled="true"]):is(:hover, :focus-visible) { background: var(--hover-bg); }
+:is(#ctx-menu, #ctx-sub) .ctx-label { min-width: 0; overflow-wrap: anywhere; }
 /* 开关项的 ✓ 列:菜单里只要有一个开关项,所有项都留这一列,文字起点对齐 */
-#ctx-menu .ctx-check { flex: none; width: 12px; margin-right: -2px; color: var(--accent2); font-size: 12px; text-align: center; }
-#ctx-menu .ctx-item:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: default; }
+:is(#ctx-menu, #ctx-sub) .ctx-check { flex: none; width: 12px; margin-right: -2px; color: var(--accent2); font-size: 12px; text-align: center; }
+:is(#ctx-menu, #ctx-sub) .ctx-item:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: default; }
 /* 禁用原因:焦点或鼠标停在禁用项上时出现在菜单底部(core.showMenuReason) */
-#ctx-menu .menu-reason {
+:is(#ctx-menu, #ctx-sub) .menu-reason {
   position: sticky; bottom: -6px; flex: none; margin: 4px -6px -6px; padding: 7px 16px;
   border-top: 1px solid var(--border); background: var(--panel);
   color: var(--muted); font-size: 11px; line-height: 1.4; white-space: normal;
 }
-#ctx-menu .menu-reason.hidden { display: none; }
-#ctx-menu .ctx-item .ctx-key { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+:is(#ctx-menu, #ctx-sub) .menu-reason.hidden { display: none; }
+:is(#ctx-menu, #ctx-sub) .ctx-item .ctx-key { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
 /* 破坏性操作(删除)在菜单里标红,避免与"下载/重命名"混在一起误点 */
-#ctx-menu .ctx-item.danger .ctx-label { color: var(--danger, #ff6b6b); }
-#ctx-menu .ctx-sep { flex: none; height: 1px; margin: 4px 6px; background: var(--border); }
+:is(#ctx-menu, #ctx-sub) .ctx-item.danger .ctx-label { color: var(--danger, #ff6b6b); }
+:is(#ctx-menu, #ctx-sub) .ctx-sep { flex: none; height: 1px; margin: 4px 6px; background: var(--border); }
+/* 二级菜单(标签右键 →「分屏与布局 ▸」):与一级同一套面板语言,窄一档;
+   z-index 略高,保证压在一级菜单之上。 */
+#ctx-sub { z-index: 81; min-width: 168px; }
+#ctx-sub .ctx-item[aria-expanded="true"] { background: var(--hover-bg); }
+:is(#ctx-menu, #ctx-sub) .ctx-parent .ctx-sub-arrow {
+  flex: none; margin-left: auto; padding-left: 10px;
+  color: var(--muted); font-size: 14px; line-height: 1;
+}
+:is(#ctx-menu, #ctx-sub) .ctx-parent[aria-disabled="true"] .ctx-sub-arrow { opacity: 0.6; }
 
-/* 窗格工具条(terminal.js appendPaneButtons):右上角一条,右对齐。
-   ✕⤢ 在悬停/焦点窗格时出现;文件·端口转发·广播 / 重连只在悬停或键盘聚焦
-   工具条时出现,打字时不遮挡终端右上角。隐藏用 opacity:各按钮位置固定不跳动。 */
+/* 窗格工具条(terminal.js appendPaneButtons):右上角一条,右对齐,只有两个
+   「本窗格框架」动作 —— [✕ 关闭窗格][⤢ 放大窗格]。悬停/焦点窗格时浮现,
+   打字时不遮挡终端右上角(用 opacity:按钮位置固定不跳动)。
+   data-solo="1"(这个标签只有一格)时整条不画:关闭=关标签、放大无意义,
+   两个按钮在这里只会和标签行、标题栏的按钮连成"第三排"。
+   会话级动作(广播/日志/重连)在状态栏,布局类在标签行的 ▾,不在这里重复。 */
 .pane-toolbar {
   position: absolute; top: 4px; right: 8px; z-index: 8;
   display: flex; align-items: center; gap: 6px; pointer-events: none;
 }
-.pane-tools-extra { display: flex; align-items: center; gap: 4px; }
-.pane-toolbar :is(.pane-tb-btn, .pane-close-btn, .pane-zoom-btn) {
+.pane-toolbar[data-solo="1"] { display: none; }
+.pane-toolbar :is(.pane-close-btn, .pane-zoom-btn) {
   display: flex; align-items: center; justify-content: center; gap: 4px;
   opacity: 0; pointer-events: none;
   min-width: 28px; height: 28px; padding: 0; font-size: 12px; line-height: 1;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   color: var(--muted); cursor: pointer;
 }
-.pane-toolbar :is(.pane-tb-btn, .pane-close-btn, .pane-zoom-btn):disabled { cursor: default; }
+.pane-toolbar :is(.pane-close-btn, .pane-zoom-btn):disabled { cursor: default; }
 .pane-toolbar svg { display: block; flex: none; width: 14px; height: 14px; }
-.pane-tb-sep { width: 1px; height: 16px; background: var(--border); opacity: 0; }
 .term-pane:is(:hover, .focused, :focus-within) .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
 /* 空窗格没有终端内容可遮挡:✕⤢ 常显,它是这个窗格唯一的关闭/放大入口
    (选择器自己不再画 ✕)。 */
 .pane-toolbar[data-kind="empty"] :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
-.term-pane:hover .pane-toolbar :is(.pane-tb-btn, .pane-tb-sep),
-.pane-toolbar:focus-within :is(.pane-tb-btn, .pane-tb-sep) { opacity: 1; pointer-events: auto; }
 /* 不可用的按钮在工具条浮现时半透明(原因在 title 里),隐藏时照样隐藏 */
-.term-pane:hover .pane-toolbar .pane-tb-btn:disabled,
-.pane-toolbar:focus-within .pane-tb-btn:disabled,
 .term-pane:is(:hover, .focused, :focus-within) .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn):disabled { opacity: 0.45; }
-/* 按窗格形态取舍:文件分屏和空窗格只留 ✕⤢;断开时只给重连;已连接时不给重连 */
-.pane-toolbar:not([data-kind="term"]) :is(.pane-tools-extra, .pane-tb-sep),
-.pane-toolbar[data-conn="connecting"] :is(.pane-tools-extra, .pane-tb-sep) { display: none; }
-.pane-toolbar[data-conn="down"] :is(.pane-tb-file, .pane-tb-forward, .pane-tb-broadcast),
-.pane-toolbar[data-conn="connected"] .pane-tb-reconnect { display: none; }
-.pane-tb-reconnect { padding: 0 8px !important; color: var(--accent) !important; }
-/* 广播期间每个已连接窗格都显示广播按钮,参与者高亮 */
-body.broadcasting .pane-toolbar[data-conn="connected"] .pane-tb-broadcast { opacity: 1; pointer-events: auto; }
-/* 会话日志:录制中(data-log="on")红点呼吸;已暂停(data-log="paused")红色常亮。
-   未连接时工具条隐藏了 file/forward/broadcast,但日志按钮仍要可见可点(停止入口)。 */
-.pane-toolbar[data-log="on"] .pane-tb-log,
-.pane-toolbar[data-log="paused"] .pane-tb-log { opacity: 1; pointer-events: auto; }
-.pane-toolbar[data-log="on"] .pane-tb-log { color: var(--danger, #ff6b6b); animation: pulse 1s infinite; }
-.pane-toolbar[data-log="paused"] .pane-tb-log { color: var(--danger, #ff6b6b); }
-.pane-toolbar .pane-tb-broadcast.active { color: var(--warn, #f5a524); border-color: var(--warn, #f5a524); }
-.pane-toolbar .pane-tb-btn:not(:disabled):hover, .pane-zoom-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
+.pane-zoom-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
 .pane-close-btn:not(:disabled):hover { color: var(--danger); border-color: var(--danger); }
 /* 触摸设备没有 hover:操作入口始终可见 */
 @media (hover: none), (any-pointer: coarse) {
-  .term-pane .pane-toolbar :is(.pane-tb-btn, .pane-tb-sep, .pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
+  .term-pane .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
 }
 .zoom-chip {
   order: -1; display: inline-flex; align-items: center; height: 28px; cursor: pointer; pointer-events: auto;
   font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
   border-radius: 6px; padding: 0 8px; background: var(--bg2);
+}
+/* 会话日志录制中的窗格(2026-11):内描边呼吸 + 右下角图标同频闪。
+   描边画在伪元素上 —— 不占 outline(焦点环是 outline:1px accent),也不会把
+   终端文字一起闪:动画只作用于伪元素与角标两个盒子。
+   角标节点常驻 DOM(默认 display:none),随 .pane-rec 同帧出现/起播,所以与
+   描边共用同一条 2.4s 时间轴时相位一致;若在录制开始时才创建节点,两者会差
+   一帧以上,看起来就是"各闪各的"。 */
+@keyframes rec-breath { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+.term-pane.pane-rec::after {
+  /* inset 2px:焦点环是贴边 1px 的 outline,红框退到里面 2px 才不会被它压住 ——
+     录制中的窗格通常就是焦点窗格,两条线必须能同时看见。 */
+  content: ''; position: absolute; inset: 2px; z-index: 6; pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--danger), inset 0 0 16px color-mix(in srgb, var(--danger) 24%, transparent);
+  animation: rec-breath 2.4s ease-in-out infinite;
+}
+.pane-rec-badge {
+  position: absolute; right: 8px; bottom: 7px; z-index: 8;
+  width: 20px; height: 20px; display: none; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm, 6px); color: var(--danger); background: var(--bg2);
+  border: 1px solid currentColor; pointer-events: none;
+}
+.term-pane.pane-rec .pane-rec-badge { display: flex; animation: rec-breath 2.4s ease-in-out infinite; }
+.pane-rec-badge svg { display: block; width: 12px; height: 12px; }
+/* 断开横幅占据底部时角标上移让位(横幅高约 30px,底距 4px) */
+.term-pane.pane-rec:has(.pane-status-banner) .pane-rec-badge { bottom: 38px; }
+/* 减弱动态:两者一起常亮,不呼吸 */
+@media (prefers-reduced-motion: reduce) {
+  .term-pane.pane-rec::after,
+  .term-pane.pane-rec .pane-rec-badge { animation: none; opacity: 0.85; }
 }
 /* 窗格状态横幅:分屏后状态栏只反映活动会话,断开的窗格在这里就地说明原因与
    重连方式。悬浮于底部避开右上角的常驻窗格按钮,也不遮盖中上部的最后输出。 */

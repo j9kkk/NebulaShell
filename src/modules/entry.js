@@ -3,7 +3,7 @@ import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenu
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { createSequenceFilter } from '../shared/term-text.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
-import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleBroadcastMember, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
+import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
 import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
 import { bindHostLibrary, openHostLibrary } from './host-library.js';
 import { openExportDialog, openImportDialog, setupTransfer } from './transfer.js';
@@ -41,8 +41,10 @@ export function termFromEvent(e) {
   return sid ? state.sessions.get(sid) || null : null;
 }
 
-/// 终端右键菜单:编辑 / 当前会话 / 窗格 / 会话连接 四组。除复制粘贴外都走
-/// 命令注册表,带显式目标(右键所在的会话),快捷键提示按平台渲染。
+/// 终端右键 = **光标下这一格**的内容与开关(8 项,三段)。
+/// 布局类(分屏/文件分屏/放大/关闭)、连接类(断开·重连)、广播、端口转发都在
+/// 标签菜单里 —— 它们的对象是"标签/连接",不是这一格的内容;而且状态栏按钮只
+/// 作用活动格,右键菜单才是唯一能对非活动格下手的地方,所以只保留这类动作。
 export function openTermCtxMenu(e, session) {
   const term = session.term;
   // 选区文本在"菜单打开时"快照:若等点击菜单项时再读 getSelection,
@@ -51,7 +53,6 @@ export function openTermCtxMenu(e, session) {
   const selText = (() => { try { return term.getSelection() || ''; } catch { return ''; } })();
   const ctx = { sessionId: session.sessionId, paneId: session.paneId, tabId: session.tabId };
   const item = (id, overrides) => commandMenuItem(id, ctx, overrides);
-  const connected = ['connected', 'connecting'].includes(session.status);
   showCtxMenu(e.clientX, e.clientY, [
     { label: '复制', key: accelOf('term.copy'), disabled: !selText, reason: '没有选中的内容', run: () => {
       copyText(selText).then((ok) => toast(ok ? `已复制 ${selText.length} 个字符` : '复制失败：剪贴板不可用', ok ? 'success' : 'error'));
@@ -63,32 +64,10 @@ export function openTermCtxMenu(e, session) {
     // tips 与原 AI 面板「诊断报错」按钮的 title 一致
     item('session.diagnose', { title: '只取最后一次输入的命令及其控制台输出,让 AI 诊断' }),
     item('session.clear'),
+    '-',
     item('session.readonly'),
     item('session.log'),
-    '-',
-    item('pane.split'),
-    item('tab.file.add'),
-    item('pane.zoom'),
-    item('workspace.close', { danger: true }),
-    '-',
-    connected ? item('session.disconnect', { danger: true }) : item('session.reconnect'),
-    item('tools.broadcast'),
-    item('tools.forwards'),
-    '-',
-    { label: '复制会话 ID', run: () => { copyText(session.sessionId).then((ok) => toast(ok ? '已复制会话 ID' : '复制失败', ok ? 'success' : 'error')); } },
   ], { label: '终端菜单' });
-}
-
-/// 分屏按钮的下拉:⛶ 本体仍是分屏,▾ 打开布局类命令。
-function splitMenuItems() {
-  return [
-    commandMenuItem('pane.split'),
-    commandMenuItem('tab.file.add'),
-    '-',
-    commandMenuItem('pane.reflow'),
-    commandMenuItem('pane.zoom'),
-    commandMenuItem('workspace.tile'),
-  ];
 }
 
 /// 侧栏「⠇」:主机库层面的操作 + 视图开关。
@@ -399,7 +378,8 @@ function setupWorkspaceCommands() {
     if (t.explicit) return togglePaneZoom(t.paneId, t.tab.id);
     return togglePaneZoom(state.zoomPaneId || focusedPaneId());
   } });
-  registerCommand('pane.reflow', { label: '整理标签分屏', category: 'layout', keywords: ['reflow', 'arrange', 'layout', 'zl', 'zhengli', 'buju'], enabled: () => count() > 1, reason: '当前标签只有一个窗格', run: autoLayoutTab });
+  registerCommand('pane.reflow', { label: '整理标签分屏', category: 'layout', keywords: ['reflow', 'arrange', 'layout', 'zl', 'zhengli', 'buju'],
+    enabled: (ctx) => count(ctx) > 1, reason: '当前标签只有一个窗格', run: (ctx) => autoLayoutTab(targetOf(ctx).tab?.id) });
   registerCommand('tabs.list', { label: '全部标签', category: 'layout', keywords: ['all tabs', 'tab list', 'switch tab', 'qbbq', 'biaoqian', 'liebiao'], enabled: () => state.tabs.size > 0, reason: '没有打开的标签', run: () => openTabList() });
   registerCommand('workspace.tile', { label: '标签平铺', category: 'layout', keywords: ['tile tabs', 'grid', 'bqpp', 'pingpu'], checked: () => state.workspace.mode === 'tiled', enabled: () => state.workspace.mode === 'tiled' || state.tabs.size >= 2, reason: '需要至少 2 个标签', run: toggleTabTiling });
   registerCommand('workspace.close', { label: (ctx) => {
@@ -437,38 +417,16 @@ function setupWorkspaceCommands() {
     checked: (ctx) => !!session(ctx)?.logActive, run: (ctx) => toggleSessionLog(session(ctx).sessionId) });
   registerCommand('session.log.folder', { label: '打开日志文件夹', category: 'session', keywords: ['log folder', 'logs', 'rzwjj', 'rizhi'], run: () => openLogFolder() });
   registerCommand('session.diagnose', { label: '用 AI 诊断报错', category: 'session', keywords: ['diagnose', 'error', 'ai', 'zdbc', 'zhenduan'], enabled: (ctx) => !!session(ctx), reason: noSession, run: async (ctx) => { focusTarget(ctx); if (await aiDiagnose()) setRightPanel(true, 'ai'); } });
-  // 广播随状态换动词,不打 ✓。广播期间,显式目标(窗格工具条、右键菜单)是
-  // 该会话的加入 / 退出开关,按下态表示参与。
-  const broadcastMember = (ctx) => {
-    const t = targetOf(ctx);
-    return t.explicit && state.broadcast && t.session ? t.session : null;
-  };
-  registerCommand('tools.broadcast', { label: (ctx) => {
-    const member = broadcastMember(ctx);
-    if (member) return state.broadcast.has(member.sessionId) ? '退出广播' : '加入广播';
-    return state.broadcast ? '停止广播' : '广播输入';
-  }, kind: 'action', category: 'session', keywords: ['broadcast', 'multi input', 'gbsr', 'guangbo'],
-  // 只有「选会话」这一步会向用户要东西:广播中(停止)与显式目标(加入/退出)都不加「…」
-  asks: (ctx) => !broadcastMember(ctx) && !state.broadcast,
-  enabled: (ctx) => {
-    const member = broadcastMember(ctx);
-    if (member) return member.status === 'connected' && (state.broadcast.has(member.sessionId) || !member.readOnly);
-    return !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly);
-  },
-  reason: (ctx) => {
-    const member = broadcastMember(ctx);
-    if (member) return member.status !== 'connected' ? '会话未连接' : '只读会话不参与广播';
-    return '没有可写入的已连接会话（只读会话不参与广播）';
-  },
-  checked: (ctx) => {
-    const t = targetOf(ctx);
-    return t.explicit && t.session ? !!state.broadcast?.has(t.session.sessionId) : undefined;
-  },
-  run: (ctx) => {
-    const member = broadcastMember(ctx);
-    if (member) return toggleBroadcastMember(member.sessionId);
-    return openBroadcastPicker({ sessionId: targetOf(ctx).explicit ? session(ctx)?.sessionId : undefined });
-  } });
+  // 广播:只有"开始(选会话)/停止"两个动作 —— 退出广播看横幅,成员中途不可改
+  // (2026-11 明确:要改范围就停止再重选)。逐格加入/退出已从菜单移除,
+  // 相应的 broadcastMember 分支与 toggleBroadcastMember 一并下线。
+  registerCommand('tools.broadcast', { label: () => (state.broadcast ? '停止广播' : '广播输入'),
+    kind: 'action', category: 'session', keywords: ['broadcast', 'multi input', 'gbsr', 'guangbo'],
+    // 只有「选会话」这一步会向用户要东西;广播中再点就是停止,不加「…」
+    asks: () => !state.broadcast,
+    enabled: () => !!state.broadcast || [...state.sessions.values()].some((s) => s.status === 'connected' && !s.readOnly),
+    reason: () => '没有可写入的已连接会话（只读会话不参与广播）',
+    run: () => openBroadcastPicker() });
   registerCommand('tools.batch', { label: '批量执行', category: 'host', kind: 'dialog', keywords: ['batch', 'run on hosts', 'plzx', 'piliang'], run: openBatchModal });
   registerCommand('tools.forwards', { label: '端口转发', category: 'session', kind: 'dialog', keywords: ['port forward', 'tunnel', 'dkzf', 'zhuanfa'],
     run: (ctx) => openForwardModal({ hostId: targetOf(ctx).explicit ? session(ctx)?.host?.id : undefined }) });
@@ -494,7 +452,7 @@ function setupWorkspaceCommands() {
   });
 
   const buttons = {
-    'btn-newtab': 'tab.new', 'btn-split': 'pane.split', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
+    'btn-newtab': 'tab.new', 'btn-ai-toggle': 'panel.tools', 'btn-sidebar-toggle': 'panel.sidebar',
     'btn-readonly': 'session.readonly', 'btn-log-toggle': 'session.log', 'btn-clear': 'session.clear', 'btn-reconnect': 'session.reconnect', 'btn-disconnect': 'session.disconnect',
     'btn-add-host': 'host.new', 'btn-welcome-add': 'host.new', 'btn-welcome-import': 'hosts.import', 'btn-welcome-cloud': 'cloud.import',
   };
@@ -505,7 +463,6 @@ function setupWorkspaceCommands() {
     if (el) el.dataset.command = command;
   }
   bindCommandButtons();
-  bindMenuButton($('#btn-split-menu'), splitMenuItems, { label: '布局', alignRight: true });
   bindMenuButton($('#btn-host-manage'), hostManageItems, { label: '主机管理' });
   document.addEventListener('nebula:state-change', refreshCommandStates);
   document.addEventListener('nebula:modal-scope', refreshCommandStates);
@@ -1909,7 +1866,7 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
     accelTitles: () => ({
       platform: window.nebula.platform,
       newtab: $('#btn-newtab').title,
-      split: $('#btn-split').title,
+      split: commandMenuItem('pane.split').key,
       // 关闭窗格的快捷键提示改在终端右键等菜单里显示,取同一份渲染结果
       closePane: commandMenuItem('workspace.close').key,
       hasDirectionMenus: !!$('#btn-split-left-right') || !!$('#btn-split-top-bottom'),

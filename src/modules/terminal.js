@@ -95,11 +95,32 @@ export function openTabCtxMenu(x, y, tabId) {
   const ids = [...state.tabs.keys()];
   const idx = ids.indexOf(tabId);
   const firstSession = [...state.sessions.values()].find((s) => s.tabId === tabId);
+  const live = !!firstSession && ['connected', 'connecting'].includes(firstSession.status);
+  const paneCount = tab.panes.size;
+  // 布局类命令都要显式窗格目标(pane.zoom / workspace.close 按目标算名称与可用性),
+  // 落点 = 该标签的活动窗格,没有则第一个叶子。
+  const anchorPane = tab.activePaneId || firstLeafPaneId(tab.layout) || null;
+  const layoutCtx = anchorPane ? { tabId, paneId: anchorPane } : { tabId };
+  const layoutItems = [
+    commandMenuItem('pane.split', layoutCtx),
+    commandMenuItem('tab.file.add', layoutCtx),
+    '-',
+    commandMenuItem('pane.reflow', { tabId }),
+    commandMenuItem('workspace.tile'),
+    commandMenuItem('pane.zoom', layoutCtx),
+    ...(paneCount > 1 ? ['-', commandMenuItem('workspace.close', layoutCtx, { danger: true })] : []),
+  ];
   showCtxMenu(x, y, [
     // 键位属于「活动标签」而不是右键的这个标签,所以这里只给名称不给键位(S6)
-    { label: '关闭标签', danger: true, run: () => closeTab(tabId) },
-    { label: '关闭其他标签', disabled: ids.length <= 1, run: () => { for (const id of ids) if (id !== tabId) closeTab(id); } },
-    { label: '关闭右侧标签', disabled: idx >= ids.length - 1, run: () => { for (const id of ids.slice(idx + 1)) closeTab(id); } },
+    commandMenuItem('tab.new'),
+    // 分屏与布局:低频、成组,收一级菜单的子级 —— 标签行不再有 ⛶▾ 两颗常驻按钮
+    { label: '分屏与布局', submenu: layoutItems },
+    '-',
+    // 广播:不传 ctx —— 传了 tabId 会让注册表把它当成"这一格的加入/退出",
+    // 这里要的是"开始广播…"这个选会话卡(广播中则为「停止广播」)
+    commandMenuItem('tools.broadcast'),
+    commandMenuItem('tools.forwards', { tabId }),
+    ...(firstSession ? [live ? commandMenuItem('session.disconnect', { tabId }) : commandMenuItem('session.reconnect', { tabId })] : []),
     '-',
     commandMenuItem('tab.rename', { tabId }),
     {
@@ -108,10 +129,10 @@ export function openTabCtxMenu(x, y, tabId) {
         copyText(`${h.username}@${h.host}:${h.port}`).then((ok) => toast(ok ? '已复制主机地址' : '复制失败', ok ? 'success' : 'error'));
       },
     },
-    // 文件管理是标签内的分屏之一:与「新增分屏」对称的入口,可连续开多个
-    commandMenuItem('tab.file.add', { tabId }),
     '-',
-    commandMenuItem('tab.new'),
+    { label: '关闭标签', danger: true, run: () => closeTab(tabId) },
+    { label: '关闭其他标签', disabled: ids.length <= 1, run: () => { for (const id of ids) if (id !== tabId) closeTab(id); } },
+    { label: '关闭右侧标签', disabled: idx >= ids.length - 1, run: () => { for (const id of ids.slice(idx + 1)) closeTab(id); } },
   ], { label: '标签菜单' });
 }
 
@@ -528,24 +549,28 @@ export function syncTabChrome() {
   }
   // 活动标签换了标题(新建后连上主机、重命名)宽度会变,可能被挤出可视区
   if (activeRetitled) revealActiveTab();
+  // 首页标签:只在"还没有任何标签"(未连接)时出现;一有标签就收起。
+  // 它不在 state.tabs 里,所以平铺、⌘1..9、全部标签都不受影响。
+  const home = $('#tab-home');
+  if (home) home.hidden = state.tabs.size > 0;
   syncWorkspaceChrome(state.tabs, state.activeTabId);
 }
 
 // —— 分屏布局(E3):二叉布局树,leaf 持有 paneId ——
 export function newPaneId() { return 'pane-' + (++state.paneSeq); }
 
-// 窗格工具条(终端窗格右上角;文件分屏在文件工具栏行尾):[已放大·还原] [文件][端口转发][广播] / [重连] │ [✕][⤢]。
-// ✕⤢ 常驻(关闭对空窗格同样有效 —— 没有会话的窗格此前关不掉);其余按钮在
-// 悬停或键盘聚焦工具条时浮现,广播期间广播按钮一直显示本会话是否参与。
-// 所有按钮带显式目标(data-cmd-pane/tab),名称与可用状态取自命令注册表,
-// 不抢焦点、不切标签。✕⤢ 直接调用窗格级函数(direct),不依赖注册表也能用。
-const PANE_TOOLS = [
-  { cls: 'pane-tb-file', command: 'tab.file.add', icon: 'folderPlus' },
-  { cls: 'pane-tb-forward', command: 'tools.forwards', icon: 'shuffle' },
-  { cls: 'pane-tb-broadcast', command: 'tools.broadcast', icon: 'megaphone' },
-  { cls: 'pane-tb-log', command: 'session.log', icon: 'circleDot' },
-  { cls: 'pane-tb-reconnect', command: 'session.reconnect', icon: 'rotate', text: '重连' },
-];
+// 窗格工具条(终端窗格右上角)只放**这一个窗格的框架动作**:[✕ 关闭][⤢ 放大]。
+// 并且只在多窗格时出现 —— 单窗格时关掉它就等于关掉标签(标签行已有 ✕)、放大
+// 也无意义,这两个按钮在这里是纯噪声。
+//
+// 2026-11 之前这里有 6 个无文字图标(文件分屏/端口转发/广播/日志/重连/✕⤢),
+// 与「终端右键菜单」几乎一一重合,而后者带文字标签;于是右上角留下一排"看不出
+// 管什么"的按钮。按作用域拆开后每个动作都只留一个常驻入口:
+//   文件分屏 · 重排 · 平铺 · 放大 → 标签行右侧 ▾(entry.js splitMenuItems)
+//   端口转发                     → 侧栏「⠇」/ 终端右键菜单
+//   会话日志 · 重连 · 广播        → 状态栏(会话控制面,#btn-log-toggle 等)
+//   关闭窗格 · 放大窗格           → 本工具条(多窗格时)+ 终端右键菜单
+const PANE_TOOLS = [];
 
 function paneToolButton(cls, command, paneId, tabId, direct = null) {
   const btn = document.createElement('button');
@@ -572,39 +597,51 @@ export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
   bar.className = 'pane-toolbar';
   bar.setAttribute('role', 'toolbar');
   bar.setAttribute('aria-label', '窗格操作');
-  const extra = document.createElement('span');
-  extra.className = 'pane-tools-extra';
   for (const tool of PANE_TOOLS) {
     const btn = paneToolButton(`pane-tb-btn ${tool.cls}`, tool.command, paneId, tabId);
     btn.innerHTML = icon(tool.icon) + (tool.text ? `<span class="pane-tb-text">${tool.text}</span>` : '');
-    extra.appendChild(btn);
+    bar.appendChild(btn);
   }
-  const sep = document.createElement('span');
-  sep.className = 'pane-tb-sep';
   const closeBtn = paneToolButton('pane-close-btn', 'workspace.close', paneId, tabId, () => closeActivePane(paneId, tabId));
   closeBtn.innerHTML = icon('x');
   closeBtn.title = '关闭窗格';
   const zoomBtn = paneToolButton('pane-zoom-btn', 'pane.zoom', paneId, tabId, () => togglePaneZoom(paneId, tabId));
   zoomBtn.innerHTML = icon('zoom');
   zoomBtn.title = '放大窗格';
-  for (const child of [extra, sep, closeBtn, zoomBtn]) bar.appendChild(child);
+  for (const child of [closeBtn, zoomBtn]) bar.appendChild(child);
   // 文件分屏:✕⤢ 放进文件工具栏行尾。悬浮在右上角会盖住窄窗格里的工具按钮
   const host = el.classList?.contains?.('file-pane') ? el.querySelector('.file-toolbar') || el : el;
   host.appendChild(bar);
+  appendRecordBadge(el);
+}
+
+/// 录制中的角落图标:常驻 DOM(默认 display:none),只为与内描边呼吸共用同一条
+/// 时间轴 —— 录到一半才创建节点会让两者的相位错开(见 style.css 的 rec-breath)。
+function appendRecordBadge(el) {
+  if (el.querySelector('.pane-rec-badge')) return;
+  const badge = document.createElement('span');
+  badge.className = 'pane-rec-badge';
+  badge.setAttribute('aria-hidden', 'true');
+  badge.title = '正在记录会话日志';
+  badge.innerHTML = icon('circleDot');
+  el.appendChild(badge);
 }
 
 /// 工具条的形态随窗格变化:data-kind = term / file / empty,data-conn =
-/// connected / connecting / down;按钮状态和名称由注册表按显式目标刷新。
+/// connected / connecting / down;data-solo="1" 表示这个标签只有一个窗格 ——
+/// 此时两个框架按钮都不成立(关闭=关标签,放大=无意义),整条工具条不画。
 export function syncPaneButtons(tab = activeTab()) {
   if (!tab) return;
+  const solo = leafCount(tab.layout) <= 1;
   for (const pane of tab.panes.values()) {
     const bar = pane.el.querySelector('.pane-toolbar');
     if (!bar) continue;
     const session = pane.sessionId ? state.sessions.get(pane.sessionId) : null;
     bar.dataset.kind = pane.kind === 'file' ? 'file' : session ? 'term' : 'empty';
     bar.dataset.conn = session ? (['connected', 'connecting'].includes(session.status) ? session.status : 'down') : '';
-    // 日志按钮显隐:录制中/已暂停时常显(含未连接 —— 那是唯一停止入口),其余随工具条悬停
-    bar.dataset.log = session && session.logActive ? (session.status === 'connected' ? 'on' : 'paused') : 'off';
+    bar.dataset.solo = solo ? '1' : '0';
+    // 录制中的窗格:内描边呼吸 + 右下角图标(只是状态,入口在状态栏)
+    pane.el.classList.toggle('pane-rec', !!(session && session.logActive));
     const enlarged = tab.zoomPaneId === pane.id;
     const zoom = bar.querySelector('.pane-zoom-btn');
     if (zoom) {
@@ -1436,8 +1473,8 @@ export function closeActivePane(targetPaneId, tabId) {
 /// 手动分屏容易越分越歪(自定义比例 + 嵌套结构),窗格数一多就出现极窄条。
 /// 这里按窗格数算出行列数,重建为行列均衡的二叉布局,比例全部回到等分。
 /// 网格算法与"新增分屏后自动整理"共用 buildGrid,避免两处规则漂移。
-export function autoLayoutTab() {
-  const tab = activeTab();
+export function autoLayoutTab(tabId) {
+  const tab = tabId ? state.tabs.get(tabId) : activeTab();
   if (!tab || !tab.layout) return toast('当前没有窗格', 'error');
   const paneIds = paneIdsInOrder(tab);
   if (paneIds.length <= 1) return toast('只有一个窗格,无需整理', 'error');
@@ -2912,16 +2949,6 @@ export function refreshBroadcast() {
   }
   const s = state.sessions.get(state.activeId);
   if (s) updateStatusbar(s);
-}
-
-/// 广播期间从窗格工具条加入或退出某个会话;最后一个会话退出即停止广播。
-export function toggleBroadcastMember(sessionId) {
-  if (!state.broadcast) return;
-  const next = new Set(state.broadcast);
-  if (next.has(sessionId)) next.delete(sessionId);
-  else next.add(sessionId);
-  setBroadcast(next);
-  if (!next.size) toast('广播已停止', 'success');
 }
 
 /// 广播范围预设:当前标签全部窗格 / 全部已连接会话 / 自定义(手动勾选即切到自定义)。

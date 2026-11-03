@@ -551,6 +551,24 @@ test('unrelated DOM churn cannot reopen a modal, move its focus, or emit modal-s
   core.closeModal(confirm); await flush();
 });
 
+test('a dismiss handler that closes its own modal does not recurse; returning false still blocks', async () => {
+  const { core, add, app, confirm } = await setup();
+  // 设置窗口的 dismiss handler(dismissSettings)会经 closeAiSettings 再调一次
+  // closeModal —— 闸门不可重入时就是无限递归:Esc 关不掉、保存抛
+  // "Maximum call stack size exceeded"。
+  core.openModal(confirm); await flush();
+  let calls = 0;
+  core.setModalDismissHandler(confirm, () => { calls++; core.closeModal(confirm); });
+  core.closeModal(confirm); await flush();
+  assert.equal(calls, 1, 'handler must run exactly once, not recursively');
+  assert.equal(confirm.classList.contains('hidden'), true, 'the outer closeModal still closes it');
+  // 闸门语义不变:handler 明确返回 false 时不关
+  core.openModal(confirm); await flush();
+  core.setModalDismissHandler(confirm, () => false);
+  core.closeModal(confirm); await flush();
+  assert.equal(confirm.classList.contains('hidden'), false, 'false from the handler blocks closing');
+});
+
 test('command availability rejects unknown, disconnected/disabled, and modal-blocked actions without executing', async () => {
   const { core, commands, add, app, confirm } = await setup();
   let connected = false; let runs = 0;
@@ -569,41 +587,41 @@ test('command availability rejects unknown, disconnected/disabled, and modal-blo
   assert.equal(await commands.executeCommand('split'), true); assert.equal(runs, 1);
 });
 
-test('terminal state notifications refresh the real workspace split button after async connection', async () => {
+test('terminal state notifications refresh the real statusbar session button after async connection', async () => {
   const { core, commands, document, window, add, app, confirm, root } = await setup();
   const tile = add(root, 'button', 'btn-tile-tabs'); tile.dataset.command = 'workspace.tile';
   add(tile, 'span', '', 'mm-label'); add(tile, 'span', '', 'mm-state');
-  for (const id of ['btn-newtab', 'btn-split', 'btn-ai-toggle', 'btn-sidebar-toggle', 'btn-batch', 'btn-readonly', 'btn-log-toggle', 'btn-clear', 'btn-reconnect', 'btn-disconnect',
-    'btn-add-host', 'btn-welcome-add', 'btn-cloud-import', 'btn-welcome-cloud', 'btn-split-menu', 'btn-host-manage']) add(app, 'button', id);
+  for (const id of ['btn-newtab', 'btn-ai-toggle', 'btn-sidebar-toggle', 'btn-batch', 'btn-readonly', 'btn-log-toggle', 'btn-clear', 'btn-reconnect', 'btn-disconnect',
+    'btn-add-host', 'btn-welcome-add', 'btn-cloud-import', 'btn-welcome-cloud', 'btn-host-manage']) add(app, 'button', id);
   add(app, 'aside', 'sidebar'); add(app, 'aside', 'ai-panel', 'hidden');
-  const split = document.querySelector('#btn-split');
-  const session = { status: 'connecting' };
+  // 分屏按钮已收进标签右键菜单(2026-11),这里改用状态栏的「会话日志」验证同一件事:
+  // 静态按钮的可用状态必须跟着 nebula:state-change 刷新,而不是只在启动时算一次。
+  const logBtn = document.querySelector('#btn-log-toggle');
+  const session = { status: 'connecting', logActive: false, logBusy: false };
   const state = { sessions: new Map([['session', session]]), activeId: 'session', panes: new Map(), tabs: new Map([['tab', {}]]), workspace: { mode: 'single' } };
-  let capacity = 2, runs = 0;
+  let runs = 0;
   const context = vm.createContext({
     ...core, ...commands, document, window, state, CustomEvent: DomEvent,
-    activeTab: () => ({ layout: {} }), leafCount: () => 1, maxPaneCapacity: () => capacity,
-    splitActive: () => { runs++; },
+    activeTab: () => ({ layout: {} }), leafCount: () => 1, maxPaneCapacity: () => 2,
+    splitActive: () => {},
     toggleTabTiling: () => { state.workspace.mode = state.workspace.mode === 'single' ? 'tiled' : 'single'; },
   });
   for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openHistoryModal', 'openSnippetsModal', 'openSettings', 'openFingerprints', 'openAbout', 'toggleSidebar',
     'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts',
-    'focusedPaneId', 'paneOwner', 'activateSession', 'toggleBroadcastMember', 'splitMenuItems', 'hostManageItems', 'openTabList',
+    'focusedPaneId', 'paneOwner', 'activateSession', 'hostManageItems', 'openTabList',
     'rightPanelOpen', 'rightTabShown', 'toggleRightPanel', 'toggleRightTab', 'setRightPanel']) context[name] = () => {};
-  // 本用例只验证命令注册与状态刷新,不关心主机库/密度开关的实现细节:
-  // 给它们最小适配(打开主机库、读写界面偏好、重绘侧栏)。
+  context.toggleSessionLog = () => { runs++; };
   context.openHostLibrary = () => {};
   context.renderHosts = () => {};
   context.uiPrefs = () => ({ favoriteHostIds: [], collapsedGroups: [], hostDensity: 'comfortable' });
   context.saveUiPrefs = () => {};
-  // Execute production wiring and notifier, with adapters only for unrelated actions.
   const entrySource = await readFile(new URL('../src/modules/entry.js', import.meta.url), 'utf8');
   const terminalSource = await readFile(new URL('../src/modules/terminal.js', import.meta.url), 'utf8');
   const wiring = entrySource.match(/^function setupWorkspaceCommands\(\) \{[\s\S]*?^\}/m)?.[0];
   const notifier = terminalSource.match(/^export function notifyTerminalStateChange\(\) \{[\s\S]*?^\}/m)?.[0];
   assert.ok(wiring); assert.ok(notifier);
   vm.runInContext(`${wiring}\n${notifier.replace(/^export /, '')}\nsetupWorkspaceCommands();`, context);
-  assert.equal(split.disabled, true);
+  assert.equal(logBtn.disabled, true, '还没连上时不允许录制');
   const tileOff = () => tile.getAttribute('aria-disabled') === 'true';
   assert.equal(tileOff(), true, 'one untiled tab cannot enable tiling');
   assert.equal(tile.disabled, false, 'menu items stay focusable while unavailable');
@@ -624,20 +642,20 @@ test('terminal state notifications refresh the real workspace split button after
   assert.equal(await commands.executeCommand('workspace.tile'), false);
   core.closeModal(confirm); assert.equal(tileOff(), false);
   tile.click(); await flush(); assert.equal(state.workspace.mode, 'single'); assert.equal(tileOff(), true);
-  split.click(); await flush(); assert.equal(runs, 0);
+  logBtn.click(); await flush(); assert.equal(runs, 0);
   session.status = 'connected';
   vm.runInContext('notifyTerminalStateChange()', context);
-  assert.equal(split.disabled, false, 'connected notification must reach the command refresh listener');
-  split.click(); await flush(); assert.equal(runs, 1);
-  capacity = 1; vm.runInContext('notifyTerminalStateChange()', context);
-  assert.equal(split.disabled, true, 'capacity still gates splitting');
-  capacity = 2; vm.runInContext('notifyTerminalStateChange()', context);
-  assert.equal(split.disabled, false);
-  core.openModal(confirm); assert.equal(split.disabled, true);
-  core.closeModal(confirm); assert.equal(split.disabled, false);
+  assert.equal(logBtn.disabled, false, 'connected notification must reach the command refresh listener');
+  logBtn.click(); await flush(); assert.equal(runs, 1);
+  session.logBusy = true; vm.runInContext('notifyTerminalStateChange()', context);
+  assert.equal(logBtn.disabled, true, 'busy still gates the toggle');
+  session.logBusy = false; vm.runInContext('notifyTerminalStateChange()', context);
+  assert.equal(logBtn.disabled, false);
+  core.openModal(confirm); assert.equal(logBtn.disabled, true);
+  core.closeModal(confirm); assert.equal(logBtn.disabled, false);
   session.status = 'disconnected'; vm.runInContext('notifyTerminalStateChange()', context);
-  assert.equal(split.disabled, true, 'disconnect notification disables splitting again');
-  split.click(); await flush(); assert.equal(runs, 1);
+  assert.equal(logBtn.disabled, true, 'disconnect notification disables recording again');
+  logBtn.click(); await flush(); assert.equal(runs, 1);
 });
 
 test('command execution synchronizes checked state and dynamic labels across toolbar and menu controls', async () => {

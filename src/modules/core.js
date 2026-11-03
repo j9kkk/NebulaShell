@@ -316,9 +316,19 @@ export function closeModal(id) {
   const modal = typeof id === 'string' ? $(id) : id;
   if (!modal || modal._closing || (modal.classList.contains('hidden') && !activeModals.has(modal))) return;
   // 关闭闸门(D4):X / Esc / 遮罩 / 代码关闭都先问 dismiss handler,
-  // 它返回 false 就不关 —— 写入中(导入/导出)不能再被任何路径关掉。
+  // 它返回 false 就不关 —— 写入中(导入、导出)不能再被任何路径关掉。
+  //
+  // 闸门要可重入:设置窗口的 handler(dismissSettings)自己会经 closeAiSettings
+  // 再调一次 closeModal —— 不加 _inDismiss 就是无限递归,表现为 Esc 关不掉、
+  // 保存时抛 "Maximum call stack size exceeded"。重入那一次直接返回,由外层
+  // closeModal 完成真正的关闭。
   const canClose = modalDismiss.get(modal);
-  if (canClose && canClose() === false) return;
+  if (canClose && !modal._inDismiss) {
+    modal._inDismiss = true;
+    let ok = true;
+    try { ok = canClose() !== false; } finally { modal._inDismiss = false; }
+    if (!ok) return;
+  }
   activeModals.delete(modal);
   modal.classList.add('hidden');
   if (modal.tagName === 'DIALOG' && modal.open) modal.close();
@@ -599,6 +609,14 @@ export function bindMenuKeyboard(menu, close, back = null) {
     if (next) { event.preventDefault(); event.stopPropagation(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
     if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); close(); }
     if (event.key === 'ArrowLeft' && back) { event.preventDefault(); event.stopPropagation(); back(); }
+    // → 展开二级(标签右键的「分屏与布局」):只在指针/焦点停在父项上时生效
+    if (event.key === 'ArrowRight') {
+      const parent = active?.closest?.('.ctx-parent');
+      if (parent && !isMenuItemDisabled(parent) && parent._submenuItems) {
+        event.preventDefault(); event.stopPropagation();
+        parent.dispatchEvent(new MouseEvent('mouseenter'));
+      }
+    }
   }, true);
   // 点组标题、分隔线、空白处不挪焦点(否则焦点掉到 body)
   menu.addEventListener('mousedown', (event) => { if (!event.target.closest?.('button')) event.preventDefault(); });
@@ -613,6 +631,7 @@ export function bindMenuKeyboard(menu, close, back = null) {
 /// restore === false:关闭但不挪焦点(按在菜单外、或开新菜单前先关旧的)。
 export function closeCtxMenu(restore = true) {
   const m = $('#ctx-menu');
+  closeCtxSubmenu(false);
   if (!m || m.classList.contains('hidden')) return;
   // 焦点掉到 body(点了分隔线、组标题)也算还在菜单上,关闭后照样还给打开前的位置
   const focused = m.contains(document.activeElement) || document.activeElement === document.body;
@@ -621,6 +640,130 @@ export function closeCtxMenu(restore = true) {
   m._trigger = null;
   if (trigger) trigger.setAttribute('aria-expanded', 'false');
   if (restore && focused && m._returnFocus?.isConnected) m._returnFocus.focus();
+}
+
+/* ---------------- 二级菜单(标签右键的「分屏与布局 ▸」这类) ----------------
+   同一个 #ctx-menu 里只放一级;二级是 body 下的 #ctx-sub,由父项 hover / →
+   / Enter / 点击打开,←/Esc 收起并回到父项。只做一层 —— 菜单再深没人读得动,
+   showCtxMenu 遇到 submenu 里的 submenu 会当普通项忽略。 */
+function ctxSubEl() {
+  let sub = $('#ctx-sub');
+  if (!sub) {
+    sub = document.createElement('div');
+    sub.id = 'ctx-sub';
+    sub.className = 'hidden';
+    sub.setAttribute('role', 'menu');
+    (document.body || document.documentElement).appendChild(sub);
+  }
+  return sub;
+}
+
+export function closeCtxSubmenu(restore = true) {
+  const sub = $('#ctx-sub');
+  if (!sub || sub.classList.contains('hidden')) return;
+  const parent = sub._parent;
+  sub.classList.add('hidden');
+  sub._parent = null;
+  if (parent) parent.setAttribute('aria-expanded', 'false');
+  if (restore && parent?.isConnected) parent.focus();
+}
+
+function openCtxSubmenu(parent, items, fallbackFocus) {
+  const sub = ctxSubEl();
+  sub._parent = parent;
+  parent.setAttribute('aria-expanded', 'true');
+  sub.innerHTML = '';
+  // 开关项(标签平铺之类的 ✓)与一级同一套:只要有一项带 checked,所有项都留这一列,
+  // 文字起点才对齐。
+  const hasChecks = (items || []).some((it) => it && it !== '-' && it.checked !== undefined);
+  let pendingSep = false;
+  let rows = 0;
+  for (const it of items || []) {
+    if (!it) continue;
+    if (it === '-') { pendingSep = rows > 0; continue; }
+    if (pendingSep) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      sub.appendChild(sep);
+      pendingSep = false;
+    }
+    rows++;
+    const btn = document.createElement('button');
+    btn.className = 'ctx-item' + (it.danger ? ' danger' : '');
+    const part = (className, text) => {
+      const span = document.createElement('span');
+      span.className = className;
+      span.textContent = text;
+      btn.appendChild(span);
+      return span;
+    };
+    if (hasChecks) part('ctx-check', it.checked ? '✓' : '').setAttribute('aria-hidden', 'true');
+    part('ctx-label', it.label || '');
+    if (it.checked !== undefined) {
+      btn.setAttribute('role', 'menuitemcheckbox');
+      btn.setAttribute('aria-checked', String(!!it.checked));
+      btn.classList.toggle('active', !!it.checked);
+    } else btn.setAttribute('role', 'menuitem');
+    if (it.key) {
+      const k = document.createElement('span');
+      k.className = 'ctx-key';
+      k.textContent = it.key;
+      btn.appendChild(k);
+    }
+    if (it.command) btn.dataset.command = it.command;
+    if (it.disabled) {
+      btn.setAttribute('aria-disabled', 'true');
+      if (it.reason) btn.setAttribute('aria-description', it.reason);
+    }
+    btn.addEventListener('click', () => {
+      if (it.disabled) return;
+      closeCtxMenu();
+      Promise.resolve().then(() => it.run()).catch((error) => toast(error.message || '操作失败', 'error'));
+    });
+    btn.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' || event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCtxSubmenu(true);
+        return;
+      }
+      // 二级菜单自己接管 ↑↓ / Home / End:焦点已经在 #ctx-sub 里,一级的键盘
+      // 处理器会主动让路(焦点不在 #ctx-menu),不补这段就只能在第一项上打转。
+      const rows = [...sub.querySelectorAll('.ctx-item')];
+      const at = rows.indexOf(btn);
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || at < 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const next = event.key === 'Home' ? rows[0]
+        : event.key === 'End' ? rows.at(-1)
+          : rows[(at + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length];
+      next?.focus();
+      showMenuReason(sub, next);
+    });
+    sub.appendChild(btn);
+  }
+  sub.classList.remove('hidden');
+  // 禁用原因同样显示在二级菜单底部(与一级同一套 showMenuReason)
+  if (!sub._reasonBound) {
+    sub._reasonBound = true;
+    sub.addEventListener('focusin', (event) => showMenuReason(sub, event.target.closest?.('button')));
+    sub.addEventListener('mouseover', (event) => {
+      const item = event.target.closest?.('button');
+      if (item) showMenuReason(sub, item);
+    });
+  }
+  // 贴着父项右侧;右边放不下就翻到左侧
+  const pr = parent.getBoundingClientRect();
+  const mr = $('#ctx-menu')?.getBoundingClientRect();
+  const sr = sub.getBoundingClientRect();
+  const preferred = (mr ? mr.right : pr.right) + 2;
+  const left = preferred + sr.width > window.innerWidth - 8
+    ? Math.max(8, (mr ? mr.left : pr.left) - sr.width - 2)
+    : preferred;
+  const top = Math.max(8, Math.min(pr.top - 4, window.innerHeight - sr.height - 8));
+  sub.style.left = `${Math.round(left)}px`;
+  sub.style.top = `${Math.round(top)}px`;
+  (sub.querySelector('button:not([aria-disabled="true"])') || sub.querySelector('button') || fallbackFocus)?.focus();
 }
 
 /// 在 (x, y) 弹出右键菜单。items 元素形如
@@ -679,12 +822,36 @@ export function showCtxMenu(x, y, items, opts = {}) {
     }
     btn.setAttribute('role', it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem');
     if (it.checked !== undefined) btn.setAttribute('aria-checked', String(!!it.checked));
-    btn.addEventListener('click', () => {
-      if (it.disabled) return;
-      closeCtxMenu();
-      Promise.resolve().then(() => it.run()).catch((error) => toast(error.message || '操作失败', 'error'));
-    });
+    if (it.submenu) {
+      // 二级菜单:父项本身不执行,只负责展开;→ / Enter / 点击 / 悬停都能开。
+      btn.classList.add('ctx-parent');
+      btn.setAttribute('aria-haspopup', 'menu');
+      btn.setAttribute('aria-expanded', 'false');
+      btn._submenuItems = it.submenu;
+      part('ctx-sub-arrow', '›').setAttribute('aria-hidden', 'true');
+      const toggle = () => {
+        if (it.disabled) return;
+        if (btn.getAttribute('aria-expanded') === 'true') closeCtxSubmenu(true);
+        else openCtxSubmenu(btn, it.submenu);
+      };
+      btn.addEventListener('mouseenter', () => { if (!it.disabled && btn.getAttribute('aria-expanded') !== 'true') openCtxSubmenu(btn, it.submenu); });
+      btn.addEventListener('click', (event) => { event.stopPropagation(); toggle(); });
+    } else {
+      btn.addEventListener('click', () => {
+        if (it.disabled) return;
+        closeCtxMenu();
+        Promise.resolve().then(() => it.run()).catch((error) => toast(error.message || '操作失败', 'error'));
+      });
+    }
     menu.appendChild(btn);
+  }
+  // 悬停到非父项上就收起二级(父项之间切换由各自的 mouseenter 重开)
+  if (!menu._subHoverBound) {
+    menu._subHoverBound = true;
+    menu.addEventListener('mouseover', (event) => {
+      const item = event.target.closest?.('.ctx-item');
+      if (item && !item.classList.contains('ctx-parent')) closeCtxSubmenu(false);
+    });
   }
   // 先显示以便量取尺寸,再按视口边缘回推,避免菜单溢出屏幕
   menu.classList.remove('hidden');
@@ -741,7 +908,7 @@ export function bindCtxMenuDismiss() {
   bindCtxMenuDismiss._bound = true;
   window.addEventListener('mousedown', (e) => {
     const menu = $('#ctx-menu');
-    if (!menu || menu.classList.contains('hidden') || e.target.closest('#ctx-menu')) return;
+    if (!menu || menu.classList.contains('hidden') || e.target.closest('#ctx-menu, #ctx-sub')) return;
     const trigger = menu._trigger;
     closeCtxMenu(false);
     // 只有按下引起的关闭才记下:紧随其后落在同一按钮上的 click 是"收起",不再打开。
@@ -753,7 +920,7 @@ export function bindCtxMenuDismiss() {
   }, true);
   window.addEventListener('resize', closeCtxMenu);
   window.addEventListener('blur', closeCtxMenu);
-  document.addEventListener('scroll', (event) => { if (!event.target.closest?.('#ctx-menu')) closeCtxMenu(); }, true);
+  document.addEventListener('scroll', (event) => { if (!event.target.closest?.('#ctx-menu, #ctx-sub')) closeCtxMenu(); }, true);
 }
 
 /// 顺手拦下 DOM 里所有外链(<a data-external>,即 Markdown 渲染出来的链接)。

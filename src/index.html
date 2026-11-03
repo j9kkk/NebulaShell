@@ -97,14 +97,19 @@
            不再写死 ⌘ —— 在 Windows/Linux 上那是错的提示。 -->
       <!-- 主机标签行是二级区:不是窗口拖拽区(拖拽只在顶层 #titlebar) -->
       <div id="tabbar">
+        <!-- 首页标签:还没有任何标签(未连接)时出现在最左,提示"这里就是首页";
+             不可点/不可关/不可拖,有标签即收起(terminal.js syncTabChrome)。
+             Home 不参与 state.tabs,平铺、⌘1..9、全部标签都不受它影响。 -->
+        <div id="tab-home" class="tab-home" title="首页"><span class="mi" data-icon="home"></span></div>
         <div id="tabs"></div>
+        <!-- ＋ 紧跟最后一个标签(2026-11 从"固定在最右端"改过来):有空间就贴着最后一
+             个标签,标签多到撑满时停在行尾,始终可点。 -->
+        <button id="btn-newtab" class="btn icon-tb" type="button" data-title="新建标签(%1)" data-accel="tab.new" aria-label="新建标签"><span class="mi" data-icon="plus"></span></button>
+        <span class="tb-gap" aria-hidden="true"></span>
         <!-- 全部标签:仅在标签条溢出时显示,数字是标签数(terminal.js bindTabStrip) -->
         <button id="btn-tab-list" class="btn icon-tb hidden" type="button" title="全部标签" data-title="全部标签(%1)" data-accel="tabs.list" aria-label="全部标签"><span class="tab-count">0</span><span class="mi" data-icon="chevronDown"></span></button>
-        <button id="btn-newtab" class="btn icon-tb" data-title="新建标签(%1)" data-accel="tab.new">＋</button>
-        <div class="split-group" role="group" aria-label="分屏">
-          <button id="btn-split" class="btn icon-tb" data-title="分屏(%1)" data-accel="pane.split">⛶</button>
-          <button id="btn-split-menu" class="btn icon-tb split-caret" title="布局" aria-label="布局"><span class="mi" data-icon="chevronDown"></span></button>
-        </div>
+        <!-- 分屏与布局(分屏 / 文件分屏 / 整理 / 平铺 / 放大 / 关闭窗格)自 2026-11 起
+             只在标签右键菜单的「分屏与布局 ▸」里;标签行不再放 ⛶ / ▾ 两颗常驻按钮。 -->
       </div>
       <div id="term-stack">
         <div id="welcome">
@@ -166,6 +171,9 @@
         <!-- 状态栏按钮一律常驻(禁用态表达可用性,禁用原因写进 title),
               不再随连接状态显隐 —— 此前"断开↔重连"互换会让整排按钮跳动。
               图标化 + tooltip,给监控和状态文字让出宽度(收缩契约见 style.css)。 -->
+        <!-- 状态栏 = 当前会话的控制面(作用域法则:标题栏管窗口、标签行管标签、
+             状态栏管会话)。广播的开始/停止在标签右键菜单里(2026-11 从状态栏移回),
+             这里不再放广播按钮 —— 广播状态由顶部广播横幅表达。 -->
         <button id="btn-log-toggle" class="btn small icon-tb" disabled title="记录会话日志到文件"><span class="mi" data-icon="circleDot"></span></button>
         <button id="btn-clear" class="btn small icon-tb" disabled title="清屏并清空回滚"><span class="mi" data-icon="broom"></span></button>
         <button id="btn-readonly" class="btn small icon-tb" disabled title="只读模式,防止误触"><span class="mi" data-icon="lock"></span></button>
