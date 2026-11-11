@@ -71,7 +71,7 @@ fn case01_export_shape_and_no_plaintext() {
     let (s, dir) = store("c01");
     seed_three(&s);
     let out = s
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
     let text = text_of(&out);
     assert_eq!(out["version"], json!(4));
@@ -87,13 +87,13 @@ fn case01_export_shape_and_no_plaintext() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AC-02 正常导入:全量导出 → 空库导入,主机与三类凭据全部还原
+/// AC-02 正常导入:全量导出 → 空库导入,主机与密码凭据还原(私钥正文不随导出打包)
 #[test]
 fn case02_roundtrip_full_to_empty_store() {
     let (a, da) = store("c02-a");
     seed_three(&a);
     let text = text_of(
-        &a.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        &a.export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
             .unwrap(),
     );
 
@@ -105,7 +105,7 @@ fn case02_roundtrip_full_to_empty_store() {
     );
     let applied = b.apply_hosts(&text, None, &json!({})).unwrap();
     assert_eq!(applied["added"], json!(3));
-    assert_eq!(applied["withCredentials"], json!(3));
+    assert_eq!(applied["withCredentials"], json!(2));
 
     let list = b.list_hosts();
     assert_eq!(
@@ -129,11 +129,8 @@ fn case02_roundtrip_full_to_empty_store() {
     assert_eq!(full["name"], json!("web-1"));
     assert_eq!(full["group"], json!("生产"));
     let full = by_host(&b, "10.0.0.2");
-    assert!(full["privateKey"]
-        .as_str()
-        .unwrap()
-        .contains("BEGIN OPENSSH"));
-    assert_eq!(full["passphrase"], json!("kp-2"));
+    assert_eq!(full["privateKey"], json!(""));
+    assert_eq!(full["passphrase"], json!(""));
     let _ = std::fs::remove_dir_all(&da);
     let _ = std::fs::remove_dir_all(&db);
 }
@@ -144,7 +141,7 @@ fn case03_reimport_same_store_is_idempotent() {
     let (s, dir) = store("c03");
     seed_three(&s);
     let text = text_of(
-        &s.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        &s.export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
             .unwrap(),
     );
 
@@ -174,13 +171,13 @@ fn case04_roundtrip_three_generations_stable() {
     let (a, da) = store("c04-a");
     seed_three(&a);
     let gen1 = a
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
 
     let (b, db) = store("c04-b");
     b.apply_hosts(&text_of(&gen1), None, &json!({})).unwrap();
     let gen2 = b
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
     assert_eq!(
         shapes(gen1["hosts"].as_array().unwrap()),
@@ -191,7 +188,7 @@ fn case04_roundtrip_three_generations_stable() {
     let (c, dc) = store("c04-c");
     c.apply_hosts(&text_of(&gen2), None, &json!({})).unwrap();
     let gen3 = c
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
     assert_eq!(
         shapes(gen2["hosts"].as_array().unwrap()),
@@ -406,7 +403,7 @@ fn case12_conflict_skip_and_overwrite() {
     src.save_host(&json!({ "name": "改后名字", "host": "10.0.0.1", "username": "root", "password": "new-pw" }))
         .unwrap();
     let src_out = src
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
     let src_id = src.list_hosts()[0]["id"].as_str().unwrap().to_string();
 
@@ -462,7 +459,7 @@ fn case13_credentials_only_fill() {
     src.save_host(&json!({ "name": "web-1", "host": "10.0.0.1", "username": "root", "password": "from-file" }))
         .unwrap();
     let text = text_of(
-        &src.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        &src.export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
             .unwrap(),
     );
     let src_id = src.list_hosts()[0]["id"].as_str().unwrap().to_string();
@@ -492,7 +489,7 @@ fn case14_passphrase_channel() {
     src.save_host(&json!({ "name": "web", "host": "10.0.0.1", "password": "hidden-pw" }))
         .unwrap();
     let out = src
-        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass-123456"), false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass-123456"), true, true)
         .unwrap();
     assert_eq!(out["credentials"]["alg"], json!("passphrase-scrypt/v1"));
     let text = text_of(&out);
@@ -623,7 +620,7 @@ fn case17_export_scope_and_jump_closure() {
 
     // 全部
     let all = s
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
     assert_eq!(all["hosts"].as_array().unwrap().len(), 3);
 
@@ -637,7 +634,7 @@ fn case17_export_scope_and_jump_closure() {
         .unwrap()
         .to_string();
     let sel = s
-        .export_hosts_scoped(&json!({ "mode": "ids", "ids": [web_id] }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "ids", "ids": [web_id] }), None, true, true)
         .unwrap();
     let names: Vec<&str> = sel["hosts"]
         .as_array()
@@ -667,11 +664,11 @@ fn case17_export_scope_and_jump_closure() {
 
     // 空选择 / 失效选择
     let e = s
-        .export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false, false)
         .unwrap_err();
     assert!(e.contains("请先选择"), "实际: {}", e);
     let e = s
-        .export_hosts_scoped(&json!({ "mode": "ids", "ids": ["gone"] }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "ids", "ids": ["gone"] }), None, false, false)
         .unwrap_err();
     assert!(e.contains("已不存在"), "实际: {}", e);
     let _ = std::fs::remove_dir_all(&dir);
@@ -783,35 +780,30 @@ fn case21_weird_field_values() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AC-22 「导出私钥文件」:读得到的打进文件,读不到/过大的跳过并在 includedKeys 里体现
+/// AC-22 「包含密钥路径」:开启时原样写出 keyPath,关闭时置空,且不打包私钥正文
 #[test]
 fn case22_export_private_key_bundle() {
     let (s, dir) = store("c22");
     let key_ok = dir.join("id_ok");
-    std::fs::write(&key_ok, "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n").unwrap();
-    let key_big = dir.join("id_big");
-    std::fs::write(&key_big, vec![b'k'; 600 * 1024]).unwrap();
+    std::fs::write(&key_ok, "KEYBODY-DO-NOT-PACK\n").unwrap();
     s.save_host(&json!({ "name": "with-key", "host": "10.0.0.1",
         "authType": "key", "keyPath": key_ok.to_string_lossy() }))
         .unwrap();
-    s.save_host(&json!({ "name": "big-key", "host": "10.0.0.2",
-        "authType": "key", "keyPath": key_big.to_string_lossy() }))
+
+    let off = s
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false, false)
         .unwrap();
-    s.save_host(&json!({ "name": "gone-key", "host": "10.0.0.3",
-        "authType": "key", "keyPath": dir.join("missing").to_string_lossy() }))
-        .unwrap();
+    assert_eq!(off["keyPathsIncluded"], json!(false));
+    assert_eq!(off["hosts"][0]["keyPath"], json!(""));
 
     let out = s
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, true)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, false, true)
         .unwrap();
-    assert_eq!(
-        out["includedKeys"],
-        json!(1),
-        "只应打包读得到且 ≤512KB 的私钥"
-    );
+    assert_eq!(out["keyPathsIncluded"], json!(true));
+    assert_eq!(out["hosts"][0]["keyPath"], json!(key_ok.to_string_lossy()));
     let text = text_of(&out);
+    assert!(!text.contains("KEYBODY-DO-NOT-PACK"));
 
-    // 带私钥文件导入:keyFile 落到应用数据目录,0600
     let (dst, ddst) = store("c22-b");
     dst.apply_hosts(&text, None, &json!({})).unwrap();
     let key_host = dst
@@ -819,18 +811,7 @@ fn case22_export_private_key_bundle() {
         .into_iter()
         .find(|h| h["name"] == json!("with-key"))
         .unwrap();
-    let installed = key_host["keyPath"].as_str().unwrap_or("").to_string();
-    assert!(
-        PathBuf::from(&installed).exists(),
-        "私钥文件应已落地: {}",
-        installed
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "私钥权限应为 0600,实际 {:o}", mode);
-    }
+    assert_eq!(key_host["keyPath"], json!(key_ok.to_string_lossy()));
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&ddst);
 }
@@ -848,7 +829,7 @@ fn case20_adjacent_features_intact() {
     )
     .unwrap();
     let file = text_of(
-        &a.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        &a.export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
             .unwrap(),
     );
 
@@ -895,7 +876,7 @@ fn case23_file_changed_between_inspect_and_apply_is_rejected() {
     let (src, dsrc) = store("c23-src");
     seed_three(&src);
     let good = text_of(
-        &src.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        &src.export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
             .unwrap(),
     );
 
@@ -922,7 +903,7 @@ fn case23_file_changed_between_inspect_and_apply_is_rejected() {
 
     // 2) 用户确认之后,同一个路径的文件被换成另一份(模拟导出文件被覆盖/同步工具改写)
     let mut other = src
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
         .unwrap();
     other["hosts"][0]["host"] = json!("10.9.9.9");
     std::fs::write(&file, text_of(&other)).unwrap();
@@ -1118,29 +1099,44 @@ fn case27_partial_import_rejects_jump_pointing_at_invalid_row() {
 /// `keyPath` 也不会被改成一个没写成功的路径。
 #[test]
 fn case28_key_install_failure_is_reported() {
-    // v4 的凭据块是加密的,不能手搓 —— 先造一份「含私钥文件」的真导出
-    let (src, dsrc) = store("c28-src");
+    // 构造一份含 keyFile 的口令加密块,验证导入端的 keyFile 落地失败告警
+    let (dsrc_store, dsrc) = store("c28-src");
     let key_path = dsrc.join("id_rsa");
-    std::fs::write(&key_path, "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n").unwrap();
-    src.save_host(&json!({
-        "name": "keyed", "host": "10.9.9.9", "username": "root",
-        "authType": "key", "keyPath": key_path.to_string_lossy()
-    }))
+    let cred_plain = serde_json::to_vec(&json!([
+        {
+            "id": "src-k1",
+            "host": "10.9.9.9",
+            "port": 22,
+            "username": "root",
+            "keyFile": { "name": "id_rsa", "content": "KEYBODY\n" }
+        }
+    ]))
     .unwrap();
-    let out = src
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, true)
-        .unwrap();
-    assert_eq!(
-        out["includedKeys"],
-        json!(1),
-        "导出应带上私钥文件内容(凭据块是密文,不能靠文本匹配)"
-    );
+    let blob = nebulashell_lib::config::encrypt_with_passphrase("pass1234", &cred_plain).unwrap();
+    let out = json!({
+        "app": "nebulashell",
+        "version": 4,
+        "hosts": [{
+            "id": "src-k1",
+            "name": "keyed",
+            "host": "10.9.9.9",
+            "port": 22,
+            "username": "root",
+            "authType": "key",
+            "keyPath": key_path.to_string_lossy()
+        }],
+        "credentials": {
+            "alg": "passphrase-scrypt/v1",
+            "blob": blob
+        }
+    });
     let text = text_of(&out);
+    drop(dsrc_store);
 
     // 目标库:把 keys 目录的位置占成普通文件 → 私钥写盘必然失败
     let (dst, ddst) = store("c28-dst");
     std::fs::write(ddst.join("keys"), b"occupied").unwrap();
-    let r = dst.apply_hosts(&text, None, &json!({})).unwrap();
+    let r = dst.apply_hosts(&text, Some("pass1234"), &json!({})).unwrap();
     let row = &r["rows"][0];
     assert_eq!(
         row["result"],

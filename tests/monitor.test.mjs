@@ -269,3 +269,16 @@ test('renderMonitorBar 在断开/无会话时收起监控条', async () => {
   mod.renderMonitorBar();
   assert.equal(bar.classList.contains('hidden'), true, '无活动会话时收起');
 });
+
+test('renderMonitorBar 在不支持的主机上显示 Linux / macOS 提示且保留延迟', async () => {
+  const { mod, state, getEl } = await createMonitorModule();
+  state.metrics.set('sess-1', {
+    supported: false,
+    latencyMs: 42,
+  });
+  mod.renderMonitorBar();
+  const bar = getEl('monitor-bar');
+  assert.equal(bar.classList.contains('mon-unsupported'), true);
+  assert.equal(getEl('mon-lat').textContent, '42ms');
+  assert.equal(getEl('mon-note').textContent, '该主机暂不支持资源监控(仅支持 Linux / macOS)');
+});

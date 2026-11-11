@@ -52,6 +52,9 @@
   --tab-inactive-bg: rgba(19, 26, 38, 0.6);
   --radius: 10px;
   --radius-tab: 8px;   /* 标签上圆角:.tab / .tab-ghost / .tab-home 共用 */
+  /* 控件圆角:导入/导出卡里的提示块、分段控件等一直引用它却从没定义过,
+     实际一直是回落值 6px(第三种圆角)。补上定义,全局回到 8 —— 控件一套、卡 10、胶囊 999 */
+  --radius-sm: 8px;
   /* 字体规范:UI 界面走 --font-ui(无衬线),终端命令/代码/路径等机器文本一律 --font-mono,
      各模块不得自行内联等宽栈(历史上有三种写法导致弹窗间字体不一致)。 */
   --font-ui: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
@@ -2065,7 +2068,8 @@ body.is-fullscreen #win-controls { display: none; }
   position: absolute; right: 4px; width: 26px; height: 26px; border: none;
   background: transparent; color: var(--muted); cursor: pointer; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 6px;
+  /* 密码框内的显隐按钮也是控件:跟全局控件同一档圆角(8),不做 6px 变体 */
+  border-radius: var(--radius-sm);
 }
 .secret-input-wrap .btn-reveal-secret:hover { color: var(--text); background: var(--hover-bg); }
 /* 已保存密钥提示与显隐/清除按钮共用可收缩的控件行。 */
@@ -4648,13 +4652,14 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 12px 10px 16px;
+  padding: 14px 16px 10px;
   flex: none;
 }
 .io-head h3 {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 16px;
   font-weight: 600;
+  line-height: 22px;
   color: var(--text);
 }
 .io-badge {
@@ -4663,7 +4668,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 16px;
   color: var(--accent);
 }
@@ -4677,13 +4682,14 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  min-height: 56px;
+  padding: 10px 16px;
   border-top: 1px solid var(--line);
   background: var(--bg2);
   flex: none;
 }
 .io-hint {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--muted);
   min-width: 0;
   overflow: hidden;
@@ -4691,8 +4697,10 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   white-space: nowrap;
   transition: color var(--dur-fast) var(--ease);
 }
-/* 底栏左侧是唯一的问题提示位(口令位数不足等),危险态用危险色,不另起 toast */
+/* 底栏左侧是唯一的问题提示位(口令位数不足等),危险态用危险色,不另起 toast;
+   warn 只用于「会导出未加密的密码」这种不致命但要说清的状态 */
 .io-hint.bad { color: var(--danger); }
+.io-hint.warn { color: var(--warn-text); }
 
 /* 导出卡的两列:几何不另起一套,直接复用设置页 .form-grid(≥110px 标签列 + 12px 列距 +
    34px 控件),卡片里「范围/分组/保存到」与设置页各行落在同一条竖线上。标签列按内容长胖,
@@ -4731,6 +4739,83 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- 导出卡三段(导出范围 / 打包内容 / 保存位置) ----
+   分区标题 11/600 + .04em,上 18 下 8;开关行「名字列 120 + 开关 + 说明」一条竖线到底,
+   口令两行缩进到开关列,出现/消失只影响自己那两行。 */
+.io-sec {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--muted);
+  margin: 18px 0 8px;
+}
+#io-export-config > .io-sec:first-child { margin-top: 8px; }
+/* 控件高度沿用其他弹窗(.form-grid 的 34),不在这张卡里另起一套;
+   宽度也要显式给足 —— 离开 form-grid 后 .inp 回到收缩宽度,文件名会被截成半截 */
+#io-export-config .inp { height: 34px; width: 100%; box-sizing: border-box; }
+/* 文件名是机器文本,走等宽;.mono 的 11px 是侧栏用的,这里要回到 13 */
+#io-export-config #io-export-name { font-size: 13px; line-height: 1.2; }
+.io-export-facts { display: block; }
+.io-sw-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+}
+.io-sw-name {
+  width: 120px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text);
+  cursor: pointer;
+}
+.io-tag-reco {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent);
+  background: var(--hover-bg);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+/* 参数不勾就不该能点:口令加密在「包含密码」关着时整行禁用 */
+.io-sw-row .switch:has(input:disabled) { cursor: not-allowed; }
+.io-sw-row .switch input:disabled + .switch-slider { opacity: .45; }
+.io-sw-row .switch:has(input:disabled):hover .switch-slider { border-color: var(--border); }
+.io-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+}
+.io-row.between { justify-content: space-between; }
+.io-val {
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.after-row { margin-top: 10px; }
+.io-passrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.io-pass-name {
+  width: 120px;
+  flex: none;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--muted);
 }
 .io-pass-inline {
   flex: 1 1 auto;
@@ -4936,7 +5021,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--accent2) 35%, transparent);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent2) 8%, transparent);
 }
 .io-banner-ico { flex: none; display: inline-flex; color: var(--accent2); margin-top: 1px; }
@@ -5065,7 +5150,8 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-file-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
 .io-file-row .inp { flex: 1 1 0%; min-width: 0; }
 .io-file-row .btn { flex: none; height: 30px; }
-.io-note { font-size: 10.5px; line-height: 1.5; color: var(--muted); min-width: 0; }
+.io-note { font-size: 11.5px; line-height: 1.5; color: var(--muted); min-width: 0; }
+.io-note.warn { color: var(--warn-text); }
 .io-preview { display: flex; flex-direction: column; gap: 8px; }
 /* 读取中:保留上一份预览并降透明度(§9.5),不把内容闪没 */
 .io-preview.is-loading { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease); }

@@ -37,8 +37,10 @@ const ex = {
   opts: { all: 0, filtered: 0, selected: 0, filteredIds: [], selectedIds: [] },
   path: '',
   busy: false,
-  withCred: true,
-  withKeys: false,
+  // 两个开关互相独立,默认都关 —— 打开的是一张「纯结构导出」,
+  // 密码与密钥路径各自要用户自己勾。
+  withPass: false,
+  withKeyPaths: false,
   usePass: false,
   pass: '',
   pass2: '',
@@ -60,8 +62,8 @@ export function openExportDialog({ scope = 'all', ids = [], filteredIds = null }
   ex.scope = want;
   ex.path = `${defaultDirs?.downloads || '~/Downloads'}/${defaultName()}`;
   ex.busy = false;
-  ex.withCred = true;
-  ex.withKeys = false;
+  ex.withPass = false;
+  ex.withKeyPaths = false;
   ex.usePass = false;
   ex.pass = '';
   ex.pass2 = '';
@@ -69,16 +71,14 @@ export function openExportDialog({ scope = 'all', ids = [], filteredIds = null }
   ex.done = null;
   ex.error = '';
   setPassRevealed('export', false);
-  ['#io-export-with-cred', '#io-export-with-keys', '#io-export-use-pass'].forEach((sel) => {
+  ['#io-export-with-pass', '#io-export-with-keypaths', '#io-export-use-pass'].forEach((sel) => {
     const el = $(sel);
-    if (el) el.checked = sel === '#io-export-with-cred';
+    if (el) el.checked = false;
   });
   const pin = $('#io-export-pass-input');
   if (pin) pin.value = '';
   const pin2 = $('#io-export-pass2');
   if (pin2) pin2.value = '';
-  const din = $('#io-export-dir');
-  if (din) din.value = ex.path;
   renderExport();
   openModal('#modal-export');
   setTimeout(() => $('#io-export-scope')?.focus?.(), 30);
@@ -155,46 +155,41 @@ function renderExport() {
   }
 
   const extra = $('#io-export-extra');
-  if (extra) extra.textContent = sum.jumps ? `附带 ${sum.jumps} 台跳板机(连同其凭据)` : '不含跳板机';
+  if (extra) extra.textContent = sum.jumps ? `附带 ${sum.jumps} 台跳板机` : '不含跳板机';
 
-  const credNote = $('#io-export-cred-note');
-  if (credNote) {
-    credNote.textContent = ex.withCred
-      ? `文件内含 ${sum.count} 台主机的密码/私钥`
-      : '不含凭据,导入后需重新填写';
-  }
-  const keysRow = $('#io-export-keys-row');
-  if (keysRow) keysRow.classList.toggle('hidden', !ex.withCred);
-  const keyHosts = (state.hosts || []).filter((h) => h.hasKey || h.hasPassword).length;
-  const keysNote = $('#io-export-keys-note');
-  if (keysNote) {
-    keysNote.textContent = !ex.withKeys
-      ? '不带私钥文件,只记录路径'
-      : keyHosts
-        ? `含 ${keyHosts} 个私钥文件`
-        : '所选主机都没有引用私钥文件';
-  }
+  renderExportPath();
 
-  const passOn = ex.usePass && ex.withCred;
-  const passEl = $('#io-export-pass-input');
-  if (passEl) passEl.classList.toggle('hidden', !passOn);
+  // 两个开关都不勾 = 纯结构导出,口令加密没有作用对象 → 整行禁用,说明写清楚为什么。
+  const usePassEl = $('#io-export-use-pass');
+  if (usePassEl) {
+    usePassEl.disabled = !ex.withPass || ex.busy;
+    usePassEl.checked = ex.withPass && ex.usePass;
+  }
+  const passOn = ex.withPass && ex.usePass;
+  const passRow = $('#io-export-pass-row');
+  if (passRow) passRow.classList.toggle('hidden', !passOn);
   const pass2Row = $('#io-export-pass2-row');
   if (pass2Row) pass2Row.classList.toggle('hidden', !passOn);
   const passNote = $('#io-export-pass-note');
   if (passNote) {
-    // 两态互斥,占同一行(U-10):关 → 用内置密钥(等同明文),开 → 口令不进文件。
-    // 关态这句是纯文案的安全披露,必须与开关同屏可见,不能只靠下面的警示块。
-    const show = ex.withCred && sum.count > 0;
-    passNote.classList.toggle('hidden', !show);
-    passNote.textContent = passOn
-      ? '文件口令不会写入文件;丢失后文件里的凭据无法找回'
-      : '用内置密钥：任何拿到本 App 的人都能解开，等同明文';
+    let text;
+    let warn = false;
+    if (!ex.withPass) {
+      text = '没有可加密的内容';
+    } else if (passOn) {
+      text = '口令只用来加密这个文件,不保存';
+    } else {
+      text = '关: 内置密钥保护,等同明文';
+      warn = true;
+    }
+    passNote.textContent = text;
+    passNote.classList.toggle('warn', warn);
   }
-  $('#btn-reveal-export-pass')?.classList.toggle('hidden', !passOn || !ex.pass.length);
 
   const passLen = ex.pass.trim().length;
   const tooShort = passOn && passLen > 0 && passLen < PASS_MIN;
   const mismatch = passOn && ex.pass2.length > 0 && ex.pass2 !== ex.pass;
+  const passEl = $('#io-export-pass-input');
   if (passEl) {
     passEl.classList.toggle('invalid', tooShort);
     passEl.setAttribute('aria-invalid', tooShort ? 'true' : 'false');
@@ -204,10 +199,7 @@ function renderExport() {
     pass2.classList.toggle('invalid', mismatch);
     pass2.setAttribute('aria-invalid', mismatch ? 'true' : 'false');
   }
-
-  // 警示块:含凭据且没设口令时常驻(不是底栏状态位)
-  const warn = $('#io-export-warn');
-  if (warn) warn.classList.toggle('hidden', !(ex.withCred && !ex.usePass && sum.count > 0));
+  $('#btn-reveal-export-pass')?.classList.toggle('hidden', !passOn || !ex.pass.length);
 
   const ok = $('#io-export-ok');
   if (ok) {
@@ -221,20 +213,45 @@ function renderExport() {
 
   const hint = $('#io-export-hint');
   if (hint) {
+    // 底栏左侧是「这次到底会导出什么」的唯一一句话:错误优先,没有错误就是范围状态。
     let text = '';
     let bad = false;
+    let warn = false;
     if (ex.error) { text = ex.error; bad = true; }
     else if (ex.busy) text = '正在写入文件…';
     else if (sum.count === 0) { text = '没有可导出的主机'; bad = true; }
-    // U-07:主按钮禁用时底栏必须给原因(设计 §9.2/§7.7)。空口令与「只输了第一遍」
-    // 这两态以前没有文案 —— 禁用看着像卡住了,输第一个字符才冒出提示。
     else if (passOn && passLen === 0) text = `请输入文件口令(至少 ${PASS_MIN} 位)`;
     else if (tooShort) { text = `文件口令至少 ${PASS_MIN} 位,当前 ${passLen} 位`; bad = true; }
     else if (mismatch) { text = '两次输入的文件口令不一致'; bad = true; }
     else if (passOn && ex.pass2.length === 0) text = '请再次输入文件口令';
+    else if (ex.withPass && !ex.withKeyPaths) {
+      text = passOn ? `含 ${sum.count} 台密码,已加密` : `含 ${sum.count} 台密码,未加密`;
+      warn = !passOn;
+    } else if (!ex.withPass && ex.withKeyPaths) text = `含 ${sum.count} 条密钥路径`;
+    else if (ex.withPass && ex.withKeyPaths) {
+      text = passOn
+        ? `含 ${sum.count} 台密码 · ${sum.count} 条密钥路径,已加密`
+        : `含 ${sum.count} 台密码 · ${sum.count} 条密钥路径,未加密`;
+      warn = !passOn;
+    } else text = '不含密码与密钥路径';
     hint.classList.toggle('bad', bad);
+    hint.classList.toggle('warn', warn && !bad);
     hint.textContent = text;
   }
+}
+
+/// 保存位置:目录只读 + 唯一入口「更改…」,文件名单独一行。
+/// 卡里显示 ~ 缩写(路径太长会吃掉整行),实际写盘用绝对路径。
+function renderExportPath() {
+  const dirEl = $('#io-export-dir');
+  const nameEl = $('#io-export-name');
+  const cut = ex.path.lastIndexOf('/');
+  const dir = cut > 0 ? ex.path.slice(0, cut) : '';
+  const name = cut >= 0 ? ex.path.slice(cut + 1) : ex.path;
+  const home = defaultDirs?.home;
+  const shown = home && dir.startsWith(home) ? `~${dir.slice(home.length)}` : dir;
+  if (dirEl && dirEl.textContent !== shown) dirEl.textContent = shown || '~/Downloads';
+  if (nameEl && nameEl.value !== name) nameEl.value = name;
 }
 
 /// 口令显隐(导出/导入共用):密文 ↔ 明文,图标换 eye/eyeOff,标题跟着变。
@@ -271,19 +288,19 @@ async function pickExportDir() {
   const idx = ex.path.lastIndexOf('/');
   const picked = await api('dialog:pickDirectory', { defaultPath: idx > 0 ? ex.path.slice(0, idx) : '' });
   if (picked && typeof picked === 'string') {
-    ex.path = `${picked.replace(/\/$/, '')}/${defaultName()}`;
-    const input = $('#io-export-dir');
-    if (input) input.value = ex.path;
+    const name = idx > 0 ? ex.path.slice(idx + 1) : defaultName();
+    ex.path = `${picked.replace(/\/$/, '')}/${name}`;
     renderExport();
   }
 }
 
-/// 导出摘要:结果态与 toast 共用这一句(D8)。
+/// 导出摘要:结果态与 toast 共用这一句(D8)。说了什么,文件里就有什么。
 function exportSummary(res) {
   const parts = [`已导出 ${res.count} 台`];
   if (res.includedJumps) parts.push(`含 ${res.includedJumps} 台跳板机`);
-  if (res.includedKeys) parts.push(`${res.includedKeys} 个私钥`);
-  if (res.credentialsIncluded === false) parts.push('不含凭据');
+  if (res.passwordsIncluded) parts.push(res.encrypted ? '含密码(已加密)' : '含密码(未加密)');
+  if (res.keyPathsIncluded) parts.push('含密钥路径');
+  if (!res.passwordsIncluded && !res.keyPathsIncluded) parts.push('不含密码与密钥路径');
   return parts.join(' · ');
 }
 
@@ -291,10 +308,15 @@ async function runExport() {
   if (ex.busy) return;
   const sum = scopeSummary();
   if (!sum.count) return;
-  if (ex.usePass && ex.withCred && (ex.pass.trim().length < PASS_MIN || ex.pass !== ex.pass2)) return;
-  ex.path = normalizeExportPath($('#io-export-dir')?.value ?? ex.path);
-  const input = $('#io-export-dir');
-  if (input) input.value = ex.path;
+  const passOn = ex.withPass && ex.usePass;
+  if (passOn && (ex.pass.trim().length < PASS_MIN || ex.pass !== ex.pass2)) return;
+  // 文件名单独编辑:规范化只作用于末段,目录保持不变
+  const nameRaw = $('#io-export-name')?.value ?? '';
+  if (nameRaw.trim()) {
+    const cut = ex.path.lastIndexOf('/');
+    const dir = cut > 0 ? ex.path.slice(0, cut + 1) : '';
+    ex.path = normalizeExportPath(`${dir}${nameRaw.trim()}`);
+  }
   ex.busy = true;
   ex.error = '';
   renderExport();
@@ -305,9 +327,9 @@ async function runExport() {
       scope: sum.ids ? { mode: 'ids', ids: sum.ids } : { mode: 'all' },
       dir: cut > 0 ? ex.path.slice(0, cut) : '',
       filename: cut > 0 ? ex.path.slice(cut + 1) : ex.path,
-      passphrase: ex.usePass && ex.withCred ? ex.pass : undefined,
-      withKeys: ex.withCred && ex.withKeys,
-      withCredentials: ex.withCred,
+      passphrase: passOn ? ex.pass : undefined,
+      withPasswords: ex.withPass,
+      withKeyPaths: ex.withKeyPaths,
     });
   } catch (e) {
     // 失败留在卡里:路径不丢,按钮恢复,原因进底栏(err 文案由后端给)
@@ -321,7 +343,8 @@ async function runExport() {
     renderExport(); // 用户取消保存对话框
     return;
   }
-  ex.done = { ...res, summary: exportSummary(res) };
+  // encrypted 由本端决定(后端只回 passwordsIncluded),摘要与结果态都读它
+  ex.done = { ...res, encrypted: passOn, summary: exportSummary({ ...res, encrypted: passOn }) };
   ex.error = '';
   renderExport();
   renderExportDone();
@@ -341,7 +364,15 @@ function renderExportDone() {
   const title = $('#io-export-done-title');
   if (title) title.textContent = done.summary;
   const sub = $('#io-export-done-sub');
-  if (sub) sub.textContent = done.credentialsIncluded === false ? '此文件不含凭据,导入后需重新填写密码/私钥' : '文件已写入本地';
+  if (sub) {
+    // 结果态必须说清「下次导入会发生什么」,因为默认就是什么都不带
+    let subText;
+    if (!done.passwordsIncluded && !done.keyPathsIncluded) subText = '不含密码与密钥路径,导入后需重新填写';
+    else if (done.passwordsIncluded && done.encrypted) subText = '密码已用文件口令加密,导入时需要口令';
+    else if (done.passwordsIncluded) subText = '密码用内置密钥保护,本机导入可还原';
+    else subText = '只含密钥文件路径,换机后需重新选择私钥';
+    sub.textContent = subText;
+  }
   const pathEl = $('#io-export-done-path');
   if (pathEl) {
     const p = done.path || '';
@@ -352,7 +383,7 @@ function renderExportDone() {
     pathEl.title = p;
   }
   // 结果态:配置按钮让位给结果动作
-  ['#io-export-reveal', '#io-export-copy', '#io-export-again'].forEach((sel) => $(sel)?.classList.remove('hidden'));
+  $('#io-export-reveal')?.classList.remove('hidden');
   $('#io-export-cancel')?.classList.add('hidden');
   const ok = $('#io-export-ok');
   if (ok) {
@@ -1018,47 +1049,43 @@ export function setupTransfer() {
     ex.done = null;
     renderExport();
   });
-  $('#io-export-dir')?.addEventListener('input', (e) => {
-    ex.path = e.target.value;
+  $('#io-export-name')?.addEventListener('input', (e) => {
+    const cut = ex.path.lastIndexOf('/');
+    const dir = cut > 0 ? ex.path.slice(0, cut + 1) : '';
+    ex.path = `${dir}${e.target.value}`;
     if (ex.error) {
       ex.error = '';
       renderExport();
     }
   });
-  $('#io-export-dir')?.addEventListener('blur', () => {
+  $('#io-export-name')?.addEventListener('blur', () => {
     // 只规范化输入框里的值,不在这里重绘整张卡:
     // 重绘会在 mousedown 与 mouseup 之间改按钮文本/布局,WebKit 会因此吞掉对「导出」的点击。
-    ex.path = normalizeExportPath($('#io-export-dir')?.value ?? ex.path);
-    const input = $('#io-export-dir');
-    if (input) input.value = ex.path;
+    const cut = ex.path.lastIndexOf('/');
+    const dir = cut > 0 ? ex.path.slice(0, cut + 1) : '';
+    ex.path = normalizeExportPath(`${dir}${$('#io-export-name')?.value ?? ''}`);
+    const input = $('#io-export-name');
+    if (input) input.value = cut > 0 ? ex.path.slice(ex.path.lastIndexOf('/') + 1) : ex.path;
   });
-  $('#io-export-with-cred')?.addEventListener('change', (e) => {
-    ex.withCred = !!e.target.checked;
-    if (!ex.withCred) {
+  // 两个开关各自独立:关密码不动密钥路径,反之亦然。
+  $('#io-export-with-pass')?.addEventListener('change', (e) => {
+    ex.withPass = !!e.target.checked;
+    // 密码关掉 = 没有可加密的内容,口令状态一并复位(否则再勾回来会带着旧口令)
+    if (!ex.withPass) {
       ex.usePass = false;
-      ex.withKeys = false;
       const on = $('#io-export-use-pass');
       if (on) on.checked = false;
-      const keys = $('#io-export-with-keys');
-      if (keys) keys.checked = false;
     }
     renderExport();
   });
-  $('#io-export-with-keys')?.addEventListener('change', (e) => {
-    ex.withKeys = !!e.target.checked;
+  $('#io-export-with-keypaths')?.addEventListener('change', (e) => {
+    ex.withKeyPaths = !!e.target.checked;
     renderExport();
   });
   $('#io-export-use-pass')?.addEventListener('change', (e) => {
     ex.usePass = !!e.target.checked;
     renderExport();
     if (ex.usePass) $('#io-export-pass-input')?.focus?.();
-  });
-  $('#io-export-warn-set')?.addEventListener('click', () => {
-    ex.usePass = true;
-    const on = $('#io-export-use-pass');
-    if (on) on.checked = true;
-    renderExport();
-    $('#io-export-pass-input')?.focus?.();
   });
   $('#io-export-pass-input')?.addEventListener('input', (e) => {
     ex.pass = e.target.value;

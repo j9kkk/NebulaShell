@@ -145,7 +145,7 @@ fn export_never_contains_plaintext_credentials() {
         !text.contains("BEGIN OPENSSH PRIVATE KEY"),
         "导出文件泄漏了明文私钥"
     );
-    assert_eq!(exported["credentialsIncluded"], json!(true));
+    assert_eq!(exported["passwordsIncluded"], json!(true));
     assert_eq!(
         exported["credentials"]["alg"],
         json!("builtin-aes-256-gcm/v1")
@@ -967,43 +967,64 @@ fn settings_ui_roundtrip_and_sanitize() {
     let _ = std::fs::remove_dir_all(&store.dir);
 }
 
-/// 「包含凭据」关闭:文件里不能有 credentials 块,且要明确告诉导入端没有凭据。
-/// 这是 F-01 的界面开关落点 —— 以前导出恒含全部凭据,卡片却一字未提。
+/// 密码 / 密钥路径两个开关**互相独立**:四种组合各自只影响自己那一项。
+/// 这是 v7 界面「包含密码」「包含密钥路径」的落点 —— 以前是一个「包含凭据」管密码+私钥,
+/// 关掉连密钥路径一起丢,开着又必须有口令。
 #[test]
-fn export_without_credentials_omits_block() {
-    let store = tmp_store("no-cred");
+fn export_password_and_key_path_switches_are_independent() {
+    let store = tmp_store("split-switches");
+    let key = store.dir.join("id_split");
+    std::fs::write(&key, "KEYBODY-SHOULD-NEVER-LEAVE\n").unwrap();
     store
-        .save_host(&json!({ "name": "a", "host": "10.0.0.1", "password": "SuperSecret123" }))
+        .save_host(&json!({
+            "name": "a", "host": "10.0.0.1", "username": "root", "authType": "key",
+            "keyPath": key.to_string_lossy(), "password": "SuperSecret123"
+        }))
         .unwrap();
+    let scope = json!({ "mode": "all" });
 
-    let on = store
-        .export_hosts_with(&json!({ "mode": "all" }), None, false, true)
+    let none = store
+        .export_hosts_with(&scope, None, false, false)
         .unwrap();
-    assert_eq!(on["credentialsIncluded"], json!(true));
-    assert!(
-        on["credentials"]["data"].as_str().is_some(),
-        "默认仍带加密凭据块"
-    );
-
-    let off = store
-        .export_hosts_with(&json!({ "mode": "all" }), None, false, false)
-        .unwrap();
-    assert_eq!(off["credentialsIncluded"], json!(false));
-    assert!(
-        off["credentials"].is_null(),
-        "不含凭据时不应有 credentials 块"
-    );
-    assert_eq!(
-        off["hosts"].as_array().unwrap().len(),
-        1,
-        "主机字段仍要导出"
-    );
-    let text = serde_json::to_string(&off).unwrap();
+    assert_eq!(none["passwordsIncluded"], json!(false));
+    assert_eq!(none["keyPathsIncluded"], json!(false));
+    assert!(none["credentials"].is_null(), "不开密码就不写凭据块");
+    assert_eq!(none["hosts"][0]["keyPath"], json!(""), "不开密钥路径就写空串");
+    let text = serde_json::to_string(&none).unwrap();
     assert!(!text.contains("SuperSecret123"), "明文密码不能出现在文件里");
-    assert!(
-        !text.contains("\"credentials\": {") && !text.contains("\"credentials\":{"),
-        "整个凭据块都不写(credentialsIncluded 字段保留)"
+    assert!(!text.contains("KEYBODY-SHOULD-NEVER-LEAVE"), "私钥正文一律不导出");
+
+    let pass_only = store
+        .export_hosts_with(&scope, None, true, false)
+        .unwrap();
+    assert_eq!(pass_only["passwordsIncluded"], json!(true));
+    assert!(pass_only["credentials"]["data"].as_str().is_some());
+    assert_eq!(pass_only["hosts"][0]["keyPath"], json!(""), "密码开关不碰密钥路径");
+
+    let key_only = store
+        .export_hosts_with(&scope, None, false, true)
+        .unwrap();
+    assert_eq!(key_only["keyPathsIncluded"], json!(true));
+    assert!(key_only["credentials"].is_null(), "密钥路径开关不碰密码");
+    assert_eq!(
+        key_only["hosts"][0]["keyPath"],
+        json!(key.to_string_lossy()),
+        "开了就原样写出路径"
     );
+    let text_key = serde_json::to_string(&key_only).unwrap();
+    assert!(
+        !text_key.contains("KEYBODY-SHOULD-NEVER-LEAVE"),
+        "只带路径,不带私钥正文"
+    );
+    assert!(!text_key.contains("SuperSecret123"));
+
+    let both = store
+        .export_hosts_with(&scope, None, true, true)
+        .unwrap();
+    assert_eq!(both["passwordsIncluded"], json!(true));
+    assert_eq!(both["keyPathsIncluded"], json!(true));
+    // 主机结构在任何组合下都完整导出
+    assert_eq!(both["hosts"].as_array().unwrap().len(), 1);
 
     let _ = std::fs::remove_dir_all(&store.dir);
 }
@@ -1069,7 +1090,7 @@ fn export_scope_ids_carries_jump_closure() {
         .unwrap();
 
     let scope = json!({ "mode": "ids", "ids": [a["id"]] });
-    let out = store.export_hosts_scoped(&scope, None, false).unwrap();
+    let out = store.export_hosts_scoped(&scope, None, true, false).unwrap();
     let names: Vec<String> = out["hosts"]
         .as_array()
         .unwrap()
@@ -1085,7 +1106,7 @@ fn export_scope_ids_carries_jump_closure() {
     );
 
     // v4:凭据始终打包(内置密钥加密),不再取决于是否给口令
-    assert_eq!(out["credentialsIncluded"], json!(true));
+    assert_eq!(out["passwordsIncluded"], json!(true));
     assert_eq!(out["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
     assert!(out["credentials"]["data"].as_str().unwrap().len() > 10);
 }
@@ -1096,12 +1117,12 @@ fn export_scope_ids_rejects_empty_and_missing() {
     store
         .save_host(&json!({ "name": "a", "host": "10.0.0.1" }))
         .unwrap();
-    let empty = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false);
+    let empty = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false, false);
     assert!(empty.is_err(), "空选择应报错而不是悄悄导出全量");
     let missing =
-        store.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["nope"] }), None, false);
+        store.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["nope"] }), None, false, false);
     assert!(missing.unwrap_err().contains("不存在"));
-    let bad_mode = store.export_hosts_scoped(&json!({ "mode": "group" }), None, false);
+    let bad_mode = store.export_hosts_scoped(&json!({ "mode": "group" }), None, false, false);
     assert!(bad_mode.is_err(), "未知范围必须报错,不能退化成全量");
 }
 
@@ -1267,6 +1288,7 @@ fn optional_passphrase_channel_roundtrip() {
         .export_hosts_scoped(
             &json!({ "mode": "all" }),
             Some("correct horse battery"),
+            true,
             false,
         )
         .unwrap();
@@ -1300,60 +1322,6 @@ fn optional_passphrase_channel_roundtrip() {
     // 同一个库里,无口令导出仍走内置通道(开关默认关)
     let plain = store.export_hosts().unwrap();
     assert_eq!(plain["credentials"]["alg"], json!("builtin-aes-256-gcm/v1"));
-
-    let _ = std::fs::remove_dir_all(&store.dir);
-    let _ = std::fs::remove_dir_all(&fresh.dir);
-}
-
-/// 可选「导出主机密钥」:私钥内容随凭据一起加密;导入时落到 keys/ 并 0600。
-#[test]
-fn optional_private_key_bundle_roundtrip() {
-    let store = tmp_store("io-key");
-    let key_path = store.dir.join("id_test_key");
-    std::fs::write(
-        &key_path,
-        "-----BEGIN OPENSSH PRIVATE KEY-----\nABC\n-----END OPENSSH PRIVATE KEY-----\n",
-    )
-    .unwrap();
-    store
-        .save_host(&json!({
-            "name": "k", "host": "10.9.1.1", "username": "root",
-            "authType": "key", "keyPath": key_path.to_string_lossy()
-        }))
-        .unwrap();
-
-    let off = store.export_hosts().unwrap();
-    assert_eq!(off["includedKeys"], json!(0), "默认不打包私钥");
-    let text_off = serde_json::to_string(&off).unwrap();
-    assert!(!text_off.contains("BEGIN OPENSSH PRIVATE KEY"));
-
-    let on = store
-        .export_hosts_scoped(&json!({ "mode": "all" }), None, true)
-        .unwrap();
-    assert_eq!(on["includedKeys"], json!(1));
-    let text_on = serde_json::to_string(&on).unwrap();
-    assert!(
-        !text_on.contains("BEGIN OPENSSH PRIVATE KEY"),
-        "私钥必须密文传输"
-    );
-
-    let fresh = tmp_store("io-key-fresh");
-    fresh.import_hosts(&text_on, None).unwrap();
-    let host = &fresh.list_hosts()[0];
-    let installed = host["keyPath"].as_str().unwrap();
-    assert!(
-        installed.starts_with(&*fresh.dir.join("keys").to_string_lossy()),
-        "应落到 keys/: {}",
-        installed
-    );
-    let content = std::fs::read_to_string(installed).unwrap();
-    assert!(content.contains("BEGIN OPENSSH PRIVATE KEY"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(installed).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "私钥文件必须 0600");
-    }
 
     let _ = std::fs::remove_dir_all(&store.dir);
     let _ = std::fs::remove_dir_all(&fresh.dir);

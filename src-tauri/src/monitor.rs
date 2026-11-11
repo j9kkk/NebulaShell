@@ -1,11 +1,35 @@
-// 服务器资源监控:/proc 探测解析(与 Electron 版 parseProc 语义一致)
+// 服务器资源监控:/proc (Linux) 与 Darwin (macOS) 探测解析
 use serde_json::{json, Value};
 
-pub const PROBE: &str =
-    "cat /proc/stat /proc/meminfo /proc/net/dev /proc/diskstats 2>/dev/null; df -kP / 2>/dev/null | tail -1; echo __NB_DONE__";
+pub const PROBE: &str = "case $(uname -s 2>/dev/null) in \
+Darwin) \
+echo __NB_OS_DARWIN__; \
+sysctl -n hw.logicalcpu hw.memsize 2>/dev/null; \
+echo __NB_SEC__; \
+ps -A -o %cpu 2>/dev/null; \
+echo __NB_SEC__; \
+vm_stat 2>/dev/null; \
+echo __NB_SEC__; \
+df -kP /System/Volumes/Data / 2>/dev/null; \
+echo __NB_SEC__; \
+netstat -ibn 2>/dev/null; \
+echo __NB_SEC__; \
+ioreg -c IOBlockStorageDriver -r -w0 2>/dev/null | grep '\"Statistics\"'; \
+;; \
+*) \
+cat /proc/stat /proc/meminfo /proc/net/dev /proc/diskstats 2>/dev/null; \
+df -kP / 2>/dev/null | tail -1; \
+;; \
+esac; echo __NB_DONE__";
 
 pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value {
     let sections = text.split("__NB_DONE__").next().unwrap_or("");
+    if let Some(darwin_body) = sections.strip_prefix("__NB_OS_DARWIN__") {
+        return parse_darwin(darwin_body.trim_start(), prev, interval_sec);
+    }
+    if let Some((_, darwin_body)) = sections.split_once("__NB_OS_DARWIN__\n") {
+        return parse_darwin(darwin_body, prev, interval_sec);
+    }
     let has_stat = quick_match(sections, "cpu");
     let has_mem = sections.contains("MemTotal:");
     if !has_stat || !has_mem {
@@ -185,4 +209,218 @@ fn kb(text: &str, key: &str) -> Option<u64> {
         }
     }
     None
+}
+
+fn parse_darwin(body: &str, prev: Option<&Value>, interval_sec: f64) -> Value {
+    let parts: Vec<&str> = body.split("__NB_SEC__").collect();
+    if parts.len() < 3 {
+        return json!({ "supported": false });
+    }
+
+    // 1. sysctl: hw.logicalcpu 与 hw.memsize (Bytes)
+    let sysctl_nums: Vec<u64> = parts[0]
+        .lines()
+        .filter_map(|l| l.trim().parse::<u64>().ok())
+        .collect();
+    let logical_cpu = sysctl_nums.first().copied().unwrap_or(0);
+    let mem_total_bytes = sysctl_nums.get(1).copied().unwrap_or(0);
+    if logical_cpu == 0 || mem_total_bytes == 0 {
+        return json!({ "supported": false });
+    }
+
+    // 2. CPU: ps -A -o %cpu 累加除以逻辑核数
+    let mut cpu_sum = 0.0f64;
+    let mut has_cpu = false;
+    for line in parts[1].lines() {
+        let s = line.trim().replace(',', ".");
+        if s.is_empty() || s.eq_ignore_ascii_case("%cpu") {
+            continue;
+        }
+        if let Ok(v) = s.parse::<f64>() {
+            cpu_sum += v;
+            has_cpu = true;
+        }
+    }
+    if !has_cpu {
+        return json!({ "supported": false });
+    }
+    let cpu_pct = Some(((cpu_sum / logical_cpu as f64).clamp(0.0, 100.0) * 10.0).round() / 10.0);
+
+    // 3. 内存: vm_stat 页大小与各状态页数
+    let vm_text = parts[2];
+    let page_size = parse_vm_page_size(vm_text).unwrap_or(4096);
+    let pages_anon = vm_pages(vm_text, "Anonymous pages");
+    let pages_wired = vm_pages(vm_text, "Pages wired down");
+    let pages_comp = vm_pages(vm_text, "Pages occupied by compressor").unwrap_or(0);
+    let pages_active = vm_pages(vm_text, "Pages active");
+
+    let used_pages = match (pages_anon, pages_wired) {
+        (Some(anon), Some(wired)) => Some(anon + wired + pages_comp),
+        (None, Some(wired)) => pages_active.map(|act| act + wired + pages_comp),
+        _ => None,
+    };
+
+    let (mem_pct, mem_used_mb, mem_total_mb) = match used_pages {
+        Some(up) => {
+            let used_bytes = (up.saturating_mul(page_size)).min(mem_total_bytes);
+            let total_mb = mem_total_bytes / 1024 / 1024;
+            let used_mb = used_bytes / 1024 / 1024;
+            let pct = ((used_bytes as f64 / mem_total_bytes as f64) * 1000.0).round() / 10.0;
+            (Some(pct.clamp(0.0, 100.0)), Some(used_mb), Some(total_mb))
+        }
+        None => return json!({ "supported": false }),
+    };
+
+    // 4. 磁盘容量: 优先 /System/Volumes/Data (APFS 数据卷)，回退 /
+    let mut disk_pct = None;
+    let mut disk_used_gb = None;
+    let mut disk_total_gb = None;
+    if let Some(df_text) = parts.get(3) {
+        let mut target_cols: Option<Vec<&str>> = None;
+        for line in df_text.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() >= 6 && f[4].ends_with('%') && f[0] != "Filesystem" {
+                let mount = f[5];
+                if mount == "/System/Volumes/Data" {
+                    target_cols = Some(f);
+                    break;
+                } else if mount == "/" && target_cols.is_none() {
+                    target_cols = Some(f);
+                }
+            }
+        }
+        if let Some(f) = target_cols {
+            let total_kb = f[1].parse::<f64>().ok();
+            let used_col_kb = f[2].parse::<f64>().ok();
+            let avail_kb = f[3].parse::<f64>().ok();
+            if let (Some(total), Some(avail)) = (total_kb, avail_kb) {
+                if total > 0.0 {
+                    // APFS 容器多宗卷共享空间:根卷与 Data 卷的 Used 各自独立，
+                    // total - avail 才能反映整个容器已被占用的真实空间。
+                    let used = (total - avail).max(used_col_kb.unwrap_or(0.0)).clamp(0.0, total);
+                    disk_total_gb = Some((total / 1024.0 / 1024.0 * 10.0).round() / 10.0);
+                    disk_used_gb = Some((used / 1024.0 / 1024.0 * 10.0).round() / 10.0);
+                    disk_pct = Some(((used / total) * 1000.0).round() / 10.0);
+                }
+            }
+        }
+    }
+
+    // 5. 网络速率: netstat -ibn 仅取 <Link# 链路层行并排除 lo*
+    let mut rx: u64 = 0;
+    let mut tx: u64 = 0;
+    let mut has_net = false;
+    if let Some(net_text) = parts.get(4) {
+        for line in net_text.lines() {
+            if !line.contains("<Link#") {
+                continue;
+            }
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 7 {
+                continue;
+            }
+            let iface = f[0];
+            if iface.starts_with("lo") {
+                continue;
+            }
+            // netstat -ibn 列尾固定为: Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+            let ibytes_idx = f.len() - 5;
+            let obytes_idx = f.len() - 2;
+            if let (Ok(ib), Ok(ob)) = (f[ibytes_idx].parse::<u64>(), f[obytes_idx].parse::<u64>()) {
+                rx = rx.saturating_add(ib);
+                tx = tx.saturating_add(ob);
+                has_net = true;
+            }
+        }
+    }
+    let (rx_bps, tx_bps) = match (has_net, prev.and_then(|p| p["rx"].as_u64())) {
+        (true, Some(prev_rx)) => (
+            Some(rx.saturating_sub(prev_rx) as f64 / interval_sec),
+            Some(
+                tx.saturating_sub(prev.and_then(|p| p["tx"].as_u64()).unwrap_or(0)) as f64
+                    / interval_sec,
+            ),
+        ),
+        _ => (None, None),
+    };
+
+    // 6. 磁盘 IO 速率: ioreg IOBlockStorageDriver Statistics Bytes (Read)/(Write)
+    let mut disk_r_bytes: u64 = 0;
+    let mut disk_w_bytes: u64 = 0;
+    let mut has_disk = false;
+    if let Some(io_text) = parts.get(5) {
+        for line in io_text.lines() {
+            let r = extract_ioreg_stat(line, "\"Bytes (Read)\"=");
+            let w = extract_ioreg_stat(line, "\"Bytes (Write)\"=");
+            if r.is_some() || w.is_some() {
+                disk_r_bytes = disk_r_bytes.saturating_add(r.unwrap_or(0));
+                disk_w_bytes = disk_w_bytes.saturating_add(w.unwrap_or(0));
+                has_disk = true;
+            }
+        }
+    }
+    let (disk_read_bps, disk_write_bps) =
+        match (has_disk, prev.and_then(|p| p["diskRBytes"].as_u64())) {
+            (true, Some(pr)) => (
+                Some(disk_r_bytes.saturating_sub(pr) as f64 / interval_sec),
+                Some(
+                    disk_w_bytes
+                        .saturating_sub(prev.and_then(|p| p["diskWBytes"].as_u64()).unwrap_or(0))
+                        as f64
+                        / interval_sec,
+                ),
+            ),
+            _ => (None, None),
+        };
+
+    json!({
+        "supported": true,
+        "cpuPct": cpu_pct,
+        "memPct": mem_pct, "memUsedMB": mem_used_mb, "memTotalMB": mem_total_mb,
+        "rxBps": rx_bps, "txBps": tx_bps,
+        "diskPct": disk_pct, "diskUsedGB": disk_used_gb, "diskTotalGB": disk_total_gb,
+        "diskReadBps": disk_read_bps, "diskWriteBps": disk_write_bps,
+        "raw": {
+            "rx": if has_net { json!(rx) } else { json!(null) },
+            "tx": if has_net { json!(tx) } else { json!(null) },
+            "diskRBytes": if has_disk { json!(disk_r_bytes) } else { json!(null) },
+            "diskWBytes": if has_disk { json!(disk_w_bytes) } else { json!(null) }
+        }
+    })
+}
+
+fn parse_vm_page_size(text: &str) -> Option<u64> {
+    let first_line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let (_, after) = first_line.split_once("page size of ")?;
+    let num_str = after.split_whitespace().next()?;
+    num_str.parse::<u64>().ok()
+}
+
+fn vm_pages(text: &str, key: &str) -> Option<u64> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest
+                .trim_start()
+                .strip_prefix(':')
+                .unwrap_or(rest.trim_start());
+            if let Some(first) = rest.split_whitespace().next() {
+                let clean = first.trim_end_matches('.');
+                if let Ok(n) = clean.parse::<u64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_ioreg_stat(line: &str, marker: &str) -> Option<u64> {
+    let (_, after) = line.split_once(marker)?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u64>().ok()
+    }
 }

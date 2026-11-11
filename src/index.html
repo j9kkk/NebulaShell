@@ -1003,72 +1003,49 @@
       </div>
       <div class="io-body">
         <div id="io-export-config">
-          <div class="form-grid io-grid">
-            <label class="io-label" for="io-export-scope">范围</label>
-            <div class="io-cell">
-              <select id="io-export-scope" class="inp"></select>
-            </div>
+          <div class="io-sec">导出范围</div>
+          <select id="io-export-scope" class="inp"></select>
+          <div class="io-note io-export-facts after-row"><span id="io-export-format">JSON 备份</span> · <span id="io-export-extra">不含跳板机</span></div>
 
-            <span class="io-label">附带</span>
-            <span id="io-export-extra" class="io-value">不含跳板机</span>
-
-            <span class="io-label">格式</span>
-            <span id="io-export-format" class="io-value">JSON 备份</span>
-
-            <!-- display:contents 让标签与控件各自成为网格列,.io-switches 只作行容器/选择器锚点 -->
-            <div class="io-switches">
-              <label class="io-label" for="io-export-with-cred"><span class="switch-label">包含凭据</span></label>
-              <div class="io-cell">
-                <label class="switch"><input id="io-export-with-cred" type="checkbox" checked /><span class="switch-slider"></span></label>
-                <span id="io-export-cred-note" class="io-switch-note">文件内含主机密码/私钥</span>
-              </div>
-            </div>
-
-            <label class="io-label" for="io-export-dir">保存到</label>
-            <div class="dir-field">
-              <input id="io-export-dir" class="inp dir-path" type="text" placeholder="下载文件夹(默认)" spellcheck="false" autocomplete="off" />
-              <button id="io-export-pick" class="btn icon dir-pick" type="button" title="选择目录" aria-label="选择导出目录"><span class="mi" data-icon="folder"></span></button>
-            </div>
-
-            <div class="io-switches" id="io-export-keys-row">
-              <label class="io-label" for="io-export-with-keys"><span class="switch-label">包含私钥文件</span></label>
-              <div class="io-cell">
-                <label class="switch"><input id="io-export-with-keys" type="checkbox" /><span class="switch-slider"></span></label>
-                <span id="io-export-keys-note" class="io-switch-note">不带私钥文件,只记录路径</span>
-              </div>
-            </div>
-
-            <div class="io-switches">
-              <label class="io-label" for="io-export-use-pass"><span class="switch-label">用口令加密（推荐）</span></label>
-              <div class="io-cell">
-                <label class="switch"><input id="io-export-use-pass" type="checkbox" /><span class="switch-slider"></span></label>
-                <!-- 口令框沿用项目统一的 .secret-input-wrap(右侧内嵌眼睛显隐),与主机弹窗、AI 密钥同款 -->
-                <div class="secret-input-wrap io-pass-wrap">
-                  <input id="io-export-pass-input" class="inp io-pass-inline hidden" type="password" placeholder="设置文件口令(至少 8 位)" autocomplete="new-password" spellcheck="false" />
-                  <button id="btn-reveal-export-pass" class="btn icon btn-reveal-secret hidden" type="button" title="显示口令" aria-label="显示口令"><span class="mi" data-icon="eyeOff"></span></button>
-                </div>
-              </div>
-            </div>
-
-            <div id="io-export-pass2-row" class="io-switches hidden">
-              <label class="io-label" for="io-export-pass2">再次输入</label>
-              <div class="io-cell">
-                <input id="io-export-pass2" class="inp io-pass-inline" type="password" placeholder="再次输入文件口令" autocomplete="new-password" spellcheck="false" />
-              </div>
-            </div>
-
-            <span class="io-label" aria-hidden="true"></span>
-            <!-- 开关的状态说明:关 = 用内置密钥(等同明文),开 = 口令不进文件。两态互斥,
-                 由 renderExport 写内容(U-10)。关态文案常驻在这里,不靠下方警示块兜底。 -->
-            <span id="io-export-pass-note" class="io-note hidden">用内置密钥：任何拿到本 App 的人都能解开，等同明文</span>
+          <div class="io-sec">打包内容</div>
+          <div class="io-sw-row io-switches">
+            <label class="io-sw-name switch-label" for="io-export-with-pass">包含密码</label>
+            <label class="switch"><input id="io-export-with-pass" type="checkbox" /><span class="switch-slider"></span></label>
+            <span class="io-note">仅对密码登录主机有效</span>
+          </div>
+          <div class="io-sw-row io-switches">
+            <label class="io-sw-name switch-label" for="io-export-with-keypaths">包含密钥路径</label>
+            <label class="switch"><input id="io-export-with-keypaths" type="checkbox" /><span class="switch-slider"></span></label>
+            <span class="io-note">仅导出密钥文件路径</span>
+          </div>
+          <div class="io-sw-row io-switches" id="io-export-usepass-row">
+            <label class="io-sw-name switch-label" for="io-export-use-pass">用口令加密<span class="io-tag-reco">推荐</span></label>
+            <label class="switch"><input id="io-export-use-pass" type="checkbox" /><span class="switch-slider"></span></label>
+            <!-- 状态说明:密码关 → 没有可加密的内容;密码开+口令关 → 内置密钥等同明文;口令开 → 口令不进文件 -->
+            <span id="io-export-pass-note" class="io-note">没有可加密的内容</span>
           </div>
 
-          <!-- 安全提示是常驻块,不是底栏状态位:底栏会被"口令不足/导出中"顶掉(§7.2 注) -->
-          <div id="io-export-warn" class="io-warn">
-            <span class="io-warn-ico" aria-hidden="true">!</span>
-            <span class="io-warn-t">文件里是真实凭据:内置密钥只能防误读,不能防人。设一个文件口令再发出去。</span>
-            <button id="io-export-warn-set" class="btn small" type="button">设置文件口令</button>
+          <div id="io-export-pass-row" class="io-passrow hidden">
+            <span class="io-pass-name">口令</span>
+            <!-- 口令框沿用项目统一的 .secret-input-wrap(右侧内嵌眼睛显隐) -->
+            <div class="secret-input-wrap io-pass-wrap">
+              <input id="io-export-pass-input" class="inp" type="password" placeholder="设置文件口令(至少 8 位)" autocomplete="new-password" spellcheck="false" />
+              <button id="btn-reveal-export-pass" class="btn icon btn-reveal-secret hidden" type="button" title="显示口令" aria-label="显示口令"><span class="mi" data-icon="eyeOff"></span></button>
+            </div>
           </div>
+          <div id="io-export-pass2-row" class="io-passrow hidden">
+            <span class="io-pass-name">再次输入</span>
+            <div class="secret-input-wrap io-pass-wrap">
+              <input id="io-export-pass2" class="inp" type="password" placeholder="再次输入文件口令" autocomplete="new-password" spellcheck="false" />
+            </div>
+          </div>
+
+          <div class="io-sec">保存位置</div>
+          <div class="io-row between">
+            <span id="io-export-dir" class="io-val mono">~/Downloads</span>
+            <button id="io-export-pick" class="btn ghost" type="button">更改…</button>
+          </div>
+          <input id="io-export-name" class="inp mono after-row" type="text" spellcheck="false" autocomplete="off" aria-label="文件名" />
         </div>
 
         <div id="io-export-done" class="io-done hidden">
@@ -1088,9 +1065,7 @@
       <div class="io-foot">
         <span id="io-export-hint" class="io-hint" role="status" aria-live="polite"></span>
         <span class="spacer"></span>
-        <button id="io-export-reveal" class="btn hidden" type="button">在文件夹中显示</button>
-        <button id="io-export-copy" class="btn hidden" type="button">复制路径</button>
-        <button id="io-export-again" class="btn hidden" type="button">再导出一份</button>
+        <button id="io-export-reveal" class="btn ghost hidden" type="button">在文件夹中显示</button>
         <button id="io-export-cancel" class="btn" type="button">取消</button>
         <button id="io-export-ok" class="btn primary" type="button">导出</button>
       </div>

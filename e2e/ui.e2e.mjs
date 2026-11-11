@@ -3465,13 +3465,15 @@ async function main() {
   // 是有意引入的第 5 档 —— 输入控件旁的按钮随输入框拉伸,不套通用刻度。
   check('T15 按钮高度层级收敛(≤5 档)', Array.isArray(heights) && heights.length <= 5, JSON.stringify(heights));
 
-  // 导出:新卡片(范围/路径/两个开关)。默认零输入;这里显式打开「启用加密」验证口令通道。
+  // 导出:新卡片(范围 / 打包内容 / 保存位置)。默认零敏感项;
+  // 这里显式打开「包含密码」+「用口令加密」验证口令通道(密码关时口令开关是禁用的)。
   const exportPath = path.join(work, 'hosts-export.json');
   await evalJs(`window.__exportPath = ${JSON.stringify(exportPath)}; return 1`);
   // 入口:侧栏「管理」菜单(鼠标路径)
   await evalJs(`document.querySelector('#btn-host-manage').click(); document.querySelector('#ctx-menu [data-command="hosts.export"]').click(); return 1`);
   await waitEval(`return !document.querySelector('#modal-export').classList.contains('hidden')`, 'true', 10000);
   await evalJs(`
+    document.querySelector('.io-switches:has(#io-export-with-pass) .switch-label').click();
     document.querySelector('.io-switches:has(#io-export-use-pass) .switch-label').click();
     const inp = document.querySelector('#io-export-pass-input');
     inp.value = 'e2e-passphrase-1';
@@ -3490,7 +3492,7 @@ async function main() {
     await sleep(250);
     if (fs.existsSync(exportPath)) {
       const t = fs.readFileSync(exportPath, 'utf8');
-      if (t.includes('credentialsIncluded')) { exportText = t; break; } // 等写完整
+      if (t.includes('passwordsIncluded')) { exportText = t; break; } // 等写完整
     }
   }
   const exportObj = exportText ? JSON.parse(exportText) : {};
@@ -3502,8 +3504,8 @@ async function main() {
   const leaksValue = exportText.includes(PASSWORD) || /BEGIN [A-Z ]*PRIVATE KEY/.test(exportText);
   check(
     'T16 导出含加密凭据且文件无明文密码',
-    exportObj.credentialsIncluded === true && !!exportObj.credentials && !hasPlainCredField && !leaksValue,
-    `included=${exportObj.credentialsIncluded} plainField=${hasPlainCredField} leakedValue=${leaksValue}`,
+    exportObj.passwordsIncluded === true && !!exportObj.credentials && !hasPlainCredField && !leaksValue,
+    `included=${exportObj.passwordsIncluded} plainField=${hasPlainCredField} leakedValue=${leaksValue}`,
   );
   // 导出后停在结果态(设计 §7.5):点「完成」关卡片,后续用例才点得到侧栏
   await evalJs(`document.querySelector('#io-export-ok').click(); return 1`);

@@ -597,7 +597,7 @@ export function renderMonitorBar() {
     set('#mon-cpu', '–'); set('#mon-mem', '–'); set('#mon-disk', '–'); set('#mon-rx', '–'); set('#mon-tx', '–');
     setV('#mon-mem-det', ''); setV('#mon-disk-det', '');
     setLat(m.latencyMs);
-    set('#mon-note', '该主机暂不支持资源监控(仅支持 Linux)');
+    set('#mon-note', '该主机暂不支持资源监控(仅支持 Linux / macOS)');
     set('#mon-spark-cpu', '');
     setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
     renderCpuPopoverChart([], null);

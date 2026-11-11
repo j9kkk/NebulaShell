@@ -245,7 +245,7 @@ fn scrypt_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
     scrypt_key_with(passphrase, salt, EXPORT_LOG_N, EXPORT_R, EXPORT_P)
 }
 
-pub(crate) fn encrypt_with_passphrase(passphrase: &str, plain: &[u8]) -> Result<String, String> {
+pub fn encrypt_with_passphrase(passphrase: &str, plain: &[u8]) -> Result<String, String> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     use base64::Engine;
@@ -1534,9 +1534,9 @@ impl Store {
             .ok_or_else(|| "克隆后读取失败".to_string())
     }
 
-    /// 导出主机(全量)。
+    /// 导出主机(全量,密码与密钥路径都带)。测试与 CLI 用;界面走 `export_hosts_with`。
     pub fn export_hosts(&self) -> Result<Value, String> {
-        self.export_hosts_scoped(&json!({ "mode": "all" }), None, false)
+        self.export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
     }
 
     /// 导出主机。
@@ -1545,25 +1545,31 @@ impl Store {
     /// ids 模式会把被依赖的跳板机一并带进来(闭包)—— 子集导出首先得是一张自洽的图,
     /// 否则 `validate_jump_graph` 会因为引用不到跳板机而整批失败。
     ///
-    /// `passphrase` 为 None 时**只导出非敏感字段**;给出时凭据用 scrypt 派生密钥 +
-    /// AES-256-GCM 加密后单独放在 credentials 里。
+    /// `passphrase` 为 None 时只导出内置密钥保护的密码块;给出时走口令通道。
+    /// `with_passwords` / `with_key_paths` 是界面上两个**互相独立**的开关。
     pub fn export_hosts_scoped(
         &self,
         scope: &Value,
         passphrase: Option<&str>,
-        with_keys: bool,
+        with_passwords: bool,
+        with_key_paths: bool,
     ) -> Result<Value, String> {
-        self.export_hosts_with(scope, passphrase, with_keys, true)
+        self.export_hosts_with(scope, passphrase, with_passwords, with_key_paths)
     }
 
-    /// 导出主机。`with_credentials = false` 时不收集、不写 `credentials`,
-    /// 文件只能恢复主机结构(导入后需重填密码/私钥)—— 界面「包含凭据」开关的落点。
+    /// 导出主机。两个开关各自决定一件事,互不依赖:
+    ///
+    /// - `with_passwords`:写 `credentials` 块(只含 password),内置密钥或口令加密;
+    /// - `with_key_paths`:`hosts[].keyPath` 原样写出,否则写空串。
+    ///
+    /// 私钥正文(pasted key / passphrase)不在任何开关的覆盖范围内 —— 界面上只承诺
+    /// 「导出密钥文件路径」,要连正文一起备份得等第三个开关,这里不偷偷带。
     pub fn export_hosts_with(
         &self,
         scope: &Value,
         passphrase: Option<&str>,
-        with_keys: bool,
-        with_credentials: bool,
+        with_passwords: bool,
+        with_key_paths: bool,
     ) -> Result<Value, String> {
         let wanted: Option<std::collections::HashSet<String>> =
             match scope["mode"].as_str().unwrap_or("all") {
@@ -1589,7 +1595,7 @@ impl Store {
 
         // 读锁只取数据,scrypt 派生在锁外 —— 与旧实现同样的理由:派生是秒级 CPU 操作,
         // 持锁会把其它所有命令一起卡住。
-        let (hosts, creds, included_jumps, included_keys) = {
+        let (hosts, creds, included_jumps) = {
             let data = self.data.lock().unwrap();
             let all: Vec<Value> = data["hosts"].as_array().cloned().unwrap_or_default();
 
@@ -1643,54 +1649,44 @@ impl Store {
                 return Err("所选主机已不存在,请刷新主机库".into());
             }
 
+            // 密钥路径:开关关着就写空串,不给「反正只是路径」这种默认。
+            // keyPath 在新机大概率失效,却会让导进来的主机看起来配好了 keys —— 只在用户明确要时才带。
             let hosts: Vec<Value> = picked
                 .iter()
                 .map(|h| {
+                    let key_path = if with_key_paths {
+                        h["keyPath"].clone()
+                    } else {
+                        json!("")
+                    };
                     json!({
                         "id": h["id"], "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
-                        "authType": h["authType"], "keyPath": h["keyPath"], "group": h["group"], "tags": h["tags"],
+                        "authType": h["authType"], "keyPath": key_path, "group": h["group"], "tags": h["tags"],
                         "jumpIds": h["jumpIds"], "initcmd": h["initcmd"], "cloud": h["cloud"],
                         "sessionLog": h["sessionLog"].as_str().unwrap_or("default"),
                         "aiAccess": h["aiAccess"].as_str().unwrap_or("default"),
                     })
                 })
                 .collect();
-            // v4:凭据一律收集,由内置密钥加密后写入 credentials。
-            // 私钥文件:只有用户显式打开「导出主机密钥」才读进来。
-            // 读不到(路径失效/权限/非 UTF-8/过大)就跳过 —— 导出本身不该因为一个坏路径失败,
-            // 但要通过 includedKeys 让调用方知道少带了几个。
-            let mut creds: Vec<Value> = Vec::with_capacity(picked.len());
-            let mut included_keys = 0usize;
-            for h in &picked {
-                let mut entry = json!({
-                    "id": h["id"], "host": h["host"], "port": h["port"], "username": h["username"],
-                    "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
-                    "privateKey": self.dec(h["privateKeyEnc"].as_str().unwrap_or("")),
-                    "passphrase": self.dec(h["passphraseEnc"].as_str().unwrap_or("")),
-                });
-                let key_path = h["keyPath"].as_str().unwrap_or("");
-                if with_keys && !key_path.is_empty() {
-                    if let Ok(bytes) = std::fs::read(key_path) {
-                        if bytes.len() <= 512 * 1024 {
-                            if let Ok(text) = String::from_utf8(bytes) {
-                                let name = std::path::Path::new(key_path)
-                                    .file_name()
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "id_key".to_string());
-                                entry["keyFile"] = json!({ "name": name, "content": text });
-                                included_keys += 1;
-                            }
-                        }
-                    }
-                }
-                creds.push(entry);
-            }
-            (hosts, creds, included_jumps, included_keys)
+            // 凭据块只装密码:私钥正文与 passphrase 不归任何开关管,一律不写。
+            let creds: Vec<Value> = if with_passwords {
+                picked
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "id": h["id"], "host": h["host"], "port": h["port"], "username": h["username"],
+                            "password": self.dec(h["passwordEnc"].as_str().unwrap_or("")),
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (hosts, creds, included_jumps)
         };
 
         validate_jump_graph(&hosts)?;
-        // 「包含凭据」关闭:不写 credentials 块,导入端会提示需要重填 —— 界面开关的落点
-        let (block, credentials_included) = if with_credentials {
+        let (block, passwords_included) = if with_passwords {
             let plain = serde_json::to_string(&creds).map_err(|e| e.to_string())?;
             // 默认内置密钥(零输入);用户显式开了「用口令加密」才走口令通道。
             let block = match passphrase.filter(|p| !p.trim().is_empty()) {
@@ -1708,12 +1704,12 @@ impl Store {
             "app": "nebulashell", "version": 4,
             "exportedAt": chrono::Utc::now().to_rfc3339(),
             "hosts": hosts,
-            // 非敏感字段明文;凭据只在 credentials 里(内置密钥或口令加密)
-            "credentialsIncluded": credentials_included,
+            // 非敏感字段明文;密码只在 credentials 里(内置密钥或口令加密)
+            "passwordsIncluded": passwords_included,
+            "keyPathsIncluded": with_key_paths,
             "credentials": block,
             // 只给调用方提示用,导入端忽略该字段
             "includedJumps": included_jumps,
-            "includedKeys": included_keys,
         });
         Ok(out)
     }

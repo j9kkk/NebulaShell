@@ -97,7 +97,7 @@ fn v3_full_roundtrip_remaps_forward_references_and_keeps_per_id_credentials() {
     // Same endpoint/login, independent host configuration and credentials.
     let target = s.save_host(&json!({"host":"shared.test","name":"target","password":"target-secret","jumpIds":[id(&jump)],"initcmd":"echo ready","cloud":cloud("a","r1"),"tags":["ops"]})).unwrap();
     let mut exported = s
-        .export_hosts_scoped(&json!({ "mode": "all" }), Some("migration pass"), false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("migration pass"), true, true)
         .unwrap();
     assert_eq!(exported["version"], json!(4));
     assert_eq!(exported["hosts"][1]["id"], target["id"]);
@@ -146,27 +146,25 @@ fn stripped(mut v: serde_json::Value) -> String {
 #[test]
 fn repeated_encrypted_import_fills_only_missing_credentials_and_preserves_edits() {
     let source = Fixture::new();
-    source.0.save_host(&json!({"host":"example.test","password":"import-pw","privateKey":"import-key","passphrase":"import-phrase","name":"source","initcmd":"source command"})).unwrap();
+    source.0.save_host(&json!({"host":"example.test","password":"import-pw","name":"source","initcmd":"source command"})).unwrap();
     let public = source.0.export_hosts().unwrap();
     let encrypted = source
         .0
-        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass"), false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass"), true, true)
         .unwrap();
     let dest = Fixture::new();
     dest.0.import_hosts(&stripped(public), None).unwrap();
     let host = dest.0.list_hosts()[0].clone();
-    dest.0.save_host(&json!({"id":id(&host),"host":"example.test","username":"custom-login","password":"local-pw","name":"custom","authType":"agent","group":"local","tags":["local"],"initcmd":"local command"})).unwrap();
+    dest.0.save_host(&json!({"id":id(&host),"host":"example.test","username":"custom-login","name":"custom","authType":"agent","group":"local","tags":["local"],"initcmd":"local command"})).unwrap();
     let r = dest
         .0
         .import_hosts(&text(&encrypted), Some("pass"))
         .unwrap();
     assert_eq!(r["added"], json!(0));
     assert_eq!(r["updated"], json!(1));
-    assert_eq!(r["credentialsFilled"], json!(2));
+    assert_eq!(r["credentialsFilled"], json!(1));
     let full = dest.0.host_full(id(&host)).unwrap();
-    assert_eq!(full["password"], json!("local-pw"));
-    assert_eq!(full["privateKey"], json!("import-key"));
-    assert_eq!(full["passphrase"], json!("import-phrase"));
+    assert_eq!(full["password"], json!("import-pw"));
     assert_eq!(full["username"], json!("custom-login"));
     assert_eq!(full["name"], json!("custom"));
     assert_eq!(full["authType"], json!("agent"));
@@ -271,7 +269,7 @@ fn repeat_import_into_local_duplicate_remembers_source_after_user_changes_login(
     let public = source.0.export_hosts().unwrap();
     let encrypted = source
         .0
-        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass"), false)
+        .export_hosts_scoped(&json!({ "mode": "all" }), Some("pass"), true, true)
         .unwrap();
     let dest = Fixture::new();
     let local = dest

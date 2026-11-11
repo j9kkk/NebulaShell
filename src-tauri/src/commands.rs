@@ -606,21 +606,27 @@ pub async fn nebula_invoke(
             } else {
                 payload["scope"].clone()
             };
-            let pass = payload["passphrase"]
-                .as_str()
-                .filter(|p| !p.trim().is_empty());
-            let with_keys = payload["withKeys"] == json!(true);
-            // 「包含凭据」缺省开(向后兼容);显式 false 时文件里没有 credentials 块
-            let with_cred = payload["withCredentials"] != json!(false);
-            let data = match state
-                .store
-                .export_hosts_with(&scope, pass, with_keys, with_cred)
-            {
+            // 两个开关互相独立:密码进 credentials 块,密钥路径进 hosts[].keyPath。
+            // 缺省都是关 —— 老前端不传这两个键时得到的是"纯结构备份",不是"悄悄带上密码"。
+            let with_passwords = payload["withPasswords"] == json!(true);
+            let with_key_paths = payload["withKeyPaths"] == json!(true);
+            let pass = if with_passwords {
+                payload["passphrase"]
+                    .as_str()
+                    .filter(|p| !p.trim().is_empty())
+            } else {
+                None
+            };
+            let data = match state.store.export_hosts_with(
+                &scope,
+                pass,
+                with_passwords,
+                with_key_paths,
+            ) {
                 Ok(d) => d,
                 Err(e) => return err_msg(e),
             };
             let included_jumps = data["includedJumps"].as_u64().unwrap_or(0);
-            let included_keys = data["includedKeys"].as_u64().unwrap_or(0);
             let count = data["hosts"].as_array().map(|a| a.len()).unwrap_or(0);
             let default_name = payload["filename"]
                 .as_str()
@@ -639,7 +645,8 @@ pub async fn nebula_invoke(
                     std::fs::write(&p, serde_json::to_string_pretty(&data).unwrap_or_default())
                         .ok();
                     return ok(
-                        json!({ "path": p, "count": count, "includedJumps": included_jumps }),
+                        json!({ "path": p, "count": count, "includedJumps": included_jumps,
+                             "passwordsIncluded": with_passwords, "keyPathsIncluded": with_key_paths }),
                     );
                 }
             }
@@ -675,7 +682,8 @@ pub async fn nebula_invoke(
                     return err_msg(e.to_string());
                 }
                 return ok(
-                    json!({ "path": path_str, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }),
+                    json!({ "path": path_str, "count": count, "includedJumps": included_jumps,
+                             "passwordsIncluded": with_passwords, "keyPathsIncluded": with_key_paths }),
                 );
             }
             let file = rfd::AsyncFileDialog::new()
@@ -690,7 +698,8 @@ pub async fn nebula_invoke(
                         return err_msg(e.to_string());
                     }
                     ok(
-                        json!({ "path": path, "count": count, "includedJumps": included_jumps, "includedKeys": included_keys }),
+                        json!({ "path": path, "count": count, "includedJumps": included_jumps,
+                             "passwordsIncluded": with_passwords, "keyPathsIncluded": with_key_paths }),
                     )
                 }
                 None => ok(json!(null)),
