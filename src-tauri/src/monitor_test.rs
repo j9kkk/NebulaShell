@@ -200,8 +200,12 @@ fn darwin_live_probe_executes_and_parses() {
     let text1 = String::from_utf8_lossy(&out1.stdout);
     let r1 = parse_proc(&text1, None, 3.0);
     assert_eq!(r1["supported"], serde_json::json!(true));
-    assert!(r1["cpuPct"].as_f64().is_some_and(|v| (0.0..=100.0).contains(&v)));
-    assert!(r1["memPct"].as_f64().is_some_and(|v| (0.0..=100.0).contains(&v)));
+    assert!(r1["cpuPct"]
+        .as_f64()
+        .is_some_and(|v| (0.0..=100.0).contains(&v)));
+    assert!(r1["memPct"]
+        .as_f64()
+        .is_some_and(|v| (0.0..=100.0).contains(&v)));
     assert!(r1["memTotalMB"].as_u64().unwrap_or(0) > 1024);
     assert!(r1["diskTotalGB"].as_f64().unwrap_or(0.0) > 10.0);
 

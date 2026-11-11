@@ -617,15 +617,14 @@ pub async fn nebula_invoke(
             } else {
                 None
             };
-            let data = match state.store.export_hosts_with(
-                &scope,
-                pass,
-                with_passwords,
-                with_key_paths,
-            ) {
-                Ok(d) => d,
-                Err(e) => return err_msg(e),
-            };
+            let data =
+                match state
+                    .store
+                    .export_hosts_with(&scope, pass, with_passwords, with_key_paths)
+                {
+                    Ok(d) => d,
+                    Err(e) => return err_msg(e),
+                };
             let included_jumps = data["includedJumps"].as_u64().unwrap_or(0);
             let count = data["hosts"].as_array().map(|a| a.len()).unwrap_or(0);
             let default_name = payload["filename"]

@@ -97,7 +97,12 @@ fn v3_full_roundtrip_remaps_forward_references_and_keeps_per_id_credentials() {
     // Same endpoint/login, independent host configuration and credentials.
     let target = s.save_host(&json!({"host":"shared.test","name":"target","password":"target-secret","jumpIds":[id(&jump)],"initcmd":"echo ready","cloud":cloud("a","r1"),"tags":["ops"]})).unwrap();
     let mut exported = s
-        .export_hosts_scoped(&json!({ "mode": "all" }), Some("migration pass"), true, true)
+        .export_hosts_scoped(
+            &json!({ "mode": "all" }),
+            Some("migration pass"),
+            true,
+            true,
+        )
         .unwrap();
     assert_eq!(exported["version"], json!(4));
     assert_eq!(exported["hosts"][1]["id"], target["id"]);

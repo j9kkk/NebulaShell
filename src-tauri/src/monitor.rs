@@ -297,7 +297,9 @@ fn parse_darwin(body: &str, prev: Option<&Value>, interval_sec: f64) -> Value {
                 if total > 0.0 {
                     // APFS 容器多宗卷共享空间:根卷与 Data 卷的 Used 各自独立，
                     // total - avail 才能反映整个容器已被占用的真实空间。
-                    let used = (total - avail).max(used_col_kb.unwrap_or(0.0)).clamp(0.0, total);
+                    let used = (total - avail)
+                        .max(used_col_kb.unwrap_or(0.0))
+                        .clamp(0.0, total);
                     disk_total_gb = Some((total / 1024.0 / 1024.0 * 10.0).round() / 10.0);
                     disk_used_gb = Some((used / 1024.0 / 1024.0 * 10.0).round() / 10.0);
                     disk_pct = Some(((used / total) * 1000.0).round() / 10.0);

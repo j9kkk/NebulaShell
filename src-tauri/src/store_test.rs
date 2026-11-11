@@ -983,27 +983,32 @@ fn export_password_and_key_path_switches_are_independent() {
         .unwrap();
     let scope = json!({ "mode": "all" });
 
-    let none = store
-        .export_hosts_with(&scope, None, false, false)
-        .unwrap();
+    let none = store.export_hosts_with(&scope, None, false, false).unwrap();
     assert_eq!(none["passwordsIncluded"], json!(false));
     assert_eq!(none["keyPathsIncluded"], json!(false));
     assert!(none["credentials"].is_null(), "不开密码就不写凭据块");
-    assert_eq!(none["hosts"][0]["keyPath"], json!(""), "不开密钥路径就写空串");
+    assert_eq!(
+        none["hosts"][0]["keyPath"],
+        json!(""),
+        "不开密钥路径就写空串"
+    );
     let text = serde_json::to_string(&none).unwrap();
     assert!(!text.contains("SuperSecret123"), "明文密码不能出现在文件里");
-    assert!(!text.contains("KEYBODY-SHOULD-NEVER-LEAVE"), "私钥正文一律不导出");
+    assert!(
+        !text.contains("KEYBODY-SHOULD-NEVER-LEAVE"),
+        "私钥正文一律不导出"
+    );
 
-    let pass_only = store
-        .export_hosts_with(&scope, None, true, false)
-        .unwrap();
+    let pass_only = store.export_hosts_with(&scope, None, true, false).unwrap();
     assert_eq!(pass_only["passwordsIncluded"], json!(true));
     assert!(pass_only["credentials"]["data"].as_str().is_some());
-    assert_eq!(pass_only["hosts"][0]["keyPath"], json!(""), "密码开关不碰密钥路径");
+    assert_eq!(
+        pass_only["hosts"][0]["keyPath"],
+        json!(""),
+        "密码开关不碰密钥路径"
+    );
 
-    let key_only = store
-        .export_hosts_with(&scope, None, false, true)
-        .unwrap();
+    let key_only = store.export_hosts_with(&scope, None, false, true).unwrap();
     assert_eq!(key_only["keyPathsIncluded"], json!(true));
     assert!(key_only["credentials"].is_null(), "密钥路径开关不碰密码");
     assert_eq!(
@@ -1018,9 +1023,7 @@ fn export_password_and_key_path_switches_are_independent() {
     );
     assert!(!text_key.contains("SuperSecret123"));
 
-    let both = store
-        .export_hosts_with(&scope, None, true, true)
-        .unwrap();
+    let both = store.export_hosts_with(&scope, None, true, true).unwrap();
     assert_eq!(both["passwordsIncluded"], json!(true));
     assert_eq!(both["keyPathsIncluded"], json!(true));
     // 主机结构在任何组合下都完整导出
@@ -1090,7 +1093,9 @@ fn export_scope_ids_carries_jump_closure() {
         .unwrap();
 
     let scope = json!({ "mode": "ids", "ids": [a["id"]] });
-    let out = store.export_hosts_scoped(&scope, None, true, false).unwrap();
+    let out = store
+        .export_hosts_scoped(&scope, None, true, false)
+        .unwrap();
     let names: Vec<String> = out["hosts"]
         .as_array()
         .unwrap()
@@ -1119,8 +1124,12 @@ fn export_scope_ids_rejects_empty_and_missing() {
         .unwrap();
     let empty = store.export_hosts_scoped(&json!({ "mode": "ids", "ids": [] }), None, false, false);
     assert!(empty.is_err(), "空选择应报错而不是悄悄导出全量");
-    let missing =
-        store.export_hosts_scoped(&json!({ "mode": "ids", "ids": ["nope"] }), None, false, false);
+    let missing = store.export_hosts_scoped(
+        &json!({ "mode": "ids", "ids": ["nope"] }),
+        None,
+        false,
+        false,
+    );
     assert!(missing.unwrap_err().contains("不存在"));
     let bad_mode = store.export_hosts_scoped(&json!({ "mode": "group" }), None, false, false);
     assert!(bad_mode.is_err(), "未知范围必须报错,不能退化成全量");

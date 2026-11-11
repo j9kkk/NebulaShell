@@ -668,7 +668,12 @@ fn case17_export_scope_and_jump_closure() {
         .unwrap_err();
     assert!(e.contains("请先选择"), "实际: {}", e);
     let e = s
-        .export_hosts_scoped(&json!({ "mode": "ids", "ids": ["gone"] }), None, false, false)
+        .export_hosts_scoped(
+            &json!({ "mode": "ids", "ids": ["gone"] }),
+            None,
+            false,
+            false,
+        )
         .unwrap_err();
     assert!(e.contains("已不存在"), "实际: {}", e);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1136,7 +1141,9 @@ fn case28_key_install_failure_is_reported() {
     // 目标库:把 keys 目录的位置占成普通文件 → 私钥写盘必然失败
     let (dst, ddst) = store("c28-dst");
     std::fs::write(ddst.join("keys"), b"occupied").unwrap();
-    let r = dst.apply_hosts(&text, Some("pass1234"), &json!({})).unwrap();
+    let r = dst
+        .apply_hosts(&text, Some("pass1234"), &json!({}))
+        .unwrap();
     let row = &r["rows"][0];
     assert_eq!(
         row["result"],
