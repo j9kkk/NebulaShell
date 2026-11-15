@@ -451,11 +451,14 @@ export async function startMockSshd({ user = 'root', password = 'test-pass-123',
             stream.end();
             return;
           }
-          // 延迟探测的常驻回显通道(ssh::probe_latency 执行 `cat`):
+          // 延迟探测的常驻回显通道(ssh::probe_latency 执行 PING_ECHO_CMD):
           // stdin 写什么原样回什么,通道保持打开直到客户端关闭 —— 真实 cat 的行为。
           // 不能走下面的 EXEC-OK 分支:那条会立刻 exit/end,客户端会判定通道僵死,
           // 每轮探测都要重建通道(退化成用建通道的往返计时)。
-          if (String(info.command).trim() === 'cat') {
+          //
+          // 命令是 `cat 2>/dev/null || powershell ...`(POSIX 首选 cat,Windows 回退
+          // PowerShell)。这里按首个 token 判断,不要求整串等于 `cat`。
+          if (/^cat(\s|$)/.test(String(info.command).trim())) {
             // 只让**第一条** cat 通道按开关关闭:后续重建的通道正常服务,
             // 用例才能验证"重建之后可持续使用"。跨通道计数会让重建出来的
             // 通道也被立刻关掉,测的就不是自愈了。

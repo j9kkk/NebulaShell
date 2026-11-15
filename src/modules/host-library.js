@@ -388,7 +388,7 @@ export function renderLibrary() {
       <td class="hl-c-chk"><span class="hl-box${selected.has(h.id) ? ' on' : ''}">${
         selected.has(h.id) ? icon('check', { size: 9 }) : ''
       }</span></td>
-      <td class="hl-c-name" title="${escapeHtml(h.name || '')}">${escapeHtml(h.name || h.host)}</td>
+      <td class="hl-c-name" title="${escapeHtml(h.name || '')}">${escapeHtml(h.name || h.host)}${h.protocol === 'rdp' ? '<span class="proto-badge rdp">RDP</span>' : ''}</td>
       <td class="hl-c-user">${escapeHtml(h.username || 'root')}</td>
       <td class="hl-c-addr" title="${escapeHtml(h.host)}:${port}">${escapeHtml(h.host)}<span class="hl-port">:${port}</span></td>
       <td class="hl-c-grp" title="${escapeHtml(groupOf(h))}">${escapeHtml(groupOf(h))}</td>

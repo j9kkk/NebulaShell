@@ -10,6 +10,7 @@ import { escapeHtml, groupOf } from './hosts.js';
 import { rankItems } from '../shared/palette-match.js';
 import { renderMonitorBar } from './monitor.js';
 import { buildFilePane, initFilePane, createFilePaneState, syncFilePanesForSession } from './sftp.js';
+import { RDP_COMBOS, activeRdpPane, buildRdpPane, connectRdpPane, createRdpPaneState, disposeRdpPane, rdpPanesIn, reconnectRdpPane, renderRdpOverlay, sendRdpCombo, setRdpReadOnly, updateRdpStatusbar } from './rdp.js';
 import { confirmTransferInterrupt, revealLocalPath } from './file-transfer.js';
 import { fmtSize } from '../shared/format.js';
 import { appendTrusted, createLine, feed as feedLine, firstCommandLine, resetLine } from '../shared/cmdline.js';
@@ -104,6 +105,7 @@ export function openTabCtxMenu(x, y, tabId) {
   const layoutItems = [
     commandMenuItem('pane.split', layoutCtx),
     commandMenuItem('tab.file.add', layoutCtx),
+    ...(rdpPanesIn(tab).length ? [{ label: '新增远程桌面分屏', disabled: !!rdpPaneBlocker(tab.id), run: () => addRdpPane(null, tab.id, anchorPane) }] : []),
     '-',
     commandMenuItem('pane.reflow', { tabId }),
     commandMenuItem('workspace.tile'),
@@ -115,6 +117,15 @@ export function openTabCtxMenu(x, y, tabId) {
     commandMenuItem('tab.new'),
     // 分屏与布局:低频、成组,收一级菜单的子级 —— 标签行不再有 ⛶▾ 两颗常驻按钮
     { label: '分屏与布局', submenu: layoutItems },
+    // RDP 组合键只在这里出现:常驻面严禁放容易误触的 Ctrl+Alt+Del(设计稿 R1)
+    ...(rdpPanesIn(tab).length ? [{
+      label: '发送按键',
+      submenu: RDP_COMBOS.map((item) => ({
+        label: item.label,
+        hint: item.hint,
+        run: () => sendRdpCombo(rdpPanesIn(tab)[0], item.combo),
+      })),
+    }] : []),
     '-',
     // 广播:不传 ctx —— 传了 tabId 会让注册表把它当成"这一格的加入/退出",
     // 这里要的是"开始广播…"这个选会话卡(广播中则为「停止广播」)
@@ -454,7 +465,10 @@ export function activatePane(tabId, paneId, focus = false) {
   state.activeId = null;
   syncFocusedPane(tab.id, paneId);
   syncTabChrome();
-  updateStatusbar(null);
+  // 桌面窗格没有 SSH 会话,状态栏要按它自己的四态写,否则底部会显示「尚未建立连接」
+  if (pane?.kind === 'rdp') updateRdpStatusbar(pane); else updateStatusbar(null);
+  // RDP 桌面没有 SSH 会话:焦点要显式落到画布上,键盘事件才收得到
+  if (pane?.kind === 'rdp' && focus) pane.surface?.focus?.({ preventScroll: true });
   // 没有活动会话 = 状态栏不再代言任何窗格,断开的窗格都要亮出横幅
   syncAllPaneStatusBanners();
   renderMonitorBar();
@@ -498,6 +512,8 @@ export async function closeTab(tabId) {
   const wasActive = state.activeTabId === tabId;
   tab.closing = true;
   for (const sid of ids) closeSession(sid, { checkTransfers: false });
+  // RDP 窗格没有 SSH 会话:关标签时必须显式断开,否则后端会话会留到进程退出
+  for (const pane of rdpPanesIn(tab)) disposeRdpPane(pane);
   tab.el.remove();
   tab.workspaceTile?.remove();
   state.tabs.delete(tabId);
@@ -541,6 +557,11 @@ export function syncTabChrome() {
     if (s) {
       title.textContent = tab.customTitle || s.host.name;
       dot.className = 'tab-dot ' + s.status;
+    } else if (rdpPanesIn(tab).length) {
+      // RDP 标签没有 SSH 会话:标题与状态点由第一个桌面窗格代言
+      const pane = rdpPanesIn(tab)[0];
+      title.textContent = tab.customTitle || `${pane.host?.name || pane.host?.host || '远程桌面'} [RDP]`;
+      dot.className = 'tab-dot ' + (pane.phase === 'connected' ? 'connected' : pane.phase === 'connecting' ? 'connecting' : 'disconnected');
     } else {
       title.textContent = tab.customTitle || '新标签';
       dot.className = 'tab-dot';
@@ -609,8 +630,11 @@ export function appendPaneButtons(el, paneId, tabId = paneOwner(paneId)?.id) {
   zoomBtn.innerHTML = icon('zoom');
   zoomBtn.title = '放大窗格';
   for (const child of [closeBtn, zoomBtn]) bar.appendChild(child);
-  // 文件分屏:✕⤢ 放进文件工具栏行尾。悬浮在右上角会盖住窄窗格里的工具按钮
-  const host = el.classList?.contains?.('file-pane') ? el.querySelector('.file-toolbar') || el : el;
+  // 文件分屏:✕⤢ 放进文件工具栏行尾。悬浮在右上角会盖住窄窗格里的工具按钮。
+  // 桌面窗格同理:工具条进 .rdp-bar,不叠在远端画面上。
+  const host = el.classList?.contains?.('file-pane') ? el.querySelector('.file-toolbar') || el
+    : el.classList?.contains?.('rdp-pane') ? el.querySelector('.rdp-bar') || el
+      : el;
   host.appendChild(bar);
   appendRecordBadge(el);
 }
@@ -637,7 +661,7 @@ export function syncPaneButtons(tab = activeTab()) {
     const bar = pane.el.querySelector('.pane-toolbar');
     if (!bar) continue;
     const session = pane.sessionId ? state.sessions.get(pane.sessionId) : null;
-    bar.dataset.kind = pane.kind === 'file' ? 'file' : session ? 'term' : 'empty';
+    bar.dataset.kind = pane.kind === 'file' ? 'file' : pane.kind === 'rdp' ? 'rdp' : session ? 'term' : 'empty';
     bar.dataset.conn = session ? (['connected', 'connecting'].includes(session.status) ? session.status : 'down') : '';
     bar.dataset.solo = solo ? '1' : '0';
     // 录制中的窗格:内描边呼吸 + 右下角图标(只是状态,入口在状态栏)
@@ -673,8 +697,9 @@ export function bindPaneToolbars() {
 
 export function makePaneEl(paneId, tabId = state.activeTabId, kind = 'term', paneObj = null) {
   const el = document.createElement('div');
-  // 文件分屏复用 .term-pane 的焦点/激活/布局契约,叠加 .file-pane 做内容与最小尺寸
-  el.className = kind === 'file' ? 'term-pane file-pane' : 'term-pane';
+  // 文件分屏 / RDP 桌面复用 .term-pane 的焦点/激活/布局契约,各自再加一层类名
+  // 承载内容与最小尺寸
+  el.className = kind === 'file' ? 'term-pane file-pane' : kind === 'rdp' ? 'term-pane rdp-pane' : 'term-pane';
   el.dataset.pane = paneId;
   el.dataset.tab = tabId;
   const activate = (event) => {
@@ -687,6 +712,7 @@ export function makePaneEl(paneId, tabId = state.activeTabId, kind = 'term', pan
   // 文件分屏的内部 DOM 需要 pane.el 才能渲染:先把元素回填到窗格对象,
   // 否则 buildFilePane 读到 window.pane.el 为空直接返回,分屏永远空白。
   if (kind === 'file' && paneObj) { paneObj.el = el; buildFilePane(paneObj); }
+  if (kind === 'rdp' && paneObj) { paneObj.el = el; buildRdpPane(paneObj); }
   appendPaneButtons(el, paneId, tabId);
   return el;
 }
@@ -705,7 +731,7 @@ export function togglePaneZoom(paneId, tabId) {
   if (tab.zoomPaneId === paneId) tab.zoomPaneId = null;
   else {
     const pane = tab.panes.get(paneId);
-    if (!pane?.sessionId && pane?.kind !== 'file') return toast('空窗格无需放大', 'error');
+    if (!pane?.sessionId && pane?.kind !== 'file' && pane?.kind !== 'rdp') return toast('空窗格无需放大', 'error');
     if (leafCount(tab.layout) <= 1) return toast('当前只有一个窗格,无需放大', 'error');
     tab.zoomPaneId = paneId;
     // Remember a visible local target without changing the active workspace tile.
@@ -760,8 +786,8 @@ export function firstEmptyLeaf(node, tab = activeTab()) {
   if (!node || !tab) return null;
   if (isLeaf(node)) {
     const pane = tab.panes.get(node.paneId);
-    // 文件分屏不是"空窗格":新会话绝不复用它的格子
-    return pane && !pane.sessionId && pane.kind !== 'file' ? node.paneId : null;
+    // 文件分屏 / RDP 桌面不是"空窗格":新会话绝不复用它们的格子
+    return pane && !pane.sessionId && pane.kind !== 'file' && pane.kind !== 'rdp' ? node.paneId : null;
   }
   return firstEmptyLeaf(node.a, tab) || firstEmptyLeaf(node.b, tab);
 }
@@ -978,7 +1004,7 @@ export function renderPickers(tab = activeTab()) {
   if (!tab) return;
   const tabId = tab.id;
   for (const [paneId, pane] of tab.panes) {
-    if (pane.sessionId || pane.kind === 'file' || pane.pickerRendered) continue;
+    if (pane.sessionId || pane.kind === 'file' || pane.kind === 'rdp' || pane.pickerRendered) continue;
     pane.pickerRendered = true;
     const picker = document.createElement('div');
     picker.className = 'pane-picker';
@@ -1285,7 +1311,7 @@ export function refreshPickers() {
   lastPickerSignature = signature;
   for (const tab of state.tabs.values()) {
     for (const pane of tab.panes.values()) {
-      if (pane.sessionId || pane.kind === 'file' || !pane.pickerRendered) continue;
+      if (pane.sessionId || pane.kind === 'file' || pane.kind === 'rdp' || !pane.pickerRendered) continue;
       pane.pickerRendered = false;
       pane.el.querySelector('.pane-picker')?.remove();
     }
@@ -1378,6 +1404,93 @@ export function addFilePane(tabId, anchorPaneId) {
   return pane;
 }
 
+/// 新建一个 RDP 桌面窗格。与文件分屏对称:落点、容量、自动整理规则相同;
+/// 区别是它自己持有一条后端 RDP 会话(不是借用标签内的 SSH 连接)。
+export function addRdpPane(host, tabId, anchorPaneId) {
+  const tab = tabId ? state.tabs.get(tabId) : activeTab();
+  if (!tab) return toast('没有打开的标签', 'error');
+  const source = host || rdpPanesIn(tab)[0]?.host;
+  if (!source) return toast('找不到远程桌面主机', 'error');
+  const cap = maxPaneCapacity();
+  if (tab.panes.size + 1 > cap) return toast(`当前窗口最多容纳 ${cap} 个分屏窗格`, 'error');
+  const paneId = newPaneId();
+  const pane = { id: paneId, ...createRdpPaneState(source) };
+  pane.onClose = () => closeActivePane(paneId, tab.id);
+  pane.el = makePaneEl(paneId, tab.id, 'rdp', pane);
+  tab.panes.set(paneId, pane);
+  if (!tab.layout) {
+    tab.layout = leaf(paneId);
+  } else {
+    const anchor = (anchorPaneId && tab.panes.has(anchorPaneId)) ? anchorPaneId
+      : tab.activePaneId && tab.panes.has(tab.activePaneId) ? tab.activePaneId
+      : firstLeafPaneId(tab.layout);
+    const path = findLeafPath(tab.layout, anchor) || [];
+    const split = (node) => ({ type: 'h', ratio: 0.62, a: node, b: leaf(paneId) });
+    if (!path.length) tab.layout = split(tab.layout);
+    else {
+      const parent = nodeAt(tab.layout, path.slice(0, -1));
+      const key = path.at(-1);
+      parent[key] = split(parent[key]);
+    }
+  }
+  if (tab.panes.size > 1) reflowIfSplitting(undefined, tab);
+  else renderLayout();
+  activatePane(tab.id, paneId, true);
+  connectRdpPane(pane);
+  notifyTerminalStateChange();
+  return pane;
+}
+
+/// 打开一台 RDP 主机:复用空白标签(与 SSH 默认行为一致),否则新建标签。
+export function openRdpHost(host, opts = {}) {
+  if (!host) return null;
+  if (opts.reuseExisting) {
+    for (const tab of state.tabs.values()) {
+      const pane = rdpPanesIn(tab).find((p) => p.host?.id === host.id);
+      if (pane) { activateTab(tab.id); return pane; }
+    }
+  }
+  let tab = activeTab();
+  let paneId = null;
+  if (tab && tab.panes.size === 1 && !tab.sessionId) {
+    const only = [...tab.panes.values()][0];
+    if (only && !only.sessionId && only.kind !== 'file' && only.kind !== 'rdp') {
+      tab.panes.clear();
+      tab.activePaneId = null;
+      only.el?.remove?.();
+      paneId = newPaneId();
+      tab.layout = leaf(paneId);
+    }
+  }
+  if (!paneId) {
+    tab = createTab();
+    paneId = newPaneId();
+    tab.layout = leaf(paneId);
+  }
+  const pane = { id: paneId, ...createRdpPaneState(host) };
+  pane.onClose = () => closeActivePane(paneId, tab.id);
+  pane.el = makePaneEl(paneId, tab.id, 'rdp', pane);
+  tab.panes.set(paneId, pane);
+  setActiveTabId(tab.id);
+  renderLayout();
+  activatePane(tab.id, paneId, true);
+  updateWelcome();
+  connectRdpPane(pane);
+  notifyTerminalStateChange();
+  return pane;
+}
+
+/// 该标签能否新增一个 RDP 桌面窗格:能返回 '',不能返回原因。
+/// 入口(pane.rdp.add)与执行共用同一判定,可用状态与拦截不会各说各话。
+export function rdpPaneBlocker(tabId) {
+  const tab = tabId ? state.tabs.get(tabId) : activeTab();
+  if (!tab) return '没有打开的标签';
+  if (!rdpPanesIn(tab).length) return '该标签没有远程桌面';
+  const cap = maxPaneCapacity();
+  if (tab.panes.size + 1 > cap) return `当前窗口最多容纳 ${cap} 个分屏窗格`;
+  return '';
+}
+
 export function reflowIfSplitting(dir, tab = activeTab()) {
   if (!tab || !tab.layout) return false;
   const ids = paneIdsInOrder(tab);
@@ -1407,8 +1520,8 @@ export function buildGrid(paneIds, dir) {
 export function activeLeafPaneId() {
   if (state.activePaneId) {
     const p = state.panes.get(state.activePaneId);
-    // "空窗格复用"只认终端空窗格;文件分屏有自己的内容,绝不能被新会话顶掉
-    if (p && !p.sessionId && p.kind !== 'file') return state.activePaneId;
+    // "空窗格复用"只认终端空窗格;文件分屏 / RDP 桌面有自己的内容,绝不能被新会话顶掉
+    if (p && !p.sessionId && p.kind !== 'file' && p.kind !== 'rdp') return state.activePaneId;
   }
   const s = state.sessions.get(state.activeId);
   if (s && s.paneId) return s.paneId;
@@ -1458,6 +1571,8 @@ export function closeActivePane(targetPaneId, tabId) {
   if (!pane) return toast('找不到当前窗格', 'error');
   // 有会话的窗格走 closeSession:它会断开连接、释放终端并从布局树摘除
   if (pane.sessionId) { closeSession(pane.sessionId); return; }
+  // RDP 桌面 / 文件分屏:先回收自己的资源(后端会话、观察者),再从布局树摘除
+  if (pane.kind === 'rdp') disposeRdpPane(pane);
   // 空窗格:直接从布局树与窗格表摘除
   removePaneFromTab(tab, paneId);
   tab.panes.delete(paneId);
@@ -2154,6 +2269,21 @@ export function disconnectReasonSummary(why) {
   return clean;
 }
 
+/// 局域网地址判断:RFC1918/回环,mDNS `.local`,以及不带点的裸主机名(单标签名只会
+/// 在本地网段被解析)。这类目标在 macOS 15+ 上要先过「本地网络」隐私闸门,被拦时
+/// connect() 返回 EHOSTUNREACH,与「主机真不可达」文案完全相同,只能靠地址形态
+/// 区分,好在提示里给出可操作的那一条。
+export function isPrivateHost(host) {
+  const h = String(host || '').trim().replace(/^\[|\]$/g, '');
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254);
+  }
+  return /\.local$/i.test(h) || (h !== '' && !h.includes('.') && !h.includes(':'));
+}
+
 export function updateStatusbar(session, error = session?.lastError) {
   notifyTerminalStateChange();
   const dot = $('#status-dot');
@@ -2231,7 +2361,12 @@ export function updateStatusbar(session, error = session?.lastError) {
     text.title = displayError || '';
     // 横幅不再覆盖活动窗格,这条提示是用户唯一能看见的「怎么连回去」。
     // 自动重连排期时改成"立即重连",与横幅此前同一套语义。
-    setHint(session.reconnectScheduled ? `按 Enter 立即重连` : '按 Enter 重连');
+    // 局域网目标被 macOS「本地网络」隐私闸门拦截时同样报 No route to host(见
+    // isPrivateHost 注释),这里直接给出系统设置里的具体开关,省得用户当成主机坏了。
+    const lanTip = summary === '主机不可达' && isPrivateHost(session.host.host)
+      ? '（局域网连不上：到 系统设置 → 隐私与安全性 → 本地网络 允许 NebulaShell）'
+      : '';
+    setHint((session.reconnectScheduled ? '按 Enter 立即重连' : '按 Enter 重连') + lanTip);
     setBtn(btnRe, true, '重连（也可按 Enter）');
     setBtn(btnDis, !!session.reconnectScheduled, session.reconnectScheduled ? '取消自动重连' : '连接已断开');
   }
@@ -2822,6 +2957,8 @@ export function handleSessionStatus({ sessionId, state: status, error, reason, c
 export async function connectHost(hostId, paneId, opts = {}) {
   const host = state.hosts.find((h) => h.id === hostId);
   if (!host) return;
+  // RDP 主机走图形桌面窗格,不创建 SSH 会话(协议在主机库里就是唯一分叉点)
+  if (String(host.protocol || 'ssh') === 'rdp') return openRdpHost(host, opts);
   // 仅当显式传入 reuseExisting 时才切到已有会话;默认行为直接新建标签(或就地复用当前空白标签)
   if (opts.reuseExisting && !opts.force) {
     const existing = [...state.sessions.values()].find((s) => s.host.id === hostId && ['connected', 'connecting'].includes(s.status));
@@ -3017,6 +3154,13 @@ export function openBroadcastPicker(opts = {}) {
 /* ---------------- 批量执行(F6) ---------------- */
 
 export async function toggleReadonly(sessionId = state.activeId) {
+  // RDP 桌面没有 SSH 会话:只读开关作用于"当前焦点桌面窗格",在输入出口拦截
+  const rdpPane = activeRdpPane();
+  if (!sessionId && rdpPane) {
+    setRdpReadOnly(rdpPane, !rdpPane.readOnly);
+    toast(rdpPane.readOnly ? '已开启只读模式' : '已关闭只读模式', 'success');
+    return;
+  }
   const s = state.sessions.get(sessionId);
   if (!s || s.status !== 'connected') return;
   const previous = s.readOnly;

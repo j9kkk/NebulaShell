@@ -5276,3 +5276,251 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-r-note { font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 落盘告警(F-15):私钥写失败这类「数据没全带上」要压过普通说明,颜色用警示色 */
 .io-r-note.is-warn { color: var(--warn-text); }
+
+/* ─────────── 远程桌面(RDP)窗格 ───────────
+   .pane-toolbar 与文件分屏不同:RDP 画布是满格内容,工具条按全局规则悬浮在
+   右上角(多窗格时才出现,单窗格整条隐匿)。画布本身铺满窗格,不留内边距。 */
+.term-pane.rdp-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  background: var(--field);
+}
+/* 标题行:高度与标签栏一致(--tabbar-h),✕⤢ 落在行尾;不覆盖远端画面 */
+.rdp-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: var(--tabbar-h);
+  padding: 0 8px 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.rdp-bar-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rdp-bar-addr {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.rdp-bar-state {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.rdp-bar-state[data-phase="connected"] { color: var(--accent2); }
+.rdp-bar-state[data-phase="connecting"],
+.rdp-bar-state[data-phase="cert"] { color: var(--warn); }
+.rdp-bar-state[data-phase="down"] { color: var(--danger); }
+.rdp-bar .pane-toolbar { position: static; flex: none; margin-left: auto; gap: 4px; pointer-events: auto; }
+.rdp-bar .pane-toolbar :is(.pane-close-btn, .pane-zoom-btn) { opacity: 1; pointer-events: auto; }
+.rdp-surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  outline: none;
+  overflow: hidden;
+  cursor: default;
+}
+.rdp-surface:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.rdp-canvas { display: block; width: 100%; height: 100%; }
+/* 光标由前端画:remote = 用服务端下发的形状(--rdp-cursor 由 JS 以 PNG dataURL 写入),
+   local = 系统箭头,hidden = 不显示。三个图层都吃同一个变量,免得叠出双鼠标。 */
+.rdp-surface[data-pointer],
+.rdp-surface[data-pointer] .rdp-canvas,
+.rdp-surface[data-pointer] .rdp-overlay { cursor: var(--rdp-cursor, auto); }
+/* 浮层只盖画面,不吃键鼠事件;卡片自己再收回事件 */
+.rdp-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--modal-backdrop);
+  pointer-events: none;
+}
+.rdp-overlay:not([data-state="connected"]) { display: flex; }
+.rdp-overlay[data-state="connecting"] { background: var(--modal-backdrop-stack); }
+
+.rdp-card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(520px, 100%);
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+}
+.rdp-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rdp-card-title svg { flex: none; width: 16px; height: 16px; color: var(--warn); }
+.rdp-card-sub { font-size: 12px; color: var(--muted); }
+.rdp-chain {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 8px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rdp-fp-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rdp-fp-row .rdp-fp { flex: 1 1 auto; min-width: 0; }
+.rdp-fp-row .rdp-fp-copy { --ctl-h: 28px; color: var(--muted); }
+.rdp-fp-row .rdp-fp-copy:hover { color: var(--text); }
+.rdp-fp {
+  font-size: 11px;
+  color: var(--text);
+  padding: 8px 10px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  /* 指纹按 16 字节一行折成固定两行(见 rdp.js fingerprintRows):单行 71 字符在
+     缺等宽字体的环境里会涨到近 700px 被截断,固定分行才能保证 32 字节始终可核对。
+     行数固定 = 高度固定,卡片不会因字体差异跳高。 */
+  overflow: hidden;
+  white-space: pre;
+  line-height: 1.55;
+  user-select: text;
+}
+.rdp-fp-line { display: block; }
+.rdp-cert-meta {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+}
+.rdp-cert-meta > div { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; }
+.rdp-cert-meta dt { color: var(--muted); }
+.rdp-cert-meta dd { margin: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rdp-card-note { font-size: 12px; color: var(--muted); }
+.rdp-card-err {
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.rdp-card-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.rdp-card-actions .btn { min-width: 84px; }
+.rdp-card-btn { align-self: center; }
+
+/* 连接中的雷达环:三层同心圆错相位扩散,只用 transform/opacity,不碰布局 */
+.rdp-radar {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  align-self: center;
+  margin: 2px 0 4px;
+}
+.rdp-radar > span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  animation: rdp-radar 2.1s ease-out infinite;
+}
+.rdp-radar > span:nth-child(2) { animation-delay: 0.7s; }
+.rdp-radar > span:nth-child(3) { animation-delay: 1.4s; }
+@keyframes rdp-radar {
+  0% { transform: scale(0.28); opacity: 0.85; }
+  100% { transform: scale(1); opacity: 0; }
+}
+
+/* 协议徽标:主机列表与主机库共用。SSH 不打标(绝大多数),只标 RDP */
+.proto-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  margin-left: 6px;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg2);
+  vertical-align: middle;
+  flex: none;
+}
+.proto-badge.rdp { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+/* 协议分段控件的滑块位移:与认证方式(第二档 = key)同一套机制 */
+.segmented-slider[data-value="rdp"] .segmented-thumb { transform: translateX(100%); }
+
+@media (prefers-reduced-motion: reduce) {
+  .rdp-radar > span { animation: none; opacity: 0.5; }
+}
+
+/* ── 远程桌面「显示与体验」:对标 mstsc 的显示/体验页 ───────────────── */
+.rdp-adv {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--field);
+}
+.rdp-adv-title { font-size: 12px; font-weight: 600; color: var(--fg); }
+.rdp-adv-grid {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 72px minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+}
+/* 4 列自动排布:label / 控件 / label / 控件,行内两对 */
+.rdp-adv-grid > label { font-size: 12px; line-height: 18px; color: var(--muted); white-space: nowrap; }
+.rdp-adv-grid > select,
+.rdp-adv-grid > input { min-width: 0; width: 100%; }
+.rdp-adv-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+.rdp-chk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.rdp-chk input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+.rdp-chk span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rdp-adv-note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
+.rdp-bar-stat { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }

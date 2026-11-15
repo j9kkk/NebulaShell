@@ -127,7 +127,7 @@ function harness({ renderStatusbar = false, terminal = null, clock = null, stubL
     globalThis.subject = {writeSessionInput, disconnectSession, reconnectSession, runSessionConnection, makePaneEl: realMakePaneEl,
       scheduleReconnect, handleSessionStatus, writableBroadcastSessions, quickConnect, splitActive,
       isRetryableNetworkError, closeActivePane, syncPaneButtons, visibleSessions, fitActive, updateStatusbar,
-      syncPaneStatusBanner, syncAllPaneStatusBanners, disconnectReasonSummary,
+      syncPaneStatusBanner, syncAllPaneStatusBanners, disconnectReasonSummary, isPrivateHost,
       getCommandBlockTarget, commandBlockTargetStatus, submitCommandBlock, feedTrusted,
       activateSession, activatePane, setActiveTabId, closeSession, createInputSession,
       consumeCommandKeys, setAltScreen, toggleSessionLog, stopSessionLog, openLogFolder};
@@ -358,6 +358,14 @@ test('disconnect reason summary keeps the status bar to one readable line', () =
     ['', ''],
   ];
   for (const [why, want] of cases) assert.equal(h.disconnectReasonSummary(why), want, why);
+});
+
+test('private host detection drives the local-network permission hint', () => {
+  const h = harness();
+  for (const host of ['192.168.31.200', '10.0.0.5', '172.16.0.1', '172.31.255.254', '127.0.0.1', 'nas', 'printer.local'])
+    assert.equal(h.isPrivateHost(host), true, host);
+  for (const host of ['124.221.200.38', '43.134.16.114', '172.32.0.1', 'example.com', '', 'a.example.com'])
+    assert.equal(h.isPrivateHost(host), false, host);
 });
 
 // 活动会话由底部状态栏代言,窗格内不再挂横幅(同一句话上下相邻既重影又遮挡终端);

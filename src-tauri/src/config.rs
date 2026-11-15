@@ -476,10 +476,21 @@ fn fields_identical(local: &Value, item: &Value) -> bool {
             tags.len() == local_tags.len() && tags.iter().all(|t| local_tags.contains(t))
         }
     };
+    let default_port = if item["protocol"]
+        .as_str()
+        .or_else(|| local["protocol"].as_str())
+        == Some("rdp")
+    {
+        3389
+    } else {
+        22
+    };
     same_str(local, item, "name")
         && same_str(local, item, "host")
-        && same_i64(local, item, "port", 22)
+        && same_enum(local, item, "protocol", "ssh")
+        && same_i64(local, item, "port", default_port)
         && same_str(local, item, "username")
+        && same_str(local, item, "domain")
         && same_str(local, item, "authType")
         && same_str(local, item, "group")
         && same_str(local, item, "keyPath")
@@ -492,11 +503,17 @@ fn fields_identical(local: &Value, item: &Value) -> bool {
 
 /// 凭据与主机的对应键(导出/导入两侧必须一致)
 fn cred_key(v: &Value) -> String {
+    let is_rdp = v["protocol"].as_str() == Some("rdp");
+    let default_port = if is_rdp { 3389 } else { 22 };
+    let default_user = if is_rdp { "Administrator" } else { "root" };
     format!(
         "{}:{}:{}",
         v["host"].as_str().unwrap_or("").to_lowercase(),
-        v["port"].as_i64().unwrap_or(22),
-        v["username"].as_str().unwrap_or("root").to_lowercase()
+        v["port"].as_i64().unwrap_or(default_port),
+        v["username"]
+            .as_str()
+            .unwrap_or(default_user)
+            .to_lowercase()
     )
 }
 
@@ -1106,6 +1123,12 @@ impl Store {
                 )
             })?;
         let mut out = h.clone();
+        if out["protocol"].as_str().filter(|s| !s.is_empty()).is_none() {
+            out["protocol"] = json!("ssh");
+        }
+        if out["domain"].is_null() {
+            out["domain"] = json!("");
+        }
         for field in ["password", "privateKey", "passphrase"] {
             let cipher = h[format!("{}Enc", field)].as_str().unwrap_or("");
             out[field] = json!(self.dec(cipher));
@@ -1164,13 +1187,26 @@ impl Store {
                     .filter(|id| !id.is_empty())
                     .map(String::from)
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let proto = match input["protocol"].as_str() {
+                    Some("rdp") => "rdp",
+                    _ => "ssh",
+                };
+                let default_port = if proto == "rdp" { 3389 } else { 22 };
+                let default_user = if proto == "rdp" {
+                    "Administrator"
+                } else {
+                    "root"
+                };
+                let domain = input["domain"].as_str().unwrap_or("").trim();
                 (
                     json!({
                         "id": id,
                         "name": input["name"].as_str().unwrap_or(host_field),
                         "host": host_field,
-                        "port": input["port"].as_i64().unwrap_or(22),
-                        "username": input["username"].as_str().unwrap_or("root"),
+                        "protocol": proto,
+                        "port": input["port"].as_i64().unwrap_or(default_port),
+                        "username": input["username"].as_str().unwrap_or(default_user),
+                        "domain": domain,
                         "authType": input["authType"].as_str().unwrap_or("password"),
                         "keyPath": "", "group": "", "tags": [],
                         "jumpIds": [], "initcmd": "", "sessionLog": "default",
@@ -1182,6 +1218,16 @@ impl Store {
             }
         };
         let mut host = host;
+        if host["protocol"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            host["protocol"] = json!("ssh");
+        }
+        if host["domain"].is_null() {
+            host["domain"] = json!("");
+        }
         // Track a discovered name until the user edits it. Legacy/file-imported
         // names have no baseline and are always preserved on cloud refresh.
         if is_new
@@ -1209,6 +1255,25 @@ impl Store {
                 if !input[field].is_null() {
                     host[field] = input[field].clone();
                 }
+            }
+            if let Some(p) = input["protocol"].as_str() {
+                host["protocol"] = json!(if p == "rdp" { "rdp" } else { "ssh" });
+            }
+            if let Some(d) = input["domain"].as_str() {
+                host["domain"] = json!(d.trim());
+            }
+            // 远程桌面帧率:0 = 不限,其余只接受 15/24/30/60 这几档,非法值按默认 30
+            // 远程桌面显示/体验/网络三段:整对象透传,字段校验在 rdp.rs 解析时做
+            for key in ["rdpDisplay", "rdpExperience", "rdpNetwork", "rdpLaunch"] {
+                if input[key].is_object() {
+                    host[key] = input[key].clone();
+                }
+            }
+            if let Some(fps) = input["rdpFrameRate"].as_u64() {
+                host["rdpFrameRate"] = json!(match fps {
+                    0 | 15 | 24 | 30 | 60 => fps,
+                    _ => 30,
+                });
             }
             // 会话日志覆盖:default(跟随全局)/ always(总是自动记录)/ never(从不);
             // 非法值归一为 default,不报错 —— 编辑器之外的手改配置不该把保存卡死
@@ -1285,6 +1350,12 @@ impl Store {
         let (has_key, _) = dec_stat("privateKey");
         let (has_pp, pp_len) = dec_stat("passphrase");
         let mut out = h.clone();
+        if out["protocol"].as_str().filter(|s| !s.is_empty()).is_none() {
+            out["protocol"] = json!("ssh");
+        }
+        if out["domain"].is_null() {
+            out["domain"] = json!("");
+        }
         out["hasPassword"] = json!(has_pw);
         out["passwordLen"] = json!(pw_len);
         out["hasKey"] = json!(has_key);
@@ -1660,7 +1731,10 @@ impl Store {
                         json!("")
                     };
                     json!({
-                        "id": h["id"], "name": h["name"], "host": h["host"], "port": h["port"], "username": h["username"],
+                        "id": h["id"], "name": h["name"], "host": h["host"],
+                        "protocol": h["protocol"].as_str().filter(|s| !s.is_empty()).unwrap_or("ssh"),
+                        "port": h["port"], "username": h["username"],
+                        "domain": h["domain"].as_str().unwrap_or(""),
                         "authType": h["authType"], "keyPath": key_path, "group": h["group"], "tags": h["tags"],
                         "jumpIds": h["jumpIds"], "initcmd": h["initcmd"], "cloud": h["cloud"],
                         "sessionLog": h["sessionLog"].as_str().unwrap_or("default"),
@@ -2065,11 +2139,30 @@ impl Store {
                             item["host"].as_str().unwrap_or("")
                         ));
                     }
-                    if !same_i64(&staged[i], item, "port", 22) {
+                    if !same_enum(&staged[i], item, "protocol", "ssh") {
+                        diff.push(format!(
+                            "协议 {} → {}",
+                            staged[i]["protocol"]
+                                .as_str()
+                                .unwrap_or("ssh")
+                                .to_uppercase(),
+                            item["protocol"].as_str().unwrap_or("ssh").to_uppercase()
+                        ));
+                    }
+                    let def_port = if item["protocol"]
+                        .as_str()
+                        .or_else(|| staged[i]["protocol"].as_str())
+                        == Some("rdp")
+                    {
+                        3389
+                    } else {
+                        22
+                    };
+                    if !same_i64(&staged[i], item, "port", def_port) {
                         diff.push(format!(
                             "端口 {} → {}",
-                            staged[i]["port"].as_i64().unwrap_or(22),
-                            item["port"].as_i64().unwrap_or(22)
+                            staged[i]["port"].as_i64().unwrap_or(def_port),
+                            item["port"].as_i64().unwrap_or(def_port)
                         ));
                     }
                     if !same_str(&staged[i], item, "username") {
@@ -2077,6 +2170,13 @@ impl Store {
                             "用户 {} → {}",
                             staged[i]["username"].as_str().unwrap_or(""),
                             item["username"].as_str().unwrap_or("")
+                        ));
+                    }
+                    if !same_str(&staged[i], item, "domain") {
+                        diff.push(format!(
+                            "域 {} → {}",
+                            text_or_none(&staged[i]["domain"]),
+                            text_or_none(&item["domain"])
                         ));
                     }
                     if !same_str(&staged[i], item, "group") {

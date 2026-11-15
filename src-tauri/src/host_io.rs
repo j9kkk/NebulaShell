@@ -83,7 +83,8 @@ impl ImportIssue {
             "username" => "E_USER",
             "name" => "E_NAME",
             "authType" => "E_AUTH",
-            "sessionLog" | "aiAccess" => "E_ENUM",
+            "protocol" | "sessionLog" | "aiAccess" => "E_ENUM",
+            "domain" => "E_DOMAIN",
             "tags" => "E_TAGS",
             "password" | "privateKey" | "passphrase" => "E_CRED",
             "cloud" => "E_CLOUD",
@@ -426,6 +427,50 @@ pub fn validate_items(text: &str, items: &[Value], version: u64) -> Vec<ImportIs
             }
         }
 
+        let is_rdp = if !item["protocol"].is_null() {
+            match item["protocol"].as_str() {
+                Some("ssh") | Some("") => false,
+                Some("rdp") => true,
+                Some(other) => {
+                    push(
+                        "protocol",
+                        format!("连接协议只能是 ssh 或 rdp，当前为 {}", other),
+                    );
+                    false
+                }
+                None => {
+                    push("protocol", "连接协议必须是字符串".to_string());
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        if is_rdp {
+            if let Some(auth) = item["authType"].as_str() {
+                if !auth.is_empty() && auth != "password" {
+                    push(
+                        "authType",
+                        format!("RDP 协议仅支持 password（密码）认证，当前为 {}", auth),
+                    );
+                }
+            }
+        }
+
+        if !item["domain"].is_null() {
+            match item["domain"].as_str() {
+                None => push("domain", "域（domain）必须是字符串".to_string()),
+                Some(d) if d.chars().count() > 128 => {
+                    push("domain", "域（domain）过长（上限 128 个字符）".to_string())
+                }
+                Some(d) if d.chars().any(char::is_control) => {
+                    push("domain", "域（domain）不能包含不可见控制字符".to_string())
+                }
+                Some(_) => {}
+            }
+        }
+
         if !item["sessionLog"].is_null() {
             match item["sessionLog"].as_str() {
                 Some("default") | Some("always") | Some("never") => {}
@@ -594,15 +639,33 @@ fn location_text(record: usize, line: Option<usize>) -> String {
     }
 }
 
+fn default_port_of(item: &Value) -> i64 {
+    if item["protocol"].as_str() == Some("rdp") {
+        3389
+    } else {
+        22
+    }
+}
+
+fn default_user_of(item: &Value) -> &'static str {
+    if item["protocol"].as_str() == Some("rdp") {
+        "Administrator"
+    } else {
+        "root"
+    }
+}
+
 fn endpoint_key(item: &Value) -> Option<String> {
     let host = item["host"].as_str()?.trim().to_lowercase();
     if host.is_empty() {
         return None;
     }
-    let port = item["port"].as_i64().unwrap_or(22);
+    let port = item["port"]
+        .as_i64()
+        .unwrap_or_else(|| default_port_of(item));
     let user = item["username"]
         .as_str()
-        .unwrap_or("root")
+        .unwrap_or_else(|| default_user_of(item))
         .trim()
         .to_lowercase();
     Some(format!("{}:{}:{}", host, port, user))
@@ -612,8 +675,13 @@ fn endpoint_display(item: &Value) -> String {
     format!(
         "{}:{}/{}",
         item["host"].as_str().unwrap_or("").trim(),
-        item["port"].as_i64().unwrap_or(22),
-        item["username"].as_str().unwrap_or("root").trim()
+        item["port"]
+            .as_i64()
+            .unwrap_or_else(|| default_port_of(item)),
+        item["username"]
+            .as_str()
+            .unwrap_or_else(|| default_user_of(item))
+            .trim()
     )
 }
 
@@ -629,8 +697,10 @@ fn duplicate_key(item: &Value) -> Option<String> {
         names.join("\u{1f}")
     };
     Some(format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         endpoint,
+        item["protocol"].as_str().unwrap_or("ssh"),
+        item["domain"].as_str().unwrap_or("").trim(),
         item["name"].as_str().unwrap_or("").trim(),
         item["group"].as_str().unwrap_or("").trim(),
         item["authType"].as_str().unwrap_or(""),

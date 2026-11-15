@@ -294,6 +294,16 @@ pub(super) fn tail_cmd(real: &str, lines: u64, gz: bool) -> String {
     }
 }
 
+pub(super) fn tail_cmd_windows(real: &str, lines: u64) -> String {
+    let win_path = real
+        .strip_prefix('/')
+        .filter(|s| crate::sftp::is_windows_drive_path(s))
+        .unwrap_or(real)
+        .replace('/', "\\")
+        .replace('\'', "''");
+    format!("Get-Content -LiteralPath '{win_path}' -Tail {lines} -ErrorAction Stop")
+}
+
 pub(super) fn search_cmd(real: &str, args: &Value, gz: bool) -> String {
     let q = crate::ai_exec_guard::shell_quote;
     let mut flags = vec!["-n".to_string()];
@@ -315,6 +325,30 @@ pub(super) fn search_cmd(real: &str, args: &Value, gz: bool) -> String {
     }
 }
 
+pub(super) fn search_cmd_windows(real: &str, args: &Value) -> String {
+    let win_path = real
+        .strip_prefix('/')
+        .filter(|s| crate::sftp::is_windows_drive_path(s))
+        .unwrap_or(real)
+        .replace('/', "\\")
+        .replace('\'', "''");
+    let pat = args["pattern"].as_str().unwrap_or("").replace('\'', "''");
+    let simple = if args["regex"] == true {
+        ""
+    } else {
+        " -SimpleMatch"
+    };
+    let case_flag = if args["ignoreCase"] == true {
+        ""
+    } else {
+        " -CaseSensitive"
+    };
+    let max_m = clamp(&args["maxMatches"], 200, 200);
+    format!(
+        "Select-String -LiteralPath '{win_path}' -Pattern '{pat}'{simple}{case_flag} | Select-Object -First {max_m} | ForEach-Object {{ \"$($_.LineNumber):$($_.Line)\" }}"
+    )
+}
+
 pub(super) fn journal_cmd(args: &Value) -> String {
     let q = crate::ai_exec_guard::shell_quote;
     let lines = clamp(&args["lines"], 200, 500);
@@ -332,8 +366,9 @@ pub(super) fn journal_cmd(args: &Value) -> String {
 }
 
 async fn command_tool(ctx: &Ctx<'_>, tool: &str, args: &Value) -> Value {
+    let info = hostinfo::get(ctx.state, &ctx.sid, ctx.epoch, false).await;
+    let is_win = info.os_family == "windows";
     let cmd = if tool == "read_journal" {
-        let info = hostinfo::get(ctx.state, &ctx.sid, ctx.epoch, false).await;
         if !info.journald {
             return err(
                 "unsupported",
@@ -352,12 +387,20 @@ async fn command_tool(ctx: &Ctx<'_>, tool: &str, args: &Value) -> Value {
         };
         let gz = args["gz"] == true || real.ends_with(".gz");
         if tool == "tail_file" {
-            tail_cmd(&real, clamp(&args["lines"], 200, 500), gz)
+            if is_win {
+                tail_cmd_windows(&real, clamp(&args["lines"], 200, 500))
+            } else {
+                tail_cmd(&real, clamp(&args["lines"], 200, 500), gz)
+            }
         } else {
             if args["pattern"].as_str().unwrap_or("").is_empty() {
                 return err("invalid", "缺少搜索内容 pattern");
             }
-            search_cmd(&real, args, gz)
+            if is_win {
+                search_cmd_windows(&real, args)
+            } else {
+                search_cmd(&real, args, gz)
+            }
         }
     };
     let res = run::run(

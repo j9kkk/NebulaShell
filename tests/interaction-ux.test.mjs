@@ -609,7 +609,8 @@ test('terminal state notifications refresh the real statusbar session button aft
   for (const name of ['newTabWithPicker', 'autoLayoutTab', 'closeCurrent', 'toggleFilePanel', 'reconnectSession', 'toggleReadonly', 'toggleSessionLog', 'clearActiveTerm', 'openTermSearch', 'openBroadcastPicker', 'openBatchModal', 'openForwardModal', 'openHistoryModal', 'openSnippetsModal', 'openSettings', 'openFingerprints', 'openAbout', 'toggleSidebar',
     'openPalette', 'requestWindowClose', 'renameTab', 'aiDiagnose', 'openHostModal', 'openCloudImport', 'importHosts', 'exportHosts',
     'focusedPaneId', 'paneOwner', 'activateSession', 'hostManageItems', 'openTabList',
-    'rightPanelOpen', 'rightTabShown', 'toggleRightPanel', 'toggleRightTab', 'setRightPanel']) context[name] = () => {};
+    'rightPanelOpen', 'rightTabShown', 'toggleRightPanel', 'toggleRightTab', 'setRightPanel',
+    'activeRdpPane', 'disconnectRdpPane', 'reconnectRdpPane']) context[name] = () => {};
   context.toggleSessionLog = () => { runs++; };
   context.openHostLibrary = () => {};
   context.renderHosts = () => {};

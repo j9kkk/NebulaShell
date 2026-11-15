@@ -1,4 +1,4 @@
-// 服务器资源监控:/proc (Linux) 与 Darwin (macOS) 探测解析
+// 服务器资源监控:/proc (Linux)、Darwin (macOS) 与 Windows (CIM/WMI) 探测解析
 use serde_json::{json, Value};
 
 pub const PROBE: &str = "case $(uname -s 2>/dev/null) in \
@@ -22,8 +22,23 @@ df -kP / 2>/dev/null | tail -1; \
 ;; \
 esac; echo __NB_DONE__";
 
+/// Windows OpenSSH 监控探针（兼容 cmd.exe 与 PowerShell 默认 Shell）：
+/// 单次拉起无 Profile PowerShell，并行读取 Win32_Processor、Win32_OperatingSystem、
+/// Win32_LogicalDisk(DriveType=3)、Win32_PerfRawData_Tcpip_NetworkInterface 与
+/// Win32_PerfRawData_PerfDisk_PhysicalDisk(_Total)。
+pub const WIN_PROBE: &str = "powershell -NoLogo -NoProfile -NonInteractive -Command \"$ErrorActionPreference='SilentlyContinue'; Write-Output '__NB_OS_WINDOWS__'; $cpu=(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; $os=Get-CimInstance Win32_OperatingSystem; Write-Output ('CPU=' + $cpu); Write-Output ('MEM=' + $os.TotalVisibleMemorySize + '|' + $os.FreePhysicalMemory); Write-Output '__NB_SEC__'; Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { Write-Output ($_.DeviceID + '|' + $_.Size + '|' + $_.FreeSpace) }; Write-Output '__NB_SEC__'; $rx=0; $tx=0; Get-CimInstance Win32_PerfRawData_Tcpip_NetworkInterface | Where-Object { $_.Name -notmatch 'Loopback|isatap|Teredo' } | ForEach-Object { $rx += [int64]$_.BytesReceivedPersec; $tx += [int64]$_.BytesSentPersec }; Write-Output ('NET=' + $rx + '|' + $tx); Write-Output '__NB_SEC__'; $d=Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk -Filter \\\"Name='_Total'\\\"; if($d){ Write-Output ('DISKIO=' + $d.DiskReadBytesPersec + '|' + $d.DiskWriteBytesPersec) }; Write-Output '__NB_DONE__'\"";
+
 pub fn parse_proc(text: &str, prev: Option<&Value>, interval_sec: f64) -> Value {
     let sections = text.split("__NB_DONE__").next().unwrap_or("");
+    if let Some(win_body) = sections.strip_prefix("__NB_OS_WINDOWS__") {
+        return parse_windows(win_body.trim_start(), prev, interval_sec);
+    }
+    if let Some((_, win_body)) = sections.split_once("__NB_OS_WINDOWS__\n") {
+        return parse_windows(win_body, prev, interval_sec);
+    }
+    if let Some((_, win_body)) = sections.split_once("__NB_OS_WINDOWS__\r\n") {
+        return parse_windows(win_body, prev, interval_sec);
+    }
     if let Some(darwin_body) = sections.strip_prefix("__NB_OS_DARWIN__") {
         return parse_darwin(darwin_body.trim_start(), prev, interval_sec);
     }
@@ -425,4 +440,154 @@ fn extract_ioreg_stat(line: &str, marker: &str) -> Option<u64> {
     } else {
         digits.parse::<u64>().ok()
     }
+}
+
+fn parse_windows(body: &str, prev: Option<&Value>, interval_sec: f64) -> Value {
+    let parts: Vec<&str> = body.split("__NB_SEC__").collect();
+    if parts.is_empty() {
+        return json!({ "supported": false });
+    }
+
+    let mut cpu_pct: Option<f64> = None;
+    let mut mem_total_kb: Option<u64> = None;
+    let mut mem_free_kb: Option<u64> = None;
+
+    for line in parts[0].lines() {
+        let l = line.trim();
+        if let Some(v) = l.strip_prefix("CPU=") {
+            let clean = v.trim().replace(',', ".");
+            if let Ok(val) = clean.parse::<f64>() {
+                cpu_pct = Some((val.clamp(0.0, 100.0) * 10.0).round() / 10.0);
+            }
+        } else if let Some(v) = l.strip_prefix("MEM=") {
+            let mut sp = v.split('|');
+            mem_total_kb = sp.next().and_then(|s| s.trim().parse::<u64>().ok());
+            mem_free_kb = sp.next().and_then(|s| s.trim().parse::<u64>().ok());
+        }
+    }
+
+    let (Some(total_kb), Some(free_kb)) = (mem_total_kb, mem_free_kb) else {
+        return json!({ "supported": false });
+    };
+    if total_kb == 0 {
+        return json!({ "supported": false });
+    }
+    let used_kb = total_kb.saturating_sub(free_kb);
+    let mem_total_mb = Some(total_kb / 1024);
+    let mem_used_mb = Some(used_kb / 1024);
+    let mem_pct = Some(((used_kb as f64 / total_kb as f64) * 1000.0).round() / 10.0);
+
+    // 2. 磁盘容量：优先 C: 盘，若无 C: 则取第一个固定磁盘，同时输出 drives 列表
+    let mut disk_pct = None;
+    let mut disk_used_gb = None;
+    let mut disk_total_gb = None;
+    let mut drives = Vec::new();
+    if let Some(disk_text) = parts.get(1) {
+        for line in disk_text.lines() {
+            let cols: Vec<&str> = line.trim().split('|').collect();
+            if cols.len() >= 3 {
+                let dev = cols[0].trim().to_ascii_uppercase();
+                let size_b = cols[1].trim().parse::<u64>().unwrap_or(0);
+                let free_b = cols[2].trim().parse::<u64>().unwrap_or(0);
+                if size_b == 0 {
+                    continue;
+                }
+                let used_b = size_b.saturating_sub(free_b);
+                let total_gb = ((size_b as f64 / 1073741824.0) * 10.0).round() / 10.0;
+                let used_gb = ((used_b as f64 / 1073741824.0) * 10.0).round() / 10.0;
+                let pct = ((used_b as f64 / size_b as f64) * 1000.0).round() / 10.0;
+                if dev == "C:" || disk_pct.is_none() {
+                    disk_pct = Some(pct);
+                    disk_used_gb = Some(used_gb);
+                    disk_total_gb = Some(total_gb);
+                }
+                drives.push(json!({
+                    "name": dev,
+                    "totalGB": total_gb,
+                    "usedGB": used_gb,
+                    "pct": pct,
+                }));
+            }
+        }
+    }
+
+    // 3. 网络吞吐差分
+    let mut rx = 0u64;
+    let mut tx = 0u64;
+    let mut has_net = false;
+    if let Some(net_text) = parts.get(2) {
+        for line in net_text.lines() {
+            if let Some(rest) = line.trim().strip_prefix("NET=") {
+                let mut sp = rest.split('|');
+                if let (Some(r), Some(t)) = (
+                    sp.next().and_then(|s| s.trim().parse::<u64>().ok()),
+                    sp.next().and_then(|s| s.trim().parse::<u64>().ok()),
+                ) {
+                    rx = r;
+                    tx = t;
+                    has_net = true;
+                }
+            }
+        }
+    }
+    let (rx_bps, tx_bps) = match (has_net, prev.and_then(|p| p["rx"].as_u64())) {
+        (true, Some(prev_rx)) => (
+            Some(rx.saturating_sub(prev_rx) as f64 / interval_sec),
+            Some(
+                tx.saturating_sub(prev.and_then(|p| p["tx"].as_u64()).unwrap_or(0)) as f64
+                    / interval_sec,
+            ),
+        ),
+        _ => (None, None),
+    };
+
+    // 4. 磁盘 IO 差分
+    let mut disk_r_bytes = 0u64;
+    let mut disk_w_bytes = 0u64;
+    let mut has_disk = false;
+    if let Some(io_text) = parts.get(3) {
+        for line in io_text.lines() {
+            if let Some(rest) = line.trim().strip_prefix("DISKIO=") {
+                let mut sp = rest.split('|');
+                if let (Some(r), Some(w)) = (
+                    sp.next().and_then(|s| s.trim().parse::<u64>().ok()),
+                    sp.next().and_then(|s| s.trim().parse::<u64>().ok()),
+                ) {
+                    disk_r_bytes = r;
+                    disk_w_bytes = w;
+                    has_disk = true;
+                }
+            }
+        }
+    }
+    let (disk_read_bps, disk_write_bps) =
+        match (has_disk, prev.and_then(|p| p["diskRBytes"].as_u64())) {
+            (true, Some(pr)) => (
+                Some(disk_r_bytes.saturating_sub(pr) as f64 / interval_sec),
+                Some(
+                    disk_w_bytes
+                        .saturating_sub(prev.and_then(|p| p["diskWBytes"].as_u64()).unwrap_or(0))
+                        as f64
+                        / interval_sec,
+                ),
+            ),
+            _ => (None, None),
+        };
+
+    json!({
+        "supported": true,
+        "os": "windows",
+        "cpuPct": cpu_pct,
+        "memPct": mem_pct, "memUsedMB": mem_used_mb, "memTotalMB": mem_total_mb,
+        "rxBps": rx_bps, "txBps": tx_bps,
+        "diskPct": disk_pct, "diskUsedGB": disk_used_gb, "diskTotalGB": disk_total_gb,
+        "diskReadBps": disk_read_bps, "diskWriteBps": disk_write_bps,
+        "drives": drives,
+        "raw": {
+            "rx": if has_net { json!(rx) } else { json!(null) },
+            "tx": if has_net { json!(tx) } else { json!(null) },
+            "diskRBytes": if has_disk { json!(disk_r_bytes) } else { json!(null) },
+            "diskWBytes": if has_disk { json!(disk_w_bytes) } else { json!(null) }
+        }
+    })
 }

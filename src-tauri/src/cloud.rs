@@ -312,10 +312,13 @@ pub fn map_tencent_instances(resp: &Value, provider: &str, region: &str) -> Vec<
                 .or_else(|| i["PrivateAddresses"][0].as_str())
                 .unwrap_or("");
             let os = i["OsName"].as_str().unwrap_or("");
+            let is_win = os.to_lowercase().contains("windows");
             json!({
                 "name": i["InstanceName"].as_str().unwrap_or_else(|| i["InstanceId"].as_str().unwrap_or("")),
-                "host": host, "port": 22,
-                "username": if os.to_lowercase().contains("windows") { "Administrator" } else { "root" },
+                "host": host,
+                "protocol": if is_win { "rdp" } else { "ssh" },
+                "port": if is_win { 3389 } else { 22 },
+                "username": if is_win { "Administrator" } else { "root" },
                 "state": i["InstanceState"],
                 "cloud": { "provider": provider, "region": region, "instanceId": i["InstanceId"], "os": os }
             })
@@ -457,7 +460,7 @@ pub async fn aliyun_fetch_all(
     Ok((instances, errors))
 }
 
-fn map_aliyun_instances(resp: &Value, region: &str) -> Vec<Value> {
+pub fn map_aliyun_instances(resp: &Value, region: &str) -> Vec<Value> {
     let list = resp["Instances"]["Instance"]
         .as_array()
         .cloned()
@@ -470,10 +473,13 @@ fn map_aliyun_instances(resp: &Value, region: &str) -> Vec<Value> {
                 .or_else(|| i["VpcAttributes"]["PrivateIpAddress"]["IpAddress"][0].as_str())
                 .unwrap_or("");
             let os = i["OSName"].as_str().unwrap_or("");
+            let is_win = os.to_lowercase().contains("windows");
             json!({
                 "name": i["InstanceName"].as_str().unwrap_or_else(|| i["InstanceId"].as_str().unwrap_or("")),
-                "host": host, "port": 22,
-                "username": if os.to_lowercase().contains("windows") { "Administrator" } else { "root" },
+                "host": host,
+                "protocol": if is_win { "rdp" } else { "ssh" },
+                "port": if is_win { 3389 } else { 22 },
+                "username": if is_win { "Administrator" } else { "root" },
                 "state": i["Status"],
                 "cloud": { "provider": "aliyun", "region": region, "instanceId": i["InstanceId"], "os": os }
             })

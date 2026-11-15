@@ -29,7 +29,12 @@ pub(super) async fn resolve(sftp: &SftpSession, raw: &str) -> Result<String, Pat
         "~" => ".",
         r => r.strip_prefix("~/").unwrap_or(r),
     };
-    let real = sftp.canonicalize(rel).await.map_err(|e| {
+    let rel_norm = if crate::sftp::is_windows_drive_path(rel) {
+        crate::sftp::normalize_sftp_path(rel)
+    } else {
+        rel.to_string()
+    };
+    let real = sftp.canonicalize(&rel_norm).await.map_err(|e| {
         let s = e.to_string();
         let lower = s.to_ascii_lowercase();
         if lower.contains("no such file")

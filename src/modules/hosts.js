@@ -337,7 +337,7 @@ export function renderHosts() {
     item.innerHTML = `
       <span class="host-st"><i class="host-dot ${st}"></i></span>
       <div class="host-main">
-        <div class="host-name"><span class="t">${escapeHtml(h.name)}</span>${credMissing
+        <div class="host-name"><span class="t">${escapeHtml(h.name)}</span>${h.protocol === 'rdp' ? '<span class="proto-badge rdp">RDP</span>' : ''}${credMissing
           ? `<span class="key" title="缺少凭据，编辑主机补全">${icon('key')}</span>` : ''}</div>
         <div class="host-sub"><span class="ip">${escapeHtml(subAddr)}</span>${region
           ? `<span class="sep">·</span><span class="reg">${escapeHtml(region)}</span>` : ''}</div>
@@ -455,6 +455,54 @@ let hostSecretState = {
 
 let currentJumpIds = [];
 let currentHostTags = [];
+
+/// 协议是主机的第一等属性:弹窗顶部的分段控件是唯一切换点(R1),
+/// 协议决定端口/用户名默认值,并折叠只对 SSH 有意义的表单行。
+export function syncProtocolSliderUI(val) {
+  const slider = $('#host-protocol-slider');
+  if (!slider) return;
+  const current = val || $('#host-protocol')?.value || 'ssh';
+  slider.dataset.value = current;
+  slider.querySelectorAll('.segmented-item').forEach((btn) => {
+    const isAct = btn.dataset.value === current;
+    btn.classList.toggle('active', isAct);
+    btn.setAttribute?.('aria-checked', String(isAct));
+  });
+}
+
+export function toggleProtocolRows() {
+  const protocol = $('#host-protocol')?.value || 'ssh';
+  const isRdp = protocol === 'rdp';
+  // RDP 没有 shell:认证方式(私钥)、连接后执行、会话日志、AI 访问全部不成立
+  for (const id of ['row-auth', 'row-password', 'row-key', 'row-initcmd', 'row-sessionlog', 'row-aiaccess']) {
+    $('#' + id)?.classList.toggle('hidden', isRdp);
+  }
+  // 域、帧率、显示与体验只对 RDP 有意义
+  $('#row-domain')?.classList.toggle('hidden', !isRdp);
+  $('#row-frame-rate')?.classList.toggle('hidden', !isRdp);
+  $('#rdp-advanced')?.classList.toggle('hidden', !isRdp);
+  syncProtocolSliderUI(protocol);
+}
+
+export function setHostProtocol(val) {
+  const next = val === 'rdp' ? 'rdp' : 'ssh';
+  const sel = $('#host-protocol');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.value = next;
+  // 端口/用户名只在用户没改过上一协议的默认值时跟着换,不覆盖手填内容
+  const port = $('#host-port');
+  const user = $('#host-username');
+  if (port) {
+    const wasDefault = port.value === '' || port.value === String(prev === 'rdp' ? 3389 : 22);
+    if (wasDefault) port.value = next === 'rdp' ? '3389' : '22';
+  }
+  if (user) {
+    const wasDefault = user.value === '' || user.value === (prev === 'rdp' ? 'Administrator' : 'root');
+    if (wasDefault) user.value = next === 'rdp' ? 'Administrator' : 'root';
+  }
+  toggleProtocolRows();
+}
 
 export function syncAuthSliderUI(val) {
   const slider = $('#host-auth-slider');
@@ -807,6 +855,18 @@ export function openHostModal(host) {
   $('#host-host').value = host ? host.host : '';
   $('#host-port').value = host ? host.port : 22;
   $('#host-username').value = host ? host.username : 'root';
+  // 协议与域:老配置没有 protocol 字段,按 SSH 兜底(config.rs 同样处理)
+  const protocol = host && host.protocol === 'rdp' ? 'rdp' : 'ssh';
+  if ($('#host-protocol')) $('#host-protocol').value = protocol;
+  if ($('#host-frame-rate')) {
+    const raw = host?.rdpDisplay?.frameRate ?? host?.rdpFrameRate;
+    const rate = Number(raw);
+    $('#host-frame-rate').value = raw === 'auto'
+      ? 'auto'
+      : RDP_FRAME_RATES.includes(rate) ? String(rate) : '30';
+  }
+  fillRdpAdvanced(host);
+  if ($('#host-domain')) $('#host-domain').value = host && host.domain ? host.domain : '';
   const authMode = host ? host.authType : 'password';
   if ($('#host-auth')) $('#host-auth').value = authMode;
   syncAuthSliderUI(authMode);
@@ -868,6 +928,7 @@ export function openHostModal(host) {
 
   if ($('#host-aiaccess')) $('#host-aiaccess').value = (host && host.aiAccess) || 'default';
   toggleAuthRows();
+  toggleProtocolRows();
   openModal('#modal-host');
   $('#host-name').focus();
 }
@@ -875,23 +936,114 @@ export function openHostModal(host) {
 export function toggleAuthRows() {
   const current = $('#host-auth')?.value || 'password';
   const isKey = current === 'key';
-  $('#row-password')?.classList.toggle('hidden', isKey);
-  $('#row-key')?.classList.toggle('hidden', !isKey);
+  const isRdp = ($('#host-protocol')?.value || 'ssh') === 'rdp';
+  // RDP 没有认证方式可选:整行走 toggleProtocolRows 的折叠,这里不再把它放出来
+  $('#row-password')?.classList.toggle('hidden', isRdp || isKey);
+  $('#row-key')?.classList.toggle('hidden', isRdp || !isKey);
   syncAuthSliderUI(current);
+}
+
+/// 远程桌面帧率档位（0 = 不限，跟随服务端）
+const RDP_FRAME_RATES = [0, 15, 24, 30, 60, 90, 120, 144];
+
+/// 把主机里的显示/体验/网络三段回填到弹窗（缺省即 mstsc 默认体验）
+function fillRdpAdvanced(host) {
+  const display = host?.rdpDisplay || {};
+  const exp = host?.rdpExperience || {};
+  const net = host?.rdpNetwork || {};
+  const setVal = (id, val) => {
+    const el = $('#' + id);
+    if (el && val !== undefined && val !== null) el.value = String(val);
+  };
+  const setChk = (id, val, dflt) => {
+    const el = $('#' + id);
+    if (el) el.checked = typeof val === 'boolean' ? val : dflt;
+  };
+  setVal('rdp-resolution', display.resolution || 'auto');
+  setVal('rdp-scale', display.scaleFactor ?? 100);
+  setVal('rdp-color-depth', display.colorDepth ?? 32);
+  setVal('rdp-quality', net.qualityPreset || 'auto');
+  setVal('rdp-bandwidth', net.bandwidthKbps ?? 0);
+  setVal('rdp-pixel-budget', display.pixelBudget ?? 1600000);
+  setChk('rdp-clipboard', exp.clipboard, true);
+  setChk('rdp-egfx', net.egfx, true);
+  setChk('rdp-compress', net.compressFrames, true);
+  setChk('rdp-font-smoothing', exp.fontSmoothing, true);
+  setChk('rdp-composition', exp.desktopComposition, true);
+  setChk('rdp-wallpaper', exp.wallpaper, true);
+  setChk('rdp-theming', exp.theming, true);
+  setChk('rdp-cursor-shadow', exp.cursorShadow, true);
+  setChk('rdp-drag-contents', exp.showWindowContents, true);
+  setChk('rdp-menu-animations', exp.menuAnimations, false);
+  const launch = host?.rdpLaunch || {};
+  if ($('#rdp-program')) $('#rdp-program').value = launch.program || '';
+  if ($('#rdp-working-dir')) $('#rdp-working-dir').value = launch.workingDir || '';
+  setChk('rdp-window-animations', exp.windowAnimations, false);
+}
+
+function collectRdpDisplay() {
+  const rate = $('#host-frame-rate')?.value;
+  return {
+    resolution: $('#rdp-resolution')?.value || 'auto',
+    scaleFactor: Number($('#rdp-scale')?.value || 100),
+    colorDepth: Number($('#rdp-color-depth')?.value || 32),
+    pixelBudget: Number($('#rdp-pixel-budget')?.value || 1600000),
+    // 'auto' 原样传字符串:后端据此走自适应节拍,别把它强转成 NaN
+    frameRate: rate === undefined || rate === '' ? 30 : rate === 'auto' ? 'auto' : Number(rate),
+  };
+}
+
+function collectRdpExperience() {
+  const chk = (id) => !!$('#' + id)?.checked;
+  return {
+    fontSmoothing: chk('rdp-font-smoothing'),
+    desktopComposition: chk('rdp-composition'),
+    wallpaper: chk('rdp-wallpaper'),
+    theming: chk('rdp-theming'),
+    cursorShadow: chk('rdp-cursor-shadow'),
+    showWindowContents: chk('rdp-drag-contents'),
+    menuAnimations: chk('rdp-menu-animations'),
+    windowAnimations: chk('rdp-window-animations'),
+    clipboard: chk('rdp-clipboard'),
+  };
+}
+
+function collectRdpLaunch() {
+  return {
+    program: $('#rdp-program')?.value?.trim() || '',
+    workingDir: $('#rdp-working-dir')?.value?.trim() || '',
+  };
+}
+
+function collectRdpNetwork() {
+  return {
+    qualityPreset: $('#rdp-quality')?.value || 'auto',
+    bandwidthKbps: Number($('#rdp-bandwidth')?.value || 0),
+    egfx: !!$('#rdp-egfx')?.checked,
+    compressFrames: !!$('#rdp-compress')?.checked,
+  };
 }
 
 export async function saveHostModal() {
   const id = $('#host-id').value;
+  const protocol = $('#host-protocol')?.value === 'rdp' ? 'rdp' : 'ssh';
   const payload = {
     id: id || undefined,
     name: $('#host-name').value.trim(),
     host: $('#host-host').value.trim(),
-    port: Number($('#host-port').value) || 22,
-    username: $('#host-username').value.trim() || 'root',
-    authType: $('#host-auth').value,
+    protocol,
+    domain: protocol === 'rdp' ? ($('#host-domain')?.value.trim() || '') : '',
+    rdpFrameRate: protocol === 'rdp' ? Number($('#host-frame-rate')?.value ?? 30) || 0 : undefined,
+    rdpDisplay: protocol === 'rdp' ? collectRdpDisplay() : undefined,
+    rdpExperience: protocol === 'rdp' ? collectRdpExperience() : undefined,
+    rdpNetwork: protocol === 'rdp' ? collectRdpNetwork() : undefined,
+    rdpLaunch: protocol === 'rdp' ? collectRdpLaunch() : undefined,
+    port: Number($('#host-port').value) || (protocol === 'rdp' ? 3389 : 22),
+    username: $('#host-username').value.trim() || (protocol === 'rdp' ? 'Administrator' : 'root'),
+    authType: protocol === 'rdp' ? 'password' : $('#host-auth').value,
     group: $('#host-group').value.trim(),
     jumpIds: [...currentJumpIds],
-    initcmd: $('#host-initcmd').value.trim(),
+    initcmd: protocol === 'rdp' ? '' : $('#host-initcmd').value.trim(),
     sessionLog: $('#host-sessionlog') ? $('#host-sessionlog').value : 'default',
     aiAccess: $('#host-aiaccess') ? $('#host-aiaccess').value : undefined,
   };

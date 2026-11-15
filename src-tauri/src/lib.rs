@@ -9,6 +9,8 @@ pub mod config;
 pub mod forward;
 pub mod host_io;
 mod monitor;
+pub mod rdp;
+pub mod rdp_clipboard;
 mod session_log;
 pub mod sftp;
 pub mod signing;
@@ -25,6 +27,8 @@ mod cloud_test;
 mod host_io_test;
 #[cfg(test)]
 mod monitor_test;
+#[cfg(test)]
+mod rdp_test;
 #[cfg(test)]
 mod signing_test;
 #[cfg(test)]
@@ -93,11 +97,13 @@ pub fn run() {
     let store = Arc::new(config::Store::load(data_dir.clone()));
     let remote_targets = ssh::RemoteTargets::default();
     let ssh = Arc::new(ssh::SshService::new(store.clone(), remote_targets.clone()));
+    let rdp = rdp::RdpService::new(store.clone(), ssh.clone());
     let test_results: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let state = AppState {
         store: store.clone(),
         ssh: ssh.clone(),
+        rdp: rdp.clone(),
         forwards: forward::ForwardService::new(remote_targets),
         transfers: Arc::new(transfer::TransferManager::new(
             ssh.clone(),
@@ -148,7 +154,13 @@ pub fn run() {
                 let transfers = active_transfer_count(&state.transfers.list());
                 // 窗口事件回调是同步的:会话表是 tokio 锁,只能 try_lock;
                 // 锁正忙按"有会话"处理(None),宁可多问一次也不静默断开
-                let sessions = state.ssh.sessions.try_lock().ok().map(|m| m.len());
+                let sessions = state
+                    .ssh
+                    .sessions
+                    .try_lock()
+                    .ok()
+                    .map(|m| m.len())
+                    .map(|n| n + state.rdp.active_sessions());
                 if should_block_close(force, transfers, sessions) {
                     api.prevent_close();
                     ai::emit_evt(
@@ -207,6 +219,8 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Some(state) = app.try_state::<AppState>() {
                     stop_session_logs(&state);
+                    // RDP 会话没有 SSH 那样的优雅关闭路径,退出前统一发断开信号
+                    tauri::async_runtime::block_on(state.rdp.disconnect_all());
                     state.store.flush_now();
                 }
             }
@@ -344,6 +358,8 @@ impl AppState {
         let sid = session_id.to_string();
         let handle = tauri::async_runtime::spawn(async move {
             let mut prev: Option<serde_json::Value> = None;
+            // 是否已切到 Windows PowerShell 探针（POSIX 探针不支持时自动尝试一次）
+            let mut use_win_probe = false;
             // 上一轮成功的延迟读数:偶发一轮测不到时沿用它,而不是让状态栏
             // 在数字与 "–" 之间反复跳。
             let mut last_latency: Option<u64> = None;
@@ -369,9 +385,14 @@ impl AppState {
                 }
                 let latency_ms = latency_ms.or(last_latency);
                 let interval_sec = last_probe.elapsed().as_secs_f64().clamp(1.0, 60.0);
+                let probe_cmd = if use_win_probe {
+                    monitor::WIN_PROBE
+                } else {
+                    monitor::PROBE
+                };
                 let r = match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    ssh.exec(&sid, monitor::PROBE),
+                    std::time::Duration::from_secs(6),
+                    ssh.exec(&sid, probe_cmd),
                 )
                 .await
                 {
@@ -379,9 +400,24 @@ impl AppState {
                     _ => break,
                 };
                 last_probe = std::time::Instant::now();
-                let parsed = monitor::parse_proc(&r, prev.as_ref(), interval_sec);
+                let mut parsed = monitor::parse_proc(&r, prev.as_ref(), interval_sec);
+                if parsed["supported"] == json!(false) && !use_win_probe {
+                    // POSIX 探针未识别出 Linux/Darwin，尝试 Windows PowerShell CIM 探针
+                    if let Ok(Ok((_, win_out))) = tokio::time::timeout(
+                        std::time::Duration::from_secs(6),
+                        ssh.exec(&sid, monitor::WIN_PROBE),
+                    )
+                    .await
+                    {
+                        let win_parsed = monitor::parse_proc(&win_out, prev.as_ref(), interval_sec);
+                        if win_parsed["supported"] == json!(true) {
+                            use_win_probe = true;
+                            parsed = win_parsed;
+                        }
+                    }
+                }
                 if parsed["supported"] == json!(false) {
-                    // 非 Linux 主机没有 /proc:资源面板切"不支持"终态,但连接是通的,
+                    // 非 Linux/Darwin/Windows 主机:资源面板切"不支持"终态,但连接是通的,
                     // 循环继续跑 —— 延迟(回显往返)对任何 shell 都有意义。
                     // exec 失败(超时/断开)仍走上面分支退出。
                     ai::emit_evt(
@@ -395,7 +431,7 @@ impl AppState {
                 ai::emit_evt(
                     &app,
                     "ssh:metrics",
-                    json!({ "sessionId": sid, "supported": true, "cpuPct": parsed["cpuPct"], "memPct": parsed["memPct"], "memUsedMB": parsed["memUsedMB"], "memTotalMB": parsed["memTotalMB"], "rxBps": parsed["rxBps"], "txBps": parsed["txBps"], "diskPct": parsed["diskPct"], "diskUsedGB": parsed["diskUsedGB"], "diskTotalGB": parsed["diskTotalGB"], "diskReadBps": parsed["diskReadBps"], "diskWriteBps": parsed["diskWriteBps"], "latencyMs": latency_ms }),
+                    json!({ "sessionId": sid, "supported": true, "os": parsed["os"], "cpuPct": parsed["cpuPct"], "memPct": parsed["memPct"], "memUsedMB": parsed["memUsedMB"], "memTotalMB": parsed["memTotalMB"], "rxBps": parsed["rxBps"], "txBps": parsed["txBps"], "diskPct": parsed["diskPct"], "diskUsedGB": parsed["diskUsedGB"], "diskTotalGB": parsed["diskTotalGB"], "diskReadBps": parsed["diskReadBps"], "diskWriteBps": parsed["diskWriteBps"], "drives": parsed["drives"], "latencyMs": latency_ms }),
                 );
             }
         });

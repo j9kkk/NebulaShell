@@ -366,3 +366,112 @@ fn ai_credentials_are_endpoint_and_protocol_scoped_and_explicitly_clearable() {
         json!(false)
     );
 }
+
+#[test]
+fn stage1_protocol_and_domain_contract_roundtrip_and_validation() {
+    // A1: Legacy config without protocol/domain normalizes to ssh/22/""
+    let f = Fixture::new();
+    let s = &f.0;
+    let ssh_host = s.save_host(&json!({ "host": "10.10.0.1" })).unwrap();
+    assert_eq!(ssh_host["protocol"], json!("ssh"));
+    assert_eq!(ssh_host["port"], json!(22));
+    assert_eq!(ssh_host["username"], json!("root"));
+    assert_eq!(ssh_host["domain"], json!(""));
+
+    // RDP defaults: port=3389, username="Administrator", domain trimmed
+    let rdp_host = s
+        .save_host(&json!({
+            "name": "win-dc",
+            "host": "10.10.0.2",
+            "protocol": "rdp",
+            "domain": "  CORP  ",
+            "password": "win-secret"
+        }))
+        .unwrap();
+    assert_eq!(rdp_host["protocol"], json!("rdp"));
+    assert_eq!(rdp_host["port"], json!(3389));
+    assert_eq!(rdp_host["username"], json!("Administrator"));
+    assert_eq!(rdp_host["domain"], json!("CORP"));
+    assert_eq!(rdp_host["hasPassword"], json!(true));
+
+    let full_rdp = s.host_full(id(&rdp_host)).unwrap();
+    assert_eq!(full_rdp["protocol"], json!("rdp"));
+    assert_eq!(full_rdp["domain"], json!("CORP"));
+    assert_eq!(full_rdp["password"], json!("win-secret"));
+
+    // A2: v4 export & import roundtrip preserves protocol, port=3389, domain, and credentials
+    let exported = s
+        .export_hosts_scoped(&json!({ "mode": "all" }), None, true, true)
+        .unwrap();
+    let exported_text = text(&exported);
+    let insp_same = s.inspect_hosts(&exported_text, None).unwrap();
+    assert_eq!(
+        insp_same["counts"]["identical"],
+        json!(2),
+        "re-inspecting same store with ssh+rdp must be identical: {}",
+        insp_same
+    );
+
+    let dest = Fixture::new();
+    let applied = dest
+        .0
+        .apply_hosts(&exported_text, None, &json!({}))
+        .unwrap();
+    assert_eq!(applied["added"], json!(2));
+    let dest_hosts = dest.0.list_hosts();
+    let imported_rdp = dest_hosts
+        .iter()
+        .find(|h| h["host"] == "10.10.0.2")
+        .unwrap();
+    assert_eq!(imported_rdp["protocol"], json!("rdp"));
+    assert_eq!(imported_rdp["port"], json!(3389));
+    assert_eq!(imported_rdp["username"], json!("Administrator"));
+    assert_eq!(imported_rdp["domain"], json!("CORP"));
+    assert_eq!(
+        dest.0.host_full(id(imported_rdp)).unwrap()["password"],
+        json!("win-secret")
+    );
+
+    // Conflict detection when protocol or domain changes
+    let mut modified_export = exported.clone();
+    modified_export["hosts"][1]["domain"] = json!("SUBCORP");
+    let insp_diff = dest.0.inspect_hosts(&text(&modified_export), None).unwrap();
+    assert_eq!(insp_diff["counts"]["conflict"], json!(1));
+    let diff_list = insp_diff["rows"][1]["diff"].as_array().unwrap();
+    assert!(
+        diff_list
+            .iter()
+            .any(|d| d.as_str().unwrap_or("").contains("域 CORP → SUBCORP")),
+        "expected domain diff in {:?}",
+        diff_list
+    );
+
+    // A3: Invalid protocol or RDP with key auth is rejected with E_ENUM / E_AUTH
+    let bad_proto = json!({
+        "version": 4,
+        "hosts": [{ "id": "h1", "host": "10.0.0.9", "protocol": "vnc" }]
+    });
+    let detail = dest
+        .0
+        .inspect_hosts_detailed(&text(&bad_proto), None)
+        .unwrap();
+    assert_eq!(detail["rejected"], json!(true));
+    assert_eq!(detail["invalidRows"][0]["field"], json!("protocol"));
+    assert_eq!(detail["invalidRows"][0]["code"], json!("E_ENUM"));
+    assert!(dest
+        .0
+        .apply_hosts(&text(&bad_proto), None, &json!({}))
+        .is_err());
+
+    let bad_rdp_auth = json!({
+        "version": 4,
+        "hosts": [{ "id": "h2", "host": "10.0.0.9", "protocol": "rdp", "authType": "key" }]
+    });
+    let detail_auth = dest
+        .0
+        .inspect_hosts_detailed(&text(&bad_rdp_auth), None)
+        .unwrap();
+    assert_eq!(detail_auth["rejected"], json!(true));
+    assert_eq!(detail_auth["invalidRows"][0]["field"], json!("authType"));
+    assert_eq!(detail_auth["invalidRows"][0]["code"], json!("E_AUTH"));
+}

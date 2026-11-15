@@ -760,7 +760,10 @@ function openCtxSubmenu(parent, items, fallbackFocus) {
   const left = preferred + sr.width > window.innerWidth - 8
     ? Math.max(8, (mr ? mr.left : pr.left) - sr.width - 2)
     : preferred;
-  const top = Math.max(8, Math.min(pr.top - 4, window.innerHeight - sr.height - 8));
+  // 与父项对齐的是「第一行的行首」,不是面板外沿:面板自带 6px 内边距(见 style.css),
+  // 若把面板顶边贴到父项顶边,第一行反而会低 6px,眼睛看到的是一排错位的字。
+  const padTop = 6;
+  const top = Math.max(8, Math.min(pr.top - padTop, window.innerHeight - sr.height - 8));
   sub.style.left = `${Math.round(left)}px`;
   sub.style.top = `${Math.round(top)}px`;
   (sub.querySelector('button:not([aria-disabled="true"])') || sub.querySelector('button') || fallbackFocus)?.focus();

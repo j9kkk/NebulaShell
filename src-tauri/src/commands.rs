@@ -374,6 +374,7 @@ async fn stop_auto_log_on_failure<R: tauri::Runtime>(
 pub struct AppState {
     pub store: Arc<Store>,
     pub ssh: Arc<SshService>,
+    pub rdp: Arc<crate::rdp::RdpService>,
     pub forwards: ForwardService,
     pub transfers: Arc<crate::transfer::TransferManager>,
     /// 上传/下载按 taskId 的取消标记(任务中心可取消在途传输)
@@ -931,6 +932,23 @@ pub async fn nebula_invoke(
             ok(json!(null))
         }
 
+        // 列出 Windows OpenSSH 远端文件系统的逻辑盘符（非 Windows 主机返回空数组）
+        "sftp:drives" => {
+            let sid = payload["sessionId"].as_str().unwrap_or("").to_string();
+            const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+            match tokio::time::timeout(
+                PROBE_TIMEOUT,
+                state.ssh.exec(&sid, crate::sftp::DRIVES_PROBE_CMD),
+            )
+            .await
+            {
+                Ok(Ok((_, out))) => {
+                    ok(json!({ "drives": crate::sftp::parse_windows_drives(&out) }))
+                }
+                Ok(Err(e)) => err_msg(e),
+                Err(_) => ok(json!({ "drives": [] })),
+            }
+        }
         "sftp:list" => {
             sftp_op(
                 &state,
@@ -1369,6 +1387,89 @@ pub async fn nebula_invoke(
             state.store.save().ok();
             ok(json!(null))
         }
+
+        // ── RDP(IronRDP)会话:连接/输入/分辨率/断开/证书确认 ──
+        "rdp:connect" => {
+            let host_id = payload["hostId"].as_str().unwrap_or("");
+            let session_id = payload["sessionId"].as_str().map(String::from);
+            let width = payload["width"].as_u64().map(|v| v as u32);
+            let height = payload["height"].as_u64().map(|v| v as u32);
+            let prompt_cert = payload["promptCert"].as_bool().unwrap_or(false);
+            // 前端声明支持 deflate 才压缩帧（DecompressionStream 不可用的引擎走原样）
+            let compress_frames = payload["compression"]
+                .as_str()
+                .map(|c| c == "deflate")
+                .unwrap_or(false);
+            // 画面帧走 Tauri Channel(二进制),不占 JSON 事件通道
+            let frame_sink: Option<crate::rdp::FrameSink> = payload["frameChannel"]
+                .as_str()
+                .and_then(|spec| spec.parse::<tauri::ipc::JavaScriptChannelId>().ok())
+                .and_then(|id| {
+                    let window = app.get_webview_window("main")?;
+                    let channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody> =
+                        id.channel_on(window.as_ref().clone());
+                    let sink: crate::rdp::FrameSink = std::sync::Arc::new(move |bytes| {
+                        let _ = channel.send(tauri::ipc::InvokeResponseBody::Raw(bytes));
+                    });
+                    Some(sink)
+                });
+            // Box::pin:把未来收敛到具体生命周期后再 await。RdpService 的方法在
+            // 泛型命令处理函数里直接 await 会触发 rustc 的
+            // 「Send is not general enough」误报(&AppState)。
+            let fut = state.rdp.connect(
+                app.clone(),
+                host_id,
+                session_id,
+                width,
+                height,
+                frame_sink,
+                prompt_cert,
+                compress_frames,
+            );
+            match Box::pin(fut).await {
+                Ok(data) => ok(data),
+                Err(e) => err_msg(e),
+            }
+        }
+        "rdp:input" => {
+            let session_id = payload["sessionId"].as_str().unwrap_or("");
+            match serde_json::from_value::<crate::rdp::RdpInputPayload>(
+                payload.get("input").cloned().unwrap_or(Value::Null),
+            ) {
+                Ok(input) => match Box::pin(state.rdp.send_input(session_id, input)).await {
+                    Ok(()) => ok(json!(null)),
+                    Err(e) => err_msg(e),
+                },
+                Err(e) => err_msg(format!("输入载荷格式错误: {e}")),
+            }
+        }
+        "rdp:resize" => {
+            let session_id = payload["sessionId"].as_str().unwrap_or("");
+            let width = payload["width"].as_u64().unwrap_or(0) as u32;
+            let height = payload["height"].as_u64().unwrap_or(0) as u32;
+            let scale = payload["scaleFactor"].as_u64().map(|v| v as u32);
+            match Box::pin(state.rdp.resize(session_id, width, height, scale)).await {
+                Ok(()) => ok(json!(null)),
+                Err(e) => err_msg(e),
+            }
+        }
+        "rdp:disconnect" => {
+            let session_id = payload["sessionId"].as_str().unwrap_or("");
+            match Box::pin(state.rdp.disconnect(session_id)).await {
+                Ok(()) => ok(json!(null)),
+                Err(e) => err_msg(e),
+            }
+        }
+        "rdp:cert_reply" => {
+            let request_id = payload["requestId"].as_str().unwrap_or("");
+            let accept = payload["accept"].as_bool().unwrap_or(false);
+            if state.rdp.resolve_cert_decision(request_id, accept) {
+                ok(json!(null))
+            } else {
+                err_msg("证书确认请求已失效")
+            }
+        }
+        "rdp:sessions" => ok(json!(Box::pin(state.rdp.session_ids()).await)),
 
         "bookmarks:list" => {
             let data = state.store.data.lock().unwrap();

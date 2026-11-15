@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS 15+ 本地网络隐私(NECP):缺少此键时系统静默丢弃所有 RFC-1918 流量,
+	     既不弹授权框也不出现在「隐私与安全性 → 本地网络」列表里,connect() 直接返回
+	     EHOSTUNREACH(errno 65),表现为「连接失败: No route to host」。
+	     SSH/SFTP 连局域网主机(192.168.x.x / 10.x / 172.16-31.x)必须声明。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>NebulaShell 需要访问本地网络，以便通过 SSH 连接局域网内的服务器。</string>
+</dict>
+</plist>

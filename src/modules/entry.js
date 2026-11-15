@@ -4,8 +4,9 @@ import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { createSequenceFilter } from '../shared/term-text.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
 import { activateSession, activateTab, addFilePane, applyTheme, autoLayoutTab, bindPaneToolbars, bindTabStrip, openTabList, filePaneBlocker, bindSelectionExplain, clearActiveTerm, closeActivePane, closeTab, closeTermSearch, disconnectSession, doTermSearch, firstPaint, fitAllVisible, focusedPaneId, handleSessionStatus, leafCount, maxPaneCapacity, newTabWithPicker, openBroadcastPicker, openLogFolder, openTermSearch, paneOwner, reconnectSession, renameTab, scheduleResizeSync, scheduleWorkspaceLayout, splitActive, togglePaneZoom, toggleReadonly, toggleTabTiling, toggleSessionLog, updateStatusbar, updateTab } from './terminal.js';
-import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
+import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, openHostModal, refreshHosts, removeHostTag, renderHosts, renderTagMenu, saveHostModal, saveUiPrefs, setHostAuthMode, setHostProtocol, toggleAuthRows, toggleHostSecret, toggleJumpMenu, toggleProtocolRows, toggleTagMenu, uiPrefs, updateSessionLogHint } from './hosts.js';
 import { bindHostLibrary, openHostLibrary } from './host-library.js';
+import { activeRdpPane, bindRdpEvents, disconnectRdpPane, reconnectRdpPane } from './rdp.js';
 import { openExportDialog, openImportDialog, setupTransfer } from './transfer.js';
 import { bindSidebarPeek, resetPeekOnToggle } from './sidebar-peek.js';
 import { bindRailCards, closeRailCard } from './rail-cards.js';
@@ -356,6 +357,9 @@ function setupWorkspaceCommands() {
   registerCommand('tab.file.add', { label: '新增文件分屏', category: 'layout', keywords: ['files', 'sftp', 'file manager', 'wenjian', 'wjfp', 'xzwjfp'],
     enabled: (ctx) => !filePaneBlocker(targetOf(ctx).tab?.id), reason: (ctx) => filePaneBlocker(targetOf(ctx).tab?.id),
     run: (ctx) => { const t = targetOf(ctx); addFilePane(t.tab?.id, t.explicit ? t.paneId : undefined); refreshCommandStates(); } });
+  // 远程桌面分屏:只在已有 RDP 桌面窗格的标签里出现(没有桌面就没有可分的东西)。
+  // 低频、目标天然是该标签的桌面,直接给菜单项而不注册命令 —— 命令表是
+  // 菜单栏/native 菜单的索引面,分屏动作不属于那一层。
   // 单文件下载:在文件夹中选中该文件;批量下载:打开目标文件夹
   registerCommand('files.revealLastDownload', { label: '在文件夹中显示最近下载', category: 'layout',
     keywords: ['downloads', 'show in folder', 'reveal', 'open folder', 'xiazai', 'zjxz', 'dkzjxzwz', 'wenjianjia'],
@@ -406,11 +410,28 @@ function setupWorkspaceCommands() {
   registerCommand('tools.snippets', { label: '常用命令', category: 'session', kind: 'dialog', keywords: ['snippets', '片段', 'cyml', 'changyong', 'cypd', 'pianduan'], run: openSnippetsModal });
   registerCommand('session.search', { label: '在终端中查找', category: 'session', kind: 'dialog', keywords: ['find', 'search', 'cz', 'chazhao', 'sousuo'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => { focusTarget(ctx); return openTermSearch(); } });
   registerCommand('session.clear', { label: '清屏', category: 'session', keywords: ['clear', 'cls', 'qp', 'qingping'], enabled: (ctx) => !!session(ctx), reason: noSession, run: (ctx) => clearActiveTerm(session(ctx).sessionId) });
-  registerCommand('session.reconnect', { label: '重新连接', category: 'session', keywords: ['reconnect', 'cl', 'chonglian'], enabled: (ctx) => !!session(ctx) && !live(session(ctx)),
-    reason: (ctx) => (!session(ctx) ? noSession : session(ctx).status === 'connecting' ? '会话正在连接' : '会话已连接'), run: (ctx) => reconnectSession(session(ctx).sessionId) });
-  registerCommand('session.disconnect', { label: '断开连接', category: 'session', keywords: ['disconnect', 'dk', 'duankai'], enabled: (ctx) => live(session(ctx)) || !!session(ctx)?.reconnectScheduled,
-    reason: sessionReason, run: async (ctx) => { const id = session(ctx).sessionId; if (await confirmTransferInterrupt([id])) disconnectSession(id); } });
-  registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'], enabled: (ctx) => session(ctx)?.status === 'connected', reason: sessionReason, checked: (ctx) => !!session(ctx)?.readOnly, run: (ctx) => toggleReadonly(session(ctx).sessionId) });
+  // 桌面窗格没有 SSH 会话对象:这三条命令对 RDP 走自己的分支,
+  // 否则按钮永远是禁用态(状态栏明明写着已连接,断开却点不动)。
+  const rdpLive = () => ['connected', 'connecting', 'cert'].includes(activeRdpPane()?.phase);
+  const rdpRetryable = () => ['down', 'idle'].includes(activeRdpPane()?.phase);
+  registerCommand('session.reconnect', { label: '重新连接', category: 'session', keywords: ['reconnect', 'cl', 'chonglian'],
+    enabled: (ctx) => (activeRdpPane() ? rdpRetryable() : !!session(ctx) && !live(session(ctx))),
+    reason: (ctx) => (activeRdpPane() ? '远程桌面仍在连接中' : !session(ctx) ? noSession : session(ctx).status === 'connecting' ? '会话正在连接' : '会话已连接'),
+    run: (ctx) => (activeRdpPane() ? reconnectRdpPane(activeRdpPane()) : reconnectSession(session(ctx).sessionId)) });
+  registerCommand('session.disconnect', { label: '断开连接', category: 'session', keywords: ['disconnect', 'dk', 'duankai'],
+    enabled: (ctx) => (activeRdpPane() ? rdpLive() : live(session(ctx)) || !!session(ctx)?.reconnectScheduled),
+    reason: (ctx) => (activeRdpPane() ? '远程桌面未连接' : sessionReason(ctx)),
+    run: async (ctx) => {
+      const rdp = activeRdpPane();
+      if (rdp) return disconnectRdpPane(rdp);
+      const id = session(ctx).sessionId;
+      if (await confirmTransferInterrupt([id])) disconnectSession(id);
+    } });
+  registerCommand('session.readonly', { label: '只读模式', category: 'session', keywords: ['read only', 'readonly', 'zd', 'zhidu'],
+    enabled: (ctx) => (activeRdpPane() ? activeRdpPane().phase === 'connected' : session(ctx)?.status === 'connected'),
+    reason: (ctx) => (activeRdpPane() ? '远程桌面未连接' : sessionReason(ctx)),
+    checked: (ctx) => (activeRdpPane() ? !!activeRdpPane().readOnly : !!session(ctx)?.readOnly),
+    run: (ctx) => toggleReadonly(session(ctx)?.sessionId) });
   registerCommand('session.log', { label: '会话日志', category: 'session', keywords: ['log', 'record', 'jlrz', 'rizhi'],
     enabled: (ctx) => { const s = session(ctx); return !!s && !s.logBusy && (s.status === 'connected' || !!s.logActive); },
     reason: (ctx) => { const s = session(ctx); if (!s) return noSession; if (s.logBusy) return '正在处理日志操作'; return '会话未连接'; },
@@ -510,6 +531,17 @@ export function bindEvents() {
   bindSidebarPeek();
   bindRailCards();
   $('#host-auth').addEventListener('change', toggleAuthRows);
+
+  // 协议分段控件:唯一切换点(R1)。切换时联动端口/用户名默认值与表单行显隐
+  $('#host-protocol').addEventListener('change', toggleProtocolRows);
+  $('#host-protocol-slider')?.addEventListener('click', (e) => {
+    const item = e.target.closest('.segmented-item');
+    if (item && item.dataset.value) setHostProtocol(item.dataset.value);
+  });
+  $('#host-protocol-slider')?.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); setHostProtocol('ssh'); }
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); setHostProtocol('rdp'); }
+  });
 
   // 认证方式滑块:点击分段项切换 + 键盘左右箭头支持
   $('#host-auth-slider')?.addEventListener('click', (e) => {
@@ -1254,6 +1286,7 @@ export async function boot() {
   buildMenubar();
   bindPalette();
   bindPaneToolbars();
+  bindRdpEvents();
   bindTabStrip();
   setupResizers();
   bindContextMenu();

@@ -16,8 +16,11 @@ pub type RemoteTargets = Arc<std::sync::Mutex<HashMap<String, (String, u32, Stri
 /// 用共享句柄把详情带出来,供连接错误构造"重新信任"提示(跳板链上任一跳失败都能定位到那一跳)。
 pub type FpMismatch = Arc<std::sync::Mutex<Option<(String, String, String)>>>;
 
-pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
-impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
+pub trait AsyncReadWrite:
+    tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin
+{
+}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin> AsyncReadWrite for T {}
 pub type BoxStream = Box<dyn AsyncReadWrite>;
 
 pub struct SshHandler {
@@ -347,7 +350,12 @@ async fn shut_down_session(session: Arc<Session>) {
 // Dropping a setup future must close every already-open transport: russh Handle::drop
 // does not disconnect. This guard also covers errors midway through a jump chain.
 #[derive(Default)]
-struct SetupHandles(Vec<Handle<SshHandler>>);
+pub struct SetupHandles(pub Vec<Handle<SshHandler>>);
+impl SetupHandles {
+    pub fn take(&mut self) -> Vec<Handle<SshHandler>> {
+        std::mem::take(&mut self.0)
+    }
+}
 impl Drop for SetupHandles {
     fn drop(&mut self) {
         let handles = std::mem::take(&mut self.0);
@@ -413,7 +421,7 @@ pub struct Session {
 }
 
 /// 常驻回显通道:写什么 stdout 回什么。
-struct PingChannel {
+pub struct PingChannel {
     channel: russh::Channel<russh::client::Msg>,
     /// 本轮探测的序号;每轮写一行 `__NB_PING_<seq>__`,必须读到同一序号才算回来,
     /// 避免把上一轮迟到的回显误记到本轮(高 RTT + 抖动时会出现)。
@@ -421,6 +429,14 @@ struct PingChannel {
     /// 跨多次 `wait()` 的残余字节:回显和上一次的尾巴可能粘在同一个消息里。
     buf: Vec<u8>,
 }
+
+/// 跨平台常驻 stdin→stdout 回显命令：
+/// - POSIX sh/bash/zsh：`cat 2>/dev/null` 分支立即接管，后续按行原样回显；
+/// - Windows OpenSSH `cmd.exe`：前半段报语法/找不到命令失败后触发 `|| powershell ...`，
+///   进入无 Profile 的 `[Console]::In.ReadLine()` 循环逐行回显；
+/// - Windows OpenSSH 默认 Shell 设为 PowerShell：同样可由 `cat` (Get-Content 别名失败) 或
+///   回退分支处理。
+pub const PING_ECHO_CMD: &str = "cat 2>/dev/null || powershell -NoLogo -NoProfile -NonInteractive -Command \"while(($l=[Console]::In.ReadLine()) -ne $null){[Console]::Out.WriteLine($l)}\"";
 
 static EPOCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -689,6 +705,80 @@ impl SshService {
         let mut guard = SetupHandles(vec![handle]);
         Self::auth(&mut guard.0[0], user, host).await?;
         Ok(guard.0.pop().unwrap())
+    }
+
+    /// 打开到 `host_full` 的底层字节流（支持无跳板 TCP 直连，或多跳 SSH `direct_tcpip` 隧道）。
+    ///
+    /// 返回 `(stream, setup_handles)`：
+    /// - `stream`：直连 `TcpStream`（已设置 `TCP_NODELAY`）或最后一跳跳板机的 `direct_tcpip` 通道流；
+    /// - `setup_handles`：沿途已建立的跳板机 SSH 会话句柄守卫（Drop 时自动断开全部跳板，调用方在会话存活期应保留它）。
+    pub async fn open_target_stream(
+        &self,
+        host_full: &Value,
+        default_port: u16,
+    ) -> Result<(BoxStream, SetupHandles), String> {
+        let host_addr = host_full["host"].as_str().unwrap_or("").trim();
+        if host_addr.is_empty() {
+            return Err("未配置目标主机地址".into());
+        }
+        let port = host_full["port"]
+            .as_i64()
+            .filter(|&p| (1..=65535).contains(&p))
+            .map(|p| p as u16)
+            .unwrap_or(default_port);
+        let jump_ids: Vec<String> = host_full["jumpIds"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut setup = SetupHandles::default();
+        if jump_ids.is_empty() {
+            let addr = format!("{}:{}", host_addr, port);
+            let sock = tokio::net::TcpStream::connect(&addr)
+                .await
+                .map_err(|e| format!("{}:连接失败: {}", host_addr, e))?;
+            let _ = sock.set_nodelay(true);
+            return Ok((Box::new(sock), setup));
+        }
+
+        let mut prev_sock: Option<BoxStream> = None;
+        for (i, jid) in jump_ids.iter().enumerate() {
+            let jump = self
+                .store
+                .host_full(jid)
+                .map_err(|e| format!("跳板: {}", e))?;
+            let jhost = jump["host"].as_str().unwrap_or("").to_string();
+            let (target_host, target_port) = if i + 1 < jump_ids.len() {
+                let next = self
+                    .store
+                    .host_full(&jump_ids[i + 1])
+                    .map_err(|e| format!("跳板: {}", e))?;
+                (
+                    next["host"].as_str().unwrap_or("").to_string(),
+                    next["port"].as_i64().unwrap_or(22) as u32,
+                )
+            } else {
+                (host_addr.to_string(), port as u32)
+            };
+            let jh = self
+                .connect_one(self.store.clone(), &jump, prev_sock.take())
+                .await
+                .map_err(|e| format!("跳板 {} 失败: {}", jhost, e))?;
+            setup.0.push(jh);
+            let ch = setup
+                .0
+                .last()
+                .unwrap()
+                .channel_open_direct_tcpip(&target_host, target_port, "127.0.0.1", 0)
+                .await
+                .map_err(|e| format!("跳板 {} 建立直连失败: {}", jhost, e))?;
+            prev_sock = Some(Box::new(ch.into_stream()));
+        }
+        Ok((prev_sock.expect("jump_ids non-empty"), setup))
     }
 
     /// 连接(支持跳板链 host.jumpIds):返回 (sessionId, 跳板连接数)
@@ -1431,8 +1521,11 @@ impl SshService {
                 .await
                 .map_err(|e| e.to_string())?
         };
-        channel.exec(true, "cat").await.map_err(|e| e.to_string())?;
-        // cat 读 stdin 直到 EOF,不需要写 EOF/close:通道随会话一起结束。
+        channel
+            .exec(true, PING_ECHO_CMD)
+            .await
+            .map_err(|e| e.to_string())?;
+        // 读 stdin 直到 EOF,不需要写 EOF/close:通道随会话一起结束。
         Ok(PingChannel {
             channel,
             seq: 0,
@@ -1502,34 +1595,54 @@ impl SshService {
     pub async fn probe_cwd(&self, session_id: &str) -> Result<Option<String>, String> {
         // 探针在服务器上跑 ps/lsof,负载高的机器上 lsof 可达秒级甚至卡死,
         // 而 exec_limited 等 Close 无限期 —— 不加超时,文件面板首开会跟着挂起。
-        // 超时按探测失败处理,兜底链路(pwd → None)不变。
+        // 超时按探测失败处理,兜底链路(pwd → cd → None)不变。
         const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
         if let Ok(Ok((_, out))) =
             tokio::time::timeout(PROBE_TIMEOUT, self.exec(session_id, Self::CWD_PROBE)).await
         {
-            for line in out.lines().rev() {
-                if let Some(rest) = line.trim_start().strip_prefix("NB_CWD ") {
-                    let p = rest.trim();
-                    if p.starts_with('/') {
-                        return Ok(Some(p.to_string()));
-                    }
-                }
+            if let Some(p) = Self::extract_probed_cwd(&out, true) {
+                return Ok(Some(p));
             }
         }
-        // 兜底:exec 通道里 pwd = 登录家目录(shell 实时 cwd 拿不到时的下限)
-        if let Ok(Ok((code, out))) =
-            tokio::time::timeout(PROBE_TIMEOUT, self.exec(session_id, "pwd")).await
+        // 兜底:exec 通道里 pwd (POSIX/PowerShell) 或 cd (Windows cmd.exe) = 登录家目录
+        if let Ok(Ok((code, out))) = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            self.exec(session_id, "pwd 2>/dev/null || cd"),
+        )
+        .await
         {
             if code == 0 {
-                for line in out.lines().rev() {
-                    let l = line.trim();
-                    if l.starts_with('/') {
-                        return Ok(Some(l.to_string()));
-                    }
+                if let Some(p) = Self::extract_probed_cwd(&out, false) {
+                    return Ok(Some(p));
                 }
             }
         }
         Ok(None)
+    }
+
+    /// 从 CWD_PROBE 或 `pwd || cd` 输出中提取规范化的 SFTP 绝对路径：
+    /// 兼容 POSIX `/home/u` 与 Windows `C:\Users\Administrator`（转为 `/C:/Users/Administrator`）。
+    pub fn extract_probed_cwd(out: &str, require_prefix: bool) -> Option<String> {
+        for line in out.lines().rev() {
+            let candidate = if require_prefix {
+                line.trim_start().strip_prefix("NB_CWD ")?.trim()
+            } else {
+                line.trim()
+            };
+            if candidate.is_empty()
+                || candidate.starts_with("Path")
+                || candidate.starts_with("----")
+            {
+                continue;
+            }
+            if candidate.starts_with('/') {
+                return Some(crate::sftp::normalize_sftp_path(candidate));
+            }
+            if crate::sftp::is_windows_drive_path(candidate) {
+                return Some(crate::sftp::normalize_sftp_path(candidate));
+            }
+        }
+        None
     }
 
     pub async fn find_by_host(&self, host_id: &str) -> Option<String> {
@@ -1826,5 +1939,24 @@ mod lifecycle_tests {
         .await
         .expect("cancelled handshake leaked its TCP socket");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn extract_probed_cwd_supports_posix_and_windows_drive_outputs() {
+        assert_eq!(
+            SshService::extract_probed_cwd("NB_CWD /var/www/html\n", true),
+            Some("/var/www/html".to_string())
+        );
+        assert_eq!(
+            SshService::extract_probed_cwd("C:\\Users\\Administrator\r\n", false),
+            Some("/C:/Users/Administrator".to_string())
+        );
+        assert_eq!(
+            SshService::extract_probed_cwd(
+                "\r\nPath\r\n----\r\nD:\\Projects\\Nebula\r\n\r\n",
+                false
+            ),
+            Some("/D:/Projects/Nebula".to_string())
+        );
     }
 }

@@ -20,6 +20,23 @@ fn path_policy_levels() {
         ("/etc/passwd", PathPolicy::Allow),
         ("/srv/app/.env.production", PathPolicy::Redact),
         ("/root/.bash_history", PathPolicy::Redact),
+        // Windows 敏感路径与凭据防护
+        (r"C:\Windows\System32\config\SAM", PathPolicy::Deny),
+        (r"c:\windows\system32\config\system", PathPolicy::Deny),
+        ("/C:/Windows/System32/config/SAM", PathPolicy::Deny),
+        (r"C:\ProgramData\ssh\ssh_host_ed25519_key", PathPolicy::Deny),
+        (
+            r"C:\ProgramData\ssh\administrators_authorized_keys",
+            PathPolicy::Deny,
+        ),
+        (r"C:\Windows\NTDS\ntds.dit", PathPolicy::Deny),
+        (r"C:\Users\Administrator\.ssh\id_rsa", PathPolicy::Deny),
+        (r"C:\certs\prod.pfx", PathPolicy::Deny),
+        (
+            r"C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt",
+            PathPolicy::Redact,
+        ),
+        (r"C:\Users\Administrator\logs\app.log", PathPolicy::Allow),
     ];
     for (p, want) in cases {
         assert_eq!(path_policy(p), want, "{p}");

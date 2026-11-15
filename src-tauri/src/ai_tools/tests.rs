@@ -177,6 +177,47 @@ fn host_info_parsing() {
     let unknown = hostinfo::parse("% Invalid input detected\n");
     assert!(!unknown.os_known);
     assert!(hostinfo::summary(&unknown).contains("都需要用户确认"));
+
+    let win = hostinfo::parse(
+        "__NB_WIN_HOSTINFO__\r\nWindows_NT 10.0.20348 AMD64\r\nMicrosoft Windows Server 2022 Datacenter\r\nAdministrator\r\nadmin\r\nPowerShell\r\n",
+    );
+    assert!(win.os_known && win.is_root && !win.systemd && !win.journald);
+    assert_eq!(win.os_family, "windows");
+    assert_eq!(win.os_id, "windows");
+    assert_eq!(win.os, "Microsoft Windows Server 2022 Datacenter");
+    assert_eq!(win.user, "Administrator");
+    assert!(hostinfo::summary(&win).contains("Windows OpenSSH"));
+}
+
+#[test]
+fn windows_wrapper_and_readonly_commands_encode_cleanly() {
+    use base64::Engine as _;
+    let wrapped = super::run::wrap_windows("/C:/Users/Administrator", "Get-Process");
+    assert!(wrapped.starts_with("powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand "));
+    let b64 = wrapped.rsplit(' ').next().unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .unwrap();
+    let u16s: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let decoded = String::from_utf16(&u16s).unwrap();
+    assert!(decoded.contains("__NB_PGID $PID"));
+    assert!(decoded.contains(r"Set-Location -LiteralPath 'C:\Users\Administrator'"));
+    assert!(decoded.ends_with("Get-Process"));
+
+    assert_eq!(
+        tail_cmd_windows("/C:/logs/app.log", 100),
+        r"Get-Content -LiteralPath 'C:\logs\app.log' -Tail 100 -ErrorAction Stop"
+    );
+    let s = search_cmd_windows(
+        "/C:/logs/app.log",
+        &json!({ "pattern": "ERROR", "ignoreCase": true }),
+    );
+    assert!(
+        s.contains(r"Select-String -LiteralPath 'C:\logs\app.log' -Pattern 'ERROR' -SimpleMatch")
+    );
 }
 
 #[test]

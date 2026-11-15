@@ -98,6 +98,7 @@ fn make_state(tag: &str) -> AppState {
     AppState {
         store: store.clone(),
         ssh: ssh.clone(),
+        rdp: nebulashell_lib::rdp::RdpService::new(store.clone(), ssh.clone()),
         forwards: ForwardService::new(remote_targets),
         transfers: Arc::new(nebulashell_lib::transfer::TransferManager::new(
             ssh.clone(),

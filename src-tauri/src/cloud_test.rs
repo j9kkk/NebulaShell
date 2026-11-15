@@ -1,6 +1,7 @@
 // 云厂商实例映射测试:重点回归"轻量与 CVM 字段名不同导致轻量 IP 读成空"的缺陷
 use crate::cloud::{
-    aliyun_probe, map_tencent_instances, parse_tencent_regions, tencent_probe, union_region_count,
+    aliyun_probe, map_aliyun_instances, map_tencent_instances, parse_tencent_regions,
+    tencent_probe, union_region_count,
 };
 use serde_json::{json, Value};
 
@@ -26,10 +27,12 @@ fn lighthouse_public_addresses_are_mapped() {
     );
     assert_eq!(out[0]["cloud"]["provider"], json!("lighthouse"));
     assert_eq!(out[0]["cloud"]["region"], json!("ap-shanghai"));
+    assert_eq!(out[0]["protocol"], json!("ssh"));
+    assert_eq!(out[0]["port"], json!(22));
     assert_eq!(out[0]["username"], json!("root"), "非 Windows 默认 root");
 }
 
-/// CVM 字段不受影响(优先读 PublicIpAddresses)
+/// CVM 字段不受影响(优先读 PublicIpAddresses),且 Windows 自动映射为 RDP/3389/Administrator
 #[test]
 fn cvm_public_ip_addresses_still_mapped() {
     let resp = json!({
@@ -42,11 +45,45 @@ fn cvm_public_ip_addresses_still_mapped() {
     });
     let out = map_tencent_instances(&resp, "cvm", "ap-guangzhou");
     assert_eq!(out[0]["host"], json!("203.0.113.10"));
+    assert_eq!(out[0]["protocol"], json!("rdp"), "Windows 默认协议为 rdp");
+    assert_eq!(out[0]["port"], json!(3389), "Windows 默认端口为 3389");
     assert_eq!(
         out[0]["username"],
         json!("Administrator"),
         "Windows 用 Administrator"
     );
+}
+
+#[test]
+fn aliyun_windows_and_linux_instances_map_protocol_and_port() {
+    let resp = json!({
+        "Instances": {
+            "Instance": [
+                {
+                    "InstanceId": "i-win",
+                    "InstanceName": "ali-win",
+                    "PublicIpAddress": { "IpAddress": ["47.96.0.1"] },
+                    "OSName": "Windows Server 2022 数据中心版 64位",
+                    "Status": "Running"
+                },
+                {
+                    "InstanceId": "i-lin",
+                    "InstanceName": "ali-lin",
+                    "EipAddress": { "IpAddress": "47.96.0.2" },
+                    "OSName": "Alibaba Cloud Linux 3.2104 LTS",
+                    "Status": "Running"
+                }
+            ]
+        }
+    });
+    let out = map_aliyun_instances(&resp, "cn-hangzhou");
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0]["protocol"], json!("rdp"));
+    assert_eq!(out[0]["port"], json!(3389));
+    assert_eq!(out[0]["username"], json!("Administrator"));
+    assert_eq!(out[1]["protocol"], json!("ssh"));
+    assert_eq!(out[1]["port"], json!(22));
+    assert_eq!(out[1]["username"], json!("root"));
 }
 
 /// 无公网 IP 时回退私网(轻量与 CVM 两种字段都要试)

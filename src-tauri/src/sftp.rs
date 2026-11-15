@@ -12,29 +12,158 @@ fn attr_val(e: &russh_sftp::protocol::FileAttributes) -> (bool, u64, u64) {
     )
 }
 
-/// 绝对路径词法规范化:折叠 `//`、解析 `.` / `..`、去掉尾斜杠。
+/// 判断是否为 Windows 盘符路径（如 `C:\Users`、`C:/Users`、`c:`、`/[A-Za-z]:`）。
+pub fn is_windows_drive_path(p: &str) -> bool {
+    let s = p.trim().strip_prefix('/').unwrap_or(p.trim());
+    let b = s.as_bytes();
+    b.len() >= 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b.len() == 2 || b[2] == b'/' || b[2] == b'\\')
+}
+
+/// 远端 SFTP 路径规范化（兼容 POSIX `/var/www` 与 Windows OpenSSH `/C:/Users/...` 或 `C:\Users\...`）。
+pub fn normalize_sftp_path(p: &str) -> String {
+    normalize_abs(p)
+}
+
+/// 绝对路径词法规范化:折叠 `//`、解析 `.` / `..`、去掉尾斜杠（Windows 盘符根 `/C:/` 保留尾斜杠）。
 /// 纯字符串操作不占往返;符号链接分量有意不解析(用户输入什么显示什么,
 /// 面板提交的 cwd 与输入一致,语义同 Explorer/Nautilus)。
 fn normalize_abs(p: &str) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in p.split('/') {
+    let trimmed = p.trim();
+    // 兼容 Windows 反斜杠与裸盘符输入（如 `C:\Users\Admin` 或 `C:` → `/C:/Users/Admin`）
+    let converted = if is_windows_drive_path(trimmed) {
+        let unified = trimmed.replace('\\', "/");
+        let without_lead = unified.trim_start_matches('/');
+        let drive = without_lead.as_bytes()[0].to_ascii_uppercase() as char;
+        let rest = &without_lead[2..];
+        format!("/{drive}:{rest}")
+    } else if trimmed.contains('\\') && is_windows_drive_path(&trimmed.replace('\\', "/")) {
+        let unified = trimmed.replace('\\', "/");
+        let without_lead = unified.trim_start_matches('/');
+        let drive = without_lead.as_bytes()[0].to_ascii_uppercase() as char;
+        let rest = &without_lead[2..];
+        format!("/{drive}:{rest}")
+    } else {
+        trimmed.to_string()
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    for (idx, seg) in converted.split('/').enumerate() {
         match seg {
             "" | "." => {}
             ".." => {
                 parts.pop();
             }
-            s => parts.push(s),
+            s => {
+                // 首段若是 Windows 盘符（如 `c:`），规范为大写 `C:`
+                if parts.is_empty()
+                    && idx <= 1
+                    && s.len() == 2
+                    && s.as_bytes()[0].is_ascii_alphabetic()
+                    && s.as_bytes()[1] == b':'
+                {
+                    parts.push(format!("{}:", s.as_bytes()[0].to_ascii_uppercase() as char));
+                } else {
+                    parts.push(s.to_string());
+                }
+            }
         }
     }
     if parts.is_empty() {
         return "/".to_string();
     }
-    let mut out = String::with_capacity(p.len() + 1);
+    // Windows OpenSSH SFTP 的盘符根目录必须带尾斜杠 `/C:/`，否则部分版本 sftp-server 会按当前目录解析
+    if parts.len() == 1
+        && parts[0].len() == 2
+        && parts[0].as_bytes()[0].is_ascii_alphabetic()
+        && parts[0].as_bytes()[1] == b':'
+    {
+        return format!("/{}/", parts[0]);
+    }
+    let mut out = String::with_capacity(converted.len() + 2);
     for seg in &parts {
         out.push('/');
         out.push_str(seg);
     }
     out
+}
+
+/// 计算 SFTP 路径的上一级父目录：
+/// - `/C:/Users/Administrator` -> `/C:/Users`
+/// - `/C:/Users` -> `/C:/`
+/// - `/C:/` 或 `/C:` -> `/`
+/// - `/var/log` -> `/var`
+pub fn parent_sftp_path(p: &str) -> String {
+    let norm = normalize_abs(p);
+    if norm == "/" {
+        return "/".to_string();
+    }
+    let trimmed = norm.trim_end_matches('/');
+    // `/C:` 的上一级是虚拟根 `/`
+    if trimmed.len() == 3
+        && trimmed.as_bytes()[0] == b'/'
+        && trimmed.as_bytes()[1].is_ascii_alphabetic()
+        && trimmed.as_bytes()[2] == b':'
+    {
+        return "/".to_string();
+    }
+    match trimmed.rfind('/') {
+        Some(0) | None => "/".to_string(),
+        Some(i) => {
+            let parent = &trimmed[..i];
+            if parent.len() == 3
+                && parent.as_bytes()[0] == b'/'
+                && parent.as_bytes()[1].is_ascii_alphabetic()
+                && parent.as_bytes()[2] == b':'
+            {
+                format!("{parent}/")
+            } else {
+                parent.to_string()
+            }
+        }
+    }
+}
+
+/// Windows 盘符探测命令：优先 PowerShell Get-PSDrive 输出 `C|total_bytes|free_bytes`，
+/// 回退 wmic logicaldisk。非 Windows 主机不输出任何匹配行。
+pub const DRIVES_PROBE_CMD: &str = "powershell -NoLogo -NoProfile -NonInteractive -Command \"Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null -or $_.Free -ne $null } | ForEach-Object { $u=[int64]$_.Used; $f=[int64]$_.Free; Write-Output ('__NB_DRV__|' + $_.Name + '|' + ($u+$f) + '|' + $f) }\"";
+
+/// 解析 `DRIVES_PROBE_CMD` 的输出为盘符数组：`[{ name: "C:", path: "/C:/", totalGB: 128.0, freeGB: 74.2, usedPct: 42.0 }]`。
+pub fn parse_windows_drives(out: &str) -> Vec<Value> {
+    let mut drives = Vec::new();
+    for line in out.lines() {
+        let Some(rest) = line.trim().strip_prefix("__NB_DRV__|") else {
+            continue;
+        };
+        let cols: Vec<&str> = rest.split('|').collect();
+        if cols.len() < 3 {
+            continue;
+        }
+        let name = cols[0].trim().trim_end_matches(':').to_ascii_uppercase();
+        if name.len() != 1 || !name.as_bytes()[0].is_ascii_alphabetic() {
+            continue;
+        }
+        let total_bytes = cols[1].trim().parse::<u64>().unwrap_or(0);
+        let free_bytes = cols[2].trim().parse::<u64>().unwrap_or(0);
+        let used_bytes = total_bytes.saturating_sub(free_bytes);
+        let total_gb = ((total_bytes as f64 / 1073741824.0) * 10.0).round() / 10.0;
+        let free_gb = ((free_bytes as f64 / 1073741824.0) * 10.0).round() / 10.0;
+        let used_pct = if total_bytes > 0 {
+            ((used_bytes as f64 / total_bytes as f64) * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+        drives.push(json!({
+            "name": format!("{name}:"),
+            "path": format!("/{name}:/"),
+            "totalGB": total_gb,
+            "freeGB": free_gb,
+            "usedPct": used_pct,
+        }));
+    }
+    drives
 }
 
 pub async fn list(
@@ -61,14 +190,14 @@ pub async fn list(
                 } else {
                     format!("{}/{}", home, rest)
                 })
-            } else if d.starts_with('/') {
+            } else if d.starts_with('/') || is_windows_drive_path(d) {
                 normalize_abs(d)
             } else {
                 // 相对路径按服务器 cwd 解析,仍需 REALPATH 提交绝对 cwd
-                sftp.canonicalize(d).await.map_err(|e| e.to_string())?
+                normalize_abs(&sftp.canonicalize(d).await.map_err(|e| e.to_string())?)
             }
         }
-        _ => sftp.canonicalize(".").await.map_err(|e| e.to_string())?,
+        _ => normalize_abs(&sftp.canonicalize(".").await.map_err(|e| e.to_string())?),
     };
     let entries = sftp.read_dir(&base).await.map_err(|e| e.to_string())?;
     let mut list: Vec<Value> = entries
@@ -811,7 +940,7 @@ mod upload_policy_tests {
 
 #[cfg(test)]
 mod list_path_tests {
-    use super::normalize_abs;
+    use super::{is_windows_drive_path, normalize_abs, parent_sftp_path, parse_windows_drives};
 
     #[test]
     fn lexical_normalization_matches_realpath_for_plain_paths() {
@@ -824,6 +953,50 @@ mod list_path_tests {
         assert_eq!(normalize_abs("/var/www/../.."), "/");
         assert_eq!(normalize_abs("/../etc"), "/etc");
         assert_eq!(normalize_abs("/中文/目录"), "/中文/目录");
+    }
+
+    #[test]
+    fn windows_drive_paths_normalize_and_navigate_parents_cleanly() {
+        assert!(is_windows_drive_path(r"C:\Users\Administrator"));
+        assert!(is_windows_drive_path("C:/Users/Administrator"));
+        assert!(is_windows_drive_path("/C:/Users"));
+        assert!(is_windows_drive_path("d:"));
+        assert!(!is_windows_drive_path("/var/log"));
+
+        assert_eq!(
+            normalize_abs(r"c:\Users\Administrator\Desktop\"),
+            "/C:/Users/Administrator/Desktop"
+        );
+        assert_eq!(normalize_abs("C:"), "/C:/");
+        assert_eq!(normalize_abs("c:\\"), "/C:/");
+        assert_eq!(normalize_abs("/c:/"), "/C:/");
+        assert_eq!(normalize_abs("/C:/Users/.."), "/C:/");
+        assert_eq!(normalize_abs("/C:/.."), "/");
+
+        assert_eq!(parent_sftp_path("/C:/Users/Administrator"), "/C:/Users");
+        assert_eq!(parent_sftp_path("/C:/Users"), "/C:/");
+        assert_eq!(parent_sftp_path("/C:/"), "/");
+        assert_eq!(parent_sftp_path("/var/log"), "/var");
+        assert_eq!(parent_sftp_path("/var"), "/");
+    }
+
+    #[test]
+    fn parse_windows_drives_extracts_capacity_and_percentage() {
+        let sample = "\
+__NB_DRV__|C|137438953472|79671640064\r\n\
+__NB_DRV__|D|536870912000|429496729600\r\n";
+        let drives = parse_windows_drives(sample);
+        assert_eq!(drives.len(), 2);
+        assert_eq!(drives[0]["name"], "C:");
+        assert_eq!(drives[0]["path"], "/C:/");
+        assert_eq!(drives[0]["totalGB"], 128.0);
+        assert_eq!(drives[0]["freeGB"], 74.2);
+        assert_eq!(drives[0]["usedPct"], 42.0);
+        assert_eq!(drives[1]["name"], "D:");
+        assert_eq!(drives[1]["path"], "/D:/");
+        assert_eq!(drives[1]["totalGB"], 500.0);
+        assert_eq!(drives[1]["freeGB"], 400.0);
+        assert_eq!(drives[1]["usedPct"], 20.0);
     }
 
     #[test]

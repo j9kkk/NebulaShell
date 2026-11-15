@@ -21,11 +21,12 @@ function leafMinSize(minimum) {
 }
 
 /// 按窗格类型的最小尺寸:终端 320×180(PTY 可用底线),
-/// 文件分屏 300×220(文件浏览器需要的最小操作宽度)。
+/// 文件分屏 300×220(文件浏览器需要的最小操作宽度),
+/// RDP 桌面 420×300(再小就看不清远端画面、工具条也会压住内容)。
 export function paneMinSize(pane) {
-  return pane && pane.kind === 'file'
-    ? { width: 300, height: 220 }
-    : { width: MIN_PANE_WIDTH, height: MIN_PANE_HEIGHT };
+  if (pane && pane.kind === 'file') return { width: 300, height: 220 };
+  if (pane && pane.kind === 'rdp') return { width: 420, height: 300 };
+  return { width: MIN_PANE_WIDTH, height: MIN_PANE_HEIGHT };
 }
 
 // The resolver receives a leaf node, not its ID: tab leaves can resolve their

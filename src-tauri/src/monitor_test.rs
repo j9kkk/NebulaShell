@@ -222,3 +222,54 @@ fn darwin_live_probe_executes_and_parses() {
     assert!(r2["diskReadBps"].as_f64().is_some_and(|v| v >= 0.0));
     assert!(r2["diskWriteBps"].as_f64().is_some_and(|v| v >= 0.0));
 }
+
+const WIN_SAMPLE_1: &str = "\
+__NB_OS_WINDOWS__\r\n\
+CPU=18,4\r\n\
+MEM=16777216|10066329\r\n\
+__NB_SEC__\r\n\
+C:|137438953472|79671640064\r\n\
+D:|536870912000|429496729600\r\n\
+__NB_SEC__\r\n\
+NET=1000000|2000000\r\n\
+__NB_SEC__\r\n\
+DISKIO=5000000|3000000\r\n\
+__NB_DONE__\r\n";
+
+const WIN_SAMPLE_2: &str = "\
+__NB_OS_WINDOWS__\r\n\
+CPU=35.0\r\n\
+MEM=16777216|8388608\r\n\
+__NB_SEC__\r\n\
+C:|137438953472|79671640064\r\n\
+D:|536870912000|429496729600\r\n\
+__NB_SEC__\r\n\
+NET=1900000|3200000\r\n\
+__NB_SEC__\r\n\
+DISKIO=8000000|4500000\r\n\
+__NB_DONE__\r\n";
+
+#[test]
+fn windows_cim_probe_first_and_second_sample_with_drives_and_rates() {
+    let r1 = parse_proc(WIN_SAMPLE_1, None, 3.0);
+    assert_eq!(r1["supported"], serde_json::json!(true));
+    assert_eq!(r1["os"], serde_json::json!("windows"));
+    assert_eq!(r1["cpuPct"], serde_json::json!(18.4));
+    assert_eq!(r1["memTotalMB"], serde_json::json!(16384));
+    assert_eq!(r1["memUsedMB"], serde_json::json!(6553));
+    assert_eq!(r1["memPct"], serde_json::json!(40.0));
+    assert_eq!(r1["diskTotalGB"], serde_json::json!(128.0));
+    assert_eq!(r1["diskUsedGB"], serde_json::json!(53.8));
+    assert_eq!(r1["diskPct"], serde_json::json!(42.0));
+    assert_eq!(r1["drives"].as_array().unwrap().len(), 2);
+    assert!(r1["rxBps"].is_null());
+
+    let r2 = parse_proc(WIN_SAMPLE_2, Some(&r1["raw"]), 3.0);
+    assert_eq!(r2["supported"], serde_json::json!(true));
+    assert_eq!(r2["cpuPct"], serde_json::json!(35.0));
+    assert_eq!(r2["memPct"], serde_json::json!(50.0));
+    assert_eq!(r2["rxBps"], serde_json::json!(300000.0));
+    assert_eq!(r2["txBps"], serde_json::json!(400000.0));
+    assert_eq!(r2["diskReadBps"], serde_json::json!(1000000.0));
+    assert_eq!(r2["diskWriteBps"], serde_json::json!(500000.0));
+}

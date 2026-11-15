@@ -289,21 +289,122 @@
       <h3 id="host-modal-title">新建主机</h3>
       <input id="host-id" type="hidden" />
       <div class="form-grid">
+        <label for="host-protocol-slider">协议</label>
+        <div class="auth-slider-field">
+          <div id="host-protocol-slider" class="segmented-slider protocol-slider" data-value="ssh" role="radiogroup" aria-label="协议" tabindex="0">
+            <div class="segmented-thumb"></div>
+            <button type="button" class="segmented-item active" data-value="ssh" role="radio" aria-checked="true" tabindex="-1">SSH</button>
+            <button type="button" class="segmented-item" data-value="rdp" role="radio" aria-checked="false" tabindex="-1">RDP</button>
+          </div>
+          <select id="host-protocol" class="hidden">
+            <option value="ssh">SSH</option>
+            <option value="rdp">RDP</option>
+          </select>
+        </div>
         <label>名称</label><input id="host-name" type="text" placeholder="例如：生产环境 Web 服务器" />
         <label>主机地址</label><input id="host-host" type="text" placeholder="IP 或域名" />
         <label>端口</label><input id="host-port" type="number" value="22" />
         <label>用户名</label><input id="host-username" type="text" value="root" />
-        <label for="host-auth-slider">认证方式</label>
-        <div class="auth-slider-field">
-          <div id="host-auth-slider" class="segmented-slider" data-value="password" role="radiogroup" aria-label="认证方式" tabindex="0">
-            <div class="segmented-thumb"></div>
-            <button type="button" class="segmented-item active" data-value="password" role="radio" aria-checked="true" tabindex="-1">密码</button>
-            <button type="button" class="segmented-item" data-value="key" role="radio" aria-checked="false" tabindex="-1">私钥</button>
+        <div id="row-domain" class="form-row hidden">
+          <label for="host-domain">域</label>
+          <input id="host-domain" type="text" placeholder="选填，例如 CORP" autocomplete="off" />
+        </div>
+        <div id="row-frame-rate" class="form-row hidden">
+          <label for="host-frame-rate">画面帧率</label>
+          <div class="sessionlog-field">
+            <select id="host-frame-rate">
+              <option value="auto">自适应 · 按实测吞吐升降</option>
+              <option value="15">15 fps · 省资源</option>
+              <option value="24">24 fps · 电影感</option>
+              <option value="30" selected>30 fps · 默认</option>
+              <option value="60">60 fps</option>
+              <option value="90">90 fps</option>
+              <option value="120">120 fps</option>
+              <option value="144">144 fps · 电竞级</option>
+              <option value="0">不限 · 跟随服务端</option>
+            </select>
+            <span id="host-frame-rate-hint" class="muted sessionlog-hint">越高越流畅，也越吃 CPU 与带宽</span>
           </div>
-          <select id="host-auth" class="hidden">
-            <option value="password">密码</option>
-            <option value="key">私钥</option>
-          </select>
+        </div>
+        <div id="rdp-advanced" class="rdp-adv hidden">
+          <div class="rdp-adv-title">显示与体验</div>
+          <div class="rdp-adv-grid">
+            <label for="rdp-resolution">分辨率</label>
+            <select id="rdp-resolution">
+              <option value="auto">跟随窗口</option>
+              <option value="1280x720">1280 × 720</option>
+              <option value="1600x900">1600 × 900</option>
+              <option value="1920x1080">1920 × 1080</option>
+              <option value="2560x1440">2560 × 1440</option>
+            </select>
+            <label for="rdp-scale">缩放</label>
+            <select id="rdp-scale">
+              <option value="100">100%</option>
+              <option value="125">125%</option>
+              <option value="150">150%</option>
+              <option value="175">175%</option>
+              <option value="200">200%</option>
+            </select>
+            <label for="rdp-color-depth">颜色深度</label>
+            <select id="rdp-color-depth">
+              <option value="32">32 位 · 真彩</option>
+              <option value="16">16 位 · 高彩</option>
+              <option value="15">15 位 · 省带宽</option>
+            </select>
+            <label for="rdp-quality">画质预设</label>
+            <select id="rdp-quality">
+              <option value="auto">自动</option>
+              <option value="lan">局域网 · 高画质</option>
+              <option value="wan">广域网 · 省流量</option>
+            </select>
+            <label for="rdp-pixel-budget">像素上限</label>
+            <select id="rdp-pixel-budget">
+              <option value="1000000">100 万 · 省带宽</option>
+              <option value="1600000">160 万 · 默认</option>
+              <option value="2300000">230 万</option>
+              <option value="3686400">370 万 · 最清晰</option>
+            </select>
+            <label for="rdp-bandwidth">带宽上限</label>
+            <select id="rdp-bandwidth">
+              <option value="0">不限</option>
+              <option value="2048">2 Mbps</option>
+              <option value="5120">5 Mbps</option>
+              <option value="10240">10 Mbps</option>
+              <option value="20480">20 Mbps</option>
+            </select>
+            <label for="rdp-program">启动程序</label>
+            <input id="rdp-program" type="text" placeholder="留空 = 正常桌面" autocomplete="off" spellcheck="false" />
+            <label for="rdp-working-dir">工作目录</label>
+            <input id="rdp-working-dir" type="text" placeholder="如 C:\" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="rdp-adv-toggles">
+            <label class="rdp-chk"><input type="checkbox" id="rdp-clipboard" checked /><span>剪贴板共享</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-egfx" checked /><span>图形加速 (EGFX)</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-compress" checked /><span>帧压缩</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-font-smoothing" checked /><span>字体平滑</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-composition" checked /><span>桌面合成</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-wallpaper" checked /><span>桌面背景</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-theming" checked /><span>视觉样式</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-cursor-shadow" checked /><span>光标阴影</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-drag-contents" checked /><span>拖动时显示内容</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-menu-animations" /><span>菜单动画</span></label>
+            <label class="rdp-chk"><input type="checkbox" id="rdp-window-animations" /><span>窗口动画</span></label>
+          </div>
+          <p class="rdp-adv-note">帧率是发送上限；带宽上限按 1 秒窗口硬限流，超额则丢帧保延迟。</p>
+        </div>
+        <div id="row-auth" class="form-row">
+          <label for="host-auth-slider">认证方式</label>
+          <div class="auth-slider-field">
+            <div id="host-auth-slider" class="segmented-slider" data-value="password" role="radiogroup" aria-label="认证方式" tabindex="0">
+              <div class="segmented-thumb"></div>
+              <button type="button" class="segmented-item active" data-value="password" role="radio" aria-checked="true" tabindex="-1">密码</button>
+              <button type="button" class="segmented-item" data-value="key" role="radio" aria-checked="false" tabindex="-1">私钥</button>
+            </div>
+            <select id="host-auth" class="hidden">
+              <option value="password">密码</option>
+              <option value="key">私钥</option>
+            </select>
+          </div>
         </div>
         <div id="row-password" class="form-row">
           <label for="host-password">密码</label>
@@ -335,22 +436,28 @@
           <div id="host-jump-menu" class="jump-menu hidden"></div>
           <select id="host-jump" multiple class="hidden"></select>
         </div>
-        <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
-        <label for="host-sessionlog">会话日志</label>
-        <div class="sessionlog-field">
-          <select id="host-sessionlog">
-            <option value="default">跟随全局设置</option>
-            <option value="always">总是自动记录</option>
-            <option value="never">从不自动记录</option>
-          </select>
-          <span id="host-sessionlog-hint" class="muted sessionlog-hint"></span>
+        <div id="row-initcmd" class="form-row">
+          <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
         </div>
-        <label for="host-aiaccess">AI 访问</label>
-        <select id="host-aiaccess" title="AI 助手能否读取该主机的文件、执行命令">
-          <option value="default">允许（可切换自动执行 / 完全托管）</option>
-          <option value="manual">仅手动确认（禁用自动与托管）</option>
-          <option value="deny">禁止 AI 访问</option>
-        </select>
+        <div id="row-sessionlog" class="form-row">
+          <label for="host-sessionlog">会话日志</label>
+          <div class="sessionlog-field">
+            <select id="host-sessionlog">
+              <option value="default">跟随全局设置</option>
+              <option value="always">总是自动记录</option>
+              <option value="never">从不自动记录</option>
+            </select>
+            <span id="host-sessionlog-hint" class="muted sessionlog-hint"></span>
+          </div>
+        </div>
+        <div id="row-aiaccess" class="form-row">
+          <label for="host-aiaccess">AI 访问</label>
+          <select id="host-aiaccess" title="AI 助手能否读取该主机的文件、执行命令">
+            <option value="default">允许（可切换自动执行 / 完全托管）</option>
+            <option value="manual">仅手动确认（禁用自动与托管）</option>
+            <option value="deny">禁止 AI 访问</option>
+          </select>
+        </div>
         <label>分组</label><input id="host-group" type="text" placeholder="默认：我的主机" />
         <label for="host-tag-input">标签</label>
         <div id="host-tags-box" class="tag-input-row">

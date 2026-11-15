@@ -34,6 +34,43 @@ pub(super) fn wrap(cwd: &str, cmd: &str, sudo: bool) -> String {
     )
 }
 
+/// Windows OpenSSH 命令包装器：使用 PowerShell `-EncodedCommand`（UTF-16LE Base64）
+/// 彻底规避 `cmd.exe` 与 `powershell.exe` 混用时的引号、`$()`、`&`、`%` 转义陷阱，
+/// 并强制设置 `[Console]::OutputEncoding = [Text.Encoding]::UTF8`、输出 `__NB_PGID $PID` 及切换工作目录。
+pub(super) fn wrap_windows(cwd: &str, cmd: &str) -> String {
+    use base64::Engine as _;
+    let win_cwd = if let Some(stripped) = cwd.strip_prefix('/') {
+        if crate::sftp::is_windows_drive_path(stripped) {
+            stripped.replace('/', "\\")
+        } else {
+            cwd.to_string()
+        }
+    } else {
+        cwd.to_string()
+    };
+    let ps_cwd_escaped = win_cwd.replace('\'', "''");
+    let cd_stmt = if win_cwd.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Set-Location -LiteralPath '{}' -ErrorAction Stop; if (-not $?) {{ exit 97 }}; ",
+            ps_cwd_escaped
+        )
+    };
+    let script = format!(
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output \"__NB_PGID $PID\"; {cd_stmt}{cmd}"
+    );
+    let utf16le: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16le);
+    format!(
+        "powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+        encoded
+    )
+}
+
 pub(super) fn sudo_stdin(password: Option<&str>) -> Option<Vec<u8>> {
     password.map(|p| format!("{p}\n").into_bytes())
 }
@@ -241,8 +278,17 @@ pub(super) async fn run(
     spec: RunSpec<'_>,
 ) -> Result<RunResult, String> {
     let started = Instant::now();
-    let stdin = sudo_stdin(spec.sudo_password);
-    let wrapped = wrap(spec.cwd, spec.cmd, spec.sudo_password.is_some());
+    let is_win = super::hostinfo::is_windows_cached(spec.sid);
+    let stdin = if is_win {
+        None
+    } else {
+        sudo_stdin(spec.sudo_password)
+    };
+    let wrapped = if is_win {
+        wrap_windows(spec.cwd, spec.cmd)
+    } else {
+        wrap(spec.cwd, spec.cmd, spec.sudo_password.is_some())
+    };
     let mut ch = state
         .ssh
         .exec_open(spec.sid, &wrapped, stdin.as_deref())
@@ -339,6 +385,15 @@ async fn terminate(
     let Some(pg) = pgid else {
         return;
     };
+    if super::hostinfo::is_windows_cached(sid) {
+        let kill_cmd = format!("taskkill /PID {pg} /T /F");
+        let _ = quick(state, sid, &kill_cmd, None, Duration::from_secs(5)).await;
+        let _ = tokio::time::timeout(Duration::from_millis(1500), async {
+            while ch.next().await.is_some() {}
+        })
+        .await;
+        return;
+    }
     let used_sudo = super::mentions_sudo(cmd);
     for (sig, wait) in [("TERM", 2000u64), ("KILL", 1000)] {
         let mut script =
@@ -372,8 +427,13 @@ pub(super) async fn quick(
     password: Option<&str>,
     timeout: Duration,
 ) -> Result<(Option<i64>, String), String> {
-    let stdin = sudo_stdin(password);
-    let wrapped = wrap("", cmd, password.is_some());
+    let is_win = super::hostinfo::is_windows_cached(sid);
+    let stdin = if is_win { None } else { sudo_stdin(password) };
+    let wrapped = if is_win {
+        wrap_windows("", cmd)
+    } else {
+        wrap("", cmd, password.is_some())
+    };
     let mut ch = state.ssh.exec_open(sid, &wrapped, stdin.as_deref()).await?;
     let mut out = Vec::new();
     let mut code = None;
