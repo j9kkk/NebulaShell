@@ -144,6 +144,9 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
       refs.started = Date.now();
       if (step.tool !== 'exec') return;
       clearTicker(refs);
+      // 一次 exec 可能被重跑（确认卡、sudo 密码卡都会重发同一步），每轮都会走到
+      // 这里：先摘掉上一轮的停止按钮，否则重试几次就在行尾叠出几个红按钮。
+      refs.stopBtn?.remove();
       const stop = btn(null, 'ai-step-stop');
       stop.title = '停止这条命令';
       stop.innerHTML = icon('stop', { size: 12 });
@@ -358,24 +361,6 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
           if (e.key === 'Escape') { e.preventDefault(); done(null, '已取消'); }
         });
         attachCard(refs, card, input);
-      });
-    },
-
-    confirmContinue(n) {
-      return new Promise((resolve) => {
-        const card = el('div', 'ai-turn-card');
-        card.append(el('div', null, `AI 已连续执行 ${n} 个步骤，是否继续？`));
-        const actions = el('div', 'ai-confirm-actions');
-        const go = btn('继续', 'btn primary');
-        const stop = btn('到此为止', 'btn');
-        actions.append(go, stop);
-        card.append(actions);
-        const done = (v) => { card.replaceChildren(el('div', 'ai-card-done', v ? '已继续' : '已停止继续执行')); setPending?.(false); resolve(v); };
-        go.addEventListener('click', () => done(true));
-        stop.addEventListener('click', () => done(false));
-        mount(card);
-        setPending?.(true, !isActive?.());
-        if (aiPanelFocused()) go.focus();
       });
     },
 

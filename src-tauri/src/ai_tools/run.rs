@@ -14,11 +14,17 @@ use std::time::{Duration, Instant};
 /// 最后交给 bash（没有就 sh）。命令经位置参数传入，不再多拼一层 shell。
 const WRAPPER: &str = r#"printf '__NB_PGID %s\n' "$$"; if [ -n "$1" ]; then cd -- "$1" || exit 97; fi; export DEBIAN_FRONTEND=noninteractive PAGER=cat SYSTEMD_PAGER= GIT_PAGER=cat LESS=FRX; if command -v bash >/dev/null 2>&1; then exec bash -c "$2"; else exec sh -c "$2"; fi"#;
 
-/// sudo 密码托管：密码经通道 stdin 读进非导出变量，每次 sudo 由 askpass
-/// 取回（`SUDO_ASKPASS=printenv` + 以变量名作提示语，sudo 执行
-/// `printenv __NB_SUDO_PW` 拿到密码）。不进命令行、不落盘，也不经命令的
-/// stdin —— sudo 无需密码时也不会把密码漏进 `sudo tee` 之类的输入里。
-const SUDO_SHIM: &str = r#"IFS= read -r __nb_pw; __nb_askpass=$(command -v printenv); sudo() { __NB_SUDO_PW="$__nb_pw" SUDO_ASKPASS="$__nb_askpass" command sudo -A -p __NB_SUDO_PW "$@"; }; "#;
+/// sudo 密码托管：密码经通道 stdin 读进非导出变量（`read` 取走这一行后通道即
+/// EOF，命令自己读 stdin 只会读到 EOF，读不到密码）。之后每次 sudo 单独把这一
+/// 行用管道喂给 `sudo -S`：密码不进命令行、不落盘、也不依赖远端有 printenv。
+/// 先 `sudo -n true` 探一次缓存凭据——凭据仍在缓存里时直接执行，不把密码写进
+/// 管道缓冲区，免得命令（`sudo tee` 之类）从 stdin 读到它。
+///
+/// 旧实现用 `SUDO_ASKPASS=printenv` + `-p __NB_SUDO_PW` 取密码，行不通：sudo 会
+/// 把 `-p` 的提示语改写成 `[sudo: __NB_SUDO_PW] Password: ` 再交给 askpass，于是
+/// printenv 拿整句当变量名、printenv 不出值，sudo 判定「没提供密码」——正确密码
+/// 也永远验不过。
+const SUDO_SHIM: &str = r#"IFS= read -r __nb_pw; sudo() { if command sudo -n true >/dev/null 2>&1; then command sudo "$@"; else printf '%s\n' "$__nb_pw" | command sudo -S -p '' "$@"; fi; }; "#;
 
 pub(super) fn wrap(cwd: &str, cmd: &str, sudo: bool) -> String {
     let body = if sudo {

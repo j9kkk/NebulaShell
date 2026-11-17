@@ -154,15 +154,19 @@ fn wrapper_quotes_every_layer() {
         "{w}"
     );
     let s = wrap("", "sudo apt-get update", true);
-    assert!(s.contains("SUDO_ASKPASS"));
     assert!(s.contains("nb '' "));
+    // 密码只能走 stdin 那一行 + sudo 自己的 -S 管道，不能再回到 askpass：
+    // sudo 会改写 -p 的提示语，askpass=printenv 拿到的不是变量名，永远拿不到密码。
+    assert!(!s.contains("SUDO_ASKPASS"));
+    assert!(s.contains("sudo -S"));
+    assert!(s.contains("read -r __nb_pw"));
 }
 
 #[test]
 fn host_info_parsing() {
-    let out = "Linux 5.15.0-91-generic x86_64\n__NB_SEP\nPRETTY_NAME=\"Ubuntu 22.04.4 LTS\"\nID=ubuntu\n__NB_SEP\nroot\n0\n/bin/bash\n__NB_SEP\nsystemd\njournald\nprintenv\n";
+    let out = "Linux 5.15.0-91-generic x86_64\n__NB_SEP\nPRETTY_NAME=\"Ubuntu 22.04.4 LTS\"\nID=ubuntu\n__NB_SEP\nroot\n0\n/bin/bash\n__NB_SEP\nsystemd\njournald\n";
     let i = hostinfo::parse(out);
-    assert!(i.os_known && i.is_root && i.systemd && i.journald && i.askpass);
+    assert!(i.os_known && i.is_root && i.systemd && i.journald);
     assert_eq!(i.os, "Ubuntu 22.04.4 LTS");
     assert_eq!(i.os_id, "ubuntu");
     assert_eq!(i.user, "root");

@@ -596,6 +596,34 @@ impl ExecPolicy {
     }
 }
 
+/// 密码校验失败时给用户看的说明。sudo 自己会区分「密码错」「不在 sudoers」
+/// 「要求 tty」几种情况，直接把它的原话带出来，别一律写成「密码不正确」。
+fn sudo_auth_error(out: &str, password: &str) -> String {
+    // 先按密码遮一遍：万一远端把输入回显出来，也不能出现在提示里。
+    let (clean, _) = run::finalize(out, Some(password));
+    let line = clean
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let lower = line.to_ascii_lowercase();
+    if line.is_empty() {
+        "sudo 密码不正确".to_string()
+    } else if [
+        "sorry",
+        "incorrect password",
+        "authentication failed",
+        "try again",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+    {
+        format!("sudo 密码不正确（{line}）")
+    } else {
+        format!("sudo 拒绝了该密码：{line}")
+    }
+}
+
 async fn exec_tool(
     ctx: &Ctx<'_>,
     args: &Value,
@@ -686,12 +714,6 @@ async fn exec_tool(
     if !info.is_root && mentions_sudo(&cmd) {
         match sudo_password.filter(|s| !s.is_empty()) {
             Some(pw) => {
-                if !info.askpass {
-                    return err(
-                        "unsupported",
-                        "远端缺少 printenv，无法托管 sudo 密码；请在终端里手动执行该命令",
-                    );
-                }
                 let check = run::quick(
                     ctx.state,
                     &ctx.sid,
@@ -700,8 +722,13 @@ async fn exec_tool(
                     Duration::from_secs(15),
                 )
                 .await;
-                if !matches!(check, Ok((Some(0), _))) {
-                    return json!({ "status": "needs-sudo-password", "host": ctx.label, "error": "sudo 密码不正确" });
+                let (ok, detail) = match check {
+                    Ok((Some(0), _)) => (true, String::new()),
+                    Ok((_, out)) => (false, sudo_auth_error(&out, pw)),
+                    Err(e) => (false, e),
+                };
+                if !ok {
+                    return json!({ "status": "needs-sudo-password", "host": ctx.label, "error": detail });
                 }
                 password = Some(pw);
             }

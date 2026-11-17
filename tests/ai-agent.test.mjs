@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AGENT_STEP_SOFT_LIMIT,
   wrapUntrusted,
   buildHostSystemPrompt,
   compressToolResult,
@@ -292,33 +291,17 @@ test('其他请求错误原样返回，不当成中止', async () => {
   assert.deepEqual(await runAgentTurn(ctx), { status: 'error', error: 'HTTP 500', steps: [] });
 });
 
-test('软上限：达到步数询问，拒绝则补停止结果', async () => {
-  const many = Array.from({ length: AGENT_STEP_SOFT_LIMIT + 2 }, (_, i) => call('c' + i, 'host_info', {}));
+test('没有步数上限：一个回合里连续执行多少条命令都不打断、不询问', async () => {
+  const many = Array.from({ length: 40 }, (_, i) => call('c' + i, 'host_info', {}));
   let asked = 0;
   const { ctx, thread, execs } = harness({
-    rounds: [{ toolCalls: many }],
-    adapter: { confirmContinue: async (n) => { asked = n; return false; } },
-  });
-  const r = await runAgentTurn(ctx);
-  assert.equal(r.status, 'stopped');
-  assert.equal(asked, AGENT_STEP_SOFT_LIMIT);
-  assert.equal(execs.length, AGENT_STEP_SOFT_LIMIT);
-  assertPaired(thread.history);
-  assert.equal(thread.history.at(-1).content, '用户选择停止继续执行');
-});
-
-test('完全托管档跳过步数软上限询问：不再停下来等「是否继续」', async () => {
-  const many = Array.from({ length: AGENT_STEP_SOFT_LIMIT + 2 }, (_, i) => call('m' + i, 'host_info', {}));
-  let asked = 0;
-  const { ctx, thread, execs } = harness({
-    rounds: [{ toolCalls: many }],
-    mode: () => 'full',
+    rounds: [{ toolCalls: many }, { content: '完' }],
     adapter: { confirmContinue: async () => { asked++; return true; } },
   });
   const r = await runAgentTurn(ctx);
   assert.equal(r.status, 'done');
-  assert.equal(asked, 0, '托管档不打断');
-  assert.equal(execs.length, AGENT_STEP_SOFT_LIMIT + 2, '全部步骤照常执行');
+  assert.equal(asked, 0, '不再弹「是否继续」');
+  assert.equal(execs.length, 40, '全部步骤照常执行');
   assertPaired(thread.history);
 });
 

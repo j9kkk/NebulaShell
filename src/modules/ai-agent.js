@@ -3,10 +3,6 @@
 // 历史只写线程对象本身（thread.history，中立格式），不得写 state.aiHistory/aiReq 视图。
 import { AI_AGENT_TOOLS, AI_EXEC_TOOL } from '../shared/ai-tools-schema.js';
 import { AI_SYSTEM_PROMPT_BASE } from '../shared/ai-presets.js';
-import { isFullExecMode } from '../shared/ai-target-state.js';
-
-// 每执行满这么多次工具询问一次是否继续（软上限，用户可放行）。
-export const AGENT_STEP_SOFT_LIMIT = 12;
 
 const KNOWN_TOOLS = new Set(AI_AGENT_TOOLS.map((t) => t.name));
 // 「使用已保存的登录密码」：只传标记，明文留在后端。
@@ -162,8 +158,6 @@ export async function runAgentTurn(ctx) {
   const steps = [];
   const execs = [];
   let useTools = Array.isArray(ctx.tools) && ctx.tools.length > 0;
-  let toolCount = 0;
-  let nextAsk = AGENT_STEP_SOFT_LIMIT;
   let currentRun = null;
   let status = 'done';
   let error = null;
@@ -262,7 +256,6 @@ export async function runAgentTurn(ctx) {
     }
     step.args = args;
     adapter.stepStart?.(step);
-    toolCount++;
     if (!KNOWN_TOOLS.has(call.name)) {
       const res = { status: 'error', code: 'unsupported', message: '未知工具：' + call.name };
       finish(step, res);
@@ -321,13 +314,7 @@ export async function runAgentTurn(ctx) {
       if (!msg.toolCalls) break;
       for (const call of msg.toolCalls) {
         if (aborted()) break;
-        // 完全托管档的语义就是「不打断」:连「已连续执行 N 步，是否继续」也不再问。
-        // 停止按钮始终可用,所以这里省掉的只是人工放行,不是中止能力。
-        if (toolCount >= nextAsk && !isFullExecMode(getMode())) {
-          const go = await untilAbort(adapter.confirmContinue ? adapter.confirmContinue(toolCount) : true, signal);
-          if (!go) { status = aborted() ? status : 'stopped'; break; }
-          nextAsk += AGENT_STEP_SOFT_LIMIT;
-        }
+        // 没有步数上限：一个回合里 AI 可以连续执行任意多条命令，中途只受「停止」打断。
         const content = await runToolCall(call);
         history.push({ role: 'tool', toolCallId: call.id, name: call.name, content });
         steps.push({ id: call.id, tool: call.name });
@@ -338,7 +325,7 @@ export async function runAgentTurn(ctx) {
     signal?.removeEventListener?.('abort', onAbort);
     if (aborted() && status === 'done') status = 'aborted';
     // 每个工具调用都必须有结果，否则下一次请求会被服务端判为非法。
-    closePendingToolCalls(history, status === 'stopped' ? '用户选择停止继续执行' : '用户已中止');
+    closePendingToolCalls(history, '用户已中止');
   }
   if (execs.length) adapter.turnSummary?.({ execs, status });
   return { status, error, steps };

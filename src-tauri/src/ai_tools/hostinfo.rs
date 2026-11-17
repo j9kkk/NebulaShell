@@ -21,13 +21,11 @@ pub(super) struct HostInfo {
     pub shell: String,
     pub systemd: bool,
     pub journald: bool,
-    /// 远端有 printenv：sudo 密码托管（askpass）的前提。
-    pub askpass: bool,
     /// 识别出已知系统（Linux/BSD/macOS 或 Windows）；否则所有命令都要用户确认。
     pub os_known: bool,
 }
 
-const PROBE: &str = "uname -srm 2>/dev/null; echo __NB_SEP; cat /etc/os-release 2>/dev/null; echo __NB_SEP; id -un 2>/dev/null; id -u 2>/dev/null; echo \"$SHELL\"; echo __NB_SEP; command -v systemctl >/dev/null 2>&1 && echo systemd; command -v journalctl >/dev/null 2>&1 && echo journald; command -v printenv >/dev/null 2>&1 && echo printenv";
+const PROBE: &str = "uname -srm 2>/dev/null; echo __NB_SEP; cat /etc/os-release 2>/dev/null; echo __NB_SEP; id -un 2>/dev/null; id -u 2>/dev/null; echo \"$SHELL\"; echo __NB_SEP; command -v systemctl >/dev/null 2>&1 && echo systemd; command -v journalctl >/dev/null 2>&1 && echo journald";
 
 /// Windows OpenSSH 探测命令（当 POSIX PROBE 失败或未识别出类 Unix 系统时回退）：
 pub const WIN_PROBE: &str = "powershell -NoLogo -NoProfile -NonInteractive -Command \"$ErrorActionPreference='SilentlyContinue'; $os=Get-CimInstance Win32_OperatingSystem; $isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); Write-Output '__NB_WIN_HOSTINFO__'; Write-Output ('Windows_NT ' + $os.Version + ' ' + $env:PROCESSOR_ARCHITECTURE); Write-Output $os.Caption; Write-Output $env:USERNAME; Write-Output ($(if($isAdmin){'admin'}else{'user'})); Write-Output 'PowerShell'\"";
@@ -60,7 +58,6 @@ pub(super) fn parse(out: &str) -> HostInfo {
             shell,
             systemd: false,
             journald: false,
-            askpass: false,
             os_known: true,
         };
     }
@@ -101,7 +98,6 @@ pub(super) fn parse(out: &str) -> HostInfo {
     if let Some(flags) = parts.get(3) {
         info.systemd = flags.contains("systemd");
         info.journald = flags.contains("journald");
-        info.askpass = flags.contains("printenv");
     }
     info.is_root = info.uid == Some(0);
     let k = info.kernel.to_ascii_lowercase();
