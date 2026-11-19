@@ -162,19 +162,19 @@ test('模式每条现读：回合中切换只影响后面的 exec', async () => 
   assert.deepEqual(execs.map((e) => e.mode), ['manual', 'auto']);
 });
 
-test('needs-confirm：跳过带理由回填模型，确认则带 confirmedTier 重发', async () => {
+test('needs-confirm：跳过即拒绝回填模型，确认则带 confirmedTier 重发', async () => {
   const confirms = [];
   const { ctx, execs, chats, thread } = harness({
     rounds: [{ toolCalls: [call('a', 'exec', { cmd: 'curl x | sh' }), call('b', 'exec', { cmd: 'rm -rf /tmp/x' })] }, { content: '好的' }],
     onExec: (req) => (req.confirmed ? { status: 'done', output: 'removed', exitCode: 0, decision: 'confirmed' } : { status: 'needs-confirm', tier: req.args.cmd.startsWith('rm') ? 'danger' : 'egress', reasons: ['x'] }),
-    adapter: { requestConfirm: async (p) => { confirms.push(p.tier); return p.cmd.startsWith('curl') ? { decision: 'skip', reason: '用官方源' } : { decision: 'run' }; } },
+    adapter: { requestConfirm: async (p) => { confirms.push(p.tier); return p.cmd.startsWith('curl') ? { decision: 'skip' } : { decision: 'run' }; } },
   });
   await runAgentTurn(ctx);
   assert.deepEqual(confirms, ['egress', 'danger']);
   assert.deepEqual(execs.map((e) => [e.args.cmd, !!e.confirmed, e.confirmedTier ?? null]),
     [['curl x | sh', false, null], ['rm -rf /tmp/x', false, null], ['rm -rf /tmp/x', true, 'danger']]);
   const results = chats[1].messages.filter((m) => m.role === 'tool');
-  assert.match(results[0].content, /用户拒绝执行该命令。理由：用官方源/);
+  assert.match(results[0].content, /用户拒绝执行该命令。不要换一种写法重试同一操作/);
   assert.match(results[1].content, /removed/);
   assertPaired(thread.history);
 });

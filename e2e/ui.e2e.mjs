@@ -1067,12 +1067,10 @@ async function aiHostToolRegressions() {
       return JSON.stringify({ text: c.textContent, primary: !!c.querySelector('.btn.primary'), preview: c.querySelector('.ai-confirm-preview pre')?.textContent || '' })`));
     check('T95d 自动模式下递归删除仍弹红卡:无默认按钮,附只读影响预览',
       red.text.includes('递归删除') && !red.primary && red.preview.includes('victim'), JSON.stringify(red));
-    await clickButton(`${view} .ai-confirm.tier-danger`, '跳过并说明原因');
-    await evalJs(`document.querySelector('${view} .ai-confirm.tier-danger .ai-confirm-input').value = '保留现场'; return 1`);
-    await clickButton(`${view} .ai-confirm.tier-danger`, '确认跳过');
+    await clickButton(`${view} .ai-confirm.tier-danger`, '跳过');
     await waitEval(lastBubble, 'DANGER-DONE', 30000);
     const danger = await evalJs(lastBubble);
-    check('T95e 跳过理由回填给模型,命令没有执行', danger.includes('理由：保留现场') && fs.existsSync(sshd.toReal('/home/user/data/victim')), danger);
+    check('T95e 跳过即拒绝:命令没有执行', danger.includes('用户拒绝执行该命令') && fs.existsSync(sshd.toReal('/home/user/data/victim')), danger);
 
     // 停止:运行中的远端命令被结束(进程组),迟到的副作用不发生;之后历史仍合法。
     await waitIdle();

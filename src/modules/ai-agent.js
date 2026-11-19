@@ -196,10 +196,10 @@ export async function runAgentTurn(ctx) {
         if (aborted()) break;
         const d = answer || { decision: 'skip' };
         if (d.decision === 'skip') {
-          finish(step, { status: 'skipped', reason: d.reason || '' });
-          execs.push({ cmd, tier: res.tier, decision: 'skipped', reason: d.reason || '' });
-          adapter.audit?.({ cmd, tier: res.tier, decision: 'skipped', reason: d.reason || '' });
-          return '用户拒绝执行该命令' + (d.reason ? '。理由：' + d.reason : '') + '。不要换一种写法重试同一操作，先询问用户或调整方案。';
+          finish(step, { status: 'skipped' });
+          execs.push({ cmd, tier: res.tier, decision: 'skipped' });
+          adapter.audit?.({ cmd, tier: res.tier, decision: 'skipped' });
+          return '用户拒绝执行该命令。不要换一种写法重试同一操作，先询问用户或调整方案。';
         }
         if (d.decision === 'edit' && String(d.cmd || '').trim() && String(d.cmd).trim() !== cmd) {
           cmd = String(d.cmd).trim();

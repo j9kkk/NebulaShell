@@ -223,7 +223,13 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
         head.append(el('span', null, titles[tier] || titles.normal));
         const meta = el('div', 'ai-confirm-meta', [p.host && '主机 ' + p.host, p.cwd && '目录 ' + p.cwd].filter(Boolean).join(' · '));
         if (p.asRoot) meta.append(el('span', 'ai-root-badge', 'root'));
-        const cmd = el('pre', 'ai-confirm-cmd', p.cmd);
+        // 命令区本身就是可编辑的:想改命令直接在这里改,点「执行」就按改后的命令跑
+        // (不再单开「改后执行」步骤;后端会按新命令重新判档,升档时再确认一次)。
+        const cmd = el('textarea', 'ai-confirm-cmd');
+        cmd.value = p.cmd;
+        cmd.rows = 2;
+        cmd.spellcheck = false;
+        cmd.title = '可以直接修改命令,点「执行」按改后的命令运行';
         card.append(head, meta, cmd);
         if (p.reasons?.length) {
           const ul = el('ul', 'ai-confirm-reasons');
@@ -239,16 +245,20 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
           card.append(pv);
         }
         const actions = el('div', 'ai-confirm-actions');
-        const run = btn(tier === 'danger' ? '确认执行' : '执行', tier === 'danger' ? 'btn danger' : 'btn primary');
-        const edit = btn('改后执行', 'btn');
-        const skip = btn('跳过', 'btn');
-        const skipWhy = btn('跳过并说明原因', 'btn ghost');
-        const baseActions = [run, edit, skip, skipWhy];
+        // 三个按钮按序:执行(主)/ 自动执行(次)/ 跳过(纯文字)。
+        // 命令想改就在上面的命令框里改,所以不再有「改后执行」这一步。
+        const run = btn(null, tier === 'danger' ? 'btn danger' : 'btn primary');
+        run.innerHTML = icon('play', { size: 12 }) + `<span>${tier === 'danger' ? '确认执行' : '执行'}</span>`;
+        const skip = btn('跳过', 'btn ghost');
+        const baseActions = [run];
+        let auto = null;
         if (tier === 'normal' && !p.forceConfirm && onRunAndAuto) {
-          const auto = btn('执行并切到自动', 'btn ghost');
-          auto.addEventListener('click', () => { onRunAndAuto(); done({ decision: 'run' }, '已执行，并切换到自动模式'); });
+          auto = btn(null, 'btn');
+          auto.innerHTML = icon('zap', { size: 12 }) + '<span>自动执行</span>';
+          auto.title = '执行这条命令,并把本对话切到自动执行';
           baseActions.push(auto);
         }
+        baseActions.push(skip);
         // 会话授权（仅自动模式）：后端判定这类命令可授权才给 allowable；
         // 差一点可授权时给 allowBlocked，说明为什么不能「总是允许」。
         const allowHere = !!canAllow?.();
@@ -277,38 +287,34 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
           resolve(decision);
         }
         p.signal?.addEventListener?.('abort', onAbort, { once: true });
-        run.addEventListener('click', () => done({ decision: 'run' }, '已确认执行'));
+        // 命令框里改过内容就按改后的命令执行(decision:edit),否则就是原命令。
+        const decisionFor = () => {
+          const v = cmd.value.trim();
+          return v && v !== p.cmd.trim() ? { decision: 'edit', cmd: v } : { decision: 'run' };
+        };
+        const submit = (note) => {
+          const d = decisionFor();
+          done(d, d.decision === 'edit' ? '已改为：' + d.cmd : note || '已确认执行');
+        };
+        run.addEventListener('click', () => submit());
+        auto?.addEventListener('click', () => { onRunAndAuto(); submit('已执行，并切换到自动模式'); });
         skip.addEventListener('click', () => done({ decision: 'skip' }, '已跳过'));
-        skipWhy.addEventListener('click', () => {
-          const input = el('input', 'ai-confirm-input');
-          input.placeholder = '跳过原因（会告诉 AI），回车确认';
-          const ok = btn('确认跳过', 'btn');
-          const submit = () => done({ decision: 'skip', reason: input.value.trim() }, '已跳过' + (input.value.trim() ? '：' + input.value.trim() : ''));
-          ok.addEventListener('click', submit);
-          input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-          actions.replaceChildren(input, ok, skip);
-          input.focus();
-        });
-        edit.addEventListener('click', () => {
-          const area = el('textarea', 'ai-confirm-edit');
-          area.value = p.cmd;
-          area.rows = Math.min(6, Math.max(2, p.cmd.split('\n').length));
-          cmd.replaceWith(area);
-          const apply = btn('执行修改后的命令', 'btn primary');
-          const cancel = btn('取消修改', 'btn');
-          apply.addEventListener('click', () => {
-            const v = area.value.trim();
-            if (v) done({ decision: 'edit', cmd: v }, v === p.cmd ? '已确认执行' : '已改为：' + v);
-          });
-          cancel.addEventListener('click', () => { area.replaceWith(cmd); actions.replaceChildren(...baseActions); });
-          actions.replaceChildren(apply, cancel);
-          area.focus();
-        });
+        // 命令框按内容长高(上限由 CSS 的 max-height 管),一条长命令不用先滚才能看全。
+        const grow = () => {
+          cmd.style.height = 'auto';
+          cmd.style.height = Math.min(160, cmd.scrollHeight + 2) + 'px';
+          // 命令被清空时没有东西可执行:避免「点执行结果跑了原来那条」。
+          const empty = !cmd.value.trim();
+          run.disabled = empty;
+          if (auto) auto.disabled = empty;
+        };
+        cmd.addEventListener('input', grow);
         // 普通档：焦点落在「执行」上，回车即执行；高危/外联档没有默认按钮，回车无效。
         card.addEventListener('keydown', (e) => {
           if (e.key === 'Escape') { e.preventDefault(); done({ decision: 'skip' }, '已跳过'); }
         });
         attachCard(refs, card, tier === 'normal' ? run : card);
+        grow();
       });
     },
 
@@ -369,10 +375,10 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
       card.append(el('div', 'ai-turn-summary-title', `本轮执行记录（${execs.length} 条命令${status === 'aborted' ? '，已中止' : ''}）`));
       const ul = el('ul');
       const label = (e) => {
-        if (e.decision === 'skipped') return '已跳过' + (e.reason ? '：' + e.reason : '');
+        if (e.decision === 'skipped') return '已跳过';
         if (e.status === 'aborted') return '已中止';
         if (e.status === 'error') return '失败';
-        return '退出码 ' + (e.exitCode ?? '—') + (e.decision === 'edited' ? '（改后执行）' : '');
+        return '退出码 ' + (e.exitCode ?? '—') + (e.decision === 'edited' ? '（命令已修改）' : '');
       };
       for (const e of execs) {
         const li = el('li');

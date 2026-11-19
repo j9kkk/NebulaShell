@@ -1396,13 +1396,22 @@ body.is-fullscreen #win-controls { display: none; }
 .ai-confirm-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--tier); }
 .ai-confirm-meta { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .ai-confirm-cmd, .ai-confirm-preview pre { max-height: 160px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: var(--bg); }
+/* 命令框本身可编辑(改完直接点「执行」):平时只有底色,悬停才浮出 1px 描边,
+   聚焦仍由全局焦点规范画 accent 描边 + 柔光 —— 这里不写 :focus。 */
+textarea.ai-confirm-cmd {
+  display: block; box-sizing: border-box; width: 100%; min-height: 34px;
+  border: 1px solid transparent; resize: none;
+}
+textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .ai-confirm-reasons { margin: 0; padding-left: 18px; color: var(--tier); }
 .ai-confirm-preview-title { margin-bottom: 4px; color: var(--muted); }
 .ai-confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ai-confirm-actions .btn, .ai-turn-card .btn { --ctl-h: 26px; padding: 0 10px; font-size: 12px; }
+/* 图标靠左:图标不参与收缩,与文字之间的间距用 .btn 自带的 6px gap */
+.ai-confirm-actions .btn > svg { flex: none; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.ghost:hover { color: var(--text); border-color: var(--border); }
-.ai-confirm-edit, .ai-confirm-input {
+.ai-confirm-input {
   box-sizing: border-box; width: 100%; padding: 5px 8px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);
   font: 12px/1.45 var(--font-mono);
