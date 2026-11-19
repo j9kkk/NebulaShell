@@ -1852,7 +1852,13 @@ pub async fn nebula_invoke(
                 (saved, key)
             };
             let config = crate::ai::resolve_request_config(&saved, Some(&payload), &saved_key);
-            match crate::ai::list_models(&config.protocol, &config.base_url, &config.api_key).await
+            match crate::ai::list_models(
+                &config.protocol,
+                &config.base_url,
+                &config.api_key,
+                config.idle_timeout,
+            )
+            .await
             {
                 Ok(ids) => ok(json!(ids)),
                 Err(e) => err_msg(e),
@@ -1902,6 +1908,7 @@ pub async fn nebula_invoke(
                     payload["tools"].clone(),
                     config.max_tokens,
                     config.reasoning_params,
+                    config.idle_timeout,
                     flag,
                 )
                 .await

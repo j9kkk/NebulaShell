@@ -99,6 +99,145 @@ async fn cancellation_polling_keeps_one_future_alive() {
     .is_none());
 }
 
+#[tokio::test]
+async fn trickling_stream_is_not_cut_by_the_total_elapsed_time() {
+    // 空闲超时不是整请求上限:每 200ms 吐一帧、总共 1.2s(远大于 500ms 空闲阈值),
+    // 只要间隔不超过阈值就必须正常收尾。
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = socket.read(&mut request).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        for i in 0..5 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let frame = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\n",
+                i
+            );
+            if socket.write_all(frame.as_bytes()).await.is_err() {
+                return;
+            }
+        }
+        let _ = socket.write_all(b"data: [DONE]\n\n").await;
+    });
+    let app = mock_app();
+    let done = Arc::new(Mutex::new(Vec::<Value>::new()));
+    {
+        let captured = done.clone();
+        app.listen("ai__done", move |evt| {
+            captured
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(evt.payload()).unwrap())
+        });
+    }
+    let flag = Arc::new(AtomicBool::new(false));
+    chat_stream_with_tools(
+        app,
+        "req-trickle".into(),
+        "openai".into(),
+        endpoint,
+        String::new(),
+        "m".into(),
+        json!([{ "role": "user", "content": "hi" }]),
+        Value::Null,
+        None,
+        None,
+        Duration::from_millis(500),
+        flag,
+    )
+    .await
+    .expect("interval under the idle timeout must not be killed");
+    let events = done.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["finishReason"], "stop");
+    drop(events);
+    server.abort();
+}
+
+#[test]
+fn idle_timeout_defaults_and_clamps_between_30_and_900() {
+    // 缺键 / null / 非正数 → 默认 180;越界夹到 30/900;合法值原样。
+    assert_eq!(clamp_timeout_secs(None), 180);
+    assert_eq!(clamp_timeout_secs(Some(0)), 180);
+    assert_eq!(clamp_timeout_secs(Some(-5)), 180);
+    assert_eq!(clamp_timeout_secs(Some(29)), 30);
+    assert_eq!(clamp_timeout_secs(Some(30)), 30);
+    assert_eq!(clamp_timeout_secs(Some(180)), 180);
+    assert_eq!(clamp_timeout_secs(Some(900)), 900);
+    assert_eq!(clamp_timeout_secs(Some(901)), 900);
+    assert_eq!(timeout_duration(Some(240)).as_secs(), 240);
+    assert_eq!(timeout_duration(None).as_secs(), 180);
+}
+
+#[test]
+fn idle_timeout_reads_saved_settings_and_never_the_draft_override() {
+    let saved = json!({
+        "protocol": "openai", "baseUrl": "https://a.example/v1", "model": "m",
+        "requestTimeoutSec": 240
+    });
+    // 设置页草稿里的值不生效:保存后才算数(与「对话只读已保存配置」同一不变量)。
+    let draft = json!({ "requestTimeoutSec": 30, "baseUrl": "https://a.example/v1" });
+    assert_eq!(
+        resolve_request_config(&saved, Some(&draft), "").idle_timeout.as_secs(),
+        240
+    );
+    // 旧配置没有该键 → 默认 180
+    let legacy = json!({ "protocol": "openai", "baseUrl": "https://a.example/v1", "model": "m" });
+    assert_eq!(
+        resolve_request_config(&legacy, None, "").idle_timeout.as_secs(),
+        180
+    );
+}
+
+#[tokio::test]
+async fn silent_upstream_uses_the_configured_timeout_not_a_constant() {
+    // 服务端接住连接后一个字节都不发:必须按传入的超时失败,而不是某个写死的常量。
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = socket.read(&mut request).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    });
+    let app = mock_app();
+    let flag = Arc::new(AtomicBool::new(false));
+    let started = std::time::Instant::now();
+    let err = chat_stream_with_tools(
+        app,
+        "req-silent".into(),
+        "openai".into(),
+        endpoint,
+        String::new(),
+        "m".into(),
+        json!([{ "role": "user", "content": "hi" }]),
+        Value::Null,
+        None,
+        None,
+        Duration::from_millis(300),
+        flag,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("超时"), "{}", err);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "应按 300ms 而不是默认值失败,实际 {:?}",
+        started.elapsed()
+    );
+    server.abort();
+}
+
 #[test]
 fn usage_chains_and_unicode_errors_remain_intact() {
     let mut usage = Usage::default();
@@ -269,7 +408,7 @@ async fn local_sse_preserves_split_utf8_usage_and_finish_events() {
 #[tokio::test]
 async fn reasoning_only_stream_emits_progress_and_thinking_not_idle_timeout() {
     // 回归:思考型模型纯推理期不产出正文,曾经一个事件都不转发,
-    // 前端 60 秒空闲计时误判超时并 abort(服务端侧表现为 HTTP 499)。
+    // 前端空闲计时误判超时并 abort(服务端侧表现为 HTTP 499)。
     // 现在思考增量走 ai:thinking、role/usage/finish 帧走 ai:progress。
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

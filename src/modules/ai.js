@@ -63,7 +63,26 @@ export const AI_HISTORY_LIMIT = 20;
 export const AI_THREAD_LIMIT = 20;
 // 消息区 DOM 上限:超出的旧气泡直接移除,避免长会话下无界增长。
 export const AI_DOM_LIMIT = 200;
-export const AI_IDLE_TIMEOUT_MS = 60_000;
+// 请求空闲超时:后端按「多久没收到任何数据」计时(等响应头 / 等每个流分片各自独立),
+// 用户可配(秒)。前端看门狗只做兜底 —— 正常路径后端先报错,它带原始错误;
+// 这里多留 15 秒宽限,避免两套计时抢答、文案口径打架。
+export const AI_TIMEOUT_DEFAULT_SEC = 180;
+export const AI_TIMEOUT_MIN_SEC = 30;
+export const AI_TIMEOUT_MAX_SEC = 900;
+export const AI_IDLE_GRACE_MS = 15_000;
+// 等待提示的静默阈值:短请求不显示计时,避免文案每秒跳动
+export const AI_PENDING_HINT_AFTER_SEC = 10;
+
+/// 当前生效的空闲超时(秒)。只读已保存配置 —— 设置表单是草稿,改完不保存不生效。
+export function aiTimeoutSec() {
+  const raw = Number((((state.settings || {}).ai) || {}).requestTimeoutSec);
+  if (!Number.isFinite(raw) || raw <= 0) return AI_TIMEOUT_DEFAULT_SEC;
+  return Math.min(AI_TIMEOUT_MAX_SEC, Math.max(AI_TIMEOUT_MIN_SEC, Math.round(raw)));
+}
+
+export function aiIdleTimeoutMs() {
+  return aiTimeoutSec() * 1000 + AI_IDLE_GRACE_MS;
+}
 
 // 设置表单是草稿,对话只读已保存配置。候选列表也只属于当前端点的草稿。
 let aiDraft = null;
@@ -1636,14 +1655,38 @@ export function markBubblePending(bubble) {
   // body 已被上面的 textContent 判空,这里直接追加即可
   body.appendChild(sp);
   body.appendChild(label);
+  startPendingHint(bubble, label);
   // 占位写入让气泡长高约一行:与 renderAiMessage 里的首次贴底相隔同帧,
   // 不收口就会从第一条回复起差出一点。调用方保证只对活动线程的气泡调用。
   aiStickScroll();
 }
 
+/// 长等待的可感知证据:静默超过 AI_PENDING_HINT_AFTER_SEC 秒才把"正在思考…"补上计时,
+/// 免得短请求也每秒跳一下。定时器挂在气泡上,撤等待态/清空气泡时一并停掉;
+/// 元素被移除(长会话裁掉旧气泡)时下一次 tick 自己收摊。
+function startPendingHint(bubble, label) {
+  stopPendingHint(bubble);
+  const tick = globalThis.setInterval;
+  if (typeof tick !== 'function') return;
+  let waited = 0;
+  bubble.__pendingTimer = tick(() => {
+    if (label.isConnected === false) { stopPendingHint(bubble); return; }
+    waited += 1;
+    if (waited >= AI_PENDING_HINT_AFTER_SEC) label.textContent = `正在思考…（已等待 ${waited}s）`;
+  }, 1000);
+}
+
+function stopPendingHint(bubble) {
+  if (!bubble || bubble.__pendingTimer == null) return;
+  const clear = globalThis.clearInterval;
+  if (typeof clear === 'function') clear(bubble.__pendingTimer);
+  bubble.__pendingTimer = null;
+}
+
 /// 首个 token 到达:撤掉等待态、清空占位,转入流式态(光标闪烁由 CSS 画)
 export function markBubbleStreaming(bubble) {
   if (!bubble) return;
+  stopPendingHint(bubble);
   bubble.dataset.responseState = 'streaming';
   if (bubble.dataset.pending) {
     delete bubble.dataset.pending;
@@ -1708,6 +1751,7 @@ export function aiSealThinking(bubble) {
 
 export function clearBubbleState(bubble) {
   if (!bubble) return;
+  stopPendingHint(bubble);
   bubble.classList.remove('pending', 'streaming', 'thinking-only');
   const sp = bubble.querySelector('.ai-spinner');
   if (sp) sp.remove();
@@ -1758,12 +1802,15 @@ export function aiTouchRequest(requestId) {
   if (!match) return false;
   const h = match.holder;
   clearTimeout(h.idleTimer);
+  // 请求级快照:途中改设置不改这条请求的计时与文案口径
+  const sec = aiTimeoutSec();
+  h.timeoutSec = sec;
   h.idleTimer = setTimeout(() => {
     if (h.cancelled) return;
     h.cancelled = true;
-    failAiRequest(h, 'AI 响应超时（60 秒未收到内容），请重试');
+    failAiRequest(h, `AI 响应超时（${sec} 秒未收到内容），请重试`);
     api('ai:abort', { requestId: h.id }).catch(() => {});
-  }, AI_IDLE_TIMEOUT_MS);
+  }, sec * 1000 + AI_IDLE_GRACE_MS);
   return true;
 }
 
@@ -3311,6 +3358,8 @@ export function openAiSettings() {
   renderModelChips();
   renderModelSwitch();
   $('#ai-protocol').value = s.protocol || 'openai';
+  const timeoutInput = $('#ai-timeout');
+  if (timeoutInput) timeoutInput.value = String(aiTimeoutSec());
   $('#ai-apikey').value = '';
   aiDraft = { endpoint: aiEndpointIdentity(draftEndpoint()) };
   onAiEndpointChange();
@@ -3341,6 +3390,16 @@ export function fillPreset(key) {
 
 export async function saveAiSettings() {
   const draft = readAiDraft();
+  // 超时是唯一会决定"多久算失败"的业务参数:越界/非整数一律拒绝保存并聚焦,
+  // 不做静默夹取(用户会以为存的就是自己填的值)。后端仍会 clamp 兜底。
+  const timeoutEl = $('#ai-timeout');
+  const timeoutRaw = String((timeoutEl && timeoutEl.value) ?? '').trim();
+  const timeoutSec = timeoutRaw === '' ? AI_TIMEOUT_DEFAULT_SEC : Number(timeoutRaw);
+  if (!Number.isInteger(timeoutSec) || timeoutSec < AI_TIMEOUT_MIN_SEC || timeoutSec > AI_TIMEOUT_MAX_SEC) {
+    toast(`响应超时需要 ${AI_TIMEOUT_MIN_SEC}–${AI_TIMEOUT_MAX_SEC} 之间的整数秒`, 'error');
+    if (timeoutEl) { timeoutEl.value = String(aiTimeoutSec()); timeoutEl.focus(); }
+    return;
+  }
   // 不变量:启用列表非空则默认模型必存在。草稿漏选(如只勾选未点选)时
   // 自动落第一个并提示,保证保存出去的配置永远可直接发起请求。
   let model = draft.model;
@@ -3355,6 +3414,7 @@ export async function saveAiSettings() {
       provider: $('#ai-provider').value,
       protocol: draft.protocol, baseUrl: draft.baseUrl, model,
       models: state.aiSelected.map((m) => ({ ...m })),
+      requestTimeoutSec: timeoutSec,
     },
   };
   if (draft.apiKey) payload.ai.apiKey = draft.apiKey;

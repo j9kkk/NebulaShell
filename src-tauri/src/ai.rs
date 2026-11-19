@@ -5,7 +5,23 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const AI_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// 空闲超时的三档边界(秒)。语义不变:每个等待阶段单独计时,不是整请求上限 ——
+/// 持续吐字的请求可以跑任意久。用户可配,存于 settings.ai.requestTimeoutSec。
+pub const AI_TIMEOUT_DEFAULT_SECS: i64 = 180;
+pub const AI_TIMEOUT_MIN_SECS: i64 = 30;
+pub const AI_TIMEOUT_MAX_SECS: i64 = 900;
+
+/// 把配置里的秒数收敛到合法区间:缺键 / null / 非正数回落默认值。
+/// 配置写入端(save_settings)与读取端(commands)都会走它,手改配置文件也逃不掉。
+pub fn clamp_timeout_secs(secs: Option<i64>) -> i64 {
+    secs.filter(|v| *v > 0)
+        .unwrap_or(AI_TIMEOUT_DEFAULT_SECS)
+        .clamp(AI_TIMEOUT_MIN_SECS, AI_TIMEOUT_MAX_SECS)
+}
+
+pub fn timeout_duration(secs: Option<i64>) -> Duration {
+    Duration::from_secs(clamp_timeout_secs(secs) as u64)
+}
 
 /// commands.rs 对 models/chat 共用此解析器:空草稿字段不偷偷回退,旧密钥只属于
 /// 已保存的协议 + 完整 Base URL(忽略空白和尾部斜杠,不忽略路径/查询/大小写)。
@@ -16,6 +32,9 @@ pub struct AiRequestConfig {
     pub api_key: String,
     pub max_tokens: Option<i64>,
     pub reasoning_params: Option<Value>,
+    /// 空闲超时(多久收不到任何字节就判定失败)。只读已保存配置,不读草稿 override ——
+    /// 设置页是草稿,保存后才生效,与前端「对话只读已保存配置」的不变量一致。
+    pub idle_timeout: Duration,
 }
 
 pub fn same_endpoint(a: &Value, b: &Value) -> bool {
@@ -87,6 +106,7 @@ pub fn resolve_request_config(
         api_key,
         max_tokens,
         reasoning_params,
+        idle_timeout: timeout_duration(saved["requestTimeoutSec"].as_i64()),
     }
 }
 
@@ -105,7 +125,10 @@ async fn wait_cancellable<F: std::future::Future>(
         }
         let remaining = idle_timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            return Err("AI 响应超时（60 秒未收到数据），请重试".into());
+            return Err(format!(
+                "AI 响应超时（{} 秒未收到数据），请重试",
+                idle_timeout.as_secs()
+            ));
         }
         match tokio::time::timeout(remaining.min(Duration::from_millis(100)), &mut operation).await
         {
@@ -138,6 +161,7 @@ pub async fn list_models(
     protocol: &str,
     base_url: &str,
     api_key: &str,
+    idle_timeout: Duration,
 ) -> Result<Vec<Value>, String> {
     if base_url.trim().is_empty() {
         return Err("未配置 API Base URL,请先填写".into());
@@ -149,7 +173,10 @@ pub async fn list_models(
         .connect_timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut req = client.get(&url).timeout(Duration::from_secs(20));
+    // 一次性 GET:把用户配置收敛到 20–60s —— 慢网关下不至于比对话先失败,
+    // 也不让一个挂死的端点把设置页拖住。
+    let total = idle_timeout.clamp(Duration::from_secs(20), Duration::from_secs(60));
+    let mut req = client.get(&url).timeout(total);
     if protocol == "anthropic" {
         req = req
             .header("x-api-key", api_key)
@@ -287,6 +314,7 @@ pub async fn chat_stream<
         Value::Null,
         None,
         None,
+        timeout_duration(None),
         abort_flag,
     )
     .await
@@ -309,6 +337,8 @@ pub async fn chat_stream_with_tools<
     tools: Value,
     max_tokens: Option<i64>,
     reasoning_params: Option<Value>,
+    // 空闲超时:等响应头 / 等错误体 / 等每个流分片,每段各自独立计时。
+    idle_timeout: Duration,
     abort_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     let started = Instant::now();
@@ -334,7 +364,7 @@ pub async fn chat_stream_with_tools<
         .connect_timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    let (url, body, req) = if protocol == "anthropic" {
+    let (url, body) = if protocol == "anthropic" {
         let url = format!("{}/messages", base_url.trim().trim_end_matches('/'));
         let (system, msgs) = crate::ai_wire::to_anthropic(&messages, with_tools);
         let max_tok = max_tokens.unwrap_or(4096);
@@ -353,12 +383,7 @@ pub async fn chat_stream_with_tools<
                 }
             }
         }
-        let r = client
-            .post(&url)
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&body);
-        (url, body, r)
+        (url, body)
     } else {
         let url = format!("{}/chat/completions", base_url.trim().trim_end_matches('/'));
         // include_usage:OpenAI 兼容流式默认不带 usage,显式请求后最后一帧会附带
@@ -382,34 +407,54 @@ pub async fn chat_stream_with_tools<
                 }
             }
         }
-        // 不发 tool_choice:默认即 auto,部分兼容网关对显式 tool_choice 另有开关要求。
-        if let Some(t) = &wire_tools {
-            body["tools"] = t.clone();
-        }
+        (url, body)
+    };
+    // 连接阶段的失败要能重发,而 RequestBuilder 只能 send 一次 —— 抽成闭包按需重建。
+    let make_request = || {
         let mut r = client.post(&url).json(&body);
-        if !api_key.is_empty() {
+        if protocol == "anthropic" {
+            r = r
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01");
+        } else if !api_key.is_empty() {
             r = r.header("authorization", format!("Bearer {}", api_key));
         }
-        (url, body, r)
+        r
     };
-    void(&url);
-    void(&body);
 
-    let Some(response) = wait_cancellable(req.send(), &abort_flag, AI_IDLE_TIMEOUT).await? else {
-        emit_evt(
-            &app,
-            "ai:done",
-            done_payload(&request_id, "aborted", Usage::default(), started),
-        );
-        return Ok(());
+    // 连接阶段(DNS / TCP / TLS)失败自动重试一次:此刻请求体通常还没送达,重发不会重复计费。
+    // 超时不重试 —— 服务端可能仍在生成并计费;收到响应头之后也不重试 —— 工具调用可能被执行两次。
+    let mut retried = false;
+    let res = loop {
+        let Some(sent) = wait_cancellable(make_request().send(), &abort_flag, idle_timeout).await?
+        else {
+            emit_evt(
+                &app,
+                "ai:done",
+                done_payload(&request_id, "aborted", Usage::default(), started),
+            );
+            return Ok(());
+        };
+        match sent {
+            Ok(res) => break res,
+            Err(e) if e.is_connect() && !retried && !abort_flag.load(Ordering::Relaxed) => {
+                retried = true;
+                emit_evt(
+                    &app,
+                    "ai:progress",
+                    json!({ "requestId": request_id, "retry": 1 }),
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(format!("AI 请求失败: {}", e)),
+        }
     };
-    let res = response.map_err(|e| format!("AI 请求失败: {}", e))?;
-    // 响应头到达即发心跳:前端 60 秒空闲计时只看"收没收到事件",不区分内容,
+    // 响应头到达即发心跳:前端空闲计时只看"收没收到事件",不区分内容,
     // 慢网关下首帧 SSE 之前的这段时间也必须计入活跃。
     emit_evt(&app, "ai:progress", json!({ "requestId": request_id }));
     if !res.status().is_success() {
         let status = res.status();
-        let Some(text) = wait_cancellable(res.text(), &abort_flag, AI_IDLE_TIMEOUT).await? else {
+        let Some(text) = wait_cancellable(res.text(), &abort_flag, idle_timeout).await? else {
             emit_evt(
                 &app,
                 "ai:done",
@@ -446,8 +491,7 @@ pub async fn chat_stream_with_tools<
         payload
     };
     loop {
-        let Some(chunk) = wait_cancellable(stream.next(), &abort_flag, AI_IDLE_TIMEOUT).await?
-        else {
+        let Some(chunk) = wait_cancellable(stream.next(), &abort_flag, idle_timeout).await? else {
             emit_evt(
                 &app,
                 "ai:done",
@@ -629,7 +673,7 @@ enum FrameOutcome {
 /// 解析一帧 SSE 事件并广播增量文本。OpenAI 与 Anthropic 的字段名不同,在这里
 /// 归一;两种协议的流式错误都转成 Err(与旧的逐帧返回语义一致)。
 /// 思考内容(reasoning/thinking)与 usage/finish 等非内容帧一律以 ai:progress
-/// 心跳转发:前端 60 秒空闲计时以"收到过事件"为准 —— 模型纯思考不产出正文时
+/// 心跳转发:前端空闲计时以"收到过事件"为准 —— 模型纯思考不产出正文时
 /// 连接其实活跃,若不心跳会被前端误判超时并 abort(服务端侧表现为 HTTP 499)。
 fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static>(
     app: &E,
@@ -709,7 +753,6 @@ fn emit_deltas<R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + '
     Ok(FrameOutcome::Continue)
 }
 
-fn void<T>(_: &T) {}
 pub fn b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
 }

@@ -22,7 +22,8 @@ fn defaults() -> Value {
         "bookmarks": [],
         "history": [],
         "settings": {
-            "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "models": [], "apiKey": "" },
+            // requestTimeoutSec:AI 请求空闲超时(秒);陈旧配置缺该键时由读取端补默认值
+            "ai": { "provider": "custom", "protocol": "openai", "baseUrl": "", "model": "", "models": [], "apiKey": "", "requestTimeoutSec": 180 },
             "terminal": { "fontSize": 13, "theme": "nebula", "scrollback": 2000 },
             // 会话日志:自动记录默认关;dir 空 = 主目录下 NebulaShell-logs;
             // format: text(纯文本,可读) | raw(原始终端流,可回放);时间戳仅对 text 生效;
@@ -2571,6 +2572,8 @@ impl Store {
             "ai": {
                 "provider": ai["provider"], "protocol": ai["protocol"], "baseUrl": ai["baseUrl"],
                 "model": ai["model"], "models": ai["models"], "toolSupport": ai["toolSupport"],
+                // 缺键/越界在这里收敛一次:手改配置文件也逃不掉(写端同样 clamp)
+                "requestTimeoutSec": crate::ai::clamp_timeout_secs(ai["requestTimeoutSec"].as_i64()),
                 "apiKeySet": api_key_set,
                 "apiKeyLen": api_key_len
             },
@@ -2954,6 +2957,10 @@ impl Store {
             // 各模型是否支持工具调用(键为 "baseUrl::model"),由前端探测后回写。
             if let Some(v) = ai.get("toolSupport").filter(|v| v.is_object()) {
                 out["toolSupport"] = v.clone();
+            }
+            // 请求空闲超时(秒):白名单里没登记的字段会被静默丢弃,这个键必须显式处理。
+            if let Some(n) = ai.get("requestTimeoutSec").and_then(Value::as_i64) {
+                out["requestTimeoutSec"] = json!(crate::ai::clamp_timeout_secs(Some(n)));
             }
             if let Some(v) = ai.get("apiKey") {
                 let plain = v.as_str().unwrap_or("");

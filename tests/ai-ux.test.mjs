@@ -552,7 +552,9 @@ test('idle watchdog resets for active request and times out with partial content
   h.acc = 'partial';
   assert.equal(ai.aiTouchRequest(h.id), true);
   assert.equal(timers.has(initial), false);
-  assert.equal(timers.get(h.idleTimer).ms, 60_000);
+  // 超时可配:缺键 → 默认 180 秒;前端看门狗再留 15 秒宽限
+  assert.equal(ai.aiTimeoutSec(), 180);
+  assert.equal(timers.get(h.idleTimer).ms, 195_000);
   timers.get(h.idleTimer).cb();
   const result = await request;
   assert.match(result.error, /超时/);
@@ -561,6 +563,53 @@ test('idle watchdog resets for active request and times out with partial content
   assert.equal(state.aiReq, null);
   assert.equal(timers.size, 0);
   assert.ok(calls.some((c) => c.channel === 'ai:abort' && c.payload.requestId === h.id));
+});
+
+test('idle watchdog follows saved seconds, snapshots per request, and ignores unsaved drafts', async () => {
+  const { ai, $, state, timers } = await setup();
+  state.settings.ai.requestTimeoutSec = 300;
+  const request = ai.aiRequest([], makeBubble());
+  const h = state.aiReq;
+  assert.equal(timers.get(h.idleTimer).ms, 315_000);
+  // 请求进行中改设置:这条请求保留自己的快照
+  state.settings.ai.requestTimeoutSec = 60;
+  ai.aiTouchRequest(h.id);
+  assert.equal(timers.get(h.idleTimer).ms, 75_000);
+  ai.stopAiGeneration();
+  await request;
+  // 草稿不生效:表单填了但没保存,计时仍按已保存值
+  ai.openAiSettings();
+  $('#ai-timeout').value = '600';
+  assert.equal(ai.aiTimeoutSec(), 60);
+});
+
+test('timeout seconds are clamped to 30-900 and the message reports the configured value', async () => {
+  const { ai, state, timers } = await setup();
+  for (const [input, want] of [[5, 30], [900, 900], [5000, 900], [undefined, 180], ['abc', 180]]) {
+    state.settings.ai.requestTimeoutSec = input;
+    assert.equal(ai.aiTimeoutSec(), want, String(input));
+  }
+  state.settings.ai.requestTimeoutSec = 90;
+  const request = ai.aiRequest([], makeBubble());
+  const h = state.aiReq;
+  timers.get(h.idleTimer).cb();
+  const result = await request;
+  assert.match(result.error, /90 秒未收到内容/);
+});
+
+test('saving AI settings persists the timeout and refuses out-of-range input', async () => {
+  const { ai, $, calls, toasts } = await setup();
+  ai.openAiSettings();
+  $('#ai-timeout').value = '240';
+  await ai.saveAiSettings();
+  const saved = calls.filter((c) => c.channel === 'settings:save').pop();
+  assert.equal(saved.payload.ai.requestTimeoutSec, 240);
+
+  const before = calls.filter((c) => c.channel === 'settings:save').length;
+  $('#ai-timeout').value = '10';
+  await ai.saveAiSettings();
+  assert.equal(calls.filter((c) => c.channel === 'settings:save').length, before);
+  assert.ok(toasts.some((t) => /整数秒/.test(t.message)));
 });
 
 test('test response does not contaminate assistant conversation history and usage stays available', async () => {

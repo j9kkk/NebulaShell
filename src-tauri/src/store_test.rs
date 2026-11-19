@@ -88,6 +88,32 @@ fn settings_roundtrip_and_clamp() {
 }
 
 #[test]
+fn ai_request_timeout_is_whitelisted_defaulted_and_clamped() {
+    let store = tmp_store("ai-timeout");
+    // 缺键 → 默认 180(旧配置迁移不需要脚本,读取端兜底)
+    let s = store
+        .save_settings(&json!({ "ai": { "model": "m1" } }))
+        .unwrap();
+    assert_eq!(s["ai"]["requestTimeoutSec"], json!(180));
+    // 合法值原样保存
+    let s = store
+        .save_settings(&json!({ "ai": { "requestTimeoutSec": 240 } }))
+        .unwrap();
+    assert_eq!(s["ai"]["requestTimeoutSec"], json!(240));
+    // 越界夹取;白名单外的键仍被丢弃
+    let s = store
+        .save_settings(&json!({ "ai": { "requestTimeoutSec": 5000, "nope": 1 } }))
+        .unwrap();
+    assert_eq!(s["ai"]["requestTimeoutSec"], json!(900));
+    assert!(s["ai"]["nope"].is_null(), "未登记字段不得落盘");
+    let s = store
+        .save_settings(&json!({ "ai": { "requestTimeoutSec": 5 } }))
+        .unwrap();
+    assert_eq!(s["ai"]["requestTimeoutSec"], json!(30));
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+#[test]
 fn snippets_persist() {
     let store = tmp_store("snips");
     store

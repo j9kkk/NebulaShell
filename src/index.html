@@ -585,10 +585,15 @@
           </div>
           <span id="ai-key-status" class="muted key-status" aria-live="polite"></span>
         </div>
+        <label for="ai-timeout">响应超时</label>
+        <div class="field-with-unit">
+          <input id="ai-timeout" class="inp" type="number" min="30" max="900" step="30" value="180" />
+          <span class="unit-text">秒</span>
+        </div>
         <!-- 默认模型:由"模型"一栏里点选的芯片决定,不再直接编辑 -->
         <input id="ai-model" type="hidden" />
       </div>
-      <p class="muted small-note">支持 OpenAI / DeepSeek / 智谱 / Kimi / Claude / Ollama 等主流厂商，任意 OpenAI 兼容或 Anthropic 协议的自定义供应商。密钥加密存储在本地。</p>
+      <p class="muted small-note">支持 OpenAI / DeepSeek / 智谱 / Kimi / Claude / Ollama 等主流厂商，任意 OpenAI 兼容或 Anthropic 协议的自定义供应商。密钥加密存储在本地。响应超时：多久收不到任何数据就判定失败，默认 180 秒；推理型模型首字慢时可调大。</p>
       <div class="modal-actions">
         <button id="btn-ai-cancel" class="btn">取消</button>
         <button id="btn-ai-test" class="btn">测试连接</button>

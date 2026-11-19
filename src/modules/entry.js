@@ -1105,8 +1105,8 @@ export function bindEvents() {
   window.nebula.on('sftp:progress', routeProgress);
   window.nebula.on('ai:progress', ({ requestId }) => {
     // 心跳:响应头到达、role/usage/keep-alive 等非内容帧都会触发。
-    // 空闲超时的语义因此是"60 秒内后端一个活跃信号都没有",而不是
-    // "60 秒没吐正文" —— 思考型模型纯推理期不再被误判超时。
+    // 空闲超时的语义因此是"配置的秒数内后端一个活跃信号都没有",而不是
+    // "这么久没吐正文" —— 思考型模型纯推理期不再被误判超时。
     aiTouchRequest(requestId);
   });
   window.nebula.on('ai:thinking', ({ requestId, text }) => {
