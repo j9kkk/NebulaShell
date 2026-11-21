@@ -188,24 +188,14 @@
          都留在原处(见 right-panel.js)。 -->
     <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手宽度"></div>
     <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="AI 助手">
-      <!-- 单层高集成度 AI 顶栏(高度 36px,与左侧标签栏严格对齐):主机链接、切换会话、新建会话、历史抽屉、清空 -->
+      <!-- 单层高集成度 AI 顶栏(高度 36px,与左侧标签栏严格对齐):切换会话、新建会话、历史抽屉、清空 -->
       <div class="ai-header">
-        <!-- 主机链接:顶栏最左侧。「这个对话作用于哪些主机」比「这是哪个对话」更常被确认,
-             所以放在会话钮前面。文案由 ai-agent-ui.js 写(未链接主机/已链接 X/已链接 N 台主机) -->
-        <button id="ai-target-trigger" class="ai-target-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-target-menu" title="选择这个对话作用于哪些主机">
-          <span class="ai-target-lead" id="ai-target-lead"><span class="dot idle"></span></span>
-          <span id="ai-target-name" class="ai-target-name">未链接主机</span>
-          <span class="ai-target-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
-        </button>
-        <!-- 目标离线时的一键重连/连接:不进菜单,少一次点击。
-             放在会话钮之后,让「主机模式 → 会话」两个下拉保持相邻。 -->
         <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
           <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
           <span id="ai-thread-title" class="ai-thread-title">新对话</span>
           <span class="ai-thread-dot" aria-hidden="true"></span>
           <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
         </button>
-        <button id="ai-target-action" class="btn small primary ai-target-action hidden" type="button"></button>
         <span class="spacer"></span>
         <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建 AI 对话" data-title="新建 AI 对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
         <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
@@ -226,16 +216,6 @@
         <div id="ai-drawer-list" class="ai-drawer-list" role="list"></div>
       </div>
 
-      <!-- 横条:只在「跨标签」和「发送被拦截」两种情况下出现 -->
-      <div id="ai-context-banner" class="ai-context-banner hidden" role="status" aria-live="polite">
-        <span class="ai-context-banner-icon mi" data-icon="alert" aria-hidden="true"></span>
-        <div class="ai-context-banner-body">
-          <div id="ai-context-banner-text" class="ai-context-banner-text"></div>
-          <div id="ai-context-banner-actions" class="ai-context-banner-actions"></div>
-        </div>
-        <button id="ai-context-banner-close" class="btn icon ghost small ai-context-banner-close" type="button" title="忽略" aria-label="忽略"><span class="mi" data-icon="x" aria-hidden="true"></span></button>
-      </div>
-
       <div class="ai-messages-wrap">
         <div id="ai-messages"></div>
         <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
@@ -249,15 +229,32 @@
            ai-agent-ui.js updateModePicker 维护 -->
       <div class="ai-input-row">
         <div class="ai-composer">
-          <textarea id="ai-input" rows="2" placeholder="向 AI 提问，例如：如何排查服务器 CPU 过高？"></textarea>
+          <!-- @ 候选浮层(F9/A2/A3):在 #ai-input 内打单个 @ 立刻弹出,只列当前会话 scope 内主机 -->
+          <div id="ai-mention-pop" class="ai-mention-pop hidden" role="listbox" aria-label="引用会话内主机"></div>
+          <div id="ai-input" class="ai-input-ed" contenteditable="true" role="textbox" aria-multiline="true" data-empty="1" data-placeholder="输入 @ 从范围内选主机，或直接提问…"></div>
+          <!-- chip 被移出范围时的阻塞提示条(F13/A4):有失效 chip 时展开并禁用发送,二选一后放行 -->
+          <div id="ai-chip-warn" class="ai-chip-warn hidden" role="alert" hidden>
+            <span class="ai-chip-warn-icon mi" data-icon="alert" aria-hidden="true"></span>
+            <span id="ai-chip-warn-text" class="ai-chip-warn-text"></span>
+            <button id="ai-chip-warn-restore" class="ai-chip-warn-act" type="button">加回范围</button>
+            <button id="ai-chip-warn-remove" class="ai-chip-warn-act" type="button">移除引用</button>
+          </div>
           <div class="ai-composer-tools">
-            <!-- 执行模式:常驻显示,与模型选择同行。触发钮只显示档位名称(手动确认/自动执行/完全托管),
-                 本对话作用于哪些主机由顶栏主机下拉承担,不再重复 -->
-            <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu">
+            <!-- 会话主机范围按钮(最左,F1):点击列出主机列表勾选本会话允许操作的主机范围 -->
+            <button id="ai-scope-trigger" class="ai-scope-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-scope-menu" title="选择本会话允许操作的主机范围" data-empty="true">
+              <span class="ai-scope-icon mi" data-icon="server" aria-hidden="true"></span>
+              <span id="ai-scope-name" class="ai-scope-name">未选主机</span>
+              <span class="ai-scope-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+            </button>
+            <!-- 执行模式:当 scope 非空时显示档位(手动确认/自动执行/完全托管);scope 为空时隐藏并显示「纯对话」 -->
+            <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu" hidden>
               <span class="ai-mode-icon mi" data-icon="lock" aria-hidden="true"></span>
               <span id="ai-mode-name" class="ai-mode-name">手动确认</span>
+              <!-- 窄档(T3/T4)只显示双字:独立 span,不改变 #ai-mode-name 的 textContent -->
+              <span id="ai-mode-short" class="ai-mode-short" aria-hidden="true">手动</span>
               <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
             </button>
+            <span id="ai-chat-note" class="ai-chat-note">纯对话</span>
             <span class="spacer"></span>
             <!-- 上下文窗口指示器:微型环状仪表图标钮,悬停或点击展开详情卡片 -->
             <button id="ai-context-trigger" class="ai-context-trigger" type="button" title="查看当前对话上下文窗口" aria-haspopup="dialog" aria-expanded="false" aria-controls="ai-context-popover">
@@ -1357,10 +1354,9 @@
   <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" aria-label="切换对话">
     <div id="ai-thread-menu-list" role="menu"></div>
   </div>
-  <!-- 主机链接菜单浮层:挂 body + fixed 锚定在顶栏 #ai-target-trigger 下方。
-       三种模式(对话/跟随命令窗口/多主机)+ 多主机清单;条目由 ai-agent-ui.js renderTargetMenu 生成 -->
-  <div id="ai-target-menu" class="ai-model-menu ai-target-menu hidden" aria-label="选择作用主机">
-    <div id="ai-target-menu-list" role="menu"></div>
+  <!-- 主机范围选择器浮层:挂 body + fixed 锚定在输入框左下角 #ai-scope-trigger 上方 -->
+  <div id="ai-scope-menu" class="ai-model-menu ai-target-menu hidden" aria-label="选择会话可操作主机范围">
+    <div id="ai-scope-menu-list" role="menu"></div>
   </div>
   <!-- 执行模式菜单浮层:与模型菜单同机制(挂 body + fixed 锚定触发钮上方)。
        第一行左对齐显示本对话的主机摘要(未链接主机 / 已链接 X / 已链接 N 台主机),

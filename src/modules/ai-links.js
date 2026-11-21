@@ -3,7 +3,7 @@
 // 两层结构,分别解决两个问题:
 //   1. 连接池 state.aiLinks(Map<hostId, link>) —— 应用级。同一台主机只连一次,
 //      跨对话/标签共享真实连接,避免为每个对话重复建链。
-//   2. 对话的目标集合 thread.linkedHostIds —— 对话级。一个对话"链接了哪几台主机"
+//   2. 对话的目标集合 thread.scope —— 对话级。一个对话"允许操作哪几台主机"
 //      是它自己的状态;切换对话不会继承别人的目标集合,退出也不会误断别人在用的连接。
 //      池条目带 refs(被几个对话引用),归零才真正断开无头会话。
 //
@@ -30,15 +30,15 @@ function pool() {
 
 function threadIds(thread) {
   if (!thread) return [];
-  if (!Array.isArray(thread.linkedHostIds)) thread.linkedHostIds = [];
-  return thread.linkedHostIds;
+  if (!Array.isArray(thread.scope)) thread.scope = [];
+  return thread.scope;
 }
 
 function emit() {
   try { onChange(); } catch { /* 界面刷新失败不应影响链接本身 */ }
 }
 
-/// 某个对话当前链接的主机条目(顺序跟 thread.linkedHostIds)。
+/// 某个对话当前链接的主机条目(顺序跟 thread.scope)。
 export function linksForThread(thread) {
   const p = pool();
   return threadIds(thread).map((id) => p.get(id)).filter(Boolean);
@@ -130,7 +130,7 @@ async function ensurePoolEntry(host) {
   }
 }
 
-/// 对话链接一台主机。失败时不会写进 thread.linkedHostIds(界面 switch 回退到关闭)。
+/// 对话链接一台主机。失败时不会写进 thread.scope(界面回退到未勾选)。
 export async function linkHost(thread, hostId) {
   const host = (state.hosts || []).find((h) => h && h.id === hostId);
   if (!host) return { ok: false, error: '主机不存在' };
@@ -176,7 +176,7 @@ export async function unlinkHost(thread, hostId) {
 export async function clearThreadLinks(thread) {
   if (!thread) return 0;
   const ids = [...threadIds(thread)];
-  thread.linkedHostIds = [];
+  if (Array.isArray(thread.scope)) thread.scope = [];
   let closed = 0;
   const p = pool();
   await Promise.all(ids.map(async (id) => {

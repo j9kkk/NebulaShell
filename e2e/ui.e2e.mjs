@@ -884,18 +884,19 @@ async function aiCommandBlockRegressions() {
 
 // AI 主机工具:真实 SSE 工具调用 → 真实 IPC → mock sshd 的真实本地 shell。
 // 场景脚本见 helpers/mock-servers.mjs toolScenario;断言只看渲染结果与副作用。
-// AI 顶栏主机菜单的通用操作(两个回归函数共用,故放模块级)。
-  // 顶栏主机菜单:开菜单(幂等:已开则不点,避免 toggle 关掉)、点某模式行、读主机钮文案。
-  const openTargetMenu = () => evalJs(`const m = document.querySelector('#ai-target-menu');
-    if (m.classList.contains('hidden')) document.querySelector('#ai-target-trigger').click();
+// AI 输入框左下角主机范围选择器菜单的通用操作(两个回归函数共用,故放模块级)。
+  const openTargetMenu = () => evalJs(`const m = document.querySelector('#ai-scope-menu');
+    if (m.classList.contains('hidden')) document.querySelector('#ai-scope-trigger').click();
     return 1`);
-  const pickTargetMode = (mode) => evalJs(`const row = document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="${mode}"]');
-    if (!row) throw new Error('模式行不存在: ${mode}');
-    if (row.getAttribute('aria-disabled') === 'true') throw new Error('模式行被禁用: ${mode}');
-    row.click(); return 1`);
-  // 三种模式互斥且必须恒选其一:顶层用单选(Radio)卡片,整行点击即切换,
-  // 已激活项再点保持激活 —— 不再有「把模式关掉」的 switch 语义。
-  const targetName = () => evalJs(`return document.querySelector('#ai-target-name')?.textContent || ''`);
+  const clearTargetScope = () => evalJs(`const b = document.querySelector('#ai-scope-menu .ai-pick-clear');
+    if (b) b.click();
+    return 1`);
+  const selectAllTargetScope = () => evalJs(`for (const d of document.querySelectorAll('#ai-scope-menu .ai-pick-dir')) {
+      const box = d.querySelector('.ai-pick-dir-box');
+      if (d.getAttribute('aria-checked') !== 'true' && box) box.click();
+    }
+    return 1`);
+  const targetName = () => evalJs(`return document.querySelector('#ai-scope-name')?.textContent || ''`);
 
 async function aiHostToolRegressions() {
   const state = asObj(await evalJs(`return JSON.stringify(window.__nbTest.workspaceState())`));
@@ -929,7 +930,7 @@ async function aiHostToolRegressions() {
     if (item.disabled) throw new Error('模式项被禁用: ${mode}');
     item.click(); return 1`);
   const modeState = async () => asObj(await evalJs(`return JSON.stringify({ hidden: document.querySelector('#ai-mode-trigger').hidden,
-    host: document.querySelector('#ai-target-name')?.textContent || '', mode: document.querySelector('#ai-mode-trigger').dataset.mode })`));
+    host: document.querySelector('#ai-scope-name')?.textContent || '', mode: document.querySelector('#ai-mode-trigger').dataset.mode })`));
   const modeMenuCtx = () => evalJs(`return document.querySelector('#ai-mode-menu-ctx').textContent`);
   try {
     // T-AT10a:模式菜单开合、头部安全上下文、「?」帮助 title。
@@ -957,27 +958,31 @@ async function aiHostToolRegressions() {
     await evalJs(`document.querySelector('#ai-mode-menu-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1`);
     await waitEval(`return document.querySelector('#ai-mode-menu').classList.contains('hidden')`, 'true');
 
-    // T-TM2:三种模式行都在,且都是单选(Radio)语义 —— 顶层模式恒选其一,没有开关。
+    // T-TM2:主机范围选择器结构齐备 —— 搜索行、已选汇总条、目录分组列表、底栏。
     await openTargetMenu();
-    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    const modeRows = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({ mode: r.dataset.mode, checked: r.getAttribute('aria-checked'), role: r.getAttribute('role'), hasRadio: !!r.querySelector('.ai-target-mode-radio'), hasSwitch: !!r.querySelector('.switch') })))`));
-    check('T-TM2 主机菜单三种模式齐备:单选卡片(无开关),且只有一处 aria-checked',
-      ['chat', 'follow', 'multi'].every((m) => modeRows.some((r) => r.mode === m && r.hasRadio === true && r.hasSwitch === false && r.role === 'menuitemradio'))
-      && modeRows.filter((r) => r.checked === 'true').length === 1,
-      JSON.stringify(modeRows));
-
-    // T-AT9a:点「对话模式」那一行(三模式互斥,不用先关跟随)→ 主机钮「未链接主机」,执行模式钮仍常驻。
-    await openTargetMenu();
-    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    await pickTargetMode('chat');
-    await waitEval(`return document.querySelector('#ai-target-name')?.textContent`, '未链接主机');
-    const chatTargetState = asObj(await evalJs(`return JSON.stringify({
-      targetName: document.querySelector('#ai-target-name')?.textContent,
-      modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
-      modeName: document.querySelector('#ai-mode-name')?.textContent,
+    await waitEval(`return !document.querySelector('#ai-scope-menu').classList.contains('hidden')`, 'true');
+    const menuShape = asObj(await evalJs(`return JSON.stringify({
+      hasSearch: !!document.querySelector('#ai-scope-menu .ai-pick-search .inp'),
+      hasSelbar: !!document.querySelector('#ai-scope-menu .ai-pick-selbar'),
+      dirs: document.querySelectorAll('#ai-scope-menu .ai-pick-dir').length,
+      foot: !!document.querySelector('#ai-scope-menu .ai-pick-foot'),
     })`));
-    check('T-AT9a 切到「对话模式」:主机钮显示「未链接主机」,执行模式钮常驻「手动确认」',
-      chatTargetState.targetName === '未链接主机' && chatTargetState.modeHidden === false && chatTargetState.modeName === '手动确认',
+    check('T-TM2 主机范围选择器结构齐备:搜索行 + 已选汇总条 + 目录分组列表 + 底栏',
+      menuShape.hasSearch && menuShape.hasSelbar && menuShape.dirs >= 1 && menuShape.foot,
+      JSON.stringify(menuShape));
+
+    // T-AT9a:点「清空」切到纯对话(0 台可操作)→ 主机钮「未选主机」,执行档位钮隐藏并显示「纯对话 · 不调用主机工具」。
+    await openTargetMenu();
+    await waitEval(`return !document.querySelector('#ai-scope-menu').classList.contains('hidden')`, 'true');
+    await clearTargetScope();
+    await waitEval(`return document.querySelector('#ai-scope-name')?.textContent`, '未选主机');
+    const chatTargetState = asObj(await evalJs(`return JSON.stringify({
+      targetName: document.querySelector('#ai-scope-name')?.textContent,
+      modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
+      chatNoteHidden: document.querySelector('#ai-chat-note')?.hidden,
+    })`));
+    check('T-AT9a 清空范围切到纯对话:主机钮显示「未选主机」,执行模式钮隐藏且显示纯对话提示',
+      chatTargetState.targetName === '未选主机' && chatTargetState.modeHidden === true && chatTargetState.chatNoteHidden === false,
       JSON.stringify(chatTargetState));
     await setBase('/tools/story');
     await send('你好,介绍一下自己');
@@ -985,15 +990,16 @@ async function aiHostToolRegressions() {
     const chatBubble = await evalJs(lastBubble);
     const chatReqHasTools = (ai.calls.toolRequests || []).length > 0
       && (ai.calls.toolRequests.at(-1).tools?.length ?? 0) > 0;
-    check('T-AT9b 对话模式发送:请求不带 tools,走普通对话路径', !chatReqHasTools && !!chatBubble, JSON.stringify({ hasTools: chatReqHasTools, bubble: chatBubble.slice(0, 80) }));
+    check('T-AT9b 纯对话发送:请求不带 tools,走普通对话路径', !chatReqHasTools && !!chatBubble, JSON.stringify({ hasTools: chatReqHasTools, bubble: chatBubble.slice(0, 80) }));
 
-    // 重新打开跟随开关,恢复手动档
+    // 重新勾选主机范围,恢复手动档
     await openTargetMenu();
-    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    await pickTargetMode('follow');
+    await waitEval(`return !document.querySelector('#ai-scope-menu').classList.contains('hidden')`, 'true');
+    await selectAllTargetScope();
+    await evalJs(`document.querySelector('#ai-scope-menu .ai-pick-done')?.click(); return 1`);
     await waitEval(`return document.querySelector('#ai-mode-trigger')?.dataset?.mode`, 'manual');
-    check('T-TM3 重新打开跟随模式:主机钮显示「已链接 <当前主机>」,档位回手动',
-      (await targetName()).startsWith('已链接 '),
+    check('T-TM3 重新勾选主机范围:主机钮显示当前主机或台数,档位回手动',
+      (await targetName()) !== '未选主机',
       await targetName());
 
     // 故事 1:手动模式 —— 只读工具自动执行,exec 停在蓝卡,确认后输出回到模型。
@@ -1006,8 +1012,8 @@ async function aiHostToolRegressions() {
     const stepWide = asObj(await evalJs(`const s = document.querySelector('${view} .ai-step');
       const msgs = document.querySelector('${view}');
       return JSON.stringify({ stepW: s.getBoundingClientRect().width, listW: msgs.getBoundingClientRect().width, right: Math.round(s.getBoundingClientRect().right), left: Math.round(s.getBoundingClientRect().left) })`));
-    check('T95 工具回合:顶栏主机钮显示已链接主机、档位默认手动;只读工具自动完成,exec 停在蓝色确认卡',
-      !bar.hidden && bar.host.startsWith('已链接 ') && bar.mode === 'manual'
+    check('T95 工具回合:左下主机钮显示范围内主机、档位默认手动;只读工具自动完成,exec 停在蓝色确认卡',
+      !bar.hidden && bar.host !== '未选主机' && bar.mode === 'manual'
       && ['host_info', 'tail_file', 'read_terminal'].every((t) => steps.some((s) => s.tool === t && s.status === 'ok'))
       && steps.some((s) => s.tool === 'exec' && s.status === 'pending'), JSON.stringify({ bar, steps }));
     check('T95j 步骤行宽度对齐 AI 响应流:不再横跨全宽,与 AI 气泡同一右界',
@@ -1314,111 +1320,69 @@ async function aiTargetRegressions() {
     return;
   }
   try {
-    // T-TG1: 新对话 + 已连接标签 → 顶栏主机钮显示「已链接 <主机>」; 单行顶栏无第二行目标栏; 档位常驻手动
+    // T-TG1: 新对话 + 已连接标签 → 输入框左下角主机钮默认快照当前活动终端主机; 顶栏旧 #ai-target-trigger 已移除; 档位默认手动
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
     await sleep(200);
     const tg1 = asObj(await evalJs(`return JSON.stringify({
-      name: document.querySelector('#ai-target-name')?.textContent,
+      name: document.querySelector('#ai-scope-name')?.textContent,
+      inTools: !!document.querySelector('.ai-composer-tools #ai-scope-trigger'),
       inHeader: !!document.querySelector('.ai-header #ai-target-trigger'),
       legacyBar: !!document.querySelector('#ai-target-bar'),
       modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
       modeName: document.querySelector('#ai-mode-name')?.textContent,
     })`));
-    check('T-TG1 顶栏单行:主机钮在 .ai-header 内且旧 #ai-target-bar 已移除; 显示「已链接 <主机>」; 档位常驻',
-      tg1.name.startsWith('已链接 ') && tg1.inHeader && !tg1.legacyBar && !tg1.modeHidden && tg1.modeName === '手动确认',
+    check('T-TG1 输入框左下角主机钮:位于 .ai-composer-tools 内且旧顶栏 #ai-target-trigger 已移除; 默认快照当前主机; 档位默认手动',
+      !!tg1.name && tg1.name !== '未选主机' && tg1.inTools && !tg1.inHeader && !tg1.legacyBar && !tg1.modeHidden && tg1.modeName === '手动确认',
       JSON.stringify(tg1));
 
-    // T-TG2: 关掉跟随开关 → 回到「对话模式」,主机钮「未链接主机」,档位仍常驻
-    // T-TG2: 点「对话模式」行 → 主机钮「未链接主机」,档位仍常驻
+    // T-TG2: 清空范围 → 切到纯对话,主机钮「未选主机」,档位钮隐藏并显示纯对话提示
     await openTargetMenu();
-    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    await pickTargetMode('chat');
-    await waitEval(`return document.querySelector('#ai-target-name')?.textContent`, '未链接主机');
+    await waitEval(`return !document.querySelector('#ai-scope-menu').classList.contains('hidden')`, 'true');
+    await clearTargetScope();
+    await waitEval(`return document.querySelector('#ai-scope-name')?.textContent`, '未选主机');
     const tg2 = asObj(await evalJs(`return JSON.stringify({
-      name: document.querySelector('#ai-target-name')?.textContent,
+      name: document.querySelector('#ai-scope-name')?.textContent,
       modeHidden: document.querySelector('#ai-mode-trigger')?.hidden,
+      chatNoteHidden: document.querySelector('#ai-chat-note')?.hidden,
     })`));
-    check('T-TG2 切到对话模式: 主机钮「未链接主机」, 档位仍常驻',
-      tg2.name === '未链接主机' && tg2.modeHidden === false,
+    check('T-TG2 清空范围切到纯对话: 主机钮「未选主机」, 档位隐藏且纯对话提示显示',
+      tg2.name === '未选主机' && tg2.modeHidden === true && tg2.chatNoteHidden === false,
       JSON.stringify(tg2));
 
-    // T-TG3: 点回跟随 → 恢复手动档;菜单只有一处 aria-checked="true"
+    // T-TG3: 重新勾选目录 → 恢复手动档
     await openTargetMenu();
-    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    const menuChecks = asObj(await evalJs(`return JSON.stringify(
-      [...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')]
-        .filter(b => b.getAttribute('aria-checked') === 'true')
-        .map(b => b.dataset.mode)
-    )`));
-    await pickTargetMode('follow');
+    await waitEval(`return !document.querySelector('#ai-scope-menu').classList.contains('hidden')`, 'true');
+    await selectAllTargetScope();
     await waitEval(`return document.querySelector('#ai-mode-trigger')?.dataset?.mode`, 'manual');
     const tg3ModeHidden = await evalJs(`return document.querySelector('#ai-mode-trigger')?.hidden`);
-    check('T-TG3 切回跟随: 恢复手动档, 主机菜单严格只有一处单选勾',
-      menuChecks.length === 1 && menuChecks[0] === 'chat' && tg3ModeHidden === false,
-      JSON.stringify({ menuChecks, tg3ModeHidden }));
+    check('T-TG3 重新勾选主机范围: 恢复手动档且档位钮可见',
+      tg3ModeHidden === false,
+      JSON.stringify({ tg3ModeHidden }));
 
-    // T-TG7: 新对话处于默认「跟随」模式、手动档、授权为空
+    // T-TG7: 新对话默认一次性快照当前活动终端那 1 台主机、手动档、授权为空
     const curTh = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiThreads().find(t => t.active))`));
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
     await sleep(150);
     const newTh = asObj(await evalJs(`return JSON.stringify(window.__nbTest.aiThreads().find(t => t.active))`));
-    check('T-TG7 新对话默认跟随窗口、手动档且授权为空',
-      newTh.linkMode === 'follow' && newTh.execMode === 'manual' && newTh.allowlistLength === 0,
+    check('T-TG7 新对话默认快照 1 台活动终端主机、手动档且授权为空',
+      Array.isArray(newTh.scope) && newTh.scope.length === 1 && newTh.execMode === 'manual' && newTh.allowlistLength === 0,
       JSON.stringify({ curTh, newTh }));
 
-    // T-TM4: 多主机模式 — 菜单出现主机清单与 switch;每台一个开关。
-    // 三模式互斥:直接点「多主机模式」行即可(不需要先关跟随);点完菜单不收起。
+    // T-TM4: 按目录分组主机范围选择器 — 展开目录出现主机行与三态复选框 + 搜索框。
     await openTargetMenu();
-    await waitEval(`return !document.querySelector('#ai-target-menu').classList.contains('hidden')`, 'true');
-    await pickTargetMode('multi');
-    await sleep(200);
+    await waitEval(`return !document.querySelector('#ai-scope-menu').classList.contains('hidden')`, 'true');
     const multiMenu = asObj(await evalJs(`return JSON.stringify({
-      menuStillOpen: !document.querySelector('#ai-target-menu').classList.contains('hidden'),
-      multiChecked: document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="multi"]')?.getAttribute('aria-checked'),
-      hostRows: document.querySelectorAll('#ai-target-menu-list .ai-target-host').length,
-      switches: document.querySelectorAll('#ai-target-menu-list .ai-target-host .switch').length,
-      search: !!document.querySelector('#ai-target-menu-list .ai-target-hosts-search .inp'),
+      menuStillOpen: !document.querySelector('#ai-scope-menu').classList.contains('hidden'),
+      dirs: document.querySelectorAll('#ai-scope-menu .ai-pick-dir').length,
+      hostRows: document.querySelectorAll('#ai-scope-menu .ai-pick-host').length,
+      search: !!document.querySelector('#ai-scope-menu .ai-pick-search .inp'),
     })`));
-    check('T-TM4 多主机模式: 切换后菜单不收起; 清单每台一个 switch + 搜索框',
-      multiMenu.menuStillOpen && multiMenu.multiChecked === 'true'
-      && multiMenu.hostRows > 0 && multiMenu.switches === multiMenu.hostRows && multiMenu.search,
+    check('T-TM4 范围选择器: 目录分组 + 主机行 + 搜索框齐备',
+      multiMenu.menuStillOpen && multiMenu.dirs > 0 && multiMenu.hostRows > 0 && multiMenu.search,
       JSON.stringify(multiMenu));
 
-    // T-TM5: 单选语义 —— 多主机是唯一勾选处,点击已激活项保持激活(不会变成"全不选")。
-    const modeChecks = asObj(await evalJs(`return JSON.stringify(
-      [...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].map((r) => ({
-        mode: r.dataset.mode,
-        checked: r.getAttribute('aria-checked'),
-        hasSwitch: !!r.querySelector('.switch'),
-      })))`));
-    await pickTargetMode('multi');
-    await sleep(150);
-    const stillMulti = await evalJs(`return document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="multi"]')?.getAttribute('aria-checked')`);
-    const checkedNow = asObj(await evalJs(`return JSON.stringify([...document.querySelectorAll('#ai-target-menu-list .ai-target-mode')].filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.dataset.mode))`));
-    check('T-TM5 单选语义: 多主机是唯一勾选处;再次点击保持选中,不存在"全部取消"',
-      modeChecks.filter((m) => m.checked === 'true').length === 1
-      && modeChecks.find((m) => m.mode === 'multi')?.checked === 'true'
-      && modeChecks.every((m) => m.hasSwitch === false)
-      && stillMulti === 'true' && checkedNow.length === 1 && checkedNow[0] === 'multi',
-      JSON.stringify({ modeChecks, stillMulti, checkedNow }));
-
-    // 切回收跟随(点行),验证互斥切换与菜单仍开着
-    await pickTargetMode('follow');
-    await sleep(200);
-    const backToFollow = asObj(await evalJs(`return JSON.stringify({
-      menuStillOpen: !document.querySelector('#ai-target-menu').classList.contains('hidden'),
-      followChecked: document.querySelector('#ai-target-menu-list .ai-target-mode[data-mode="follow"]')?.getAttribute('aria-checked'),
-      multiRows: document.querySelectorAll('#ai-target-menu-list .ai-target-host').length,
-      seps: document.querySelectorAll('#ai-target-menu-list .ai-target-menu-sep').length,
-      foot: document.querySelectorAll('#ai-target-menu-list .ai-target-menu-foot').length,
-    })`));
-    check('T-TM6 切回跟随: 菜单保持打开, 多主机清单收起且分割线/页脚不残留',
-      backToFollow.menuStillOpen && backToFollow.followChecked === 'true' && backToFollow.multiRows === 0
-      && backToFollow.seps === 0 && backToFollow.foot === 0,
-      JSON.stringify(backToFollow));
-
     // 退出菜单,避免影响后续
-    await evalJs(`const m = document.querySelector('#ai-target-menu'); if (!m.classList.contains('hidden')) document.querySelector('#ai-target-trigger').click(); return 1`);
+    await evalJs(`const m = document.querySelector('#ai-scope-menu'); if (!m.classList.contains('hidden')) document.querySelector('#ai-scope-trigger').click(); return 1`);
     await sleep(120);
   } finally {
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`).catch(() => {});

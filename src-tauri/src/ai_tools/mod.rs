@@ -167,7 +167,64 @@ fn session_allowed(p: &Value, sid: &str) -> bool {
     list.iter().any(|x| x.as_str() == Some(sid))
 }
 
+/// 会话主机范围（runScope）硬边界校验（F20 / F22）：
+/// 前端把本轮快照 `runScope`（允许的主机 key 列表）一并带来；
+/// 若请求携带 `hostKey` 或目标会话的 `session.host` 不在 `runScope` 内，立即拒绝（返回 `out_of_scope`），
+/// 绝不发起或执行任何范围外主机操作。未提供 `runScope` 时不做限制（兼容旧调用路径）。
+fn scope_key_matches(entry: &str, candidate: &str) -> bool {
+    !entry.is_empty() && !candidate.is_empty() && entry.eq_ignore_ascii_case(candidate)
+}
+
+fn host_key_in_run_scope(p: &Value, host_key: &str) -> bool {
+    let Some(list) = p["runScope"].as_array() else {
+        return true;
+    };
+    let hk = host_key.trim().trim_start_matches('@');
+    if hk.is_empty() {
+        return false;
+    }
+    list.iter()
+        .filter_map(|x| x.as_str())
+        .any(|k| scope_key_matches(k.trim().trim_start_matches('@'), hk))
+}
+
+fn session_host_in_run_scope(p: &Value, host: &Value) -> bool {
+    let Some(list) = p["runScope"].as_array() else {
+        return true;
+    };
+    if list.is_empty() {
+        return false;
+    }
+    let id = host["id"].as_str().unwrap_or("");
+    let name = host["name"].as_str().unwrap_or("");
+    let addr = host["host"].as_str().unwrap_or("");
+    let user = host["username"].as_str().unwrap_or("");
+    let port = host["port"].as_u64().unwrap_or(22);
+    let addr_key = if !addr.is_empty() {
+        format!("{user}@{addr}:{port}")
+    } else {
+        String::new()
+    };
+    list.iter().filter_map(|x| x.as_str()).any(|raw| {
+        let k = raw.trim().trim_start_matches('@');
+        scope_key_matches(k, id)
+            || scope_key_matches(k, name)
+            || scope_key_matches(k, addr)
+            || (!addr_key.is_empty() && scope_key_matches(k, &addr_key))
+    })
+}
+
 pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> Value {
+    if let Some(hk) = p["hostKey"].as_str() {
+        if !host_key_in_run_scope(p, hk) {
+            return err(
+                "out_of_scope",
+                format!("主机「{hk}」不在本轮允许的主机范围（runScope）内"),
+            );
+        }
+    } else if p["runScope"].as_array().is_some_and(|a| a.is_empty()) {
+        return err("out_of_scope", "当前会话未勾选任何可操作主机（runScope 为空）");
+    }
     let sid = p["sessionId"].as_str().unwrap_or("").to_string();
     if !session_allowed(p, &sid) {
         return err("host_not_linked", "该主机不在本对话已链接的主机内");
@@ -176,6 +233,12 @@ pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> V
     let Some(session) = session.filter(|s| s.alive.load(Ordering::Relaxed)) else {
         return err("session_gone", "主机未连接（会话已断开），请先重新连接");
     };
+    if !session_host_in_run_scope(p, &session.host) {
+        return err(
+            "out_of_scope",
+            "目标会话所属主机不在本轮允许的主机范围（runScope）内",
+        );
+    }
     let access = ai_access(state, &session.host);
     if access == "deny" {
         return err("host_denied", "该主机设置为禁止 AI 访问");

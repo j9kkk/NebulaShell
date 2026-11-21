@@ -277,7 +277,12 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
   }, { context });
   const icons = await load('../src/shared/icons.js');
   const termText = await load('../src/shared/term-text.js');
+  const aiScope = await load('../src/shared/ai-scope.js');
+  await aiScope.link(() => {});
+  await aiScope.evaluate();
   const targetState = await load('../src/shared/ai-target-state.js');
+  await targetState.link((specifier) => ({ './ai-scope.js': aiScope }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
+  await targetState.evaluate();
   const contextReasoning = await load('../src/shared/ai-context-reasoning.js');
   // 上下文压缩是新加的共享模块,ai.js 现在会导入它;测试里只做透传,行为由
   // tests/ai-compact.test.mjs 覆盖。它自身只依赖 ai-context-reasoning,
@@ -289,26 +294,30 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
     this.setExport('popupPosition', (anchor, w, h, placement) => ({ left: 0, top: 0, placement: placement || 'bottom' }));
   }, { context });
   // 工具回合另有 tests/ai-agent.test.mjs 覆盖;这里桩成「不可用」,本文件只测普通对话路径。
-  const agentRun = new vm.SyntheticModule(['agentAvailable', 'agentBinding', 'refreshAgentHostBar', 'runAgentSend'], function () {
+  const agentRun = new vm.SyntheticModule(['agentAvailable', 'agentBinding', 'refreshAgentHostBar', 'runAgentSend', 'syncComposerScopeCheck'], function () {
     this.setExport('agentAvailable', () => false);
     this.setExport('agentBinding', () => ({ session: null }));
     this.setExport('refreshAgentHostBar', () => {});
     this.setExport('runAgentSend', async () => {});
+    this.setExport('syncComposerScopeCheck', () => 0);
   }, { context });
   const aiLinks = new vm.SyntheticModule(['clearThreadLinks', 'linksForThread'], function () {
     // 桩:与真实模块同语义地读 state.aiLinks(测试直接往 state.aiLinks 里塞条目)。
     this.setExport('clearThreadLinks', (thread) => {
-      if (thread) thread.linkedHostIds = [];
+      if (thread) thread.scope = [];
       return 0;
     });
     this.setExport('linksForThread', (thread) => {
       const pool = state.aiLinks;
-      if (!pool || !thread?.linkedHostIds) return [];
-      return thread.linkedHostIds.map((id) => pool.get(id)).filter(Boolean);
+      if (!pool || !thread?.scope) return [];
+      return thread.scope.map((id) => pool.get(id)).filter(Boolean);
     });
   }, { context });
+  const composerMod = await load('../src/modules/ai-composer.js');
+  await composerMod.link((specifier) => ({ './core.js': core }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
+  await composerMod.evaluate();
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning, '../shared/ai-compact.js': compact }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-composer.js': composerMod, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning, '../shared/ai-compact.js': compact }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();
@@ -1021,32 +1030,26 @@ test('multi-thread lifecycle: create, derive title, switch, clear and delete', a
   assert.equal(state.activeThreadId, t2.id);
 });
 
-test('smart host auto-routing via ensureThreadForSession isolates hosts without cross-talk', async () => {
+test('ensureThreadForSession returns current active thread without auto-rebinding or creating threads on tab switch (F5)', async () => {
   const { ai, state } = await setup();
-  const sessA = { sessionId: 's-a', host: { id: 'host-a', name: 'web-01' } };
-  const sessB = { sessionId: 's-b', host: { id: 'host-b', name: 'db-01' } };
+  const sessA = { sessionId: 's-a', status: 'connected', host: { id: 'host-a', name: 'web-01' } };
+  const sessB = { sessionId: 's-b', status: 'connected', host: { id: 'host-b', name: 'db-01' } };
 
-  // 初始空会话直接绑定到主机 A
-  const thA = ai.ensureThreadForSession(sessA);
-  assert.equal(thA.hostId, 'host-a');
-  assert.equal(thA.hostName, 'web-01');
-  thA.history.push({ role: 'user', content: 'check nginx' });
+  // 新建会话时默认快照一次当前已连接终端主机到 scope (F5)
+  state.sessions.set('s-a', sessA);
+  state.activeId = 's-a';
+  const th1 = ai.ensureDefaultAiThread();
+  assert.deepEqual([...th1.scope], ['host-a']);
+  assert.equal(th1.hostId, 'host-a');
+  assert.equal(th1.hostName, 'web-01');
+  th1.history.push({ role: 'user', content: 'check nginx' });
 
-  // 主机 A 再次触发继续复用同一会话
-  assert.equal(ai.ensureThreadForSession(sessA).id, thA.id);
-
-  // 主机 B 触发时自动新建独立会话,不污染主机 A 的上下文
-  const thB = ai.ensureThreadForSession(sessB);
-  assert.notEqual(thB.id, thA.id);
-  assert.equal(thB.hostId, 'host-b');
-  assert.equal(thB.history.length, 0);
-  assert.equal(thA.history.length, 1);
-  thB.history.push({ role: 'user', content: 'check db' });
-
-  // 切回主机 A 触发时自动找回主机 A 的会话
-  const thA2 = ai.ensureThreadForSession(sessA);
-  assert.equal(thA2.id, thA.id);
-  assert.equal(state.activeThreadId, thA.id);
+  // 切换到主机 B 的终端窗口或调用 ensureThreadForSession:不改变当前会话的 scope,也不自动新建会话
+  state.sessions.set('s-b', sessB);
+  state.activeId = 's-b';
+  const cur = ai.ensureThreadForSession(sessB);
+  assert.equal(cur.id, th1.id);
+  assert.deepEqual([...cur.scope], ['host-a'], '切终端窗口不自动修改已有会话的 scope');
 });
 
 test('background streaming multiplexing updates background thread without polluting active thread', async () => {
@@ -1461,47 +1464,32 @@ test('title generation: explain prefix, diagnose opts.title, explicit title rete
   assert.equal(derived, 'A'.repeat(17) + '🚀…');
 });
 
-test('newAiThread and ensureThreadForSession reuse rules and quick-connect endpoint normalization', async () => {
+test('newAiThread reuse rules and default scope snapshot from active connected terminal (F5 / F15)', async () => {
   const { ai, state } = await setup();
 
   // 1. newAiThread reuses current thread if empty and idle
   const th1 = ai.ensureDefaultAiThread();
   assert.equal(th1.history.length, 0);
+  assert.deepEqual([...th1.scope], []);
   const res1 = ai.newAiThread();
   assert.equal(res1.id, th1.id);
 
-  // Non-empty current thread -> newAiThread creates new thread
+  // 2. Non-empty current thread -> newAiThread creates new thread and snapshots active connected session into scope
   th1.history.push({ role: 'user', content: 'hello' });
+  const sess1 = { sessionId: 's1', status: 'connected', host: { quick: true, id: 'quick-uuid-1', user: 'root', host: '192.168.1.10', port: 22 } };
+  state.sessions.set('s1', sess1);
+  state.activeId = 's1';
   const th2 = ai.newAiThread();
   assert.notEqual(th2.id, th1.id);
   assert.equal(state.activeThreadId, th2.id);
+  assert.deepEqual([...th2.scope], ['root@192.168.1.10:22']);
+  assert.equal(th2.hostId, 'root@192.168.1.10:22');
 
-  // 2. ensureThreadForSession Rule 1: current thread is empty & idle -> rebinds to host
-  const sess1 = { sessionId: 's1', host: { quick: true, id: 'quick-uuid-1', user: 'root', host: '192.168.1.10', port: 22 } };
-  const bound = ai.ensureThreadForSession(sess1);
-  assert.equal(bound.id, th2.id);
-  assert.equal(bound.hostId, 'root@192.168.1.10:22');
-
-  // Rule 1 also rebinds if current thread is empty & idle even if already bound to another host
-  const sessOther = { sessionId: 's-other', host: { id: 'host-other', name: 'other-box' } };
-  const rebound = ai.ensureThreadForSession(sessOther);
-  assert.equal(rebound.id, th2.id);
-  assert.equal(rebound.hostId, 'host-other');
-
-  // Rule 4: If current is busy or non-empty, but an unbound empty idle thread exists, rebinds that
-  rebound.history.push({ role: 'user', content: 'work' });
-  const unbound = ai.createAiThread({ title: '新对话' });
-  const sess2 = { sessionId: 's2', host: { id: 'host-standalone', name: 'db-box' } };
-  const bound2 = ai.ensureThreadForSession(sess2);
-  assert.equal(bound2.id, unbound.id);
-  assert.equal(bound2.hostId, 'host-standalone');
-  bound2.history.push({ role: 'user', content: 'query' });
-
-  // Quick connect same endpoint with different UUID reuses the same thread
-  rebound.hostId = 'root@192.168.1.10:22'; // restore sess1 hostId for reconnect test
-  const sess1Reconnect = { sessionId: 's1-new', host: { quick: true, id: 'quick-uuid-2', user: 'root', host: '192.168.1.10', port: 22 } };
-  const reused = ai.ensureThreadForSession(sess1Reconnect);
-  assert.equal(reused.id, rebound.id);
+  // 3. clearCurrentAiThread clears messages but preserves thread.scope (F15 / L12)
+  th2.history.push({ role: 'user', content: 'uptime' });
+  ai.clearCurrentAiThread();
+  assert.equal(th2.history.length, 0);
+  assert.deepEqual([...th2.scope], ['root@192.168.1.10:22'], '清空当前会话必须保留已勾选的主机范围');
 });
 
 test('cross-host guard allows execution between quick-connect sessions of same endpoint without warning', async () => {
@@ -1946,87 +1934,77 @@ test('apiKey mask length reflects actual key length and reveal/hide preserves it
   assert.equal(input.value.length, 28, '隐藏后长度依然为 28 字符');
 });
 
-test('multi mode with all links down intercepts aiSend: no ai:chat request, input preserved', async () => {
-  const { ai, $, state, calls } = await setup();
-  const th = ai.createAiThread({ title: '多主机离线', hostId: 'h-down', hostName: 'my-server' });
-  th.linkMode = 'multi';
-  th.linkedHostIds = ['h-down'];
-  state.aiLinks = new Map([['h-down', {
-    hostId: 'h-down', hostKey: 'h-down', hostName: 'my-server',
-    sessionId: 'ailink-x', status: 'error', headless: true, error: 'auth failed', refs: 1,
-  }]]);
+test('scope with unconnected host does not intercept aiSend with banner: sends as chat when agentUnavailable (F20)', async () => {
+  const { ai, $, calls } = await setup();
+  const th = ai.createAiThread({ title: '主机离线测试', scope: ['h-down'] });
   ai.switchAiThread(th.id);
 
   $('#ai-input').value = 'systemctl status nginx';
   const n0 = calls.filter((c) => c.channel === 'ai:chat').length;
 
-  await ai.aiSend();
+  const p = ai.aiSend();
 
-  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n0, '全部主机未连接时不发 ai:chat 请求');
-  assert.equal($('#ai-input').value, 'systemctl status nginx', '输入框文字必须保留');
-  assert.ok(th.sendBlocked, 'thread.sendBlocked 必须置位');
-  assert.equal(th.sendBlocked.text, 'systemctl status nginx');
-
-  // 程序发起的发送（如重发）也会被写回输入框与草稿
-  $('#ai-input').value = '';
-  await ai.aiSend('free -m');
-  assert.equal($('#ai-input').value, 'free -m', '程序发起的文本也写回输入框');
-  assert.equal(th.sendBlocked.text, 'free -m');
-  assert.equal(th.draft, 'free -m');
+  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n0 + 1, '不再通过离线横条拦截发送');
+  assert.equal($('#ai-input').value, '', '输入框正常清空并送出');
+  assert.equal(th.sendBlocked, null);
+  ai.aiFinishHolder({ requestId: th.req.id, finishReason: 'stop' });
+  await p;
 });
 
-test('follow mode without a connected window sends as plain chat without tools', async () => {
+test('empty scope sends as plain chat without tools (F6)', async () => {
   const { ai, $, state, calls } = await setup();
-  const th = ai.createAiThread({ title: '未链接对话' });
+  const th = ai.createAiThread({ title: '纯对话会话', scope: [] });
   ai.switchAiThread(th.id);
-  assert.equal(th.linkMode, 'follow');
+  assert.deepEqual([...th.scope], []);
   assert.equal(state.sessions.size, 0);
 
   const n0 = calls.filter((c) => c.channel === 'ai:chat').length;
   $('#ai-input').value = '写个排序算法';
   const p = ai.aiSend();
 
-  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n0 + 1, '窗口无主机时走普通对话');
+  assert.equal(calls.filter((c) => c.channel === 'ai:chat').length, n0 + 1, '空 scope 时走普通对话');
   assert.equal($('#ai-input').value, '', '已成功发出的输入框已清空');
   assert.equal(th.sendBlocked, null);
   ai.aiFinishHolder({ requestId: th.req.id, finishReason: 'stop' });
   await p;
 });
 
-test('ai drawer badges: follow thread hides host badge; chat shows dialog mode; multi shows count', async () => {
+test('ai drawer badges: empty scope shows 纯对话; 1 host shows host name; multi scope shows N 台可操作 (F16)', async () => {
   const { ai, $, state } = await setup();
+  state.hosts = [
+    { id: 'h1', name: 'web-prod-01', host: '10.0.1.11' },
+    { id: 'h2', name: 'db-prod-02', host: '10.0.1.12' },
+    { id: 'h3', name: 'cache-redis-03', host: '10.0.2.21' },
+  ];
 
-  // 1. 未链接的跟随对话 -> 不显示任何主机徽标
-  const thFollow = ai.createAiThread({ title: '跟随' });
+  // 1. scope 为空 -> 显示「纯对话」
+  const thChat = ai.createAiThread({ title: '纯对话会话', scope: [] });
 
-  // 2. chat 对话 -> 显示「对话模式」
-  const thChat = ai.createAiThread({ title: '对话模式会话' });
-  thChat.linkMode = 'chat';
+  // 2. scope 为 1 台 -> 显示该主机名
+  const thSingle = ai.createAiThread({ title: '单主机排查', scope: ['h1'] });
 
-  // 3. 多主机对话 + 生成中 -> 「N 台主机」与 busy 并列
-  const thMulti = ai.createAiThread({ title: '多主机', hostId: 'h-busy', hostName: 'prod-api' });
-  thMulti.linkMode = 'multi';
-  thMulti.linkedHostIds = ['h1', 'h2', 'h3'];
+  // 3. scope 为多台 + 生成中 -> 「3 台可操作」与 busy 并列
+  const thMulti = ai.createAiThread({ title: '跨主机排查', scope: ['h1', 'h2', 'h3'] });
   thMulti.req = { id: 'req-busy' };
 
   ai.openAiDrawer();
   const list = $('#ai-drawer-list');
 
-  const cardFollow = list.children.find((c) => c.dataset?.threadId === thFollow.id);
-  assert.ok(cardFollow);
-  assert.doesNotMatch(cardFollow.innerHTML, /ai-drawer-badge host/, '跟随对话未链接主机时不显示主机徽标');
-  assert.doesNotMatch(cardFollow.innerHTML, /ai-drawer-badge chat/, '跟随模式不显示对话模式徽标');
-
   const cardChat = list.children.find((c) => c.dataset?.threadId === thChat.id);
   assert.ok(cardChat);
-  assert.match(cardChat.innerHTML, /ai-drawer-badge chat/, 'chat 对话显示对话模式徽标');
-  assert.match(cardChat.innerHTML, /对话模式/);
+  assert.match(cardChat.innerHTML, /ai-drawer-badge chat/, '空 scope 对话显示纯对话徽标');
+  assert.match(cardChat.innerHTML, /纯对话/);
+
+  const cardSingle = list.children.find((c) => c.dataset?.threadId === thSingle.id);
+  assert.ok(cardSingle);
+  assert.match(cardSingle.innerHTML, /ai-drawer-badge host/, '单主机 scope 显示主机名徽标');
+  assert.match(cardSingle.innerHTML, /web-prod-01/);
 
   const cardMulti = list.children.find((c) => c.dataset?.threadId === thMulti.id);
   assert.ok(cardMulti);
-  assert.match(cardMulti.innerHTML, /ai-drawer-badge host/, '多主机对话显示主机徽标');
+  assert.match(cardMulti.innerHTML, /ai-drawer-badge host/, '多主机 scope 显示数量徽标');
   assert.match(cardMulti.innerHTML, /ai-drawer-badge busy/, 'busy 对话显示生成中徽标');
-  assert.match(cardMulti.innerHTML, /3 台主机/);
+  assert.match(cardMulti.innerHTML, /3 台可操作/);
   assert.match(cardMulti.innerHTML, /生成中/);
 });
 

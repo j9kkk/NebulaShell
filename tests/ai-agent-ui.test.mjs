@@ -67,6 +67,17 @@ class El {
     node.parentNode = p;
     p.children.splice(p.children.indexOf(this), 0, node);
   }
+  insertBefore(node, ref) {
+    if (!node) return null;
+    if (!ref || ref.parentNode !== this) {
+      this.append(node);
+      return node;
+    }
+    if (node.parentNode) node.remove();
+    node.parentNode = this;
+    this.children.splice(this.children.indexOf(ref), 0, node);
+    return node;
+  }
   remove() {
     const p = this.parentNode;
     if (!p) return;
@@ -85,6 +96,18 @@ class El {
   addEventListener(type, fn) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(fn);
+  }
+  dispatchEvent(ev) {
+    const type = typeof ev === 'string' ? ev : ev?.type;
+    const event = {
+      type,
+      target: this,
+      currentTarget: this,
+      stopPropagation() {},
+      preventDefault() {},
+      ...(typeof ev === 'object' ? ev : {}),
+    };
+    for (const fn of this.listeners.get(type) || []) fn(event);
   }
   focus() {}
   contains(node) {
@@ -179,4 +202,50 @@ test('失败 / 中止的步骤也不留停止按钮', async () => {
 test('不再提供「已连续执行 N 步，是否继续」这张卡', async () => {
   const { adapter } = await setup();
   assert.equal(adapter.confirmContinue, undefined);
+});
+
+test('P6 步骤行渲染 @host 胶囊并在确认卡支持切换目标主机（B1/B3）', async () => {
+  const { adapter, container } = await setup();
+  const s = {
+    id: 's-host',
+    tool: 'exec',
+    hostName: 'web-prod-01',
+    hostKey: 'h-web-01',
+    args: { cmd: 'systemctl reload nginx', host: 'web-prod-01' },
+    status: 'running',
+  };
+  adapter.stepStart(s);
+  const badge = container.querySelector('.ai-step-host');
+  assert.ok(badge, '有 hostName 时步骤行头部应挂载 .ai-step-host 胶囊');
+  assert.equal(badge.textContent, '@web-prod-01');
+
+  const confirmPromise = adapter.requestConfirm({
+    step: s,
+    tier: 'normal',
+    cmd: 'systemctl reload nginx',
+    cwd: '/etc/nginx',
+    reasons: ['重载服务'],
+    hostName: 'web-prod-01',
+    hostKey: 'h-web-01',
+    scopeHosts: [
+      { hostKey: 'h-web-01', name: 'web-prod-01', address: '10.0.1.11 · root' },
+      { hostKey: 'h-db-02', name: 'db-prod-02', address: '10.0.1.12 · postgres' },
+    ],
+  });
+
+  const hostBtn = container.querySelector('.ai-confirm-host-btn');
+  assert.ok(hostBtn, '多台可达范围时确认卡头部应渲染目标主机切换按钮');
+  assert.match(hostBtn.textContent, /@web-prod-01/);
+
+  const opts = container.querySelectorAll('.ai-confirm-host-opt');
+  assert.equal(opts.length, 2);
+  opts[1].dispatchEvent({ type: 'click' });
+  assert.equal(badge.textContent, '@db-prod-02', '切换确认卡目标主机后步骤行胶囊应同步更新');
+
+  const runBtn = container.querySelector('.primary');
+  runBtn.dispatchEvent({ type: 'click' });
+  const decision = await confirmPromise;
+  assert.equal(decision.decision, 'run');
+  assert.equal(decision.host, 'db-prod-02');
+  assert.equal(decision.hostKey, 'h-db-02');
 });

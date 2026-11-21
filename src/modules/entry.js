@@ -16,7 +16,13 @@ import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
   revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu, toggleTargetMenu,
 } from './ai-agent-ui.js';
-import { getTargetMenuData, refreshAgentHostBar, targetMenuHandlers } from './ai-agent-run.js';
+import {
+  bindComposerEvents, closeMentionPop, handleComposerKeydown, isComposerComposing,
+} from './ai-composer.js';
+import {
+  getScopeMentionHosts, getTargetMenuData, refreshAgentHostBar, removeOutChipsFromComposer,
+  resetExpandedFoldersForMenu, restoreOutChipsToScope, syncComposerScopeCheck, targetMenuHandlers,
+} from './ai-agent-run.js';
 import { clearThreadLinks, handleLinkSessionStatus, setLinksChangeHandler } from './ai-links.js';
 import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
@@ -756,33 +762,34 @@ export function bindEvents() {
     // 此时 e.target.closest() 已失效,会误判成点在外面而收起菜单。
     if (!clickFromMenu(e, ['ai-model-menu', 'ai-model-trigger'])) closeModelMenu();
     if (!clickFromMenu(e, ['ai-mode-menu', 'ai-mode-trigger', 'ai-mode-help-pop'])) closeModeMenu();
-    if (!clickFromMenu(e, ['ai-target-menu', 'ai-target-trigger'])) closeTargetMenu();
+    if (!clickFromMenu(e, ['ai-scope-menu', 'ai-scope-trigger'])) closeTargetMenu();
+    if (!clickFromMenu(e, ['ai-mention-pop', 'ai-input'])) closeMentionPop();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeModelMenu(); closeModeMenu(); closeTargetMenu(); }
+    if (e.key === 'Escape') { closeModelMenu(); closeModeMenu(); closeTargetMenu(); closeMentionPop(); }
   });
   window.addEventListener('resize', () => {
     closeModelMenu();
     closeModeMenu();
     closeThreadMenu();
     closeTargetMenu();
+    closeMentionPop();
   });
 
-  // 主机链接选择器: 触发钮开合菜单(三模式 + 多主机清单)
-  $('#ai-target-trigger')?.addEventListener('click', () => {
-    const menu = $('#ai-target-menu');
+  // 会话主机范围选择器: 输入框左下角触发钮开合菜单
+  $('#ai-scope-trigger')?.addEventListener('click', () => {
+    const menu = $('#ai-scope-menu');
     if (menu?.classList.contains('hidden')) {
       closeModelMenu();
       closeThreadMenu();
       closeModeMenu();
+      resetExpandedFoldersForMenu();
     }
     const data = getTargetMenuData();
     toggleTargetMenu(data, targetMenuHandlers());
   });
-  $('#ai-target-menu-list')?.addEventListener('keydown', onTargetMenuKeydown);
-  // 菜单内的点击一律不冒泡到 document:菜单会原地重绘,被点中的行随后就被摘出文档,
-  // 走到 document 时已经无法判断"这次点击来自菜单内"。在容器边界截断最稳。
-  $('#ai-target-menu')?.addEventListener('click', (e) => e.stopPropagation());
+  $('#ai-scope-menu-list')?.addEventListener('keydown', onTargetMenuKeydown);
+  $('#ai-scope-menu')?.addEventListener('click', (e) => e.stopPropagation());
 
   // 执行模式选择器:触发钮开菜单(绑定单点在这里,updateModePicker 不再设 onclick,
   // 否则双绑定一次点击开又关);菜单项切换模式,切 auto 的确认在 ai-agent-run.js;
@@ -931,8 +938,19 @@ export function bindEvents() {
 
   // 发送/停止同钮:空闲时发送,流式期间点击中止当前生成。
   $('#ai-send').addEventListener('click', () => (state.aiReq || threadBusy(activeAiThread()) ? stopAiGeneration() : aiSend()));
-  $('#ai-input').addEventListener('input', () => updateAiContextIndicator());
+  bindComposerEvents($('#ai-input'), {
+    onInput: () => {
+      syncComposerScopeCheck();
+      updateAiContextIndicator();
+    },
+    getScopeHosts: () => getScopeMentionHosts(),
+    onOpenScope: () => $('#ai-scope-trigger')?.click(),
+  });
+  $('#ai-chip-warn-restore')?.addEventListener('click', () => restoreOutChipsToScope());
+  $('#ai-chip-warn-remove')?.addEventListener('click', () => removeOutChipsFromComposer());
   $('#ai-input').addEventListener('keydown', (e) => {
+    if (e.isComposing || isComposerComposing()) return;
+    if (handleComposerKeydown(e, $('#ai-input'))) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       aiSend();
@@ -1163,17 +1181,14 @@ export function bindEvents() {
   // 工具回合:命令输出流进对应步骤行;模型拼工具参数期间也算活跃(防空闲误判)。
   window.nebula.on('ai:tool-output', routeToolOutput);
   window.nebula.on('ai:tool-delta', ({ requestId }) => aiTouchRequest(requestId));
-  // 主机条跟随当前会话与连接状态(作用于哪台主机、是否可用工具)。
-  window.addEventListener('nb:active-session', refreshAgentHostBar);
+  // 会话主机范围与终端标签切换彻底解耦(不再监听 nb:active-session 改写主机绑定);
+  // 仅在底层会话连接状态变化时刷新范围内主机的可达点。
   window.addEventListener('nb:session-status', refreshAgentHostBar);
   window.nebula.on('ssh:status', () => setTimeout(refreshAgentHostBar, 0));
-  // 多主机链接注册表变化(建链/断链/掉线)→ 刷新主机钮与菜单。
   setLinksChangeHandler(() => refreshAgentHostBar());
-  // 退出前断开全部 AI 无头链接(复用中的标签会话不受影响)。
-  // 用 sendBeacon 式的同步尽力而为:这里是纯 IPC,失败也不阻塞退出。
   window.addEventListener('beforeunload', () => {
     for (const th of state.aiThreads?.values?.() || []) {
-      if (th.linkedHostIds?.length) clearThreadLinks(th);
+      if (th.scope?.length) clearThreadLinks(th);
     }
   });
   window.nebula.on('ai:error', ({ requestId, message, code }) => {
@@ -1476,14 +1491,13 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
       title: t.title,
       hostId: t.hostId,
       hostName: t.hostName,
+      scope: [...(t.scope || [])],
       historyLength: t.history?.length || 0,
       active: t.id === state.activeThreadId,
       busy: !!t.req,
       unread: !!t.unread,
       draft: t.draft || '',
       execMode: t.execMode || 'manual',
-      linkMode: t.linkMode || (t.execMode === 'chat' ? 'chat' : 'follow'),
-      linkedHostIds: [...(t.linkedHostIds || [])],
       allowlistLength: t.allowlist?.length || 0,
       sendBlocked: !!t.sendBlocked,
     })),

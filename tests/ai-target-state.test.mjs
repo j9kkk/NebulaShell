@@ -6,12 +6,11 @@ import {
   toolSupportKey,
   isModelToolsCapable,
   modelToolsCapable,
-  rebindThread,
   resolveAiTarget,
-  threadLinkMode,
+  threadScope,
   threadExecMode,
   hostSummaryOf,
-  setLinkMode,
+  setThreadScope,
   clearTargetGrants,
   isFullExecMode,
 } from '../src/shared/ai-target-state.js';
@@ -58,16 +57,10 @@ test('modelToolsCapable evaluates baseUrl::model toolSupport correctly', () => {
   assert.equal(isModelToolsCapable(null), true);
 });
 
-test('threadLinkMode: reads linkMode, migrates legacy execMode=chat, defaults to follow', () => {
-  assert.equal(threadLinkMode(null), 'follow');
-  assert.equal(threadLinkMode({}), 'follow');
-  assert.equal(threadLinkMode({ linkMode: 'multi' }), 'multi');
-  assert.equal(threadLinkMode({ linkMode: 'chat' }), 'chat');
-  // v1 遗留:chat 曾执行档位
-  assert.equal(threadLinkMode({ execMode: 'chat' }), 'chat');
-  assert.equal(threadLinkMode({ execMode: 'auto' }), 'follow');
-  // linkMode 优先于遗留 execMode
-  assert.equal(threadLinkMode({ linkMode: 'follow', execMode: 'chat' }), 'follow');
+test('threadScope: normalizes and deduplicates thread.scope', () => {
+  assert.deepEqual(threadScope(null), []);
+  assert.deepEqual(threadScope({}), []);
+  assert.deepEqual(threadScope({ scope: ['h1', 'h2', 'h1'] }), ['h1', 'h2']);
 });
 
 test('threadExecMode: reads manual/auto/full, chat and unknown collapse to manual', () => {
@@ -86,17 +79,20 @@ test('isFullExecMode: only the full tier reports managed execution', () => {
   assert.equal(isFullExecMode(undefined), false);
 });
 
-test('hostSummaryOf produces the three required copy variants', () => {
-  assert.equal(hostSummaryOf({ linkMode: 'chat' }), '未链接主机');
-  assert.equal(hostSummaryOf({ linkMode: 'follow', hostLabel: 'web-01' }), '已链接 web-01');
-  assert.equal(hostSummaryOf({ linkMode: 'follow', hostLabel: null }), '未链接主机');
-  assert.equal(hostSummaryOf({ linkMode: 'multi', linkedCount: 3 }), '已链接 3 台主机');
-  assert.equal(hostSummaryOf({ linkMode: 'multi', linkedCount: 0 }), '未链接主机');
+test('hostSummaryOf produces the three required scope copy variants (F1 / F6 / F7 / F8)', () => {
+  const hosts = [
+    { id: 'h1', name: 'web-01' },
+    { id: 'h2', name: 'db-02' },
+    { id: 'h3', name: 'cache-03' },
+  ];
+  assert.equal(hostSummaryOf({ scope: [], hosts }), '未选主机');
+  assert.equal(hostSummaryOf({ scope: ['h1'], hosts }), 'web-01');
+  assert.equal(hostSummaryOf({ scope: ['h1', 'h2', 'h3'], hosts }), '3 台可操作');
 });
 
-test('setLinkMode: entering chat clears grants and drops execMode descoping', () => {
+test('setThreadScope: changing scope clears grants and resets execMode to manual', () => {
   const thread = {
-    linkMode: 'follow',
+    scope: ['host-a'],
     execMode: 'auto',
     autoAcked: true,
     allowlist: [{ rule: 'exec', key: 'ls' }],
@@ -104,247 +100,112 @@ test('setLinkMode: entering chat clears grants and drops execMode descoping', ()
     hostOs: 'linux',
     sendBlocked: { text: 'hi' },
   };
-  setLinkMode(thread, 'chat');
-  assert.equal(thread.linkMode, 'chat');
-  assert.equal(thread.execMode, 'manual', 'chat 不是执行档位,执行语义回手动');
-  assert.equal(thread.autoAcked, false);
-  assert.deepEqual(thread.allowlist, []);
-  assert.deepEqual(thread.taint, []);
-  assert.equal(thread.hostOs, null);
-  assert.equal(thread.sendBlocked, null);
-});
-
-test('setLinkMode: leaving chat restores manual and is a no-op when unchanged', () => {
-  const thread = { linkMode: 'chat', execMode: 'manual', allowlist: [], taint: [] };
-  setLinkMode(thread, 'multi');
-  assert.equal(thread.linkMode, 'multi');
+  const changed = setThreadScope(thread, ['host-a', 'host-b']);
+  assert.equal(changed, true);
+  assert.deepEqual(thread.scope, ['host-a', 'host-b']);
   assert.equal(thread.execMode, 'manual');
-
-  const same = { linkMode: 'multi', execMode: 'auto', allowlist: [{ rule: 'a', key: 'b' }] };
-  setLinkMode(same, 'multi');
-  assert.equal(same.execMode, 'auto', '同模式不变更授权');
-  assert.equal(same.allowlist.length, 1);
-});
-
-test('rebindThread: 首次绑定不算换主机，保留已选的自动/托管档', () => {
-  // 新对话的 hostId 为空，第一条消息发送时才 bindNow 落到当前标签 ——
-  // 这不是「换了目标」，不能把用户刚选的档位撤掉（否则托管档永远发不出第一条命令）。
-  for (const mode of ['auto', 'full']) {
-    const thread = { hostId: null, linkMode: 'follow', execMode: mode, allowlist: [], taint: [] };
-    rebindThread(thread, { hostKey: 'host-a', hostLabel: 'Host A', sessionId: 'sess-a' });
-    assert.equal(thread.hostId, 'host-a');
-    assert.equal(thread.execMode, mode, `首次绑定不能降级 ${mode}`);
-  }
-  // 已经绑定过再换主机，仍然必须降回手动。
-  const bound = { hostId: 'host-a', execMode: 'full' };
-  rebindThread(bound, { hostKey: 'host-b', hostLabel: 'Host B', sessionId: 'sess-b' });
-  assert.equal(bound.execMode, 'manual');
-});
-
-test('rebindThread revokes grants and downgrades auto mode when switching hosts', () => {
-  const thread = {
-    hostId: 'host-a',
-    hostName: 'Host A',
-    sessionId: 'sess-a',
-    execMode: 'auto',
-    autoAcked: true,
-    allowlist: [{ rule: 'exec', key: 'ls' }],
-    taint: ['/tmp/secret'],
-    hostOs: 'linux',
-    sendBlocked: { text: 'hello' },
-  };
-
-  rebindThread(thread, { hostKey: 'host-b', hostLabel: 'Host B', sessionId: 'sess-b' });
-
-  assert.equal(thread.hostId, 'host-b');
-  assert.equal(thread.hostName, 'Host B');
-  assert.equal(thread.sessionId, 'sess-b');
-  assert.equal(thread.execMode, 'manual', '换主机时 auto 必须降为 manual');
   assert.equal(thread.autoAcked, false);
   assert.deepEqual(thread.allowlist, []);
   assert.deepEqual(thread.taint, []);
   assert.equal(thread.hostOs, null);
   assert.equal(thread.sendBlocked, null);
-});
 
-test('rebindThread preserves grants and mode when updating on the same host', () => {
-  const thread = {
-    hostId: 'host-a',
-    hostName: 'Host A',
-    sessionId: 'sess-old',
-    execMode: 'auto',
-    autoAcked: true,
-    allowlist: [{ rule: 'exec', key: 'pwd' }],
-    taint: ['/var/log'],
-    hostOs: 'linux',
-  };
-
-  rebindThread(thread, { hostKey: 'host-a', hostLabel: 'Host A New Label', sessionId: 'sess-new' });
-
-  assert.equal(thread.hostId, 'host-a');
-  assert.equal(thread.hostName, 'Host A New Label');
-  assert.equal(thread.sessionId, 'sess-new');
-  assert.equal(thread.execMode, 'auto', '同一主机不降级');
-  assert.equal(thread.autoAcked, true);
+  // Same scope is a no-op and preserves grants
+  thread.execMode = 'full';
+  thread.allowlist = [{ rule: 'exec', key: 'pwd' }];
+  const same = setThreadScope(thread, ['host-a', 'host-b']);
+  assert.equal(same, false);
+  assert.equal(thread.execMode, 'full');
   assert.equal(thread.allowlist.length, 1);
-  assert.equal(thread.taint.length, 1);
-  assert.equal(thread.hostOs, 'linux');
 });
 
-test('rebindThread downgrades the full (managed) tier too when the host changes', () => {
-  const thread = {
-    hostId: 'host-a',
-    hostName: 'Host A',
-    sessionId: 'sess-a',
-    execMode: 'full',
-    autoAcked: true,
-    allowlist: [{ rule: 'exec', key: 'ls' }],
-    taint: ['/tmp/secret'],
-    hostOs: 'linux',
-  };
-
-  rebindThread(thread, { hostKey: 'host-b', hostLabel: 'Host B', sessionId: 'sess-b' });
-
-  // 托管权限属于「那台主机」:换一台必须重新确认,不能静默继承。
-  assert.equal(thread.execMode, 'manual', '换主机时托管档必须降为 manual');
-  assert.equal(thread.autoAcked, false);
-  assert.deepEqual(thread.allowlist, []);
-  assert.deepEqual(thread.taint, []);
-});
-
-test('setLinkMode: entering chat drops the managed tier back to manual', () => {
-  const thread = { linkMode: 'follow', execMode: 'full', autoAcked: true, allowlist: [], taint: [] };
-  setLinkMode(thread, 'chat');
-  assert.equal(thread.execMode, 'manual');
-});
-
-test('resolveAiTarget: linkMode chat does not operate any host', () => {
-  const thread = { linkMode: 'chat', hostId: 'host-1', hostName: 'Host 1' };
+test('resolveAiTarget: empty scope enters plain chat mode and hides mode control (F6)', () => {
+  const thread = { scope: [] };
   const target = resolveAiTarget({ thread });
   assert.equal(target.kind, 'chat');
-  assert.equal(target.linkMode, 'chat');
-  assert.equal(target.displayName, '未链接主机');
-  assert.equal(target.hostSummary, '未链接主机');
+  assert.equal(target.count, 0);
+  assert.equal(target.displayName, '未选主机');
+  assert.equal(target.hostSummary, '未选主机');
+  assert.equal(target.chatLabel, '纯对话');
+  assert.equal(target.showModeControl, false);
   assert.equal(target.tone, 'idle');
-  assert.equal(target.statusText, '纯对话 · 不操作主机');
+  assert.equal(target.statusText, '纯对话');
 });
 
-test('resolveAiTarget: legacy execMode=chat is treated as chat link mode', () => {
-  const target = resolveAiTarget({ thread: { execMode: 'chat' } });
-  assert.equal(target.kind, 'chat');
-  assert.equal(target.linkMode, 'chat');
-});
-
-test('resolveAiTarget: follow with no active connection is none', () => {
-  const thread = { linkMode: 'follow' };
-  const target = resolveAiTarget({ thread, sessions: new Map(), activeId: null });
-  assert.equal(target.kind, 'none');
-  assert.equal(target.hostSummary, '未链接主机');
-  assert.equal(target.displayName, '未链接主机');
-  assert.equal(target.tone, 'idle');
-  assert.equal(target.statusText, '当前窗口无主机');
-});
-
-test('resolveAiTarget: follow binds to the active command window', () => {
-  const activeSess = {
-    sessionId: 'sess-1',
-    status: 'connected',
-    host: { id: 'host-active', name: 'Active Web' },
-  };
-  const sessions = new Map([['sess-1', activeSess]]);
-  const target = resolveAiTarget({ thread: { linkMode: 'follow' }, sessions, activeId: 'sess-1' });
-
-  assert.equal(target.kind, 'bound');
-  assert.equal(target.hostSummary, '已链接 Active Web');
-  assert.equal(target.hostLabel, 'Active Web');
-  assert.equal(target.tone, 'connected');
-  assert.equal(target.active?.hostKey, 'host-active');
-});
-
-test('resolveAiTarget: follow with a disconnected window falls back to plain chat (none)', () => {
+test('resolveAiTarget: 1 host in scope shows host name and enables mode control (F7)', () => {
+  const hosts = [{ id: 'host-1', name: 'web-prod-01', host: '10.0.1.11' }];
   const sess = {
     sessionId: 'sess-1',
-    status: 'disconnected',
-    host: { id: 'host-a', name: 'Host A' },
+    status: 'connected',
+    host: hosts[0],
   };
   const sessions = new Map([['sess-1', sess]]);
-  const target = resolveAiTarget({ thread: { linkMode: 'follow' }, sessions, activeId: 'sess-1' });
-  // 没有可操作主机 → 普通对话(未链接主机),不拦截发送、不进入离线警示态。
-  assert.equal(target.kind, 'none');
-  assert.equal(target.hostSummary, '未链接主机');
-  assert.equal(target.tone, 'idle');
+  const target = resolveAiTarget({ thread: { scope: ['host-1'] }, sessions, hosts });
+
+  assert.equal(target.kind, 'single');
+  assert.equal(target.count, 1);
+  assert.equal(target.hostSummary, 'web-prod-01');
+  assert.equal(target.hostLabel, 'web-prod-01');
+  assert.equal(target.showModeControl, true);
+  assert.equal(target.tone, 'connected');
+  assert.equal(target.session?.sessionId, 'sess-1');
 });
 
-test('resolveAiTarget: multi summarizes linked count and health', () => {
-  const links = [
-    { hostId: 'h1', hostKey: 'h1', hostName: 'web-01', sessionId: 's1', status: 'connected' },
-    { hostId: 'h2', hostKey: 'h2', hostName: 'db-02', sessionId: 's2', status: 'connected' },
-    { hostId: 'h3', hostKey: 'h3', hostName: 'cache-03', sessionId: 's3', status: 'error', error: 'auth failed' },
+test('resolveAiTarget: multi-host scope summarizes count and health (F8)', () => {
+  const hosts = [
+    { id: 'h1', name: 'web-01' },
+    { id: 'h2', name: 'db-02' },
+    { id: 'h3', name: 'cache-03' },
   ];
   const sessions = new Map([
     ['s1', { sessionId: 's1', status: 'connected', host: { id: 'h1', name: 'web-01' } }],
     ['s2', { sessionId: 's2', status: 'connected', host: { id: 'h2', name: 'db-02' } }],
   ]);
-  const target = resolveAiTarget({ thread: { linkMode: 'multi' }, sessions, links, activeId: 's1' });
+  const target = resolveAiTarget({ thread: { scope: ['h1', 'h2', 'h3'] }, sessions, hosts });
 
   assert.equal(target.kind, 'multi');
-  assert.equal(target.linkMode, 'multi');
+  assert.equal(target.count, 3);
   assert.equal(target.linkedCount, 3);
-  assert.equal(target.hostSummary, '已链接 3 台主机');
-  assert.equal(target.tone, 'warn', '有离线主机时整体警示');
+  assert.equal(target.hostSummary, '3 台可操作');
+  assert.equal(target.showModeControl, true);
+  assert.equal(target.tone, 'warn', '有未连接主机时提示部分连接');
   assert.equal(target.statusText, '1 台未连接');
   assert.equal(target.session?.sessionId, 's1', '主执行会话取首台已连接');
 });
 
-test('resolveAiTarget: multi with all connected is healthy', () => {
-  const links = [
-    { hostId: 'h1', hostKey: 'h1', hostName: 'web-01', sessionId: 's1', status: 'connected' },
-    { hostId: 'h2', hostKey: 'h2', hostName: 'db-02', sessionId: 's2', status: 'connected' },
+test('resolveAiTarget: multi-host scope with all connected is healthy', () => {
+  const hosts = [
+    { id: 'h1', name: 'web-01' },
+    { id: 'h2', name: 'db-02' },
   ];
   const sessions = new Map([
     ['s1', { sessionId: 's1', status: 'connected', host: { id: 'h1', name: 'web-01' } }],
     ['s2', { sessionId: 's2', status: 'connected', host: { id: 'h2', name: 'db-02' } }],
   ]);
-  const target = resolveAiTarget({ thread: { linkMode: 'multi' }, sessions, links, activeId: 's1' });
+  const target = resolveAiTarget({ thread: { scope: ['h1', 'h2'] }, sessions, hosts });
   assert.equal(target.kind, 'multi');
   assert.equal(target.tone, 'connected');
   assert.equal(target.statusText, '全部就绪');
-  assert.equal(target.linkedHosts.length, 2);
-});
-
-test('resolveAiTarget: multi with zero links is none', () => {
-  const target = resolveAiTarget({ thread: { linkMode: 'multi' }, links: [] });
-  assert.equal(target.kind, 'none');
-  assert.equal(target.hostSummary, '未链接主机');
-  assert.equal(target.linkedCount, 0);
-});
-
-test('resolveAiTarget: multi with all links down is offline and blocks sends', () => {
-  const links = [
-    { hostId: 'h1', hostKey: 'h1', hostName: 'web-01', sessionId: 's1', status: 'error', error: 'auth failed' },
-    { hostId: 'h2', hostKey: 'h2', hostName: 'db-02', sessionId: 's2', status: 'error' },
-  ];
-  const target = resolveAiTarget({ thread: { linkMode: 'multi' }, links });
-  assert.equal(target.kind, 'offline');
-  assert.equal(target.tone, 'warn');
-  assert.equal(target.statusText, '全部主机未连接');
+  assert.equal(target.connectedHosts.length, 2);
 });
 
 test('resolveAiTarget: blocked tools and denied host', () => {
-  const sess = { sessionId: 'sess-1', status: 'connected', host: { id: 'host-1', name: 'Host 1' } };
+  const hosts = [{ id: 'host-1', name: 'Host 1' }];
+  const sess = { sessionId: 'sess-1', status: 'connected', host: hosts[0] };
   const sessions = new Map([['sess-1', sess]]);
-  const thread = { linkMode: 'follow' };
+  const thread = { scope: ['host-1'] };
 
   const settingsNoTools = {
     ai: { baseUrl: 'http://loc:11434', model: 'tiny', toolSupport: { 'http://loc:11434::tiny': false } },
   };
-  const noTools = resolveAiTarget({ thread, sessions, activeId: 'sess-1', settings: settingsNoTools });
+  const noTools = resolveAiTarget({ thread, sessions, hosts, settings: settingsNoTools });
   assert.equal(noTools.blocked, 'tools');
   assert.equal(noTools.tone, 'warn');
   assert.equal(noTools.statusText, '模型不支持工具');
 
-  const sessDeny = { sessionId: 'sess-2', status: 'connected', host: { id: 'host-2', name: 'Host 2', aiAccess: 'deny' } };
-  const deny = resolveAiTarget({ thread, sessions: new Map([['sess-2', sessDeny]]), activeId: 'sess-2' });
+  const hostsDeny = [{ id: 'host-2', name: 'Host 2', aiAccess: 'deny' }];
+  const sessDeny = { sessionId: 'sess-2', status: 'connected', host: hostsDeny[0] };
+  const deny = resolveAiTarget({ thread: { scope: ['host-2'] }, sessions: new Map([['sess-2', sessDeny]]), hosts: hostsDeny });
   assert.equal(deny.blocked, 'deny');
   assert.equal(deny.statusText, '主机禁止 AI');
 });

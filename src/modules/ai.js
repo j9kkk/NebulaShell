@@ -16,12 +16,26 @@ let aiKeySecretState = {
   endpoint: '',
 };
 import { popupPosition } from './interaction.js';
+import {
+  clearComposer,
+  getComposerChips,
+  getComposerDraft,
+  getComposerMentions,
+  getComposerText,
+  setComposerSegs,
+} from './ai-composer.js';
 import { commandBlockTargetStatus, getCommandBlockTarget, submitCommandBlock } from './terminal.js';
 import { renderMarkdown } from '../shared/markdown.js';
 import { stripTerminalNoise } from '../shared/term-text.js';
 import { classifyCommandBlock } from '../shared/ai-command-blocks.js';
 import { AI_PRESETS, AI_SYSTEM_PROMPT } from '../shared/ai-presets.js';
-import { hostKeyOf, hostLabelOf, rebindThread, resolveAiTarget, threadLinkMode } from '../shared/ai-target-state.js';
+import {
+  defaultScopeForNewThread,
+  hostKeyOf,
+  hostLabelOf,
+  scopeSummary,
+  threadScope,
+} from '../shared/ai-target-state.js';
 import {
   calculateThreadContextTokens,
   estimateMessageTokens,
@@ -33,8 +47,10 @@ import {
   resolveReasoningParams,
   trimMessagesForContext,
 } from '../shared/ai-context-reasoning.js';
-import { agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend } from './ai-agent-run.js';
-import { clearThreadLinks, linksForThread } from './ai-links.js';
+import {
+  agentAvailable, agentBinding, refreshAgentHostBar, runAgentSend, syncComposerScopeCheck,
+} from './ai-agent-run.js';
+import { clearThreadLinks } from './ai-links.js';
 import {
   COMPACT_KEEP_TURNS,
   COMPACT_MAX_OUTPUT,
@@ -443,7 +459,7 @@ export function ensureDefaultAiThread() {
   return active;
 }
 
-export function createAiThread({ hostId = null, hostName = null, sessionId = null, title = '新对话' } = {}) {
+export function createAiThread({ scope = null, hostId = null, hostName = null, sessionId = null, title = '新对话' } = {}) {
   if (!state.aiThreads) state.aiThreads = new Map();
 
   // AI_THREAD_LIMIT = 20: 淘汰非活动、非忙碌会话,空会话优先、最旧其次
@@ -480,22 +496,26 @@ export function createAiThread({ hostId = null, hostName = null, sessionId = nul
     box.appendChild(container);
   }
 
+  const activeSess = state.sessions?.get?.(state.activeId);
+  const activeHostKey = activeSess?.status === 'connected' ? hostKeyOf(activeSess.host) : null;
+  const initialScope = Array.isArray(scope)
+    ? [...scope]
+    : (hostId ? [hostId] : defaultScopeForNewThread({ activeHostKey }));
+
   const now = Date.now();
   const thread = {
     id,
     title: title || '新对话',
     autoTitle: !title || title === '新对话',
-    hostId,
-    hostName,
+    scope: initialScope,
+    hostId: initialScope[0] || hostId || null,
+    hostName: hostName || (initialScope[0] === activeHostKey ? hostLabelOf(activeSess?.host) : null),
     sessionId,
     history: [],
     containerEl: container,
     req: null,
     // 默认「手动确认」:AI 可走工具循环,但每条命令先确认;要全自动再切自动档。
     execMode: 'manual',
-    // 默认「跟随命令窗口」:对话作用于当前命令窗口的主机(与旧 bindNow 行为一致)。
-    linkMode: 'follow',
-    linkedHostIds: [],
     scroll: { top: 0, pinned: true },
     draft: '',
     unread: false,
@@ -566,7 +586,7 @@ export function switchAiThread(threadId) {
       prev.scroll = { top: box.scrollTop, pinned: aiPinned };
     }
     if (input) {
-      prev.draft = input.value;
+      prev.draft = getComposerDraft(input);
     }
   }
 
@@ -585,7 +605,7 @@ export function switchAiThread(threadId) {
   restoreThreadScroll(target);
 
   if (input) {
-    input.value = target.draft || '';
+    setComposerSegs(target.draft || '', input);
   }
 
   setAiBusy(threadBusy(target));
@@ -604,11 +624,10 @@ export function clearCurrentAiThread() {
     setAiBusy(false);
   }
   thread.agentRun?.ctrl.abort();
-  // 清空即开始新任务:断开本对话的无头链接(继续保留旧内容属于另一台主机的语义已不成立)。
-  clearThreadLinks(thread);
   thread.history = [];
   // 清空会话同时清掉上一段的速率/命中率统计:新对话没有请求记录,
   // 沿用旧值会让弹窗显示与当前对话无关的数字。
+  // 注意(F15 / L12):清空对话只清消息与授权,保留 thread.scope(用户勾选的可操作主机范围不变)。
   thread.lastStats = null;
   if (thread.containerEl) {
     thread.containerEl.innerHTML = '';
@@ -772,6 +791,7 @@ export function refreshThreadUi() {
     renderAiDrawer($('#ai-drawer-search')?.value || '');
   }
   refreshAgentHostBar();
+  refreshThreadScopeChips();
   updateAiContextIndicator();
 }
 
@@ -872,16 +892,16 @@ export function renderAiDrawer(kw = '') {
     card.title = `${th.title || '新对话'}\n点击切换到此对话`;
 
     let badges = [];
-    const linkMode = threadLinkMode(th);
-    if (linkMode === 'chat') {
-      badges.push('<span class="ai-drawer-badge chat" title="对话模式：不操作主机">对话模式</span>');
-    } else if (linkMode === 'multi') {
-      const n = (th.linkedHostIds || []).length;
-      if (n) badges.push(`<span class="ai-drawer-badge host" title="多主机模式"><span class="dot connected"></span><span class="t">${n} 台主机</span></span>`);
-    } else if (th.hostName) {
-      const isHostConnected = [...(state.sessions?.values?.() || [])].some((s) => s?.status === 'connected' && hostKeyOf(s.host) === th.hostId);
+    const sc = threadScope(th, state.hosts);
+    if (sc.length === 0) {
+      badges.push('<span class="ai-drawer-badge chat" title="纯对话：未选主机">纯对话</span>');
+    } else if (sc.length === 1) {
+      const hName = scopeSummary(sc, state.hosts).label || th.hostName || sc[0];
+      const isHostConnected = [...(state.sessions?.values?.() || [])].some((s) => s?.status === 'connected' && hostKeyOf(s.host) === sc[0]);
       const dotClass = isHostConnected ? 'connected' : 'idle';
-      badges.push(`<span class="ai-drawer-badge host" title="主机: ${escapeHtml(th.hostName)}"><span class="dot ${dotClass}"></span><span class="t">${escapeHtml(th.hostName)}</span></span>`);
+      badges.push(`<span class="ai-drawer-badge host" title="主机范围: ${escapeHtml(hName)}"><span class="dot ${dotClass}"></span><span class="t">${escapeHtml(hName)}</span></span>`);
+    } else {
+      badges.push(`<span class="ai-drawer-badge host" title="会话可操作范围"><span class="dot connected"></span><span class="t">${sc.length} 台可操作</span></span>`);
     }
     if (isBusy) {
       badges.push('<span class="ai-drawer-badge busy">生成中…</span>');
@@ -1105,56 +1125,10 @@ export function toggleThreadMenu() {
   else closeThreadMenu();
 }
 
-/// 终端触发 AI 操作(如选区解释、右键报错诊断)时,智能匹配或分流到对应主机的会话,
-/// 避免把主机 B 的报错塞进主机 A 的正在进行的排障上下文中。
-export function ensureThreadForSession(session) {
-  ensureDefaultAiThread();
-  if (!session) return activeAiThread();
-  const hostId = hostKeyOf(session.host);
-  const hostName = hostLabelOf(session.host);
-  const sessionId = session.sessionId || null;
-  const cur = activeAiThread();
-
-  // 1. 当前会话为空且空闲 → (重新)绑定到该主机并复用
-  if (cur && cur.history.length === 0 && !threadBusy(cur)) {
-    rebindThread(cur, { hostKey: hostId, hostLabel: hostName, sessionId });
-    renderAiThreadBar();
-    return cur;
-  }
-
-  // 2. 当前会话属于该主机且空闲 → 复用(更新 sessionId)
-  if (cur && cur.hostId === hostId && !threadBusy(cur)) {
-    cur.sessionId = sessionId;
-    return cur;
-  }
-
-  // 3. 该主机最近更新的空闲会话 → 切过去
-  const sameHost = [...state.aiThreads.values()]
-    .filter((th) => th.hostId === hostId && !threadBusy(th))
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-  if (sameHost) {
-    sameHost.sessionId = sessionId;
-    switchAiThread(sameHost.id);
-    return sameHost;
-  }
-
-  // 4. 任一空且空闲的未绑定会话 → 绑定并切过去
-  const unbindEmpty = [...state.aiThreads.values()]
-    .filter((th) => th.history.length === 0 && !threadBusy(th) && !th.hostId)
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-  if (unbindEmpty) {
-    rebindThread(unbindEmpty, { hostKey: hostId, hostLabel: hostName, sessionId });
-    switchAiThread(unbindEmpty.id);
-    return unbindEmpty;
-  }
-
-  // 5. 新建绑定该主机的会话
-  return createAiThread({
-    hostId,
-    hostName,
-    sessionId,
-    title: '新对话',
-  });
+/// 会话与终端命令窗口解耦:终端触发 AI 操作(选区解释/报错诊断)只发往当前活动 AI 会话,
+/// 不再因为切终端窗口而自动改写 thread.scope 或自动切换/新建另一条会话。
+export function ensureThreadForSession() {
+  return ensureDefaultAiThread();
 }
 
 /// 气泡内部结构固定为:<div.ai-msg><div.ai-meta><span.ai-avatar/><span.ai-meta-text>时间</span></div>
@@ -1167,19 +1141,115 @@ function aiBodyOf(bubble) {
   return bubble ? bubble.querySelector('.ai-body') : null;
 }
 
-export function setAiBody(bubble, text, { md = false } = {}) {
+function normalizeMentionItems(mentions) {
+  const hosts = state.hosts || [];
+  return (Array.isArray(mentions) ? mentions : [])
+    .map((m) => {
+      if (!m) return null;
+      if (typeof m === 'string') {
+        const clean = m.replace(/^@/, '').trim();
+        const found = hosts.find((h) => hostKeyOf(h) === clean || hostLabelOf(h) === clean);
+        return {
+          hostKey: found ? hostKeyOf(found) : clean,
+          label: found ? hostLabelOf(found) : clean,
+        };
+      }
+      const rawKey = String(m.hostKey || m.key || '').trim();
+      const rawLabel = String(m.label || m.name || '').trim();
+      const found = hosts.find((h) => (rawKey && hostKeyOf(h) === rawKey) || (rawLabel && hostLabelOf(h) === rawLabel));
+      return {
+        hostKey: rawKey || (found ? hostKeyOf(found) : rawLabel),
+        label: rawLabel || (found ? hostLabelOf(found) : rawKey),
+      };
+    })
+    .filter((m) => m && m.hostKey && m.label);
+}
+
+function renderUserBodyWithMentions(body, text, mentions, thread) {
+  body.textContent = '';
+  const raw = String(text ?? '');
+  const list = normalizeMentionItems(mentions);
+  if (!list.length) {
+    body.textContent = raw;
+    return;
+  }
+  const scopeSet = new Set(thread ? threadScope(thread, state.hosts) : list.map((m) => m.hostKey));
+  // 按 label 长度降序匹配 @label，避免短前缀抢先吞掉长主机名
+  const sorted = [...list].sort((a, b) => b.label.length - a.label.length);
+  let idx = 0;
+  while (idx < raw.length) {
+    const at = raw.indexOf('@', idx);
+    if (at < 0) {
+      body.appendChild(document.createTextNode(raw.slice(idx)));
+      break;
+    }
+    if (at > idx) {
+      body.appendChild(document.createTextNode(raw.slice(idx, at)));
+    }
+    const rest = raw.slice(at + 1);
+    const matched = sorted.find((m) => rest.startsWith(m.label));
+    if (matched) {
+      const chip = document.createElement('span');
+      chip.className = 'ai-chip ai-msg-chip';
+      chip.dataset.hostKey = matched.hostKey;
+      chip.dataset.label = matched.label;
+      if (!scopeSet.has(matched.hostKey)) {
+        chip.dataset.out = 'true';
+        chip.title = '已移出范围';
+      }
+      const atEl = document.createElement('span');
+      atEl.className = 'ai-chip-at';
+      atEl.textContent = '@';
+      const lblEl = document.createElement('span');
+      lblEl.className = 'ai-chip-label';
+      lblEl.textContent = matched.label;
+      chip.appendChild(atEl);
+      chip.appendChild(lblEl);
+      body.appendChild(chip);
+      idx = at + 1 + matched.label.length;
+    } else {
+      body.appendChild(document.createTextNode('@'));
+      idx = at + 1;
+    }
+  }
+}
+
+export function refreshThreadScopeChips(thread = activeAiThread()) {
+  if (!thread) return;
+  const container = thread.containerEl || thread.container || $('#ai-messages');
+  if (!container || typeof container.querySelectorAll !== 'function') return;
+  const scopeSet = new Set(threadScope(thread, state.hosts));
+  for (const chip of container.querySelectorAll('.ai-msg-chip[data-host-key]')) {
+    const key = chip.dataset.hostKey;
+    if (key && !scopeSet.has(key)) {
+      chip.dataset.out = 'true';
+      chip.title = '已移出范围';
+    } else {
+      delete chip.dataset.out;
+      chip.removeAttribute('title');
+    }
+  }
+}
+
+export function setAiBody(bubble, text, { md = false, mentions = [], thread = null } = {}) {
   const body = aiBodyOf(bubble);
   if (!body) return;
   bubble.__raw = String(text ?? '');
-  // 默认只有助手侧渲染 Markdown;用户输入不当 Markdown 解析,原样展示。
-  // 程序构造的 prompt(诊断/解释)本身含围栏代码块,走 md 分支。
+  if (Array.isArray(mentions) && mentions.length) {
+    bubble.__mentions = mentions;
+  }
+  // 默认只有助手侧渲染 Markdown;用户输入不当 Markdown 解析,原样展示。\n  // 程序构造的 prompt(诊断/解释)本身含围栏代码块,走 md 分支。
   if (bubble.dataset.role === 'assistant' || md) {
     const rendered = renderMarkdown(text, { renderCodeBlock: (block) => renderAiCodeBlock(bubble, block) });
     bubble.__codeBlocks = rendered.codeBlocks;
     body.innerHTML = rendered.html;
   } else {
     bubble.__codeBlocks = [];
-    body.textContent = text;
+    if (Array.isArray(mentions) && mentions.length) {
+      renderUserBodyWithMentions(body, text, mentions, thread || activeAiThread());
+    } else {
+      body.textContent = text;
+    }
   }
 }
 
@@ -1442,8 +1512,8 @@ export function renderAiMessage(role, text, opts) {
   el.dataset.role = role;
   el.dataset.responseState = 'completed';
   const activeSess = state.sessions?.get?.(state.activeId);
-  const originHostId = thread?.hostId || hostKeyOf(activeSess?.host) || null;
-  const originHostName = thread?.hostName || hostLabelOf(activeSess?.host) || null;
+  const originHostId = hostKeyOf(activeSess?.host) || thread?.hostId || null;
+  const originHostName = hostLabelOf(activeSess?.host) || thread?.hostName || null;
   if (originHostId) {
     el.__originHostId = originHostId;
     el.__originHostName = originHostName;
@@ -2094,46 +2164,41 @@ export async function aiSend(rawText, mode, opts) {
     return;
   }
 
-  if (opts?.session) {
-    ensureThreadForSession(opts.session);
-  }
   ensureDefaultAiThread();
   const thread = activeAiThread();
   if (threadBusy(thread)) return toast('AI 正在处理中，请稍候或先停止', 'error');
 
-  const isFromInput = !String(rawText ?? '').trim();
-  let text = (rawText || '').trim();
-  if (!text) text = ($('#ai-input')?.value || '').trim();
-  if (!text) return;
-
-  const targetView = resolveAiTarget({
-    thread,
-    sessions: state.sessions,
-    activeId: state.activeId,
-    hosts: state.hosts,
-    settings: state.settings,
-    busy: threadBusy(thread),
-    links: linksForThread(thread),
-  });
-
-  if (!opts?.session && !opts?.noTools && targetView.kind === 'offline' && !targetView.blocked) {
-    if (!isFromInput) {
-      const input = $('#ai-input');
-      if (input) input.value = text;
-    }
-    if (thread) {
-      thread.draft = text;
-      thread.sendBlocked = { text, at: Date.now() };
-    }
-    refreshAgentHostBar();
+  // F21：支持直接传入 { text, mentions } 对象，草稿 / sendBlocked / 重发均不丢 mentions
+  const rawIsObj = rawText && typeof rawText === 'object' && !Array.isArray(rawText);
+  const rawStr = rawIsObj ? String(rawText.text ?? '') : String(rawText ?? '');
+  const isFromInput = !rawStr.trim() && !(rawIsObj && Array.isArray(rawText.mentions) && rawText.mentions.length);
+  if (isFromInput && syncComposerScopeCheck() > 0) {
     return;
   }
+  let text = rawStr.trim();
+  let mentions = Array.isArray(opts?.mentions)
+    ? opts.mentions
+    : (rawIsObj && Array.isArray(rawText.mentions) ? rawText.mentions : []);
+  if (!text) {
+    const input = $('#ai-input');
+    text = getComposerText(input).trim();
+    if (!mentions.length) {
+      const chips = typeof getComposerChips === 'function' ? getComposerChips(input) : [];
+      mentions = chips.length
+        ? chips.filter((c) => !c.out).map((c) => ({ hostKey: c.hostKey, label: c.label }))
+        : getComposerMentions(input);
+    }
+  }
+  mentions = normalizeMentionItems(mentions);
+  if (!text) return;
+
   if (thread) thread.sendBlocked = null;
 
   if (isFromInput) {
     const input = $('#ai-input');
-    if (input) input.value = '';
+    if (input) clearComposer(input);
     if (thread) thread.draft = '';
+    syncComposerScopeCheck();
   }
 
   let content = text;
@@ -2172,10 +2237,10 @@ export async function aiSend(rawText, mode, opts) {
     await compactThread(thread);
   }
 
-  // 绑定了已连接主机、模型支持工具、执行模式非「对话模式」：走工具回合
-  // (AI 可直接读日志、执行命令)。对话模式走下面的旧路径,代码块带执行按钮。
+  // 绑定了可操作主机范围、模型支持工具：走工具回合
+  // (AI 可直接读日志、执行命令)。纯对话模式走下面的普通对话路径。
   if (thread && !opts?.noTools && agentAvailable(thread)) {
-    return runAgentSend(thread, agentBinding(thread), { content, display: text, md: userMd });
+    return runAgentSend(thread, agentBinding(thread), { content, display: text, md: userMd, mentions });
   }
 
   const userMsg = { role: 'user', content };
@@ -2183,7 +2248,7 @@ export async function aiSend(rawText, mode, opts) {
   const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...historyList, userMsg];
   historyList.push(userMsg);
   trimAiHistory(thread);
-  const userBubble = renderAiMessage('user', text, { md: userMd });
+  const userBubble = renderAiMessage('user', text, { md: userMd, mentions, thread });
   // 记录发起参数:失败重发(retryFailedMessage)按原样重建这次发送
   userBubble.dataset.aiMode = mode || '';
   userBubble.dataset.aiMd = userMd ? '1' : '0';
@@ -2232,6 +2297,7 @@ function retryFailedMessage(bubble) {
   aiSend(raw, userBubble.dataset.aiMode || '', {
     md: userBubble.dataset.aiMd === '1',
     title: userBubble.dataset.aiTitle || undefined,
+    mentions: Array.isArray(userBubble.__mentions) ? userBubble.__mentions : undefined,
   });
 }
 
@@ -3102,7 +3168,7 @@ export function updateAiContextIndicator() {
   const models = savedModels();
   const active = models.find((m) => m.id === current) || (current ? normModel(current) : null);
   const contextLimit = active ? (active.contextWindow || active.context || 128000) : 128000;
-  const inputDraft = $('#ai-input')?.value || '';
+  const inputDraft = getComposerText($('#ai-input')) || '';
 
   const ctx = calculateThreadContextTokens({
     thread: th,

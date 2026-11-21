@@ -91,7 +91,7 @@ class MockElement {
     }
   }
   addEventListener(type, fn) { this.listeners.set(type, fn); }
-  click() { this.listeners.get('click')?.({ stopPropagation: () => {} }); }
+  click() { this.listeners.get('click')?.({ stopPropagation: () => {}, preventDefault: () => {} }); }
   setAttribute(k, v) {
     if (!this._attrs) this._attrs = new Map();
     this._attrs.set(k, String(v));
@@ -142,17 +142,34 @@ class MockElement {
   }
 }
 
-test('TargetMenu 顶层模式为 Radio 单选卡片交互，且就地更新保留节点身份', async () => {
+test('renderTargetMenu 渲染会话主机范围勾选列表、支持整行点击勾选与清空 (F1/F2)', async () => {
   const root = new MockElement('div');
-  root.id = 'ai-target-menu';
+  root.id = 'ai-scope-menu';
   const list = new MockElement('div');
-  list.id = 'ai-target-menu-list';
+  list.id = 'ai-scope-menu-list';
   root.appendChild(list);
+
+  const trigger = new MockElement('button');
+  trigger.id = 'ai-scope-trigger';
+  const triggerName = new MockElement('span');
+  triggerName.id = 'ai-scope-name';
+  trigger.appendChild(triggerName);
 
   const doc = {
     createElement: (tag) => new MockElement(tag),
-    getElementById: (id) => (id === 'ai-target-menu' ? root : id === 'ai-target-menu-list' ? list : null),
-    querySelector: (sel) => (sel === '#ai-target-menu' ? root : sel === '#ai-target-menu-list' ? list : root.querySelector(sel)),
+    getElementById: (id) => (
+      id === 'ai-scope-menu' ? root
+        : id === 'ai-scope-menu-list' ? list
+          : id === 'ai-scope-trigger' ? trigger
+            : id === 'ai-scope-name' ? triggerName : null
+    ),
+    querySelector: (sel) => (
+      sel === '#ai-scope-menu' ? root
+        : sel === '#ai-scope-menu-list' ? list
+          : sel === '#ai-scope-trigger' ? trigger
+            : sel === '#ai-scope-name' ? triggerName
+              : root.querySelector(sel)
+    ),
   };
 
   const win = {
@@ -179,7 +196,7 @@ test('TargetMenu 顶层模式为 Radio 单选卡片交互，且就地更新保�
   await icons.evaluate();
 
   const interaction = new vm.SyntheticModule(['popupPosition'], function () {
-    this.setExport('popupPosition', () => ({ left: 0, top: 0, placement: 'bottom' }));
+    this.setExport('popupPosition', () => ({ left: 0, top: 0, placement: 'top' }));
   }, { context });
 
   const core = new vm.SyntheticModule(['$', 'api'], function () {
@@ -187,103 +204,164 @@ test('TargetMenu 顶层模式为 Radio 单选卡片交互，且就地更新保�
     this.setExport('api', async () => ({}));
   }, { context });
 
-  const hosts = new vm.SyntheticModule(['escapeHtml'], function () {
-    this.setExport('escapeHtml', (s) => s);
-  }, { context });
-
-  const ai = new vm.SyntheticModule(['threadBusy'], function () {
-    this.setExport('threadBusy', () => false);
-  }, { context });
-
   const uiMod = await load('../src/modules/ai-agent-ui.js');
   await uiMod.link((specifier) => {
     if (specifier === '../shared/icons.js') return icons;
     if (specifier === './interaction.js') return interaction;
     if (specifier === './core.js') return core;
-    if (specifier === './hosts.js') return hosts;
-    if (specifier === './ai.js') return ai;
     throw new Error('Unknown import: ' + specifier);
   });
   await uiMod.evaluate();
   const ui = uiMod.namespace;
 
-  let selectedMode = null;
+  // 1. updateTargetBar 更新左下角主机范围按钮
+  ui.updateTargetBar({
+    kind: 'single',
+    count: 1,
+    tone: 'connected',
+    displayName: 'web-prod-01',
+    title: '会话可操作主机：web-prod-01',
+    buttonDisabled: false,
+  });
+  assert.equal(triggerName.textContent, 'web-prod-01');
+  assert.equal(trigger.dataset.empty, 'false');
+  assert.equal(trigger.dataset.count, '1');
+
+  // 2. renderTargetMenu 渲染主机范围勾选清单
+  let toggledHost = null;
+  let cleared = false;
   const handlers = {
-    onSelectMode: (m) => { selectedMode = m; },
+    onToggleHost: (id) => { toggledHost = id; },
+    onClearHosts: () => { cleared = true; },
   };
 
-  // 1. 初次渲染: follow 模式选中
-  const data1 = {
-    linkMode: 'follow',
-    chat: { checked: false },
-    follow: { checked: true, hostLabel: 'server-01' },
-    multi: { checked: false, showHosts: false },
-  };
-  ui.renderTargetMenu(data1, handlers);
-
-  const modeRows = root.querySelectorAll('.ai-target-mode');
-  assert.equal(modeRows.length, 3, '应渲染 3 个互斥模式行');
-
-  const followRow = modeRows.find((r) => r.dataset.mode === 'follow');
-  const chatRow = modeRows.find((r) => r.dataset.mode === 'chat');
-  const multiRow = modeRows.find((r) => r.dataset.mode === 'multi');
-
-  // 检查 Radio 结构
-  assert.ok(followRow.querySelector('.ai-target-mode-radio'), '应包含 Radio 单选指示器');
-  assert.equal(followRow.getAttribute('role'), 'menuitemradio');
-  assert.equal(followRow.getAttribute('aria-checked'), 'true');
-  assert.ok(followRow.classList.contains('is-on'));
-
-  assert.equal(chatRow.getAttribute('aria-checked'), 'false');
-  assert.ok(!chatRow.classList.contains('is-on'));
-
-  // 检查非多主机模式下绝对不能出现多余分割线和多主机页脚
-  assert.equal(root.querySelectorAll('.ai-target-menu-sep').length, 0, '非多主机模式下禁止出现分割线');
-  assert.equal(root.querySelectorAll('.ai-target-menu-foot').length, 0, '非多主机模式下禁止出现页脚');
-
-  // 记录节点引用，用于测试就地 patch 保留节点身份
-  const followNodeBefore = followRow;
-
-  // 2. 点击已选中的 follow 行: 单选特性保持选中，不触发反选
-  selectedMode = null;
-  followRow.click();
-  assert.equal(selectedMode, null, '点击已选中的模式行保持选中，不反选');
-
-  // 3. 点击未选中的 chat 行: 触发切换到 chat
-  chatRow.click();
-  assert.equal(selectedMode, 'chat', '点击未选中的模式行触发单选切换');
-
-  // 4. 就地更新为 multi 模式并展示主机列表
-  const data2 = {
-    linkMode: 'multi',
-    linkCount: 1,
-    chat: { checked: false },
-    follow: { checked: false },
-    multi: { checked: true, showHosts: true },
+  ui.renderTargetMenu({
+    scope: ['h1'],
+    scopeCount: 1,
+    totalCount: 2,
+    query: '',
     hosts: [
-      { hostId: 'h1', name: 'host-1', linked: true, status: 'connected' },
-      { hostId: 'h2', name: 'host-2', linked: false, status: 'idle' },
+      { hostId: 'h1', name: 'web-prod-01', address: 'root@10.0.1.11', checked: true, status: 'connected' },
+      { hostId: 'h2', name: 'db-prod-02', address: 'postgres@10.0.1.12', checked: false, status: 'idle' },
     ],
-  };
-  ui.renderTargetMenu(data2, handlers);
+  }, handlers);
 
-  // 断言节点未被重建（同一个 DOM 节点）
-  const followRowAfter = root.querySelector('.ai-target-mode[data-mode="follow"]');
-  assert.equal(followRowAfter, followNodeBefore, '就地 patch 必须保留原有 DOM 节点，确保弹性过渡');
-
-  // 检查 multi 行激活
-  const multiRowAfter = root.querySelector('.ai-target-mode[data-mode="multi"]');
-  assert.equal(multiRowAfter.getAttribute('aria-checked'), 'true');
-  assert.ok(multiRowAfter.classList.contains('is-on'));
-
-  // 检查主机列表使用 Switch
   const hostRows = root.querySelectorAll('.ai-target-host');
-  assert.equal(hostRows.length, 2, '多主机列表展开 2 台主机');
-  assert.ok(hostRows[0].querySelector('.switch'), '主机项必须使用 Switch 开关');
+  assert.equal(hostRows.length, 2, '渲染 2 台主机行');
+  assert.equal(hostRows[0].getAttribute('role'), 'menuitemcheckbox');
+  assert.equal(hostRows[0].getAttribute('aria-checked'), 'true');
+  assert.ok(hostRows[0].classList.contains('is-on'));
+  assert.equal(hostRows[1].getAttribute('aria-checked'), 'false');
 
-  // 5. 再次切回 follow 模式: 分割线与页脚必须被彻底清除，不留任何残留
-  ui.renderTargetMenu(data1, handlers);
-  assert.equal(root.querySelectorAll('.ai-target-hosts').length, 0, '切回跟随模式后主机列表已清除');
-  assert.equal(root.querySelectorAll('.ai-target-menu-sep').length, 0, '切回跟随模式后分割线必须被彻底清除');
-  assert.equal(root.querySelectorAll('.ai-target-menu-foot').length, 0, '切回跟随模式后页脚必须被彻底清除');
+  // 3. 点击第 2 台主机行触发 onToggleHost('h2')
+  hostRows[1].click();
+  assert.equal(toggledHost, 'h2');
+
+  // 4. 点击清空按钮触发 onClearHosts
+  const clearBtn = root.querySelector('.ai-target-hosts-clear');
+  assert.ok(clearBtn, '存在清空按钮');
+  clearBtn.click();
+  assert.equal(cleared, true);
+
+  // 5. P5 / A6 重做：按目录分组 + 三态方框 + 搜索扁平化（D1–D4）
+  let toggledFolder = null;
+  let toggledGroup = null;
+  let selectedSearchKeys = null;
+  let clearedSearch = false;
+  let doneClicked = false;
+  const p5Handlers = {
+    onToggleHost: (id) => { toggledHost = id; },
+    onToggleFolderExpand: (f) => { toggledFolder = f; },
+    onToggleGroup: (f, keys) => { toggledGroup = { f, keys }; },
+    onSelectSearchResults: (keys) => { selectedSearchKeys = keys; },
+    onClearSearch: () => { clearedSearch = true; },
+    onDone: () => { doneClicked = true; },
+  };
+
+  ui.renderTargetMenu({
+    scope: ['h1', 'h2', 'h5'],
+    scopeCount: 3,
+    selectedNames: ['web-prod-01', 'db-prod-02', 'staging-01'],
+    totalCount: 6,
+    groupCount: 2,
+    query: '',
+    hosts: [
+      { hostId: 'h1', name: 'web-prod-01', group: '生产环境', address: '10.0.1.11 · root', checked: true },
+      { hostId: 'h2', name: 'db-prod-02', group: '生产环境', address: '10.0.1.25 · root', checked: true },
+      { hostId: 'h3', name: 'cache-redis-03', group: '生产环境', address: '10.0.1.30 · root', checked: false },
+      { hostId: 'h4', name: 'mq-worker-04', group: '生产环境', address: '10.0.1.41 · root', checked: false, unreachable: true, errorText: '连接超时' },
+      { hostId: 'h5', name: 'staging-01', group: '测试环境', address: '10.0.2.11 · deploy', checked: true },
+      { hostId: 'h6', name: 'staging-02', group: '测试环境', address: '10.0.2.12 · deploy', checked: false },
+    ],
+    groups: [
+      {
+        name: '生产环境',
+        keys: ['h1', 'h2', 'h3', 'h4'],
+        hosts: [
+          { hostId: 'h1', name: 'web-prod-01', group: '生产环境', address: '10.0.1.11 · root', checked: true },
+          { hostId: 'h2', name: 'db-prod-02', group: '生产环境', address: '10.0.1.25 · root', checked: true },
+          { hostId: 'h3', name: 'cache-redis-03', group: '生产环境', address: '10.0.1.30 · root', checked: false },
+          { hostId: 'h4', name: 'mq-worker-04', group: '生产环境', address: '10.0.1.41 · root', checked: false, unreachable: true, errorText: '连接超时' },
+        ],
+        totalCount: 4,
+        selectedCount: 2,
+        state: 'part',
+        expanded: true,
+      },
+      {
+        name: '测试环境',
+        keys: ['h5', 'h6'],
+        hosts: [
+          { hostId: 'h5', name: 'staging-01', group: '测试环境', address: '10.0.2.11 · deploy', checked: true },
+          { hostId: 'h6', name: 'staging-02', group: '测试环境', address: '10.0.2.12 · deploy', checked: false },
+        ],
+        totalCount: 2,
+        selectedCount: 1,
+        state: 'part',
+        expanded: false,
+      },
+    ],
+  }, p5Handlers);
+
+  // 常驻汇总条显示「已选 3 台」及「web-prod-01、db-prod-02 +1」
+  const sumNames = root.querySelector('.ai-pick-sum-names');
+  assert.equal(sumNames.textContent, 'web-prod-01、db-prod-02 +1');
+
+  // 渲染 2 个目录行，第一个展开显示 4 台主机，第二个折叠不渲染子主机
+  const dirRows = root.querySelectorAll('.ai-pick-dir');
+  assert.equal(dirRows.length, 2);
+  assert.equal(root.querySelectorAll('.ai-pick-host').length, 4);
+
+  // 点击目录行触发 onToggleFolderExpand，点击三态方框触发 onToggleGroup
+  dirRows[1].click();
+  assert.equal(toggledFolder, '测试环境');
+  const dirBoxes = root.querySelectorAll('.ai-pick-dir-box');
+  assert.equal(dirBoxes[0].dataset.state, 'part');
+  dirBoxes[0].click();
+  assert.equal(toggledGroup.f, '生产环境');
+  assert.deepEqual([...toggledGroup.keys], ['h1', 'h2', 'h3', 'h4']);
+
+  // 点击底栏「完成」按钮触发 onDone
+  root.querySelector('.ai-pick-done').click();
+  assert.equal(doneClicked, true);
+
+  // 搜索态（D2）：扁平展示 + 面包屑 + 全选结果
+  ui.renderTargetMenu({
+    scope: ['h1'],
+    scopeCount: 1,
+    totalCount: 6,
+    groupCount: 2,
+    query: 'prod',
+    hosts: [
+      { hostId: 'h1', name: 'web-prod-01', group: '生产环境', address: '10.0.1.11 · root', checked: true },
+      { hostId: 'h2', name: 'db-prod-02', group: '生产环境', address: '10.0.1.25 · root', checked: false },
+    ],
+  }, p5Handlers);
+  assert.equal(root.querySelectorAll('.ai-pick-dir').length, 0, '搜索态不显示目录行');
+  assert.equal(root.querySelectorAll('.ai-pick-host').length, 2, '搜索态扁平显示匹配主机');
+  assert.equal(root.querySelector('.ai-pick-crumb').textContent, '生产环境 ›');
+  root.querySelector('.ai-pick-select-results').click();
+  assert.deepEqual([...selectedSearchKeys], ['h1', 'h2']);
+  root.querySelector('.ai-pick-qx').click();
+  assert.equal(clearedSearch, true);
 });

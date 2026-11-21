@@ -1,23 +1,27 @@
-// AI 工具循环的接线：线程与主机会话绑定、模型工具能力、每轮请求与界面适配。
+// AI 工具循环的接线：线程与主机范围（scope）、模型工具能力、每轮请求与界面适配。
 import { $, api, askConfirm, state, toast } from './core.js';
 import { buildHostSystemPrompt, runAgentTurn } from './ai-agent.js';
 import {
-  createAgentAdapter, renderTargetMenu, updateModePicker, updateTargetBar, updateContextBanner,
+  clearTargetGrants, groupHostsByFolder, groupState, hostKeyOf, hostLabelOf,
+  isModelToolsCapable, resolveAiTarget, setGroup, setThreadScope, snapshotRunScope,
+  threadExecMode, threadScope, toggleHost, toolSupportKey, validateToolHost,
+} from '../shared/ai-target-state.js';
+import {
+  closeTargetMenu, createAgentAdapter, createAiNoticeElement, renderTargetMenu,
+  updateModePicker, updateTargetBar,
 } from './ai-agent-ui.js';
 import { AI_AGENT_TOOLS, AI_AGENT_TOOLS_MULTI } from '../shared/ai-tools-schema.js';
 import {
-  clearTargetGrants, hostKeyOf, hostLabelOf, isModelToolsCapable, rebindThread, resolveAiTarget,
-  setLinkMode, threadExecMode, threadLinkMode, toolSupportKey,
-} from '../shared/ai-target-state.js';
-import { connectHost, reconnectSession, readTerminalLines } from './terminal.js';
+  getComposerChips, refreshComposerChipsScope, removeOutChips,
+} from './ai-composer.js';
+import { readTerminalLines } from './terminal.js';
 import {
-  clearThreadLinks, linkCountFor, linkedSessionIds, linkHost, linkHosts, linksForThread,
-  setLinksChangeHandler, unlinkHost,
+  HEADLESS_PREFIX, clearThreadLinks, linkedSessionIds, linksForThread,
 } from './ai-links.js';
 import {
-  activeAiThread, aiRequest, aiSend, aiStickScroll, appendToThreadView, beginAiTurn, clearBubbleState,
-  endAiTurn, ensureThreadForSession, markBubblePending, refreshThreadUi, renderAiMessage, setAiBusy,
-  threadBusy, trimAiHistory,
+  activeAiThread, aiRequest, aiSend, aiStickScroll, appendToThreadView, beginAiTurn,
+  clearBubbleState, endAiTurn, markBubblePending, refreshThreadScopeChips,
+  refreshThreadUi, renderAiMessage, setAiBusy, threadBusy, trimAiHistory,
 } from './ai.js';
 
 // sessionId → sudo 密码（用户勾选「本会话记住」时才写入，只在内存）。
@@ -41,77 +45,104 @@ async function markToolsUnsupported() {
   refreshAgentHostBar();
 }
 
-/// 本对话当前可执行的会话集合(多主机时是全部已链接主机)。
-/// 后续还要经后端 linkedSessions 白名单二次校验:模型换不出别的会话。
-export function linkedSessionsFor(thread) {
-  if (!thread || threadLinkMode(thread) !== 'multi') return null;
-  return linkedSessionIds(thread);
+function hostForKey(hostKey) {
+  if (!hostKey) return null;
+  const fromHosts = (state.hosts || []).find((h) => hostKeyOf(h) === hostKey);
+  if (fromHosts) return fromHosts;
+  for (const s of state.sessions?.values?.() || []) {
+    if (s?.host && hostKeyOf(s.host) === hostKey) return s.host;
+  }
+  return null;
 }
 
-/// 主执行会话(工具循环用):多主机取首台已连接;单主机取绑定/跟随的会话。
-/// 直接复用 agentBinding,保证「默认主机」与发送时选中的主机是同一条判定。
+function hostUnreachableReason(host, hostKey) {
+  if (host && (host.unreachable || host.statusError)) {
+    return typeof host.statusError === 'string' && host.statusError ? host.statusError : '连接超时';
+  }
+  for (const s of state.sessions?.values?.() || []) {
+    if (s?.host && hostKeyOf(s.host) === hostKey && (s.status === 'error' || s.status === 'timeout' || s.lastError)) {
+      return s.lastError || '连接超时';
+    }
+  }
+  return '';
+}
+
+/// 根据 hostKey 查找当前已连接的终端会话或无头链接会话；
+/// 若尚未建终端标签且主机在 state.hosts 中可达（非 unreachable），则提供无头通道会话（D.1 解耦）。
+function connectedSessionForKey(hostKey) {
+  if (!hostKey) return null;
+  const sessions = state.sessions;
+  if (sessions?.values) {
+    for (const s of sessions.values()) {
+      if (connected(s) && hostKeyOf(s.host) === hostKey) return s;
+    }
+  }
+  const link = state.aiLinks?.get?.(hostKey);
+  if (link && link.status === 'connected' && link.sessionId) {
+    const live = sessions?.get?.(link.sessionId);
+    if (connected(live)) return live;
+    return {
+      sessionId: link.sessionId,
+      status: 'connected',
+      host: hostForKey(hostKey) || { id: link.hostKey || hostKey, name: link.hostName || hostKey },
+    };
+  }
+  const h = hostForKey(hostKey);
+  if (h && !hostUnreachableReason(h, hostKey)) {
+    return {
+      sessionId: HEADLESS_PREFIX + hostKey,
+      status: 'connected',
+      headless: true,
+      host: h,
+    };
+  }
+  return null;
+}
+
+/// 本对话当前可执行的会话集合（多台 scope 时返回所有已连接会话 ID）。
+export function linkedSessionsFor(thread) {
+  const sc = threadScope(thread, state.hosts);
+  if (sc.length <= 1) return null;
+  return allowedSessionIds(thread, null);
+}
+
+/// 主执行会话（工具循环用）：在 thread.scope 内取第一台已连接的会话（不再读取当前活动终端窗口）。
 function primarySessionFor(thread) {
   if (!thread) return null;
   return agentBinding(thread).session;
 }
 
-/// 后端允许执行的全部会话 id:多主机 = 该对话已链接的会话;单主机 = 该会话本身。
-/// 一律显式传,后端据此拒绝"参数里编出来的 sessionId"。
-/// 注意:链接注册表是应用级的(可能属于别的对话),只有当前对话处于多主机模式时才纳入。
+/// 后端允许执行的全部会话 id：严格限制在 thread.scope 范围内已连接的会话。
 export function allowedSessionIds(thread, session) {
   const ids = new Set();
   if (session?.sessionId) ids.add(session.sessionId);
-  if (threadLinkMode(thread) === 'multi') {
-    for (const id of linkedSessionIds(thread)) ids.add(id);
+  const sc = threadScope(thread, state.hosts);
+  for (const key of sc) {
+    const s = connectedSessionForKey(key);
+    if (s?.sessionId) ids.add(s.sessionId);
   }
+  for (const id of linkedSessionIds(thread)) ids.add(id);
   return [...ids];
 }
 
-/// 线程绑定的主机会话：优先原会话，断开则找同一主机的其他已连接会话；
-/// 未绑定的空闲线程在发送时绑定当前标签的主机（bindNow）。
+/// 线程在当前 scope 内的主机会话绑定（与当前活动标签页 state.activeId 彻底解耦）：
+/// - scope 为空 → 纯对话（session: null）
+/// - scope 非空 → 按 scope 顺序找第一台已连接的会话作为默认通道
 export function agentBinding(thread) {
   if (!thread) return { session: null };
-  const sessions = state.sessions;
-  const mode = threadLinkMode(thread);
-  const active = sessions?.get?.(state.activeId);
-  if (mode === 'follow') {
-    // 跟随命令窗口:目标恒为当前窗口,窗口没连上就不发(不静默降级为普通对话)。
-    if (connected(active)) return { session: active, bindNow: true };
-    return { session: null, reason: active ? '当前窗口的主机未连接' : '' };
+  const sc = threadScope(thread, state.hosts);
+  if (!sc.length) {
+    return { session: null, reason: '' };
   }
-  if (mode === 'multi') {
-    // 多主机:主会话只用于「默认主机」(exec 省略 host 时落在这里)。
-    // 绝不能用 thread.hostId/sessionId:那是此前 follow 模式下绑定的单个主机,
-    // 与当前链接集合无关 —— 用它会让默认主机悄悄落到一台并非首选的主机上。
-    // bindNow 必须为 false:多主机不该把 hostId 改写成「当前标签的主机」。
-    const link = linksForThread(thread).find((l) => l.status === 'connected' && l.sessionId);
-    if (!link) return { session: null, reason: '已链接的主机都未连接' };
-    const live = sessions?.get?.(link.sessionId);
-    if (connected(live)) return { session: live };
-    return {
-      session: {
-        sessionId: link.sessionId,
-        status: 'connected',
-        host: { id: link.hostKey, name: link.hostName },
-      },
-    };
+  for (const key of sc) {
+    const s = connectedSessionForKey(key);
+    if (s) return { session: s };
   }
-  if (!thread.hostId) {
-    return connected(active) ? { session: active, bindNow: true } : { session: null, reason: '' };
-  }
-  const own = thread.sessionId && sessions?.get?.(thread.sessionId);
-  if (connected(own)) return { session: own };
-  const same = [...(sessions?.values?.() || [])].find((s) => connected(s) && hostKeyOf(s.host) === thread.hostId);
-  return same ? { session: same } : { session: null, reason: '绑定的主机未连接' };
-}
-
-export function bindThreadToSession(thread, session) {
-  if (!thread || !session) return;
-  rebindThread(thread, {
-    hostKey: hostKeyOf(session.host),
-    hostLabel: hostLabelOf(session.host),
-    sessionId: session.sessionId,
-  });
+  return {
+    session: null,
+    unreachableOnly: true,
+    reason: sc.length === 1 ? '所选主机未连接' : '所选范围内的主机均未连接',
+  };
 }
 
 /// 撤销线程上的全部授权：自动模式确认、会话授权列表、下载污点。
@@ -138,24 +169,28 @@ function addGrant(thread, allowable) {
   }
 }
 
-/// 能否让本次发送走工具循环。对话模式不派工具;多主机要求至少一台已链接。
+/// 能否让本次发送走工具循环：scope 非空、模型支持工具、且范围内至少有一台未禁止 AI 访问。
+/// 若范围内仅包含不可达主机（如 mq-worker-04），也进入 runAgentSend 以便触发发送前不可达黄条预检（L19）。
 export function agentAvailable(thread) {
-  if (threadLinkMode(thread) === 'chat') return false;
+  const sc = threadScope(thread, state.hosts);
+  if (!sc.length) return false;
   if (!modelToolsCapable()) return false;
-  if (threadLinkMode(thread) === 'multi') {
-    return linksForThread(thread).some((l) => l.status === 'connected' && l.sessionId);
-  }
   const b = agentBinding(thread);
-  return !!(b.session && b.session.host?.aiAccess !== 'deny');
+  if (b.session) return b.session.host?.aiAccess !== 'deny';
+  return sc.some((k) => {
+    const h = hostForKey(k);
+    return !h || h.aiAccess !== 'deny';
+  });
 }
 
-/// 切换执行模式:切回 manual 无确认,manual→auto 首次弹一次性确认(每线程一次),
-/// 切 full 每次都要确认 —— 托管档不再有任何确认卡兜底,误触一次就可能删库。
+/// 切换执行模式：切回 manual 无确认，manual→auto 首次弹一次性确认（每线程一次），
+/// 切 full 每次都要确认 —— 托管档不再有任何确认卡兜底。
+/// 注意（F18）：范围 ≥ 2 台时绝不禁用完全托管。
 async function setExecMode(thread, mode) {
   if (!thread || threadExecMode(thread) === mode) return;
   if (mode === 'auto' && !thread.autoAcked) {
     const ok = await askConfirm(
-      '切到自动后，AI 会直接在该主机执行普通命令；高危、外联、覆盖已有文件的命令仍会停下来等你确认。随时可以切回手动。',
+      '切到自动后，AI 会直接在所选主机范围内执行普通命令；高危、外联、覆盖已有文件的命令仍会停下来等你确认。随时可以切回手动。',
       { title: '切换到自动执行', okText: '切到自动', danger: false },
     );
     if (!ok) return;
@@ -163,8 +198,8 @@ async function setExecMode(thread, mode) {
   }
   if (mode === 'full') {
     const ok = await askConfirm(
-      '完全托管后，AI 会连续在该主机上执行命令，任何命令都不再逐条确认：删除数据、格式化、改配置、上传文件都会直接生效，出错无法撤销。\n'
-      + '仅在你能承受这台主机被改坏、并且随时盯着执行过程时使用。切走或换主机后会自动退回手动确认。',
+      '完全托管后，AI 会连续在所选主机范围内执行命令，任何命令都不再逐条确认：删除数据、格式化、改配置、上传文件都会直接生效，出错无法撤销。\n'
+      + '仅在你能承受范围内主机被修改、并且随时盯着执行过程时使用。调整主机范围后会自动退回手动确认。',
       { title: '切换到完全托管', okText: '我了解风险，切到托管', danger: true },
     );
     if (!ok) return;
@@ -173,98 +208,88 @@ async function setExecMode(thread, mode) {
   refreshAgentHostBar();
 }
 
-/// 切换主机链接模式。离开多主机即断开本对话的无头链接;进入对话模式清空授权。
-async function setLinkModeAndRefresh(thread, mode) {
+/// 同步输入框内已插入的 `.ai-chip` 与当前会话 `scope` 的一致性（F13 / A4）：
+/// 如有被移出范围的 chip，将其置为 `data-out="true"`，展示 `#ai-chip-warn` 阻塞提示条并禁用发送按钮。
+export function syncComposerScopeCheck() {
+  const thread = activeAiThread();
+  const sc = thread ? threadScope(thread, state.hosts) : [];
+  const { outCount, outLabels } = refreshComposerChipsScope(sc);
+  const warnEl = $('#ai-chip-warn');
+  const warnText = $('#ai-chip-warn-text');
+  const sendBtn = $('#ai-send');
+
+  if (warnEl) {
+    const show = outCount > 0;
+    warnEl.classList.toggle('hidden', !show);
+    if (show) warnEl.removeAttribute('hidden');
+    else warnEl.setAttribute('hidden', '');
+    if (warnText && show) {
+      const names = [...new Set(outLabels)].map((n) => `@${n}`).join('、');
+      warnText.textContent = `${names} 已不在允许范围`;
+    }
+  }
+  if (sendBtn && !state.aiReq && !threadBusy(thread)) {
+    sendBtn.disabled = outCount > 0;
+  }
+  return outCount;
+}
+
+/// 获取当前会话 `scope` 内的主机列表（供 `@` 候选浮层 `#ai-mention-pop` 使用，F9）。
+export function getScopeMentionHosts() {
+  const thread = activeAiThread();
+  if (!thread) return [];
+  const sc = threadScope(thread, state.hosts);
+  const connectedKeys = new Set(
+    [...(state.sessions?.values?.() || [])]
+      .filter((s) => connected(s))
+      .map((s) => hostKeyOf(s.host))
+      .filter(Boolean),
+  );
+  const allHosts = state.hosts || [];
+  const byKey = new Map();
+  for (const h of allHosts) {
+    const k = hostKeyOf(h);
+    if (k) byKey.set(k, h);
+  }
+  return sc.map((key) => {
+    const h = byKey.get(key) || { id: key, name: key };
+    const name = h.name || h.host || key;
+    const hostAddr = h.host || h.ip || '';
+    const user = h.username || 'root';
+    return {
+      hostKey: key,
+      hostId: key,
+      name,
+      label: name,
+      group: h.group || '我的主机',
+      address: hostAddr ? `${hostAddr} · ${user}` : user,
+      connected: connectedKeys.has(key),
+    };
+  });
+}
+
+/// 将输入框内所有 `data-out="true"` 的失效 chip 重新加回当前会话 `thread.scope`（A4「加回范围」按钮）。
+export function restoreOutChipsToScope() {
+  const thread = activeAiThread();
   if (!thread) return;
-  const prev = threadLinkMode(thread);
-  if (prev === mode) return;
-  if (prev === 'multi' && mode !== 'multi') await clearThreadLinks(thread);
-  setLinkMode(thread, mode);
-  // 进入多主机但还没链接任何主机:不自动连,由用户在清单里逐台打开(避免意外建链)。
+  const chips = getComposerChips();
+  const outKeys = chips.filter((c) => c.out && c.hostKey).map((c) => c.hostKey);
+  if (!outKeys.length) return;
+  const cur = threadScope(thread, state.hosts);
+  const next = [...new Set([...cur, ...outKeys])];
+  setThreadScope(thread, next, state.hosts);
+  thread.hostId = thread.scope[0] || null;
+  const firstHost = (state.hosts || []).find((h) => hostKeyOf(h) === thread.hostId);
+  thread.hostName = firstHost ? hostLabelOf(firstHost) : null;
   refreshThreadUi();
   refreshAgentHostBar();
-}
-
-/// 多主机清单里切换一台主机的链接。授权随目标集合变化一并清空。
-/// 过程分三段在界面上可见:开关立即进入「连接中… / 断开中…」→ 结果(已链接 / 失败原因)。
-async function toggleLinkedHost(thread, hostId, on) {
-  if (!thread) return;
-  if (threadBusy(thread)) { toast('AI 执行中，结束后才能调整主机', 'warn'); refreshAgentHostBar(); return; }
-  const before = linkCountFor(thread);
-  hostPending.set(hostId, on ? 'connecting' : 'disconnecting');
-  refreshAgentHostBar();
   redrawTargetMenu();
-  try {
-    if (on) {
-      const r = await linkHost(thread, hostId);
-      if (!r.ok) {
-        // 失败:开关回退到关闭 + 弹一次提示(沿用原设计)。
-        // 失败原因同时写回池条目,行内保留「链接失败的原因」直到下次操作。
-        const link = linksForThread(thread).find((x) => x.hostId === hostId);
-        if (link) link.error = r.error || '连接失败';
-        toast(`链接失败：${r.error || '未知原因'}`, 'error');
-      }
-    } else {
-      await unlinkHost(thread, hostId);
-    }
-  } finally {
-    hostPending.delete(hostId);
-    if (linkCountFor(thread) !== before) {
-      // 目标集合变了:授权、污点、hostOs 全部作废,执行档回手动。
-      clearTargetGrants(thread);
-      thread.execMode = 'manual';
-    }
-    refreshAgentHostBar();
-    redrawTargetMenu({ focusHostId: hostId });
-  }
 }
 
-/// 「全部开启 / 全部关闭」。
-async function toggleAllHosts(thread, on) {
-  if (!thread) return;
-  if (threadBusy(thread)) { toast('AI 执行中，结束后才能调整主机', 'warn'); refreshAgentHostBar(); return; }
-  const hosts = state.hosts || [];
-  if (!on) {
-    await clearThreadLinks(thread);
-  } else {
-    const linked = new Set(linksForThread(thread).map((l) => l.hostId));
-    const ids = hosts.filter((h) => !linked.has(h.id)).map((h) => h.id);
-    if (!ids.length) return;
-    const results = await linkHosts(thread, ids);
-    const failed = results.filter((r) => !r.ok);
-    if (failed.length === results.length) toast(`链接失败：${failed[0].error || '未知原因'}`, 'error');
-    else if (failed.length) toast(`${failed.length} 台主机链接失败`, 'error');
-  }
-  clearTargetGrants(thread);
-  thread.execMode = 'manual';
-  refreshAgentHostBar();
-}
-
-export async function handleTargetAction(view) {
-  if (!view) return false;
-  if (view.connectable === 'reconnect') {
-    const s = [...(state.sessions?.values?.() || [])].find((item) => item && hostKeyOf(item.host) === view.hostKey);
-    if (s) {
-      toast(`正在重连 ${view.hostLabel || ''}…`, 'info');
-      const ok = await reconnectSession(s.sessionId);
-      if (!ok) toast(`重连 ${view.hostLabel || ''} 失败`, 'error');
-      return ok;
-    }
-  } else if (view.connectable === 'connect') {
-    const h = (state.hosts || []).find((item) => item && (item.id === view.hostKey || hostKeyOf(item) === view.hostKey));
-    if (h) {
-      const thread = activeAiThread();
-      if (thread) thread.pendingConnect = h.id;
-      try {
-        const session = await connectHost(h.id, null, { reuseExisting: true });
-        return !!session && session.status === 'connected';
-      } finally {
-        if (thread) thread.pendingConnect = null;
-        refreshAgentHostBar();
-      }
-    }
-  }
-  return false;
+/// 一键移除输入框内所有 `data-out="true"` 的失效 chip（A4「移除引用」按钮）。
+export function removeOutChipsFromComposer() {
+  removeOutChips();
+  syncComposerScopeCheck();
 }
 
 export function refreshAgentHostBar() {
@@ -272,75 +297,36 @@ export function refreshAgentHostBar() {
   if (!thread) {
     updateModePicker(null);
     updateTargetBar(null);
-    updateContextBanner(null);
     return;
   }
 
   const view = resolveAiTarget({
     thread,
     sessions: state.sessions,
-    activeId: state.activeId,
     hosts: state.hosts,
     settings: state.settings,
     busy: threadBusy(thread),
     links: thread ? linksForThread(thread) : [],
   });
 
-  updateTargetBar(view, {
-    onAction: () => handleTargetAction(view),
-  });
-
-  updateContextBanner(view, thread, {
-    onConnect: async () => {
-      const ok = await handleTargetAction(view);
-      if (ok) {
-        thread.sendBlocked = null;
-        refreshAgentHostBar();
-        $('#ai-input')?.focus();
-        toast(`已链接 ${view.hostLabel}，可以发送了`, 'info');
-      }
-    },
-    onSendOnActive: () => {
-      const text = ($('#ai-input')?.value || thread.sendBlocked?.text || thread.draft || '').trim();
-      thread.sendBlocked = null;
-      thread.draft = '';
-      const input = $('#ai-input');
-      if (input) input.value = '';
-      if (view.active?.session) {
-        setLinkMode(thread, 'follow');
-        ensureThreadForSession(view.active.session);
-        const nextThread = activeAiThread();
-        if (nextThread && threadLinkMode(nextThread) === 'chat') setLinkMode(nextThread, 'follow');
-        aiSend(text);
-      }
-    },
-    onSendAsChat: () => {
-      const text = ($('#ai-input')?.value || thread?.sendBlocked?.text || thread?.draft || '').trim();
-      setLinkMode(thread, 'chat');
-      thread.sendBlocked = null;
-      refreshAgentHostBar();
-      aiSend(text);
-    },
-    onDismissBlocked: () => {
-      thread.sendBlocked = null;
-      refreshAgentHostBar();
-    },
-  });
+  updateTargetBar(view);
+  syncComposerScopeCheck();
 
   const primary = primarySessionFor(thread);
-  const host = primary?.host || {};
-  const modeLocked = host.aiAccess === 'manual';
+  const host = primary?.host || view.singleHost || {};
+  const modeLocked = view.hosts?.some((h) => h?.aiAccess === 'manual') || host.aiAccess === 'manual';
   const mode = modeLocked ? 'manual' : threadExecMode(thread);
 
   updateModePicker({
     mode,
     modeLocked,
+    showModeControl: view.showModeControl,
     disabled: !!view.blocked,
     hostSummary: view.hostSummary,
     isRoot: host.username === 'root',
     warn: view.blocked === 'tools'
       ? '当前模型不支持工具调用'
-      : (view.blocked === 'deny' ? '该主机设置为禁止 AI 访问' : ''),
+      : (view.blocked === 'deny' ? '所选主机设置为禁止 AI 访问' : ''),
     statusText: view.statusText,
     grants: thread.allowlist || [],
   }, {
@@ -352,7 +338,27 @@ export function refreshAgentHostBar() {
   });
 }
 
-/// 构建顶栏主机菜单数据结构(三种模式 + 多主机清单)。
+/// 构建输入框左下角「主机范围选择器」的数据结构（P5：按目录分组 + 三态方框 + 搜索扁平化，A6 / D1–D4）。
+const expandedFoldersByThread = new Map();
+let lastDefaultedThreadId = null;
+
+function getExpandedFolderSet(thread, groups, scopeSet) {
+  const tid = thread?.id || '__default__';
+  if (!expandedFoldersByThread.has(tid) || lastDefaultedThreadId !== tid) {
+    lastDefaultedThreadId = tid;
+    const initial = new Set();
+    for (const g of groups) {
+      if (g.keys.some((k) => scopeSet.has(k))) initial.add(g.name);
+    }
+    expandedFoldersByThread.set(tid, initial);
+  }
+  return expandedFoldersByThread.get(tid);
+}
+
+export function resetExpandedFoldersForMenu() {
+  lastDefaultedThreadId = null;
+}
+
 export function getTargetMenuData() {
   const thread = activeAiThread();
   const isBusy = threadBusy(thread);
@@ -360,125 +366,263 @@ export function getTargetMenuData() {
   const view = resolveAiTarget({
     thread,
     sessions: state.sessions,
-    activeId: state.activeId,
     hosts: state.hosts,
     settings: state.settings,
     busy: isBusy,
     links: thread ? linksForThread(thread) : [],
   });
 
-  const linkMode = view.linkMode;
-  const activeSess = state.sessions?.get?.(state.activeId);
-  const followHost = connected(activeSess) ? hostLabelOf(activeSess.host) : null;
-  const links = linksForThread(thread);
-  const linkedByHostId = new Map(links.map((l) => [l.hostId, l]));
+  const scopeSet = new Set(view.scope);
+  const connectedKeys = new Set();
+  const errorKeys = new Map();
+  for (const s of state.sessions?.values?.() || []) {
+    const k = hostKeyOf(s?.host);
+    if (!k) continue;
+    if (connected(s)) connectedKeys.add(k);
+    else if (s?.status === 'error' || s?.status === 'timeout' || s?.lastError) {
+      errorKeys.set(k, s.lastError || '连接超时');
+    }
+  }
 
   let notice = '';
-  if (isBusy) notice = 'AI 执行中，结束后才能切换主机';
+  if (isBusy) notice = 'AI 执行中，调整范围仅对下一条消息生效';
 
   const query = getTargetMenuQuery();
   const allHosts = state.hosts || [];
   const q = query.trim().toLowerCase();
-  const filtered = q
-    ? allHosts.filter((h) => `${h.name || ''} ${h.host || h.ip || ''}`.toLowerCase().includes(q))
-    : allHosts;
-  const hosts = filtered.map((h) => {
-    const link = linkedByHostId.get(h.id);
-    const pending = hostPendingOf(h.id);
+
+  const toHostItem = (h) => {
+    const key = hostKeyOf(h);
+    const isConn = connectedKeys.has(key);
+    const errText = h.unreachable || h.statusError || errorKeys.get(key)
+      ? (typeof h.statusError === 'string' && h.statusError ? h.statusError : (errorKeys.get(key) || '连接超时'))
+      : '';
+    const hostAddr = h.host || h.ip || '';
+    const user = h.username || 'root';
     return {
-      hostId: h.id,
-      name: h.name || h.host || h.id,
-      address: `${h.username || 'root'}@${h.host || h.ip || ''}`,
-      linked: !!link,
-      // 中间态优先:链接成功前 linked 仍为 false,断开成功后条目已消失。
-      status: pending || link?.status || 'idle',
-      error: link?.error || null,
-      busy: isBusy || !!pending,
+      hostId: key,
+      name: h.name || h.host || key,
+      group: h.group || '我的主机',
+      address: hostAddr ? `${hostAddr} · ${user}` : user,
+      checked: scopeSet.has(key),
+      connected: isConn,
+      unreachable: !!errText,
+      errorText: errText,
+      status: errText ? 'error' : (isConn ? 'connected' : 'idle'),
+    };
+  };
+
+  const allHostItems = allHosts.map(toHostItem);
+  const rawGroups = groupHostsByFolder(allHosts, '我的主机');
+  const expandedSet = getExpandedFolderSet(thread, rawGroups, scopeSet);
+
+  const groups = rawGroups.map((g) => {
+    const gHosts = g.hosts.map(toHostItem);
+    const selectedCount = g.keys.filter((k) => scopeSet.has(k)).length;
+    return {
+      name: g.name,
+      keys: g.keys,
+      hosts: gHosts,
+      totalCount: gHosts.length,
+      selectedCount,
+      state: groupState(view.scope, g.keys), // 'all' | 'part' | 'none'
+      expanded: expandedSet.has(g.name),
     };
   });
 
+  const filteredHosts = q
+    ? allHostItems.filter((h) => `${h.name || ''} ${h.address || ''} ${h.group || ''}`.toLowerCase().includes(q))
+    : allHostItems;
+
+  // 已选主机名称预览（用于顶部常驻汇总条：web-prod-01、db-prod-02 +1）
+  const byKey = new Map(allHostItems.map((h) => [h.hostId, h.name]));
+  const selectedNames = view.scope.map((k) => byKey.get(k) || k);
+
   return {
     notice,
-    disabled: isBusy,
-    linkMode,
-    linkCount: view.linkedCount,
+    disabled: false,
+    scope: view.scope,
+    scopeCount: view.count,
+    selectedNames,
+    summaryLabel: view.hostSummary,
     query,
-    hosts,
-    chat: { checked: linkMode === 'chat' },
-    follow: {
-      checked: linkMode === 'follow',
-      hostLabel: followHost,
-    },
-    multi: {
-      checked: linkMode === 'multi',
-      showHosts: linkMode === 'multi',
-    },
+    hosts: filteredHosts,
+    groups,
+    groupCount: groups.length,
+    totalCount: allHosts.length,
   };
-}
-
-/// 正在链接/断开的 hostId → 'connecting' | 'disconnecting'。
-/// 链接成功前条目还没进 thread.linkedHostIds,断开成功后条目已被摘掉 ——
-/// 中间态只能由这里承载,否则界面开关会在等待期间闪回原始状态。
-const hostPending = new Map();
-
-export function hostPendingOf(hostId) {
-  return hostPending.get(hostId) || '';
 }
 
 let targetMenuQuery = '';
 export function getTargetMenuQuery() { return targetMenuQuery; }
 export function setTargetMenuQuery(q) { targetMenuQuery = String(q || ''); }
 
-/// 菜单原地重绘(不收起):模式切换/主机开关后立刻反映到 switch、计数与清单。
-/// focus 用来把焦点放回刚操作的那一项,连续操作不丢位置。
-export function redrawTargetMenu({ focusMode, focusHostId } = {}) {
-  const menu = $('#ai-target-menu');
+/// 菜单原地重绘（不收起）：勾选/取消主机后立即刷新。
+export function redrawTargetMenu({ focusHostId } = {}) {
+  const menu = $('#ai-scope-menu');
   if (!menu || menu.classList.contains('hidden')) return;
-  renderTargetMenu(getTargetMenuData(), targetMenuHandlers(), { focusMode, focusHostId });
+  renderTargetMenu(getTargetMenuData(), targetMenuHandlers(), { focusHostId });
 }
 
-/// 顶栏主机菜单的动作集合。模式切换走 setLinkModeAndRefresh;开关主机走 toggleLinkedHost。
-/// 所有动作都不收起菜单 —— 连续点几个开关是常态,每次都要重开菜单不合理。
+/// 主机范围选择器的交互处理器（F2 / F3：范围随时可改，只影响后续消息；B.1–B.4 全部目录与搜索分支）。
 export function targetMenuHandlers() {
   const thread = () => activeAiThread();
   let searchTimer = null;
+  const syncAfterScopeChange = (t, focusOpts) => {
+    t.hostId = t.scope[0] || null;
+    const firstHost = (state.hosts || []).find((h) => hostKeyOf(h) === t.hostId);
+    t.hostName = firstHost ? hostLabelOf(firstHost) : null;
+    if (!t.scope.length) clearThreadLinks(t);
+    if (threadBusy(t) && t.agentRun) {
+      const view = resolveAiTarget({
+        thread: t,
+        sessions: state.sessions,
+        hosts: state.hosts,
+        settings: state.settings,
+        busy: true,
+        links: linksForThread(t),
+      });
+      const text = `已调整主机范围为「${view.hostSummary}」，将从下一轮消息起生效（当前轮继续按原范围执行）`;
+      if (t.agentRun.scopeChangeNoticeEl && t.agentRun.scopeChangeNoticeEl.__label) {
+        t.agentRun.scopeChangeNoticeEl.__label.textContent = text;
+      } else {
+        const noticeEl = createAiNoticeElement({
+          kind: 'scope-next-turn',
+          level: 'info',
+          iconName: 'info',
+          text,
+        });
+        t.agentRun.scopeChangeNoticeEl = noticeEl;
+        appendToThreadView(t, noticeEl);
+      }
+    }
+    refreshThreadScopeChips(t);
+    refreshThreadUi();
+    refreshAgentHostBar();
+    redrawTargetMenu(focusOpts);
+  };
   return {
-    onSelectMode: (mode) => {
-      setTargetMenuQuery('');
-      setLinkModeAndRefresh(thread(), mode).then(() => redrawTargetMenu({ focusMode: mode }));
+    onToggleHost: (hostKey) => {
+      const t = thread();
+      if (!t || !hostKey) return;
+      const next = toggleHost(threadScope(t, state.hosts), hostKey);
+      setThreadScope(t, next, state.hosts);
+      syncAfterScopeChange(t, { focusHostId: hostKey });
     },
-    onToggleHost: (hostId, on) => {
-      toggleLinkedHost(thread(), hostId, on).then(() => redrawTargetMenu({ focusHostId: hostId }));
+    onToggleFolderExpand: (folderName) => {
+      const t = thread();
+      if (!folderName) return;
+      const rawGroups = groupHostsByFolder(state.hosts || [], '我的主机');
+      const scopeSet = new Set(threadScope(t, state.hosts));
+      const expandedSet = getExpandedFolderSet(t, rawGroups, scopeSet);
+      if (expandedSet.has(folderName)) expandedSet.delete(folderName);
+      else expandedSet.add(folderName);
+      redrawTargetMenu();
+    },
+    onToggleGroup: (folderName, keys) => {
+      const t = thread();
+      if (!t || !Array.isArray(keys) || !keys.length) return;
+      const cur = threadScope(t, state.hosts);
+      const st = groupState(cur, keys);
+      // B.1 #2/#3/#4：未选(none) 或 部分(part) 点方框 → 整目录全选；全选(all) 点方框 → 整目录全不选
+      const turnOn = st !== 'all';
+      const next = setGroup(cur, keys, turnOn);
+      setThreadScope(t, next, state.hosts);
+      syncAfterScopeChange(t);
+    },
+    onSelectSearchResults: (keys) => {
+      const t = thread();
+      if (!t || !Array.isArray(keys) || !keys.length) return;
+      // B.3 #12 / L15：点「全选结果」追加当前搜索结果集（>10 条时最多取前 10 条），不清空原有选择
+      const toAdd = keys.length > 10 ? keys.slice(0, 10) : keys;
+      const cur = threadScope(t, state.hosts);
+      const next = setGroup(cur, toAdd, true);
+      setThreadScope(t, next, state.hosts);
+      syncAfterScopeChange(t);
     },
     onToggleAll: (on) => {
-      toggleAllHosts(thread(), on).then(() => redrawTargetMenu());
-    },
-    onClearHosts: async () => {
       const t = thread();
       if (!t) return;
-      if (threadBusy(t)) { toast('AI 执行中，结束后才能调整主机', 'warn'); return; }
-      await clearThreadLinks(t);
-      clearTargetGrants(t);
-      t.execMode = 'manual';
-      refreshAgentHostBar();
-      redrawTargetMenu();
+      const allKeys = (state.hosts || []).map(hostKeyOf).filter(Boolean);
+      setThreadScope(t, on ? allKeys : [], state.hosts);
+      syncAfterScopeChange(t);
+    },
+    onClearHosts: () => {
+      const t = thread();
+      if (!t) return;
+      setThreadScope(t, [], state.hosts);
+      syncAfterScopeChange(t);
+    },
+    onClearSearch: () => {
+      clearTimeout(searchTimer);
+      setTargetMenuQuery('');
+      renderTargetMenu(getTargetMenuData(), targetMenuHandlers());
+      const input = $('#ai-scope-menu-list .ai-target-hosts-search .inp');
+      if (input) input.focus();
+    },
+    onDone: () => {
+      closeTargetMenu({ focusTrigger: true });
     },
     onSearch: (q) => {
       clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => {
-        setTargetMenuQuery(q);
-        // 只重绘清单,不重建整个菜单(否则输入框会失焦)。
-        const data = getTargetMenuData();
-        renderTargetMenu(data, targetMenuHandlers());
-        const input = $('#ai-target-menu-list .ai-target-hosts-search .inp');
-        if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
-      }, 120);
+      setTargetMenuQuery(q);
+      const data = getTargetMenuData();
+      renderTargetMenu(data, targetMenuHandlers());
+      const input = $('#ai-scope-menu-list .ai-target-hosts-search .inp');
+      if (input) { input.focus(); input.setSelectionRange?.(input.value.length, input.value.length); }
     },
   };
 }
 
+const EXEC_MODE_LABELS = {
+  manual: '手动确认',
+  auto: '自动执行',
+  full: '完全托管',
+};
+
+function appendClarifyHostPicks(bubble, thread, scopeHosts, replyText) {
+  if (!bubble || !Array.isArray(scopeHosts) || scopeHosts.length < 2) return;
+  const text = String(replyText || '');
+  const isQuestion = /(哪一台|哪台|请选择|请确认|要在哪|指定.*主机|[?？])/i.test(text);
+  if (!isQuestion) return;
+  const body = bubble.querySelector?.('.ai-body');
+  if (!body || body.querySelector?.('.ai-ask-picks')) return;
+
+  const picksWrap = document.createElement('div');
+  picksWrap.className = 'ai-ask-picks';
+  for (const h of scopeHosts) {
+    if (!h || h.unreachable) continue;
+    const pickBtn = document.createElement('button');
+    pickBtn.type = 'button';
+    pickBtn.className = 'ai-ask-pick';
+    pickBtn.dataset.hostKey = h.hostKey || h.hostId || '';
+    pickBtn.dataset.hostName = h.name || '';
+    const dot = document.createElement('span');
+    dot.className = 'ai-ask-dot';
+    const lbl = document.createElement('span');
+    lbl.className = 'ai-ask-name';
+    lbl.textContent = '@' + String(h.name || h.hostKey).replace(/^@/, '');
+    pickBtn.append(dot, lbl);
+    pickBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (threadBusy(thread)) return;
+      const hostName = h.name || h.hostKey;
+      const hostKey = h.hostKey || h.hostId || hostName;
+      aiSend(`@${hostName}`, '', {
+        mentions: [{ hostKey, label: hostName }],
+      });
+    });
+    picksWrap.appendChild(pickBtn);
+  }
+  if (!picksWrap.children.length) return;
+  const hint = document.createElement('div');
+  hint.className = 'ai-ask-hint';
+  hint.textContent = '也可以直接说“南京那台”，或打 @ 指定';
+  body.append(picksWrap, hint);
+}
+
 /// 一轮模型请求：沿用现有流式气泡；只有工具调用、没有正文的轮次不留空气泡。
-async function agentChat(thread, { messages, tools }) {
+async function agentChat(thread, { messages, tools, scopeHosts, isMultiTurn }) {
   const bubble = renderAiMessage('assistant', '', { thread });
   markBubblePending(bubble);
   const r = await aiRequest(messages, bubble, undefined, { thread, record: false, tools });
@@ -491,37 +635,206 @@ async function agentChat(thread, { messages, tools }) {
     }
     throw new Error(r.error);
   }
+  const hasCalls = Array.isArray(r?.toolCalls) && r.toolCalls.some((c) => c && c.name);
+  if (isMultiTurn && !hasCalls && r?.text) {
+    appendClarifyHostPicks(bubble, thread, scopeHosts, r.text);
+  }
   return { content: r.text || '', toolCalls: r.toolCalls, reasoning: r.reasoning, thinkingBlocks: r.thinkingBlocks, aborted: !!r.aborted };
 }
 
-export async function runAgentSend(thread, binding, { content, display, md }) {
-  const session = binding.session;
-  const isMulti = threadLinkMode(thread) === 'multi';
-  // 多主机不写 thread.hostId/sessionId:那是「单个绑定主机」的字段,多主机下写了会给
-  // 后续 follow/auto 判定留下污染(表现为下次发送仍按旧主机处理)。
-  if (!isMulti) {
-    if (binding.bindNow) bindThreadToSession(thread, session);
-    else if (session) thread.sessionId = session.sessionId;
-  }
+export async function runAgentSend(thread, binding, { content, display, md, mentions = [] }) {
+  // F22：回合开始时拍下 runScope 快照，回合进行中用户在选择器里改范围不影响当前回合的白名单判定
+  const runScope = snapshotRunScope(threadScope(thread, state.hosts));
+  const runExecMode = threadExecMode(thread);
 
-  // 多主机:把「主机名 → 已链接会话」的解析表固定在本轮入口处(目标集合本轮不再变)。
-  const links = linksForThread(thread);
+  const scopeEntries = [];
+  const reachableEntries = [];
+  const unreachableEntries = [];
   const hostIndex = new Map();
-  for (const l of links) {
-    if (l.hostName) hostIndex.set(String(l.hostName).toLowerCase(), l);
-  }
-  const isMultiTurn = isMulti && links.length > 0;
-  // 后端白名单:多主机 = 全部已链接会话;单主机 = 该会话本身。
-  const allowedIds = allowedSessionIds(thread, session);
+  const connectedScopeNames = [];
 
-  renderAiMessage('user', display, { md, thread });
+  for (const key of runScope) {
+    const h = hostForKey(key) || { id: key, name: key };
+    const name = hostLabelOf(h) || h.name || key;
+    const errReason = hostUnreachableReason(h, key);
+    const s = errReason ? null : connectedSessionForKey(key);
+    const hostAddr = h.host || h.ip || '';
+    const user = h.username || 'root';
+    const entry = {
+      hostKey: key,
+      hostId: key,
+      name,
+      group: h.group || '我的主机',
+      address: hostAddr ? `${hostAddr} · ${user}` : user,
+      unreachable: !!errReason || !s,
+      errorText: errReason || (!s ? '未连接' : ''),
+      session: s,
+      host: h,
+    };
+    scopeEntries.push(entry);
+    if (!entry.unreachable && s) {
+      reachableEntries.push(entry);
+      connectedScopeNames.push(name);
+      const record = {
+        hostKey: key,
+        sessionId: s.sessionId,
+        hostName: name,
+        host: h,
+        status: 'connected',
+      };
+      hostIndex.set(String(key).toLowerCase(), record);
+      hostIndex.set(String(name).toLowerCase(), record);
+      if (hostAddr) hostIndex.set(String(hostAddr).toLowerCase(), record);
+    } else {
+      unreachableEntries.push(entry);
+    }
+  }
+
+  renderAiMessage('user', display, { md, thread, mentions });
+
+  // L19：发送前/回合启动不可达主机预检黄条
+  const normalizedMentions = (Array.isArray(mentions) ? mentions : []).map((m) => ({
+    hostKey: String(m?.hostKey || m?.key || '').trim(),
+    label: String(m?.label || m?.name || m?.hostKey || '').trim(),
+  })).filter((m) => m.hostKey || m.label);
+
+  if (unreachableEntries.length > 0) {
+    const mentionedKeys = new Set(normalizedMentions.map((m) => m.hostKey.toLowerCase()));
+    const mentionedLabels = new Set(normalizedMentions.map((m) => m.label.toLowerCase()));
+    const hasOnlyOtherReachableMentions = normalizedMentions.length > 0
+      && !unreachableEntries.some((u) => mentionedKeys.has(u.hostKey.toLowerCase()) || mentionedLabels.has(u.name.toLowerCase()))
+      && reachableEntries.length > 0;
+
+    if (!hasOnlyOtherReachableMentions) {
+      for (const u of unreachableEntries) {
+        const suffix = reachableEntries.length > 0
+          ? '，本轮仅在其余可达主机上执行'
+          : '，无法执行主机命令';
+        const warnNotice = createAiNoticeElement({
+          kind: 'unreachable-host',
+          level: 'warn',
+          iconName: 'alert',
+          text: `${u.name} 当前不可达（${u.errorText || '连接超时'}）${suffix}`,
+          actions: [
+            {
+              label: '重连',
+              action: 'reconnect',
+              hostKey: u.hostKey,
+              onClick: async (_e, row) => {
+                const targetHost = hostForKey(u.hostKey);
+                const res = await api('ssh:connect', {
+                  hostId: u.hostKey,
+                  sessionId: HEADLESS_PREFIX + u.hostKey,
+                }).catch(() => null);
+                if (targetHost && (!res || !res.error)) {
+                  targetHost.unreachable = false;
+                  targetHost.statusError = '';
+                }
+                if (row.__label) row.__label.textContent = `已重连 ${u.name}`;
+                row.dataset.level = 'info';
+                row.className = 'ai-notice';
+                row.querySelector('.ai-notice-actions')?.remove();
+                refreshThreadUi();
+                refreshAgentHostBar();
+                redrawTargetMenu();
+              },
+            },
+            {
+              label: '从范围移除',
+              action: 'remove-scope',
+              hostKey: u.hostKey,
+              onClick: (_e, row) => {
+                const next = threadScope(thread, state.hosts).filter((k) => k !== u.hostKey);
+                setThreadScope(thread, next, state.hosts);
+                thread.hostId = thread.scope[0] || null;
+                const firstH = hostForKey(thread.hostId);
+                thread.hostName = firstH ? hostLabelOf(firstH) : null;
+                if (row.__label) row.__label.textContent = `已将 ${u.name} 从本会话允许范围移除`;
+                row.querySelector('.ai-notice-actions')?.remove();
+                refreshThreadScopeChips(thread);
+                refreshThreadUi();
+                refreshAgentHostBar();
+                redrawTargetMenu();
+              },
+            },
+          ],
+        });
+        appendToThreadView(thread, warnNotice);
+      }
+    }
+  }
+
+  // 若本轮范围内无任何可达主机，插入黄条后直接收束，不发注定失败的工具请求
+  if (reachableEntries.length === 0) {
+    thread.history.push({ role: 'user', content });
+    thread.updatedAt = Date.now();
+    trimAiHistory(thread);
+    refreshThreadUi();
+    return;
+  }
+
+  const primaryEntry = (() => {
+    if (normalizedMentions.length === 1) {
+      const m = normalizedMentions[0];
+      const hit = reachableEntries.find(
+        (e) => e.hostKey.toLowerCase() === m.hostKey.toLowerCase() || e.name.toLowerCase() === m.label.toLowerCase(),
+      );
+      if (hit) return hit;
+    }
+    return reachableEntries[0];
+  })();
+  const session = primaryEntry?.session || binding?.session;
+  const isMultiTurn = runScope.length > 1;
+  const allowedIds = [...new Set(reachableEntries.map((e) => e.session?.sessionId).filter(Boolean))];
+
   const ctrl = new AbortController();
-  thread.agentRun = { ctrl };
+  thread.agentRun = {
+    ctrl,
+    runScope,
+    runExecMode,
+    touchedHosts: new Set(),
+    targetNoticeEl: null,
+    scopeChangeNoticeEl: null,
+    firstStepEl: null,
+  };
   if (thread.id === state.activeThreadId) setAiBusy(true);
   refreshThreadUi();
   const isActive = () => thread.id === state.activeThreadId;
-  const adapter = createAgentAdapter({
-    mount: (el) => appendToThreadView(thread, el),
+  const host = session?.host || primaryEntry?.host || {};
+  const getTurnMode = () => (host.aiAccess === 'manual' ? 'manual' : (thread.agentRun?.runExecMode || threadExecMode(thread)));
+
+  const recordTouchedHost = (hostName) => {
+    if (!hostName || !thread.agentRun) return;
+    thread.agentRun.touchedHosts.add(hostName);
+    const names = [...thread.agentRun.touchedHosts];
+    const modeLabel = EXEC_MODE_LABELS[getTurnMode()] || '手动确认';
+    const text = `作用域 ${names.join(' → ')} · ${modeLabel}`;
+    if (!thread.agentRun.targetNoticeEl) {
+      const noticeEl = createAiNoticeElement({
+        kind: 'target-scope',
+        level: 'info',
+        iconName: 'zap',
+        text,
+      });
+      thread.agentRun.targetNoticeEl = noticeEl;
+      const firstStep = thread.agentRun.firstStepEl;
+      if (firstStep && firstStep.parentNode) {
+        firstStep.before(noticeEl);
+      } else {
+        appendToThreadView(thread, noticeEl);
+      }
+    } else if (thread.agentRun.targetNoticeEl.__label) {
+      thread.agentRun.targetNoticeEl.__label.textContent = text;
+    }
+  };
+
+  const baseAdapter = createAgentAdapter({
+    mount: (node) => {
+      if (thread.agentRun && !thread.agentRun.firstStepEl && node?.classList?.contains?.('ai-step')) {
+        thread.agentRun.firstStepEl = node;
+      }
+      appendToThreadView(thread, node);
+    },
     onGrow: () => { if (isActive()) aiStickScroll(); },
     isActive,
     setPending: (on, background) => {
@@ -532,64 +845,102 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
       }
       refreshThreadUi();
     },
-    onRunAndAuto: () => { thread.execMode = 'auto'; thread.autoAcked = true; refreshAgentHostBar(); },
-    // 授权按钮只在自动模式出现：手动模式的语义就是每条命令都要看到。
-    // 多主机模式下不提供「本会话总是允许」:授权按单主机维度,主机集合一变即失效,给了会误导。
-    canAllow: () => !isMultiTurn && thread.execMode === 'auto' && session?.host?.aiAccess !== 'manual',
+    onRunAndAuto: () => {
+      thread.execMode = 'auto';
+      thread.autoAcked = true;
+      if (thread.agentRun) thread.agentRun.runExecMode = 'auto';
+      refreshAgentHostBar();
+    },
+    canAllow: () => !isMultiTurn && getTurnMode() === 'auto' && session?.host?.aiAccess !== 'manual',
     onAllowAlways: (allowable) => { addGrant(thread, allowable); refreshAgentHostBar(); },
     audit: (e) => api('ai:tool-audit', {
       ...e,
       sessionId: e.sessionId || session?.sessionId,
-      host: e.host || hostLabelOf(session?.host),
+      host: e.host || primaryEntry?.name || hostLabelOf(session?.host),
     }).catch(() => {}),
     canUseSaved: () => !!(session?.host?.hasPassword || session?.host?.password),
   });
-  const host = session?.host || {};
 
-  // 多主机时模型按名字指名主机;名字解析不到就回错误给模型,绝不静默回落到默认主机。
   const resolveExecSession = (req) => {
-    if (!isMultiTurn) return { sessionId: req.sessionId };
     const wanted = String(req.args?.host || '').trim();
     if (wanted) {
-      const link = hostIndex.get(wanted.toLowerCase());
-      if (!link || link.status !== 'connected') {
-        return { error: `未知或未链接的主机「${wanted}」。可用的主机：${links.filter((l) => l.status === 'connected').map((l) => l.hostName).join('、') || '（无）'}` };
+      const cleanWanted = wanted.replace(/^@/, '').trim();
+      const check = validateToolHost({
+        runScope,
+        requested: cleanWanted,
+        hosts: state.hosts,
+      });
+      const link = hostIndex.get(cleanWanted.toLowerCase())
+        || (check.ok && check.hostKey ? hostIndex.get(String(check.hostKey).toLowerCase()) : null);
+      if (!check.ok && !link) {
+        return {
+          code: 'out_of_scope',
+          error: `越界拒绝：主机「${cleanWanted}」不在本会话允许范围（${connectedScopeNames.join('、') || '无'}）内，已拒绝连接与执行。`,
+        };
       }
-      return { sessionId: link.sessionId };
+      if (!link || link.status !== 'connected') {
+        const unreach = unreachableEntries.find(
+          (u) => u.hostKey.toLowerCase() === cleanWanted.toLowerCase() || u.name.toLowerCase() === cleanWanted.toLowerCase(),
+        );
+        if (unreach) {
+          return {
+            code: 'host_unreachable',
+            error: `主机「${unreach.name}」当前不可达（${unreach.errorText || '连接超时'}）。当前可用主机：${connectedScopeNames.join('、') || '（无）'}`,
+          };
+        }
+        return {
+          code: 'out_of_scope',
+          error: `越界拒绝：主机「${cleanWanted}」不在本会话允许范围（${connectedScopeNames.join('、') || '无'}）内，已拒绝连接与执行。`,
+        };
+      }
+      return {
+        sessionId: link.sessionId,
+        hostKey: link.hostKey,
+        hostName: link.hostName,
+      };
     }
-    return { sessionId: session?.sessionId || links.find((l) => l.status === 'connected')?.sessionId };
+    return {
+      sessionId: primaryEntry?.session?.sessionId || req.sessionId,
+      hostKey: primaryEntry?.hostKey || '',
+      hostName: primaryEntry?.name || hostLabelOf(host) || '',
+    };
   };
 
-  // 回合起点：本轮挂进消息区的节点都打上这个 token，收口据此只认本轮的节点。
-  // 放在 try 之前、runAgentTurn 之前——第一次挂载前就必须有 token。
   const turnToken = beginAiTurn(thread);
 
   try {
-    // 请求失败由流式气泡自己展示（⚠️ 错误），这里不重复提示。
     await runAgentTurn({
       thread,
       userMessage: content,
       systemPrompt: buildHostSystemPrompt({
-        hostName: hostLabelOf(host), user: host.username, isRoot: host.username === 'root',
-        os: thread.hostOs, cwd: session?.remoteCwd, execMode: threadExecMode(thread),
-        linkedHosts: isMultiTurn
-          ? links.filter((l) => l.status === 'connected').map((l) => l.hostName)
-          : null,
+        hostName: primaryEntry?.name || hostLabelOf(host),
+        user: host.username,
+        isRoot: host.username === 'root',
+        os: thread.hostOs,
+        cwd: session?.remoteCwd,
+        execMode: getTurnMode(),
+        linkedHosts: isMultiTurn ? connectedScopeNames : null,
+        scopeHosts: scopeEntries,
+        mentions: normalizedMentions,
       }),
-      // 多主机:exec 带 host 参数、不下发 read_terminal(无头主机没有终端语义)。
       tools: isMultiTurn ? AI_AGENT_TOOLS_MULTI : AI_AGENT_TOOLS,
       sessionId: session?.sessionId,
-      getMode: () => (host.aiAccess === 'manual' ? 'manual' : threadExecMode(thread)),
-      chat: (req) => agentChat(thread, req),
+      scopeHosts: reachableEntries,
+      getMode: getTurnMode,
+      chat: (req) => agentChat(thread, { ...req, scopeHosts: reachableEntries, isMultiTurn }),
       execTool: async (req) => {
         const target = resolveExecSession(req);
-        if (target.error) return { status: 'error', code: 'unknown_host', message: target.error };
-        // 授权列表与污点只随 exec 带给后端；命中与否由后端在全部补判之后判定。
-        // 多主机不携带授权(上面已禁用「总是允许」)。
+        if (target.error) {
+          return {
+            status: 'error',
+            code: target.code || 'out_of_scope',
+            message: target.error,
+          };
+        }
+        // F18 / L2：首个有效 hostKey 工具调用发生时，由 UI 强制插入目标声明条
+        recordTouchedHost(target.hostName);
         const policy = req.tool === 'exec'
           ? {
-            // 托管档本来就不确认,授权列表不参与判定;但照常带上以备切回自动档,
-            // 且后端在 auto/full 下都会先补判覆盖目标,两边判定保持一致。
             allow: !isMultiTurn && req.mode !== 'manual'
               ? (thread.allowlist || []).map(({ rule, key }) => ({ rule, key }))
               : [],
@@ -600,8 +951,14 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
           ...req,
           ...policy,
           sessionId: target.sessionId,
+          hostKey: target.hostKey,
+          runScope,
           linkedSessions: allowedIds,
         });
+        if (res && typeof res === 'object') {
+          if (!res.host && target.hostName) res.host = target.hostName;
+          if (!res.hostKey && target.hostKey) res.hostKey = target.hostKey;
+        }
         if (req.tool === 'host_info' && res?.meta?.os && !isMultiTurn) thread.hostOs = res.meta.os;
         if (!isMultiTurn && Array.isArray(res?.downloads) && res.downloads.length) addTaint(thread, res.downloads);
         return res;
@@ -609,7 +966,35 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
       cancelTool: (toolRunId) => api('ai:tool-cancel', { toolRunId }),
       readTerminal: (lines) => readTerminalLines(state.sessions?.get?.(session?.sessionId) || session, lines),
       adapter: {
-        ...adapter,
+        ...baseAdapter,
+        stepStart: (step) => {
+          if (step && !step.hostName && !step.args?.host && primaryEntry?.name) {
+            step.hostName = primaryEntry.name;
+            step.hostKey = primaryEntry.hostKey;
+          }
+          baseAdapter.stepStart(step);
+        },
+        onOutOfScope: ({ args, count, max }) => {
+          const wantedHost = String(args?.host || '').replace(/^@/, '').trim() || '未知主机';
+          if (count >= max) {
+            const abortNotice = createAiNoticeElement({
+              kind: 'oob-abort',
+              level: 'danger',
+              iconName: 'alert',
+              text: `模型连续 ${count} 次尝试操作范围外主机（@${wantedHost}），已自动中止本轮执行`,
+            });
+            appendToThreadView(thread, abortNotice);
+          } else {
+            const warnNotice = createAiNoticeElement({
+              kind: 'oob-warn',
+              level: 'warn',
+              iconName: 'alert',
+              text: `已拦截范围外主机请求 @${wantedHost}（不在本轮允许范围：${connectedScopeNames.join('、') || '无'}）`,
+            });
+            appendToThreadView(thread, warnNotice);
+          }
+          if (isActive()) aiStickScroll();
+        },
         onToolsUnsupported: () => toast('当前模型不支持工具调用，本次改为普通对话', 'info'),
       },
       signal: ctrl.signal,
@@ -617,7 +1002,6 @@ export async function runAgentSend(thread, binding, { content, display, md }) {
       uuid: () => crypto.randomUUID(),
     });
   } finally {
-    // 先收口再清忙碌态：折叠改变了节点层级与高度，贴底一次性完成。
     endAiTurn(thread, turnToken);
     thread.agentRun = null;
     thread.pendingConfirm = false;

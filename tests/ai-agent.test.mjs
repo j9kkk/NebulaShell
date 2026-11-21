@@ -318,3 +318,81 @@ test('非法参数与未知工具：报错回填，循环继续；变更清单�
   assert.equal(summaries.length, 1);
   assert.deepEqual(summaries[0].execs.map((e) => e.cmd), ['uptime']);
 });
+
+test('P6 buildHostSystemPrompt：注入范围内主机元数据与本条消息 @ 引用线索（F16/F17/L4）', () => {
+  const prompt = buildHostSystemPrompt({
+    hostName: 'web-prod-01',
+    user: 'root',
+    isRoot: true,
+    execMode: 'auto',
+    scopeHosts: [
+      { hostKey: 'h-web-01', name: 'web-prod-01', group: '生产环境', address: '10.0.1.11 · root' },
+      { hostKey: 'h-db-02', name: 'db-prod-02', group: '生产环境', address: '10.0.1.12 · postgres' },
+    ],
+    mentions: [{ hostKey: 'h-db-02', label: 'db-prod-02' }],
+  });
+  assert.match(prompt, /web-prod-01.*生产环境.*10\.0\.1\.11/);
+  assert.match(prompt, /db-prod-02.*生产环境.*10\.0\.1\.12/);
+  assert.match(prompt, /用户在当前消息中通过 @ 明确点名了以下范围内主机：@db-prod-02/);
+  assert.match(prompt, /严禁连接或操作上述允许范围之外的任何主机/);
+});
+
+test('P6 越界硬拦截：第 1 次触发 onOutOfScope 告警回填，连续第 2 次越界自动中止整轮执行（F21/F23/C1）', async () => {
+  const oobEvents = [];
+  const { ctx, thread, chats } = harness({
+    rounds: [
+      { toolCalls: [call('c1', 'exec', { cmd: 'cat /etc/shadow', host: 'bastion-jump-01' })] },
+      { toolCalls: [call('c2', 'exec', { cmd: 'hostname', host: 'bastion-jump-01' })] },
+      { content: '不应该走到第三轮' },
+    ],
+    onExec: (req) => ({
+      status: 'error',
+      code: 'out_of_scope',
+      message: `越界拒绝：主机 ${req.args.host} 不在允许范围内`,
+    }),
+    adapter: {
+      onOutOfScope: (info) => oobEvents.push({ count: info.count, max: info.max, host: info.args.host }),
+    },
+  });
+  const r = await runAgentTurn(ctx);
+  assert.equal(r.status, 'aborted', '连续 2 次越界应自动中止本轮');
+  assert.equal(chats.length, 2, '第 2 次越界后立即跳出循环，不发起第 3 轮模型请求');
+  assert.deepEqual(oobEvents, [
+    { count: 1, max: 2, host: 'bastion-jump-01' },
+    { count: 2, max: 2, host: 'bastion-jump-01' },
+  ]);
+  assertPaired(thread.history);
+});
+
+test('P6 确认卡临时改派目标主机：在确认卡将主机从 web-prod-01 改派为 db-prod-02 后按新主机执行（B1/F15）', async () => {
+  const stepUpdates = [];
+  const summaries = [];
+  const { ctx, execs } = harness({
+    rounds: [
+      { toolCalls: [call('c1', 'exec', { cmd: 'systemctl restart nginx', host: 'web-prod-01' })] },
+      { content: '已在 db-prod-02 执行完成' },
+    ],
+    onExec: (req) => (req.confirmed
+      ? { status: 'done', output: 'restarted', exitCode: 0, decision: 'confirmed', host: req.args.host }
+      : { status: 'needs-confirm', tier: 'normal', reasons: ['修改服务状态'], host: req.args.host }),
+    adapter: {
+      stepUpdate: (s) => stepUpdates.push({ hostName: s.hostName, hostKey: s.hostKey }),
+      requestConfirm: async () => ({
+        decision: 'run',
+        host: 'db-prod-02',
+        hostKey: 'h-db-02',
+      }),
+      turnSummary: (s) => summaries.push(s),
+    },
+  });
+  ctx.scopeHosts = [
+    { hostKey: 'h-web-01', name: 'web-prod-01' },
+    { hostKey: 'h-db-02', name: 'db-prod-02' },
+  ];
+  const r = await runAgentTurn(ctx);
+  assert.equal(r.status, 'done');
+  assert.equal(execs[0].args.host, 'web-prod-01');
+  assert.equal(execs[1].args.host, 'db-prod-02');
+  assert.ok(stepUpdates.some((u) => u.hostName === 'db-prod-02' && u.hostKey === 'h-db-02'));
+  assert.equal(summaries[0].execs[0].host, 'db-prod-02');
+});

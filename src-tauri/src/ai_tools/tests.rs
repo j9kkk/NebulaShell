@@ -74,6 +74,43 @@ fn linked_sessions_whitelist_rejects_unlisted_sessions() {
 }
 
 #[test]
+fn run_scope_whitelist_rejects_out_of_scope_hosts() {
+    // 未带 runScope（兼容旧路径）：默认放行。
+    assert!(host_key_in_run_scope(&json!({ "sessionId": "s1" }), "h-web-01"));
+    assert!(session_host_in_run_scope(
+        &json!({ "sessionId": "s1" }),
+        &json!({ "id": "h-web-01", "name": "web-prod-01" })
+    ));
+
+    // 带 runScope：仅允许快照内的主机 key / name，范围外主机立即拒绝。
+    let p = json!({
+        "sessionId": "s1",
+        "runScope": ["h-web-01", "h-db-02"]
+    });
+    assert!(host_key_in_run_scope(&p, "h-web-01"));
+    assert!(host_key_in_run_scope(&p, "@H-DB-02"));
+    assert!(!host_key_in_run_scope(&p, "h-cache-03"), "不在 runScope 内的 hostKey 必须被拒");
+    assert!(!host_key_in_run_scope(&p, ""), "空 hostKey 必须被拒");
+
+    assert!(session_host_in_run_scope(
+        &p,
+        &json!({ "id": "h-web-01", "name": "web-prod-01", "host": "10.0.1.11" })
+    ));
+    assert!(!session_host_in_run_scope(
+        &p,
+        &json!({ "id": "h-cache-03", "name": "cache-redis-03", "host": "10.0.1.30" })
+    ));
+
+    // 空 runScope（0 台可操作 / 纯对话模式）：任何主机都必须被拒。
+    let empty_scope = json!({ "runScope": [] });
+    assert!(!host_key_in_run_scope(&empty_scope, "h-web-01"));
+    assert!(!session_host_in_run_scope(
+        &empty_scope,
+        &json!({ "id": "h-web-01", "name": "web-prod-01" })
+    ));
+}
+
+#[test]
 fn head_tail_keeps_both_ends() {
     let mut h = HeadTail::new(4, 4);
     h.push(b"abc");

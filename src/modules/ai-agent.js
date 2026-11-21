@@ -23,8 +23,28 @@ const EXEC_MODE_LINES = {
     '路径、主机、目标含糊时先问清楚而不是猜；不要执行会把主机弄到无法登录的命令（改 ssh 配置、改 sudoers、清空系统目录、格式化磁盘）。',
 };
 
-export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMode, linkedHosts } = {}) {
+export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMode, linkedHosts, scopeHosts, mentions } = {}) {
   const modeLine = EXEC_MODE_LINES[execMode] || EXEC_MODE_LINES.manual;
+  const scopeMetaLine = Array.isArray(scopeHosts) && scopeHosts.length
+    ? '本会话主机范围详情：' + scopeHosts.map((h) => (
+      `${h.name || h.hostId}`
+      + (h.group ? `（目录：${h.group}）` : '')
+      + (h.address ? ` [${h.address}]` : '')
+      + (h.unreachable ? `（不可达：${h.errorText || '连接超时'}）` : '')
+    )).join('；') + '。可根据用户的自然语言描述（如地区、目录、环境、角色）匹配范围内的目标主机；若指令未指明目标且无法从范围唯一判定，必须先向用户反问确认，不得盲猜。严禁连接或操作上述允许范围之外的任何主机。'
+    : '';
+  const mentionLabels = Array.isArray(mentions)
+    ? mentions.map((m) => {
+      if (!m) return '';
+      if (typeof m === 'string') return '@' + m.replace(/^@/, '');
+      const lbl = m.label || m.name || m.hostKey || '';
+      return lbl ? '@' + String(lbl).replace(/^@/, '') : '';
+    }).filter(Boolean)
+    : [];
+  const mentionLine = mentionLabels.length
+    ? `用户在当前消息中通过 @ 明确点名了以下范围内主机：${mentionLabels.join('、')}（优先作为操作对象参考；若任务属于跨主机对比或联调，仍可按语义操作本会话允许范围内的其他主机）。`
+    : '';
+  const extraLines = [scopeMetaLine, mentionLine].filter(Boolean);
   // 多主机:目标是一组主机,exec 必须用 host 参数指名;给定该参数即为多主机轮次。
   if (Array.isArray(linkedHosts) && linkedHosts.length) {
     return [
@@ -34,6 +54,7 @@ export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMod
         `所有主机工具（exec 与全部只读工具）都可以用 host 参数指明目标主机；` +
         `host 必须用上面这些名字原文，不能自己编。省略 host 时才落到默认主机。` +
         (os ? `系统：${os}。` : '系统未知：动手前先调用 host_info 确认发行版，再给出匹配的命令。'),
+      ...extraLines,
       execMode === 'auto' ? `${modeLine}多主机模式下每条命令都单独确认，不能设为总是允许。` : modeLine,
       '要覆盖所有已链接主机时，对每台主机分别调用工具（带上各自的 host），逐台取结果再汇总；不要只查一台就下结论，也不要用一条命令跨主机执行。',
       '只读工具（host_info、read_file、tail_file、search_file、list_dir、file_size、read_journal）与 exec 一样接受 host 参数，' +
@@ -53,6 +74,7 @@ export function buildHostSystemPrompt({ hostName, user, isRoot, os, cwd, execMod
     `你可以调用工具直接操作用户当前绑定的主机：${who}。` +
       (os ? `系统：${os}。` : '系统未知：动手前先调用 host_info 确认发行版，再给出匹配的命令。') +
       (cwd ? `终端当前目录：${cwd}（exec 默认在此执行）。` : ''),
+    ...extraLines,
     // 对话模式不会进入工具循环（前端不带 tools）；此处兜底按手动描述，防误用。
     modeLine,
     '工作方式：先用只读工具（read_file、tail_file、search_file、read_journal、list_dir、read_terminal）调查清楚再动手，不要凭空猜测；' +
@@ -161,17 +183,41 @@ export async function runAgentTurn(ctx) {
   let currentRun = null;
   let status = 'done';
   let error = null;
+  let oobCount = 0;
+  const maxOob = ctx.maxOutOfScope ?? 2;
   const aborted = () => !!signal?.aborted;
   // 停止必须立刻结束正在跑的远端命令：execTool 要等命令结束才返回，不能等它。
   const onAbort = () => { if (currentRun && ctx.cancelTool) Promise.resolve(ctx.cancelTool(currentRun)).catch(() => {}); };
   signal?.addEventListener?.('abort', onAbort);
+
+  function trackScopeOutcome(step, args, res) {
+    if (res?.status === 'error' && res?.code === 'out_of_scope') {
+      oobCount += 1;
+      adapter.onOutOfScope?.({ step, args, res, count: oobCount, max: maxOob });
+      if (oobCount >= maxOob || res.abortTurn) {
+        status = 'aborted';
+        error = res.message || '模型连续尝试操作范围外主机，已自动中止';
+      }
+      return true;
+    }
+    if (res && res.status !== 'error') {
+      oobCount = 0;
+    }
+    return false;
+  }
 
   async function exec(step, req) {
     const toolRunId = uuid();
     currentRun = toolRunId;
     adapter.stepRun?.(step, toolRunId);
     try {
-      return await ctx.execTool({ toolRunId, sessionId: ctx.sessionId, mode: getMode(), ...req });
+      const res = await ctx.execTool({ toolRunId, sessionId: ctx.sessionId, mode: getMode(), ...req });
+      if (res?.host && step.hostName !== res.host) {
+        step.hostName = res.host;
+        if (res.hostKey) step.hostKey = res.hostKey;
+        adapter.stepUpdate?.(step);
+      }
+      return res;
     } catch (e) {
       return { status: 'error', code: 'failed', message: e?.message || String(e) };
     } finally {
@@ -192,14 +238,30 @@ export async function runAgentTurn(ctx) {
     let res = await exec(step, { tool: AI_EXEC_TOOL, args });
     for (let round = 0; round < 8 && !aborted(); round++) {
       if (res.status === 'needs-confirm') {
-        const answer = await untilAbort(adapter.requestConfirm?.({ ...res, cmd, step, signal }), signal);
+        const answer = await untilAbort(adapter.requestConfirm?.({
+          ...res,
+          cmd,
+          step,
+          signal,
+          ...(ctx.scopeHosts ? { scopeHosts: ctx.scopeHosts } : {}),
+        }), signal);
         if (aborted()) break;
         const d = answer || { decision: 'skip' };
         if (d.decision === 'skip') {
           finish(step, { status: 'skipped' });
-          execs.push({ cmd, tier: res.tier, decision: 'skipped' });
+          execs.push({ cmd, tier: res.tier, decision: 'skipped', ...(step.hostName || args.host ? { host: step.hostName || args.host } : {}) });
           adapter.audit?.({ cmd, tier: res.tier, decision: 'skipped' });
           return '用户拒绝执行该命令。不要换一种写法重试同一操作，先询问用户或调整方案。';
+        }
+        if (d.host || d.hostKey) {
+          const nextHost = String(d.host || d.hostKey).trim();
+          if (nextHost) {
+            args = { ...args, host: nextHost };
+            step.args = { ...args, cmd };
+            step.hostName = d.host || nextHost;
+            if (d.hostKey) step.hostKey = d.hostKey;
+            adapter.stepUpdate?.(step);
+          }
         }
         if (d.decision === 'edit' && String(d.cmd || '').trim() && String(d.cmd).trim() !== cmd) {
           cmd = String(d.cmd).trim();
@@ -218,7 +280,7 @@ export async function runAgentTurn(ctx) {
           if (aborted()) break;
           if (!got?.password && !got?.useSaved) {
             finish(step, { status: 'skipped', reason: 'sudo' });
-            execs.push({ cmd, tier: res.tier || null, decision: 'skipped' });
+            execs.push({ cmd, tier: res.tier || null, decision: 'skipped', ...(step.hostName || args.host ? { host: step.hostName || args.host } : {}) });
             return '用户取消输入 sudo 密码，命令未执行。';
           }
           password = got.useSaved ? SAVED_PASSWORD : got.password;
@@ -239,8 +301,16 @@ export async function runAgentTurn(ctx) {
     if (res.status === 'needs-confirm' || res.status === 'needs-sudo-password') {
       res = { status: 'error', code: 'failed', message: '确认次数过多，命令未执行' };
     }
+    trackScopeOutcome(step, args, res);
     finish(step, res);
-    execs.push({ cmd, tier: res.tier || null, decision: edited ? 'edited' : res.decision || res.status, exitCode: res.exitCode ?? null, status: res.status });
+    execs.push({
+      cmd,
+      tier: res.tier || null,
+      decision: edited ? 'edited' : res.decision || res.status,
+      exitCode: res.exitCode ?? null,
+      status: res.status,
+      ...(step.hostName || args.host ? { host: step.hostName || args.host } : {}),
+    });
     const content = formatToolResult(AI_EXEC_TOOL, args, res);
     return edited ? '实际执行：' + cmd + '\n' + content : content;
   }
@@ -255,6 +325,7 @@ export async function runAgentTurn(ctx) {
       return '工具参数不是合法 JSON，请重新生成这次调用。';
     }
     step.args = args;
+    if (args.host) step.hostName = String(args.host).trim();
     adapter.stepStart?.(step);
     if (!KNOWN_TOOLS.has(call.name)) {
       const res = { status: 'error', code: 'unsupported', message: '未知工具：' + call.name };
@@ -269,6 +340,7 @@ export async function runAgentTurn(ctx) {
     }
     if (call.name === AI_EXEC_TOOL) return runExec(step, args);
     const res = await exec(step, { tool: call.name, args });
+    trackScopeOutcome(step, args, res);
     finish(step, res);
     return formatToolResult(call.name, args, res);
   }
@@ -313,11 +385,12 @@ export async function runAgentTurn(ctx) {
       if (msg.content || msg.toolCalls) history.push(msg);
       if (!msg.toolCalls) break;
       for (const call of msg.toolCalls) {
-        if (aborted()) break;
+        if (aborted() || status !== 'done') break;
         // 没有步数上限：一个回合里 AI 可以连续执行任意多条命令，中途只受「停止」打断。
         const content = await runToolCall(call);
         history.push({ role: 'tool', toolCallId: call.id, name: call.name, content });
         steps.push({ id: call.id, tool: call.name });
+        if (status !== 'done') break;
       }
       if (status !== 'done') break;
     }

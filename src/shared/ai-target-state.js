@@ -1,28 +1,56 @@
-// AI 线程与主机目标关系的状态内核（纯函数，无 DOM 依赖，可在单测与不同环境复用）。
+// AI 线程与主机范围（scope）及执行档位（execMode）的状态内核（纯函数，无 DOM 依赖）。
 //
-// 两条正交的轴:
-//   linkMode  这个对话作用于谁 —— chat(不操作主机) / follow(跟随当前命令窗口) / multi(多主机)
-//   execMode  命令怎么执行     —— manual(逐条确认) / auto(普通命令直接执行)
-//                                / full(完全托管:后端不产生任何确认)
-// 路由判定、授权清空、文案生成都收在这里,界面层只消费 TargetView。
+// 两条正交的轴：
+//   scope     本会话允许操作哪些主机（硬边界白名单，挂 thread.scope，由 ai-scope.js 管理）
+//   execMode  命令怎么执行     —— manual(逐条确认) / auto(普通命令直接执行) / full(完全托管)
+//
+// 旧三模式（LINK_MODES: chat/follow/multi、rebindThread、crossTab 横条）已彻底移除；
+// 会话与终端命令窗口完全解耦，切换终端标签不再修改 thread.scope。
 
-export const LINK_MODES = ['chat', 'follow', 'multi'];
+import {
+  SCOPE_CHAT_LABEL,
+  SCOPE_EMPTY_LABEL,
+  allowsHost,
+  defaultScopeForNewThread,
+  folderOf,
+  groupHostsByFolder,
+  groupState,
+  hostKeyOf,
+  hostLabelOf,
+  isInScope,
+  mentionState,
+  normalizeScope,
+  resolveScopeTarget,
+  scopeSummary,
+   setGroup,
+  snapshotRunScope,
+  toggleHost,
+  validateToolHost,
+} from './ai-scope.js';
+
+export {
+  SCOPE_CHAT_LABEL,
+  SCOPE_EMPTY_LABEL,
+  allowsHost,
+  defaultScopeForNewThread,
+  folderOf,
+  groupHostsByFolder,
+  groupState,
+  hostKeyOf,
+  hostLabelOf,
+  isInScope,
+  mentionState,
+  normalizeScope,
+  resolveScopeTarget,
+  scopeSummary,
+  setGroup,
+  snapshotRunScope,
+  toggleHost,
+  validateToolHost,
+};
+
 export const EXEC_MODES = ['manual', 'auto', 'full'];
-export const CHAT_SUMMARY = '未链接主机';
-
-export function hostKeyOf(host) {
-  if (!host) return null;
-  if (host.id && !host.quick) return host.id;
-  const username = host.username || host.user || '';
-  const hostname = host.host || host.ip || '';
-  const port = host.port || 22;
-  return `${username}@${hostname}:${port}`;
-}
-
-export function hostLabelOf(host) {
-  if (!host) return null;
-  return host.name || host.host || host.ip || null;
-}
+export const CHAT_SUMMARY = SCOPE_EMPTY_LABEL;
 
 export function toolSupportKey(aiSettings) {
   const ai = aiSettings || {};
@@ -37,30 +65,18 @@ export function isModelToolsCapable(aiSettings) {
 
 export const modelToolsCapable = isModelToolsCapable;
 
-/// 线程的主机链接模式。老线程只有 execMode:'chat'(chat 当时是执行档),
-/// 按「读取即迁移」解释,不需要落盘迁移。
-export function threadLinkMode(thread) {
-  if (!thread) return 'follow';
-  const m = thread.linkMode;
-  if (LINK_MODES.includes(m)) return m;
-  return thread.execMode === 'chat' ? 'chat' : 'follow';
-}
-
-/// 线程的执行模式。chat 升格为链接模式后,这里只可能是 manual / auto / full;
-/// 未知值一律落回 manual(fail-safe:读不懂的档位不给更大权限)。
+/// 线程的执行模式：只可能是 manual / auto / full；未知值一律 fail-safe 回 manual。
 export function threadExecMode(thread) {
   const m = thread && thread.execMode;
   return EXEC_MODES.includes(m) ? m : 'manual';
 }
 
-/// 完全托管档:任何命令都不再停下来确认,由 Rust 侧把 needs-confirm 一并放开。
+/// 完全托管档：任何命令都不再停下来确认，由 Rust 侧把 needs-confirm 一并放开。
 export function isFullExecMode(mode) {
   return mode === 'full';
 }
 
-/// 撤销线程上的全部授权:自动模式确认、会话授权列表、下载污点。
-/// 换主机/换链接模式后执行档本就会降回手动,托管档不另设「已确认」标记 ——
-/// 它每次切入都要重新确认,不给跨目标静默继承的机会。
+/// 撤销线程上的全部授权：自动模式确认、会话授权列表、下载污点。
 export function clearTargetGrants(thread) {
   if (!thread) return thread;
   thread.autoAcked = false;
@@ -70,52 +86,37 @@ export function clearTargetGrants(thread) {
   return thread;
 }
 
-/// 链接模式唯一写入口。进入对话模式即解除主机绑定并清空授权
-/// (授权是「对某台主机某范围」的,目标一变就必须重来)。
-export function setLinkMode(thread, mode) {
-  if (!thread) return null;
-  const next = LINK_MODES.includes(mode) ? mode : 'follow';
-  if (threadLinkMode(thread) === next) return thread;
-  const isChatIn = thread.execMode === 'chat';
-  const isChatOut = next === 'chat';
-  thread.linkMode = next;
-  if (isChatOut) {
-    thread.execMode = 'manual';
-    clearTargetGrants(thread);
-    thread.sendBlocked = null;
-  } else if (isChatIn) {
-    // 从对话模式切回来:execMode 已经从 chat 语义脱钩,恢复手动。
-    thread.execMode = 'manual';
-  }
-  return thread;
+/// 读取线程的 scope 数组。
+export function threadScope(thread, hosts = []) {
+  if (!thread) return [];
+  const raw = Array.isArray(thread.scope) ? thread.scope : [];
+  return hosts && hosts.length
+    ? normalizeScope(raw, hosts)
+    : [...new Set(raw.filter((k) => typeof k === 'string' && k))];
 }
 
-/// 唯一改绑入口：切换主机时降级为 manual 并撤销全部授权与污点；同主机仅更新会话标识
-export function rebindThread(thread, target = {}) {
-  if (!thread) return null;
-  const nextKey = target.hostKey ?? target.hostId ?? null;
-  const nextLabel = target.hostLabel ?? target.hostName ?? null;
-  const nextSessionId = target.sessionId ?? null;
-
-  const isSameHost = thread.hostId === nextKey;
-  // 首次绑定(此前没有目标)不算换主机:新对话第一条消息在发送时才绑到当前标签,
-  // 若按「换目标」处理,用户刚选的自动/托管档会在发出前一刻被静默撤掉。
-  const firstBind = !thread.hostId && !!nextKey;
-  if (!isSameHost && !firstBind) {
-    if (thread.execMode !== 'chat') {
-      thread.execMode = 'manual';
-    }
+/// 更新线程的 scope：当新范围与原范围不同（增删了主机或清空为纯对话）时，
+/// 撤销已累积的会话授权与下载污点，执行档位回到 manual。返回是否发生变化。
+export function setThreadScope(thread, nextScope, hosts = []) {
+  if (!thread) return false;
+  const prev = threadScope(thread, hosts);
+  const next = hosts && hosts.length
+    ? normalizeScope(nextScope, hosts)
+    : [...new Set((Array.isArray(nextScope) ? nextScope : []).filter((k) => typeof k === 'string' && k))];
+  const same = prev.length === next.length && prev.every((k, i) => k === next[i]);
+  thread.scope = next;
+  if (!same) {
     clearTargetGrants(thread);
     thread.sendBlocked = null;
+    thread.execMode = 'manual';
   }
-
-  thread.hostId = nextKey;
-  thread.hostName = nextLabel;
-  thread.sessionId = nextSessionId;
-  return thread;
+  return !same;
 }
 
-const isSessionConnected = (s) => !!s && s.status === 'connected';
+/// 输入框左下角主机钮 / 执行模式菜单头部的主机范围摘要文案（F1）。
+export function hostSummaryOf({ scope = [], hosts = [] } = {}) {
+  return scopeSummary(scope, hosts).label;
+}
 
 function toArray(v) {
   if (Array.isArray(v)) return v;
@@ -123,171 +124,99 @@ function toArray(v) {
   return [];
 }
 
-/// 多主机链接注册表条目 → 视图条目。
-function linkView(link) {
-  if (!link) return null;
-  return {
-    hostId: link.hostId || null,
-    hostKey: link.hostKey || link.hostId || null,
-    hostName: link.hostName || link.hostId || null,
-    sessionId: link.sessionId || null,
-    status: link.status || 'idle',
-    connected: link.status === 'connected',
-    error: link.error || null,
-    headless: !!link.headless,
-  };
-}
-
-/// 触发钮 / 模式菜单第一行的主机摘要文案(需求 §3)。
-export function hostSummaryOf({ linkMode, hostLabel, linkedCount } = {}) {
-  if (linkMode === 'chat') return CHAT_SUMMARY;
-  if (linkMode === 'multi') {
-    return linkedCount > 0 ? `已链接 ${linkedCount} 台主机` : CHAT_SUMMARY;
-  }
-  return hostLabel ? `已链接 ${hostLabel}` : CHAT_SUMMARY;
-}
-
-/// 计算当前线程的操作目标视图（TargetView）
+/// 计算当前线程的操作范围视图（TargetView，基于 thread.scope，与当前活动终端窗口解耦）
 export function resolveAiTarget({
   thread,
   sessions,
-  activeId,
   hosts = [],
   settings,
   busy = false,
   links = [],
 } = {}) {
+  const hostList = toArray(hosts);
   const sessionList = toArray(sessions);
-  const linkList = toArray(links).map(linkView).filter(Boolean);
+  const linkList = toArray(links).filter(Boolean);
 
-  const activeSession = typeof sessions?.get === 'function'
-    ? (activeId ? sessions.get(activeId) : null)
-    : sessionList.find((s) => s && s.sessionId === activeId);
-
-  const activeConnected = isSessionConnected(activeSession);
-  const active = activeConnected
-    ? {
-      hostKey: hostKeyOf(activeSession.host),
-      hostLabel: hostLabelOf(activeSession.host),
-      session: activeSession,
-    }
-    : null;
-
-  const linkMode = threadLinkMode(thread);
-  const execMode = threadExecMode(thread);
-  const toolsCapable = isModelToolsCapable(settings?.ai);
-
-  const linkedHosts = linkList;
-  const linkedCount = linkedHosts.length;
-  const linkedConnected = linkedHosts.filter((l) => l.connected);
-  const linkedOffline = linkedHosts.filter((l) => !l.connected);
-
-  // ---- 解析目标主机与主执行会话 ----
-  let kind = 'none';
-  let hostKey = null;
-  let hostLabel = null;
-  let usableSession = null;
-  let connectable = null;
-
-  if (linkMode === 'chat') {
-    kind = 'chat';
-  } else if (linkMode === 'multi') {
-    hostKey = linkedConnected[0]?.hostKey || linkedOffline[0]?.hostKey || null;
-    hostLabel = linkedConnected[0]?.hostName || linkedOffline[0]?.hostName || null;
-    if (!linkedCount) {
-      kind = 'none';
-    } else {
-      usableSession = linkedConnected[0]?.session
-        || (linkedConnected[0]?.sessionId
-          ? sessionList.find((s) => isSessionConnected(s) && s.sessionId === linkedConnected[0].sessionId)
-          : null)
-        || null;
-      if (!usableSession && linkedConnected[0]?.hostKey) {
-        usableSession = sessionList.find((s) => isSessionConnected(s) && hostKeyOf(s.host) === linkedConnected[0].hostKey) || null;
-      }
-      // 链接了主机却一台都没连上:显式阻断发送(用户是主动链接的,静默降级为普通对话
-      // 会让命令悄悄没落到任何主机上)。部分连接时按 'multi' 正常走。
-      const anyConnected = linkedConnected.length > 0 || !!usableSession;
-      kind = anyConnected ? 'multi' : 'offline';
-    }
-  } else {
-    // follow:目标跟随当前命令窗口。窗口有活动连接就是目标;没有连接说明"暂时没有
-    // 可操作的主机"→ 按普通对话回答(顶栏文案「未链接主机」),不拦截发送也不降级为
-    // 别的静默行为 —— 打开应用随手问一句不该被挡住。重连入口在终端自身的横幅里。
-    if (activeConnected) {
-      kind = 'bound';
-      hostKey = active.hostKey;
-      hostLabel = active.hostLabel;
-      usableSession = active.session;
-    } else {
-      kind = 'none';
+  // 把已在终端连接、但不在主机库里的快速连接主机也并入可见列表，确保默认快照/范围解析不丢
+  const knownKeys = new Set(hostList.map(hostKeyOf).filter(Boolean));
+  const combinedHosts = [...hostList];
+  for (const s of sessionList) {
+    if (!s?.host) continue;
+    const k = hostKeyOf(s.host);
+    if (k && !knownKeys.has(k)) {
+      knownKeys.add(k);
+      combinedHosts.push(s.host);
     }
   }
 
-  // crossTab:目标主机与当前窗口主机不同的已绑定态(仅跟随模式可能产生)
-  const crossTab = kind === 'bound' && !!active && active.hostKey !== hostKey;
+  const base = resolveScopeTarget({
+    thread,
+    hosts: combinedHosts,
+    sessions: sessionList,
+  });
 
-  // ---- 阻断判定(仅针对会执行工具的模式) ----
+  // 合并无头链接池的在线状态：无头链接已 connected 也算 reachable
+  const connectedKeys = new Set(
+    sessionList.filter((s) => s && s.status === 'connected').map((s) => hostKeyOf(s.host)).filter(Boolean),
+  );
+  for (const l of linkList) {
+    if (l.status === 'connected' && (l.hostKey || l.hostId)) {
+      connectedKeys.add(l.hostKey || l.hostId);
+    }
+  }
+
+  const scope = base.scope;
+  const scopeHosts = base.hosts;
+  const count = scope.length;
+  const connectedHosts = scopeHosts.filter((h) => connectedKeys.has(hostKeyOf(h)));
+  const reachable = connectedHosts.length;
+  const execMode = threadExecMode(thread);
+  const toolsCapable = isModelToolsCapable(settings?.ai);
+
+  const kind = count === 0 ? 'chat' : (count === 1 ? 'single' : 'multi');
+
   let blocked = '';
-  const subjectSession = usableSession || (kind === 'offline' ? activeSession : null);
-  if (kind !== 'chat' && kind !== 'none') {
+  if (kind !== 'chat') {
     if (!toolsCapable) {
       blocked = 'tools';
-    } else if (subjectSession?.host?.aiAccess === 'deny') {
+    } else if (base.denied > 0 && base.denied === count) {
       blocked = 'deny';
     }
   }
 
-  // ---- 连接中 ----
   const isConnecting = kind !== 'chat' && (
-    (thread?.pendingConnect && thread.pendingConnect === hostKey)
-    || (hostKey && sessionList.some((s) => s && hostKeyOf(s.host) === hostKey && s.status === 'connecting'))
-    || linkedHosts.some((l) => l.status === 'connecting')
+    (thread?.pendingConnect && scope.includes(thread.pendingConnect))
+    || sessionList.some((s) => s && s.status === 'connecting' && scope.includes(hostKeyOf(s.host)))
+    || linkList.some((l) => l.status === 'connecting' && scope.includes(l.hostKey || l.hostId))
   );
 
-  // ---- 文案 ----
-  const hostSummary = hostSummaryOf({ linkMode, hostLabel, linkedCount });
-  let displayName = hostSummary;
+  const summary = scopeSummary(scope, combinedHosts);
+  const hostSummary = summary.label;
+  const singleHost = count === 1 ? scopeHosts[0] || null : null;
+  const hostKey = scope[0] || null;
+  const hostLabel = count === 1 ? summary.label : null;
+  const primarySession = sessionList.find((s) => s && s.status === 'connected' && scope.includes(hostKeyOf(s.host))) || null;
+
   let tone = 'idle';
   let statusText = '';
-  let actionText = null;
-
   if (kind === 'chat') {
-    displayName = CHAT_SUMMARY;
     tone = 'idle';
-    statusText = '纯对话 · 不操作主机';
-  } else if (kind === 'none') {
-    displayName = CHAT_SUMMARY;
-    tone = 'idle';
-    statusText = linkMode === 'multi' ? '未选择主机' : '当前窗口无主机';
-  } else if (kind === 'multi') {
-    tone = blocked ? 'warn' : 'connected';
-    if (blocked === 'tools') statusText = '模型不支持工具';
-    else if (blocked === 'deny') statusText = '部分主机禁止 AI';
-    else if (isConnecting) { tone = 'connecting'; statusText = '连接中…'; }
-    else if (linkedOffline.length) { tone = 'warn'; statusText = `${linkedOffline.length} 台未连接`; }
-    else statusText = '全部就绪';
+    statusText = SCOPE_CHAT_LABEL;
+  } else if (blocked === 'tools') {
+    tone = 'warn';
+    statusText = '模型不支持工具';
+  } else if (blocked === 'deny') {
+    tone = 'warn';
+    statusText = count === 1 ? '主机禁止 AI' : '范围内主机禁止 AI';
   } else if (isConnecting) {
     tone = 'connecting';
     statusText = '连接中…';
-  } else if (kind === 'bound') {
-    if (blocked === 'tools') {
-      tone = 'warn';
-      statusText = '模型不支持工具';
-    } else if (blocked === 'deny') {
-      tone = 'warn';
-      statusText = '主机禁止 AI';
-    } else if (crossTab) {
-      tone = 'connected';
-      statusText = '不在当前标签';
-    } else {
-      tone = 'connected';
-      statusText = '';
-    }
-  } else if (kind === 'offline') {
-    tone = 'warn';
-    statusText = linkMode === 'multi' ? '全部主机未连接' : '未连接';
-    if (connectable) actionText = connectable === 'connect' ? '连接' : '重连';
+  } else if (count === 1) {
+    tone = reachable === 1 ? 'connected' : 'warn';
+    statusText = reachable === 1 ? '已连接' : '未连接';
+  } else {
+    tone = reachable === count ? 'connected' : 'warn';
+    statusText = reachable === count ? '全部就绪' : `${count - reachable} 台未连接`;
   }
 
   const empty = !thread || !thread.history || thread.history.length === 0;
@@ -295,25 +224,29 @@ export function resolveAiTarget({
 
   return {
     kind,
-    linkMode,
+    scope,
+    hosts: scopeHosts,
+    connectedHosts,
+    count,
+    linkedCount: count,
+    reachable,
+    denied: base.denied,
     execMode,
     hostKey,
     hostLabel,
+    singleHost,
+    session: primarySession,
     hostSummary,
-    linkedCount,
-    linkedHosts,
-    displayName,
-    session: usableSession,
-    active,
-    crossTab,
+    displayName: hostSummary,
+    chatLabel: SCOPE_CHAT_LABEL,
+    summary,
+    showModeControl: kind !== 'chat',
     blocked,
     empty,
     busy: isBusy,
-    connectable,
     tone,
     statusText,
-    actionText,
     sendBlocked: thread?.sendBlocked || null,
-    ariaLabel: `AI 操作目标: ${displayName}${statusText ? ', ' + statusText : ''}`,
+    ariaLabel: `会话主机范围: ${hostSummary}${statusText ? ', ' + statusText : ''}`,
   };
 }

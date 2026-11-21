@@ -2,41 +2,38 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveAiTarget } from '../src/shared/ai-target-state.js';
 
-test('跟随模式下:活动窗口断开后 AI 目标立即变为「未链接主机」且状态为 idle', () => {
+test('会话主机范围（scope）：与活动窗口解耦，单主机在终端断开后保留在 scope 内且状态变为 warn', () => {
+  const hosts = [{ id: 'host-1', name: 'prod-server', host: '10.0.0.1' }];
   const activeSess = {
     sessionId: 'sess-1',
     status: 'connected',
-    host: { id: 'host-1', name: 'prod-server' },
+    host: hosts[0],
   };
   const sessions = new Map([['sess-1', activeSess]]);
-  const thread = { linkMode: 'follow', hostId: 'host-1' };
+  const thread = { scope: ['host-1'] };
 
-  // 1. 窗口连接状态
-  const target1 = resolveAiTarget({ thread, sessions, activeId: 'sess-1' });
-  assert.equal(target1.kind, 'bound');
-  assert.equal(target1.hostSummary, '已链接 prod-server');
+  // 1. 终端已连接
+  const target1 = resolveAiTarget({ thread, sessions, hosts });
+  assert.equal(target1.kind, 'single');
+  assert.equal(target1.hostSummary, 'prod-server');
   assert.equal(target1.tone, 'connected');
+  assert.equal(target1.showModeControl, true);
 
-  // 2. 窗口断开后 (status 变为 disconnected)
+  // 2. 终端断开后：scope 保持不变（不自动清空），状态变为 warn
   activeSess.status = 'disconnected';
-  const target2 = resolveAiTarget({ thread, sessions, activeId: 'sess-1' });
-  assert.equal(target2.kind, 'none');
-  assert.equal(target2.hostSummary, '未链接主机');
-  assert.equal(target2.tone, 'idle');
-  assert.equal(target2.displayName, '未链接主机');
-
-  // 3. 窗口关闭后 (activeId 为 null, sessions 清空)
-  sessions.delete('sess-1');
-  const target3 = resolveAiTarget({ thread, sessions, activeId: null });
-  assert.equal(target3.kind, 'none');
-  assert.equal(target3.hostSummary, '未链接主机');
-  assert.equal(target3.tone, 'idle');
+  const target2 = resolveAiTarget({ thread, sessions, hosts });
+  assert.equal(target2.kind, 'single');
+  assert.equal(target2.hostSummary, 'prod-server');
+  assert.equal(target2.tone, 'warn');
+  assert.equal(target2.statusText, '未连接');
 });
 
-test('多主机模式下:未勾选任何主机时显示「未链接主机」', () => {
-  const thread = { linkMode: 'multi' };
-  const target = resolveAiTarget({ thread, sessions: new Map(), links: [] });
-  assert.equal(target.kind, 'none');
-  assert.equal(target.hostSummary, '未链接主机');
+test('未勾选任何主机（scope 为空）时显示「未选主机」并隐藏档位控制（纯对话）', () => {
+  const thread = { scope: [] };
+  const target = resolveAiTarget({ thread, sessions: new Map(), hosts: [] });
+  assert.equal(target.kind, 'chat');
+  assert.equal(target.hostSummary, '未选主机');
+  assert.equal(target.chatLabel, '纯对话');
+  assert.equal(target.showModeControl, false);
   assert.equal(target.tone, 'idle');
 });
