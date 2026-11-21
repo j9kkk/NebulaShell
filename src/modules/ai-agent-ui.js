@@ -925,10 +925,11 @@ export function updateTargetBar(view) {
   const name = $('#ai-scope-name');
   if (name) name.textContent = view.hostSummary || view.displayName || '未选主机';
 
-  // 状态点：颜色跟 tone 走；单主机未连接时补「未连接」三个字，多主机只留点（句子交给阻塞条）
+  // 状态点只在「需要提醒」时出现：未连接(红) / 连接中(黄)。
+  // 已连接不点绿点 —— 正常状态不该占位置，把宽度留给主机名（窄面板下点名会被挤到 30px）。
   const status = $('#ai-scope-status');
   if (status) {
-    const showDot = !isEmpty && view.tone !== 'idle';
+    const showDot = !isEmpty && (view.tone === 'warn' || view.tone === 'connecting');
     status.hidden = !showDot;
     if (showDot) {
       status.dataset.tone = view.tone || 'idle';
