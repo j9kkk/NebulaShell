@@ -23,7 +23,7 @@ import {
   getScopeMentionHosts, getTargetMenuData, pruneDroppedScope, refreshAgentHostBar, removeOutChipsFromComposer,
   resetExpandedFoldersForMenu, restoreOutChipsToScope, syncComposerScopeCheck, targetMenuHandlers,
 } from './ai-agent-run.js';
-import { clearThreadLinks, handleLinkSessionStatus, setLinksChangeHandler } from './ai-links.js';
+import { clearThreadLinks, handleLinkSessionStatus, markLinkSessionClosed, setLinksChangeHandler } from './ai-links.js';
 import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
@@ -1187,7 +1187,13 @@ export function bindEvents() {
   window.nebula.on('ai:tool-delta', ({ requestId }) => aiTouchRequest(requestId));
   // 会话主机范围与终端标签切换彻底解耦(不再监听 nb:active-session 改写主机绑定);
   // 仅在底层会话连接状态变化时刷新范围内主机的可达点。
-  window.addEventListener('nb:session-status', refreshAgentHostBar);
+  window.addEventListener('nb:session-status', (e) => {
+    // 复用标签会话的链接：标签关了就等于连接没了，范围要跟着收（掉线即出范围的同一条规则）
+    if (e?.detail?.status === 'closed' && markLinkSessionClosed(e.detail.sessionId)) {
+      setTimeout(() => { try { pruneDroppedScope(); } catch { /* 界面刷新失败不影响连接状态 */ } }, 0);
+    }
+    refreshAgentHostBar();
+  });
   window.nebula.on('ssh:status', () => setTimeout(refreshAgentHostBar, 0));
   setLinksChangeHandler(() => refreshAgentHostBar());
   window.addEventListener('beforeunload', () => {

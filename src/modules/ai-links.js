@@ -132,7 +132,8 @@ async function ensurePoolEntry(host) {
 
 /// 对话链接一台主机。失败时不会写进 thread.scope(界面回退到未勾选)。
 export async function linkHost(thread, hostId) {
-  const host = (state.hosts || []).find((h) => h && h.id === hostId);
+  // scope 里存的是 hostKeyOf：库主机即 id，快速连接主机才是 user@host:port
+  const host = (state.hosts || []).find((h) => h && (h.id === hostId || hostKeyOf(h) === hostId));
   if (!host) return { ok: false, error: '主机不存在' };
   const ids = threadIds(thread);
   if (ids.includes(hostId)) return { ok: true, reused: true };
@@ -210,6 +211,21 @@ export function handleLinkSessionStatus({ sessionId, state: status }) {
       link.status = 'error';
       link.error = link.error || '连接已断开';
     }
+  }
+  if (hit) emit();
+  return hit;
+}
+
+/// 终端标签被关掉时,复用它会话的链接条目要跟着失效 —— 否则范围里那台主机
+/// 会一直显示「已连接」,直到发命令才报错。
+export function markLinkSessionClosed(sessionId) {
+  if (!sessionId) return false;
+  let hit = false;
+  for (const link of pool().values()) {
+    if (link.sessionId !== sessionId) continue;
+    hit = true;
+    link.status = 'error';
+    link.error = '会话已关闭';
   }
   if (hit) emit();
   return hit;

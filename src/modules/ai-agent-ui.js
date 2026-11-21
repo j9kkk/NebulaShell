@@ -924,6 +924,20 @@ export function updateTargetBar(view) {
 
   const name = $('#ai-scope-name');
   if (name) name.textContent = view.hostSummary || view.displayName || '未选主机';
+
+  // 状态点：颜色跟 tone 走；单主机未连接时补「未连接」三个字，多主机只留点（句子交给阻塞条）
+  const status = $('#ai-scope-status');
+  if (status) {
+    const showDot = !isEmpty && view.tone !== 'idle';
+    status.hidden = !showDot;
+    if (showDot) {
+      status.dataset.tone = view.tone || 'idle';
+      status.textContent = (view.tone === 'warn' && view.count === 1) ? '未连接' : '';
+      status.title = view.statusText || '';
+    } else {
+      status.textContent = '';
+    }
+  }
 }
 
 /// 构造开关节点。外观只有 4 种：off / on / connecting / half；

@@ -470,10 +470,17 @@ export async function pruneDroppedScope() {
       .filter((l) => l && l.status === 'error')
       .map((l) => l.hostId)
       .filter(Boolean);
+    const droppedNames = [];
     for (const key of dead) {
+      const host = (state.hosts || []).find((h) => hostKeyOf(h) === key);
+      droppedNames.push(host ? hostLabelOf(host) : key);
       // 走 unlinkHost 而不是直接改 scope：引用计数要跟着降，无头会话才好真正断开
       await unlinkHost(t, key).catch(() => {});
       changed = true;
+    }
+    if (droppedNames.length) {
+      // 只提示一次「为什么开关自己关掉了」；不弹循环、不留持久条
+      toast(`${droppedNames.join('、')} 已断开，已移出本会话范围`, 'warn');
     }
   }
   if (changed) {
