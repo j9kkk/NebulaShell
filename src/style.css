@@ -1503,6 +1503,11 @@ body.is-fullscreen #win-controls { display: none; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono);
 }
+/* 长主机名先截断:胶囊是 nowrap 原子节点,不设上限时会从被压到 0 宽的标题盒里溢出来 */
+.ai-step-title .ai-step-host {
+  display: inline-block; max-width: 118px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: baseline;
+}
 .ai-step-state { flex: none; color: var(--muted); }
 .ai-step-state.ok { color: var(--accent); }
 .ai-step-state.warn { color: var(--warn); }
@@ -1520,6 +1525,23 @@ body.is-fullscreen #win-controls { display: none; }
   background: transparent; color: var(--danger); cursor: pointer;
 }
 .ai-step-body[hidden], .ai-step-card:empty { display: none; }
+/* 失败原因独立成行:不再挤进 26px 的步骤头(会压掉标题、与 @主机 胶囊叠字) */
+.ai-step-err {
+  display: flex; align-items: center; gap: 6px; min-height: 24px;
+  margin: 0 8px 6px; padding: 3px 7px; border-left: 2px solid var(--danger); border-radius: 4px;
+  background: color-mix(in oklab, var(--danger) 7%, transparent);
+  color: var(--danger); font-size: 11.5px;
+}
+.ai-step-err[hidden] { display: none; }
+/* 原因文字允许换行:360 宽面板里整句 20 字装不进一行,截断会把「请先重新连接」这句关键指令吃掉 */
+.ai-step-err-txt { flex: 1 1 auto; min-width: 0; line-height: 1.35; overflow-wrap: anywhere; }
+.ai-step-err-act {
+  flex: none; padding: 0 6px; height: 18px; border: 1px solid currentColor; border-radius: 4px;
+  background: transparent; color: var(--danger); font: inherit; font-size: 11px; cursor: pointer;
+}
+.ai-step-err-act:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 12%, transparent); }
+.ai-step-err-act:disabled { opacity: .6; cursor: default; }
+.ai-step-err-act[data-ok="true"] { color: var(--accent); }
 .ai-step-log, .ai-confirm-cmd, .ai-confirm-preview pre {
   margin: 0; white-space: pre-wrap; word-break: break-all;
   font: 11.5px/1.45 var(--font-mono); color: var(--text);

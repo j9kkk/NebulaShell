@@ -128,7 +128,7 @@ class El {
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
 }
 
-async function setup() {
+async function setup(extra = {}) {
   const container = new El('div');
   const doc = {
     activeElement: null,
@@ -140,6 +140,8 @@ async function setup() {
     document: doc,
     setInterval: () => 1,
     clearInterval: () => {},
+    setTimeout: (fn) => { void fn; return 0; },
+    clearTimeout: () => {},
   });
   const load = async (path) => new vm.SourceTextModule(await readFile(new URL(path, import.meta.url), 'utf8'), { context });
   const icons = await load('../src/shared/icons.js');
@@ -163,7 +165,7 @@ async function setup() {
     './ai.js': ai,
   }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
   await ui.evaluate();
-  const adapter = ui.namespace.createAgentAdapter({ mount: (node) => container.append(node) });
+  const adapter = ui.namespace.createAgentAdapter({ mount: (node) => container.append(node), ...extra });
   return { adapter, container };
 }
 
@@ -248,4 +250,60 @@ test('P6 步骤行渲染 @host 胶囊并在确认卡支持切换目标主机（B
   assert.equal(decision.decision, 'run');
   assert.equal(decision.host, 'db-prod-02');
   assert.equal(decision.hostKey, 'h-db-02');
+});
+
+test('长错误文案不再挤进 26px 状态位，而是独立成错误行（叠字回归）', async () => {
+  const { adapter, container } = await setup();
+  const s = { id: 's-err', tool: 'exec', hostName: 'OpenCloudOS-ubuntu24', hostKey: 'h-nj1', args: { cmd: 'uptime' }, status: 'running' };
+  adapter.stepStart(s);
+  adapter.stepRun(s, 'run-e1');
+  const msg = '主机未连接（会话已断开），请先重新连接';
+  adapter.stepEnd(s, { status: 'error', code: 'session_gone', message: msg });
+
+  const state = container.querySelector('.ai-step-state');
+  assert.equal(state.textContent, '失败', '状态位只能是短标签，不能塞整句错误');
+  assert.equal(state.title, msg, '完整文案仍要能通过 title 看到');
+
+  const err = container.querySelector('.ai-step-err');
+  assert.ok(err, '失败时应有独立的错误行');
+  assert.equal(err.hidden, false, '错误行要可见');
+  assert.equal(container.querySelector('.ai-step-err-txt').textContent, msg, '错误行承载完整文案');
+  assert.equal(container.querySelector('.ai-step-err-act'), null, '未注入重连回调时不渲染按钮（避免死按钮）');
+});
+
+test('host_unreachable 的状态位是「主机不可达」，错误行同样独立', async () => {
+  const { adapter, container } = await setup();
+  const s = { id: 's-unr', tool: 'exec', hostKey: 'h-mq-04', args: { cmd: 'uptime' }, status: 'running' };
+  adapter.stepStart(s);
+  adapter.stepRun(s, 'run-u1');
+  adapter.stepEnd(s, { status: 'error', code: 'host_unreachable', message: '连接超时' });
+  assert.equal(container.querySelector('.ai-step-state').textContent, '主机不可达');
+  assert.equal(container.querySelector('.ai-step-err-txt').textContent, '连接超时');
+});
+
+test('错误行的「重连」调用注入的回调并回显结果', async () => {
+  let called = null;
+  const { adapter, container } = await setup({ onReconnectHost: async (k) => { called = k; return true; } });
+  const s = { id: 's-rc', tool: 'exec', hostKey: 'h-nj1', args: { cmd: 'uptime' }, status: 'running' };
+  adapter.stepStart(s);
+  adapter.stepRun(s, 'run-r1');
+  adapter.stepEnd(s, { status: 'error', code: 'session_gone', message: '主机未连接（会话已断开），请先重新连接' });
+  const act = container.querySelector('.ai-step-err-act');
+  assert.ok(act, '需要重连按钮');
+  act.dispatchEvent({ type: 'click' });
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(called, 'h-nj1', '回调要拿到 hostKey');
+  assert.equal(act.textContent, '已重连', '成功后按钮回显结果');
+});
+
+test('重跑同一步会清掉上一轮的错误行（确认卡/密码卡重发）', async () => {
+  const { adapter, container } = await setup();
+  const s = { id: 's-rerun', tool: 'exec', hostKey: 'h-nj1', args: { cmd: 'uptime' }, status: 'running' };
+  adapter.stepStart(s);
+  adapter.stepRun(s, 'run-x1');
+  adapter.stepEnd(s, { status: 'error', code: 'session_gone', message: '主机未连接（会话已断开），请先重新连接' });
+  assert.equal(container.querySelector('.ai-step-err').hidden, false);
+  adapter.stepRun(s, 'run-x2');
+  assert.equal(container.querySelector('.ai-step-err').hidden, true, '重跑时必须先清掉旧错误行');
 });

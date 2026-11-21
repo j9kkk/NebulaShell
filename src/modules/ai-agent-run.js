@@ -859,6 +859,25 @@ export async function runAgentSend(thread, binding, { content, display, md, ment
       host: e.host || primaryEntry?.name || hostLabelOf(session?.host),
     }).catch(() => {}),
     canUseSaved: () => !!(session?.host?.hasPassword || session?.host?.password),
+    // 步骤卡错误行上的「重连」：走与无头托管同一条连接路径，成功后清掉不可达标记。
+    onReconnectHost: async (hostKey) => {
+      const key = String(hostKey || '').trim();
+      if (!key) return false;
+      // api() 失败会 throw，成功一律 resolve（ssh:connect 成功时 data 可能就是 null），
+      // 所以成功与否只看有没有抛错，不看返回值真假。
+      let ok = true;
+      try { await api('ssh:connect', { hostId: key, sessionId: HEADLESS_PREFIX + key }); } catch { ok = false; }
+      const targetHost = (state.hosts || []).find((h) => hostKeyOf(h) === key || hostLabelOf(h) === key);
+      if (ok && targetHost) {
+        targetHost.unreachable = false;
+        targetHost.statusError = '';
+        if (targetHost.status === 'error') targetHost.status = 'connected';
+      }
+      refreshThreadUi();
+      refreshAgentHostBar();
+      redrawTargetMenu();
+      return ok;
+    },
   });
 
   const resolveExecSession = (req) => {

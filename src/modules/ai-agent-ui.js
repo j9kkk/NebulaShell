@@ -106,12 +106,44 @@ export function createAiNoticeElement({ kind = '', level = 'info', iconName = 'z
   return row;
 }
 
-export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunAndAuto, canAllow, onAllowAlways, audit, canUseSaved }) {
+export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunAndAuto, canAllow, onAllowAlways, audit, canUseSaved, onReconnectHost }) {
   const steps = new Map();
 
   const stateText = (refs, text, cls = '') => {
     refs.state.textContent = text;
     refs.state.className = 'ai-step-state' + (cls ? ' ' + cls : '');
+  };
+
+  /// 步骤失败时把完整原因放进卡片内的独立错误行（不再挤进 26px 的状态位）。
+  /// session_gone / host_unreachable 时右侧给「重连」，回调由调用方注入。
+  const setStepError = (refs, step, res) => {
+    if (!refs.errEl) return;
+    const msg = String(res?.message || '').trim();
+    const hostKey = step?.hostKey || step?.host || '';
+    const canReconnect = (res?.code === 'session_gone' || res?.code === 'host_unreachable')
+      && !!hostKey && typeof onReconnectHost === 'function';
+    refs.errEl.replaceChildren();
+    if (!msg && !canReconnect) { refs.errEl.hidden = true; return; }
+    refs.errEl.append(el('span', 'ai-step-err-txt', msg || '主机已断开'));
+    if (canReconnect) {
+      const act = btn('重连', 'ai-step-err-act');
+      act.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        act.disabled = true;
+        act.textContent = '连接中…';
+        let ok = false;
+        try { ok = !!(await onReconnectHost(hostKey)); } catch { ok = false; }
+        act.textContent = ok ? '已重连' : '重连失败';
+        act.dataset.ok = ok ? 'true' : 'false';
+        if (ok) refs.state.className = 'ai-step-state ok';
+        setTimeout(() => {
+          if (act.isConnected) { act.disabled = false; act.textContent = '重连'; }
+        }, 2400);
+      });
+      refs.errEl.append(act);
+    }
+    refs.errEl.hidden = false;
+    refs.errEl.title = msg;
   };
 
   const clearTicker = (refs) => {
@@ -163,17 +195,19 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
       title.append(hostBadge, el('span', 'ai-step-verb', verb), detailEl);
       const state = el('span', 'ai-step-state', '进行中…');
       head.append(ic, title, state);
+      const errEl = el('div', 'ai-step-err');
+      errEl.hidden = true;
       const body = el('div', 'ai-step-body');
       body.hidden = true;
       const log = el('pre', 'ai-step-log');
       body.append(log);
       const card = el('div', 'ai-step-card');
-      root.append(head, card, body);
+      root.append(head, errEl, card, body);
       head.addEventListener('click', () => {
         body.hidden = !body.hidden;
         head.setAttribute('aria-expanded', String(!body.hidden));
       });
-      const refs = { root, head, hostBadge, detailEl, state, body, log, card, started: Date.now(), timer: 0, onGrow };
+      const refs = { root, head, hostBadge, detailEl, state, errEl, body, log, card, started: Date.now(), timer: 0, onGrow };
       steps.set(step.id, refs);
       mount(root);
     },
@@ -184,6 +218,7 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
       runs.set(toolRunId, refs);
       refs.runId = toolRunId;
       refs.started = Date.now();
+      if (refs.errEl) { refs.errEl.hidden = true; refs.errEl.replaceChildren(); }
       if (step.tool !== 'exec') return;
       clearTicker(refs);
       // 一次 exec 可能被重跑（确认卡、sudo 密码卡都会重发同一步），每轮都会走到
@@ -227,11 +262,13 @@ export function createAgentAdapter({ mount, onGrow, isActive, setPending, onRunA
       } else if (res.status === 'aborted') {
         stateText(refs, '已中止', 'muted');
       } else {
+        // 26px 的步骤头装不下一句 20 字的错误文案:状态位只留短标签,完整原因走独立错误行。
         const shortMsg = res.code === 'out_of_scope'
           ? '越界已拦截'
-          : (res.code === 'host_unreachable' ? '主机不可达' : (res.message && res.message.length <= 24 ? res.message : '失败'));
+          : (res.code === 'host_unreachable' ? '主机不可达' : '失败');
         stateText(refs, shortMsg, 'error');
         if (res.message) refs.state.title = res.message;
+        setStepError(refs, step, res);
       }
       const text = [res.output, res.note, res.status === 'error' ? res.message : ''].filter(Boolean).join('\n');
       if (text) refs.log.textContent = text;
