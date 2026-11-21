@@ -223,7 +223,10 @@ pub async fn tool_exec(app: &tauri::AppHandle, state: &AppState, p: &Value) -> V
             );
         }
     } else if p["runScope"].as_array().is_some_and(|a| a.is_empty()) {
-        return err("out_of_scope", "当前会话未勾选任何可操作主机（runScope 为空）");
+        return err(
+            "out_of_scope",
+            "当前会话未勾选任何可操作主机（runScope 为空）",
+        );
     }
     let sid = p["sessionId"].as_str().unwrap_or("").to_string();
     if !session_allowed(p, &sid) {

@@ -76,7 +76,10 @@ fn linked_sessions_whitelist_rejects_unlisted_sessions() {
 #[test]
 fn run_scope_whitelist_rejects_out_of_scope_hosts() {
     // 未带 runScope（兼容旧路径）：默认放行。
-    assert!(host_key_in_run_scope(&json!({ "sessionId": "s1" }), "h-web-01"));
+    assert!(host_key_in_run_scope(
+        &json!({ "sessionId": "s1" }),
+        "h-web-01"
+    ));
     assert!(session_host_in_run_scope(
         &json!({ "sessionId": "s1" }),
         &json!({ "id": "h-web-01", "name": "web-prod-01" })
@@ -89,7 +92,10 @@ fn run_scope_whitelist_rejects_out_of_scope_hosts() {
     });
     assert!(host_key_in_run_scope(&p, "h-web-01"));
     assert!(host_key_in_run_scope(&p, "@H-DB-02"));
-    assert!(!host_key_in_run_scope(&p, "h-cache-03"), "不在 runScope 内的 hostKey 必须被拒");
+    assert!(
+        !host_key_in_run_scope(&p, "h-cache-03"),
+        "不在 runScope 内的 hostKey 必须被拒"
+    );
     assert!(!host_key_in_run_scope(&p, ""), "空 hostKey 必须被拒");
 
     assert!(session_host_in_run_scope(
