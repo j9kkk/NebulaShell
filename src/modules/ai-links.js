@@ -113,7 +113,7 @@ async function ensurePoolEntry(host) {
       if (!entry.refs) p.delete(host.id);
       entry.status = 'error';
       entry.error = '连接已取消';
-      return null;
+      return entry; // 带回失败原因，调用方才有话可说
     }
     entry.status = 'connected';
     entry.error = null;
@@ -126,7 +126,7 @@ async function ensurePoolEntry(host) {
       entry.status = 'error';
       entry.error = e?.message || '连接失败';
     }
-    return null;
+    return entry;
   }
 }
 

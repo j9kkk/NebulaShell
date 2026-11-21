@@ -16,7 +16,7 @@ import {
 } from './ai-composer.js';
 import { readTerminalLines } from './terminal.js';
 import {
-  HEADLESS_PREFIX, clearThreadLinks, linkedSessionIds, linksForThread,
+  HEADLESS_PREFIX, clearThreadLinks, linkHost, linkedSessionIds, linksForThread, unlinkHost,
 } from './ai-links.js';
 import {
   activeAiThread, aiRequest, aiSend, aiStickScroll, appendToThreadView, beginAiTurn,
@@ -406,6 +406,7 @@ export function getTargetMenuData() {
       address: hostAddr ? `${hostAddr} · ${user}` : user,
       checked: scopeSet.has(key),
       connected: isConn,
+      connectState: h.connectState === 'connecting' ? 'connecting' : '',
       unreachable: !!errText,
       errorText: errText,
       status: errText ? 'error' : (isConn ? 'connected' : 'idle'),
@@ -457,6 +458,32 @@ let targetMenuQuery = '';
 export function getTargetMenuQuery() { return targetMenuQuery; }
 export function setTargetMenuQuery(q) { targetMenuQuery = String(q || ''); }
 
+/// 掉线即出范围：链接池里已变成 error 的主机，从所有对话的 scope 里摘掉。
+/// 「断开」不是一种开关外观（用户拍板：一律按 off 渲染），所以范围与可执行性必须一致 ——
+/// 连接没了就不该继续留在范围里发命令。
+export async function pruneDroppedScope() {
+  const threads = [...(state.aiThreads?.values?.() || [])];
+  let changed = false;
+  for (const t of threads) {
+    if (!t || !Array.isArray(t.scope) || !t.scope.length) continue;
+    const dead = linksForThread(t)
+      .filter((l) => l && l.status === 'error')
+      .map((l) => l.hostId)
+      .filter(Boolean);
+    for (const key of dead) {
+      // 走 unlinkHost 而不是直接改 scope：引用计数要跟着降，无头会话才好真正断开
+      await unlinkHost(t, key).catch(() => {});
+      changed = true;
+    }
+  }
+  if (changed) {
+    refreshThreadUi();
+    refreshAgentHostBar();
+    redrawTargetMenu();
+  }
+  return changed;
+}
+
 /// 菜单原地重绘（不收起）：勾选/取消主机后立即刷新。
 export function redrawTargetMenu({ focusHostId } = {}) {
   const menu = $('#ai-scope-menu');
@@ -502,12 +529,48 @@ export function targetMenuHandlers() {
     redrawTargetMenu(focusOpts);
   };
   return {
-    onToggleHost: (hostKey) => {
+    // 开关即连接：开 = 先转 connecting，连上才进范围；连不上回退 off 并在行里留原因。
+    // 关 = 解除本对话对它的引用（无头会话引用归零才真断，复用中的标签会话不动）。
+    onToggleHost: async (hostKey) => {
       const t = thread();
       if (!t || !hostKey) return;
-      const next = toggleHost(threadScope(t, state.hosts), hostKey);
-      setThreadScope(t, next, state.hosts);
-      syncAfterScopeChange(t, { focusHostId: hostKey });
+      const cur = threadScope(t, state.hosts);
+      const host = (state.hosts || []).find((h) => hostKeyOf(h) === hostKey);
+      if (host && host.connectState === 'connecting') return; // 正在连，忽略重复点
+
+      if (cur.includes(hostKey)) {
+        await unlinkHost(t, hostKey);
+        if (host) { host.unreachable = false; host.statusError = ''; }
+        syncAfterScopeChange(t, { focusHostId: hostKey });
+        return;
+      }
+
+      if (host) { host.connectState = 'connecting'; host.statusError = ''; }
+      redrawTargetMenu({ focusHostId: hostKey });
+
+      const res = await linkHost(t, hostKey).catch((e) => ({ ok: false, error: String(e?.message || '连接失败') }));
+      if (host) host.connectState = '';
+      const name = host ? hostLabelOf(host) : hostKey;
+
+      if (res?.ok) {
+        if (host) {
+          host.unreachable = false;
+          host.statusError = '';
+          if (host.status === 'error') host.status = 'connected';
+        }
+        syncAfterScopeChange(t, { focusHostId: hostKey });
+        return;
+      }
+
+      // 连不上：开关回退到 off，行内留失败原因（悬停可看全文）
+      const reason = String(res?.error || '连接失败').trim() || '连接失败';
+      if (host) {
+        host.unreachable = true;
+        host.statusError = reason;
+        host.status = 'error';
+      }
+      redrawTargetMenu({ focusHostId: hostKey });
+      toast(`${name} 连接失败：${reason}`, 'error');
     },
     onToggleFolderExpand: (folderName) => {
       const t = thread();

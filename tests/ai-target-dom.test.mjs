@@ -358,6 +358,21 @@ test('renderTargetMenu 渲染会话主机范围勾选列表、支持整行点击
   assert.ok(!/[\s"]dropped[\s"]/.test(swOf('h4').className), '不得给断线行开关加 dropped 类');
   assert.equal(root.querySelectorAll('.ai-pick-box').length, 0, '旧勾选框节点已移除');
 
+  // P3：连接中的主机还没进范围，开关也要显示 connecting（而不是 off），行内提示「连接中…」
+  ui.renderTargetMenu({
+    scope: [],
+    scopeCount: 0,
+    totalCount: 1,
+    groupCount: 1,
+    hosts: [
+      { hostId: 'h9', name: 'k8s-node-09', group: '客户机房-南京', address: '10.0.3.9 · root', checked: false, connectState: 'connecting' },
+    ],
+  }, p5Handlers);
+  const connecting = root.querySelector('.ai-pick-host[data-host-id="h9"]');
+  assert.equal(connecting.querySelector('.ai-pick-sw').dataset.state, 'connecting', '连接中即使未勾选也显示 connecting');
+  assert.equal(connecting.getAttribute('aria-checked'), 'false', '连接中语义上尚未加入范围');
+  assert.equal(connecting.querySelector('.ai-pick-host-meta').textContent, '连接中…');
+
   // 点击底栏「完成」按钮触发 onDone
   root.querySelector('.ai-pick-done').click();
   assert.equal(doneClicked, true);

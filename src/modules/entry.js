@@ -20,7 +20,7 @@ import {
   bindComposerEvents, closeMentionPop, handleComposerKeydown, isComposerComposing,
 } from './ai-composer.js';
 import {
-  getScopeMentionHosts, getTargetMenuData, refreshAgentHostBar, removeOutChipsFromComposer,
+  getScopeMentionHosts, getTargetMenuData, pruneDroppedScope, refreshAgentHostBar, removeOutChipsFromComposer,
   resetExpandedFoldersForMenu, restoreOutChipsToScope, syncComposerScopeCheck, targetMenuHandlers,
 } from './ai-agent-run.js';
 import { clearThreadLinks, handleLinkSessionStatus, setLinksChangeHandler } from './ai-links.js';
@@ -1075,7 +1075,11 @@ export function bindEvents() {
     const { sessionId, state: st, label } = payload;
     // 无头链接会话不在 state.sessions 里:A 先交给链接注册表跟踪状态,
     // 由它按 sessionId 前缀判定归属(见 ai-links.js)。
-    if (handleLinkSessionStatus(payload)) return;
+    if (handleLinkSessionStatus(payload)) {
+      // 掉线的无头链接：把主机从对话范围里摘掉（开关随之回到 off）
+      setTimeout(() => { try { pruneDroppedScope(); } catch { /* 界面刷新失败不影响连接状态 */ } }, 0);
+      return;
+    }
     const s = state.sessions.get(sessionId);
     if (!s || !handleSessionStatus(payload)) return;
     if (label) { s.label = label; updateTab(s); }

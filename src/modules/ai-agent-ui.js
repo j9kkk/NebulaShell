@@ -962,14 +962,16 @@ function createHostRow(h, { isSearch = false } = {}) {
   let metaEl;
   if (isSearch) {
     metaEl = el('span', 'ai-pick-crumb ai-target-host-meta', `${h.group || '我的主机'} ›`);
+  } else if (h.connectState === 'connecting') {
+    metaEl = el('span', 'ai-pick-host-meta ai-target-host-meta', '连接中…');
   } else if (isOff) {
     metaEl = el('span', 'ai-pick-host-meta ai-target-host-meta bad', h.errorText || '连接超时');
   } else {
     metaEl = el('span', 'ai-pick-host-meta ai-target-host-meta', h.address || '');
   }
 
-  // 开关外观：连接中 → connecting；已勾选 → on；其余（含 error/dropped）→ off
-  const swState = checked ? (h.connectState === 'connecting' ? 'connecting' : 'on') : 'off';
+  // 开关外观：连接中 → connecting（此时还没进范围，checked 仍为 false）；已勾选 → on；其余（含 error/dropped）→ off
+  const swState = h.connectState === 'connecting' ? 'connecting' : (checked ? 'on' : 'off');
   const sw = createSwitch(swState, { decorative: true });
   sw.title = checked ? '取消在本会话使用该主机' : '连接并加入本会话范围';
   row.append(dot, nameEl, metaEl, sw);
