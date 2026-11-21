@@ -926,20 +926,23 @@ export function updateTargetBar(view) {
   if (name) name.textContent = view.hostSummary || view.displayName || '未选主机';
 }
 
-/// 构造三态方框节点（'all' 实心✓ / 'part' 横杠 / 'none' 空框）。
-function createTriBox(st, extraClass = '') {
-  const cls = [
-    'ai-pick-box',
-    'ai-scope-check',
-    st === 'all' ? 'on is-on' : (st === 'part' ? 'part' : ''),
-    extraClass,
-  ].filter(Boolean).join(' ');
-  const box = el('span', cls);
-  box.dataset.state = st || 'none';
-  if (st === 'all') {
-    box.innerHTML = '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+/// 构造开关节点。外观只有 4 种：off / on / connecting / half；
+/// error、dropped 一律按 off 渲染 —— 失败信息交给状态点、行文案与悬停原因行，
+/// 不给开关再造红描边/灰蓝混色第二套语义（同一个开关不该有两种「关」）。
+function createSwitch(state, { role = 'switch', extraClass = '', decorative = false } = {}) {
+  const st = ['off', 'on', 'connecting', 'half'].includes(state) ? state : 'off';
+  const sw = el('span', ['ai-pick-sw', st === 'off' ? '' : st, extraClass].filter(Boolean).join(' '));
+  sw.dataset.state = st;
+  if (decorative) {
+    // 主机行本身是 role=switch 的可聚焦控件，里面的轨道只是它的「脸」
+    sw.setAttribute('aria-hidden', 'true');
+  } else {
+    sw.setAttribute('role', role);
+    // role=switch 不接受 mixed，半选只存在于目录行（checkbox 语义）
+    sw.setAttribute('aria-checked', st === 'on' ? 'true' : (st === 'half' ? 'mixed' : 'false'));
   }
-  return box;
+  sw.append(el('i', 'ai-pick-sw-knob'));
+  return sw;
 }
 
 /// 构造单条主机行（分组内或搜索结果扁平列表共用）。
@@ -947,7 +950,7 @@ function createHostRow(h, { isSearch = false } = {}) {
   const checked = !!h.checked;
   const row = el('div', 'ai-pick-host ai-target-host' + (checked ? ' on is-on' : '') + (isSearch ? ' is-search' : ''));
   row.dataset.hostId = h.hostId;
-  row.setAttribute('role', 'menuitemcheckbox');
+  row.setAttribute('role', 'switch');
   row.setAttribute('aria-checked', checked ? 'true' : 'false');
   row.tabIndex = 0;
 
@@ -965,18 +968,18 @@ function createHostRow(h, { isSearch = false } = {}) {
     metaEl = el('span', 'ai-pick-host-meta ai-target-host-meta', h.address || '');
   }
 
-  const box = createTriBox(checked ? 'all' : 'none');
-  row.append(dot, nameEl, metaEl, box);
+  // 开关外观：连接中 → connecting；已勾选 → on；其余（含 error/dropped）→ off
+  const swState = checked ? (h.connectState === 'connecting' ? 'connecting' : 'on') : 'off';
+  const sw = createSwitch(swState, { decorative: true });
+  sw.title = checked ? '取消在本会话使用该主机' : '连接并加入本会话范围';
+  row.append(dot, nameEl, metaEl, sw);
 
   row.addEventListener('click', (e) => {
     e.stopPropagation();
     targetHandlers.onToggleHost?.(h.hostId);
   });
-  row.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    e.preventDefault();
-    targetHandlers.onToggleHost?.(h.hostId);
-  });
+  // 键盘交给菜单级 onTargetMenuKeydown 统一处理（它会把焦点行 click 一次）。
+  // 这里再加一个 keydown→onToggleHost 会和它重复触发，实测「按空格来回切换一次=没反应」。
   return row;
 }
 
@@ -1138,10 +1141,11 @@ export function renderTargetMenu(menuData, handlers = {}, { focusHostId } = {}) 
         const dirName = el('span', 'ai-pick-dir-name', g.name);
         dirName.title = g.name;
         const dirCount = el('span', 'ai-pick-dir-count', `${g.selectedCount}/${g.totalCount}`);
-        const dirBox = createTriBox(g.state, 'ai-pick-dir-box');
+        const dirBox = createSwitch(g.state === 'all' ? 'on' : (g.state === 'part' ? 'half' : 'off'), {
+          role: 'checkbox',
+          extraClass: 'ai-pick-dir-sw',
+        });
         dirBox.title = g.state === 'all' ? `取消全选「${g.name}」` : `全选「${g.name}」`;
-        dirBox.setAttribute('role', 'checkbox');
-        dirBox.setAttribute('aria-checked', g.state === 'all' ? 'true' : (g.state === 'part' ? 'mixed' : 'false'));
 
         // B.1 #2/#3/#4：点右侧三态方框 = 整目录全选/全不选
         dirBox.addEventListener('click', (e) => {

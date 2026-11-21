@@ -248,10 +248,14 @@ test('renderTargetMenu 渲染会话主机范围勾选列表、支持整行点击
 
   const hostRows = root.querySelectorAll('.ai-target-host');
   assert.equal(hostRows.length, 2, '渲染 2 台主机行');
-  assert.equal(hostRows[0].getAttribute('role'), 'menuitemcheckbox');
+  assert.equal(hostRows[0].getAttribute('role'), 'switch', '主机行是开关，不再是勾选框');
   assert.equal(hostRows[0].getAttribute('aria-checked'), 'true');
   assert.ok(hostRows[0].classList.contains('is-on'));
   assert.equal(hostRows[1].getAttribute('aria-checked'), 'false');
+  // 开关外观只有 off / on / connecting / half 四种；勾选行 = on，未勾选 = off
+  assert.equal(hostRows[0].querySelector('.ai-pick-sw')?.dataset.state, 'on');
+  assert.equal(hostRows[1].querySelector('.ai-pick-sw')?.dataset.state, 'off');
+  assert.equal(hostRows[1].querySelector('.ai-pick-sw').getAttribute('aria-hidden'), 'true', '轨道是装饰，语义在行上');
 
   // 3. 点击第 2 台主机行触发 onToggleHost('h2')
   hostRows[1].click();
@@ -335,11 +339,24 @@ test('renderTargetMenu 渲染会话主机范围勾选列表、支持整行点击
   // 点击目录行触发 onToggleFolderExpand，点击三态方框触发 onToggleGroup
   dirRows[1].click();
   assert.equal(toggledFolder, '测试环境');
-  const dirBoxes = root.querySelectorAll('.ai-pick-dir-box');
-  assert.equal(dirBoxes[0].dataset.state, 'part');
+  // P2：目录行三态方框 → 开关（half 外观 + checkbox 的 mixed 语义）
+  const dirBoxes = root.querySelectorAll('.ai-pick-dir-sw');
+  assert.equal(dirBoxes[0].dataset.state, 'half');
+  assert.equal(dirBoxes[0].getAttribute('role'), 'checkbox');
+  assert.equal(dirBoxes[0].getAttribute('aria-checked'), 'mixed');
   dirBoxes[0].click();
   assert.equal(toggledGroup.f, '生产环境');
   assert.deepEqual([...toggledGroup.keys], ['h1', 'h2', 'h3', 'h4']);
+
+  // P2：主机行开关只有 off / on / connecting / half 四种外观；
+  // error / dropped 一律按 off 渲染，不再有专属类名与专属配色。
+  const swOf = (id) => root.querySelector(`.ai-pick-host[data-host-id="${id}"]`)?.querySelector('.ai-pick-sw');
+  assert.equal(swOf('h1').dataset.state, 'on', '已勾选 → on');
+  assert.equal(swOf('h3').dataset.state, 'off', '未勾选 → off');
+  assert.equal(swOf('h4').dataset.state, 'off', '不可达主机也按 off 渲染');
+  assert.ok(!/[\s"]error[\s"]/.test(swOf('h4').className), '不得给失败行开关加 error 类');
+  assert.ok(!/[\s"]dropped[\s"]/.test(swOf('h4').className), '不得给断线行开关加 dropped 类');
+  assert.equal(root.querySelectorAll('.ai-pick-box').length, 0, '旧勾选框节点已移除');
 
   // 点击底栏「完成」按钮触发 onDone
   root.querySelector('.ai-pick-done').click();

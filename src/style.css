@@ -1005,23 +1005,36 @@ body.is-fullscreen #win-controls { display: none; }
   flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 
-.ai-pick-box {
-  width: 15px; height: 15px; flex: none; border-radius: var(--radius-xs, 4px);
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 1.5px solid var(--border-hover); color: var(--btn-primary-text);
-  box-sizing: border-box;
+/* 开关：只有 4 种外观（off / on / connecting / half）。error、dropped 一律按 off 渲染，
+   不给失败造第二套配色 —— 状态点 + 行文案 + 悬停原因行已经说清楚了。 */
+.ai-pick-sw {
+  position: relative; flex: none; width: 36px; height: 20px; border-radius: var(--radius); /* 10px = 20px 高度的一半，正是胶囊 */
+  background: var(--border); box-sizing: border-box;
+  transition: background var(--dur-fast) var(--ease);
 }
-.ai-pick-box.part {
-  border: 1px solid var(--accent);
-  background: var(--accent-soft);
+.ai-pick-sw > i {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--muted); box-sizing: border-box;
+  transition: left var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-.ai-pick-box.part::after {
-  content: ''; width: 7px; height: 2px; border-radius: var(--radius-xs, 4px);
-  background: var(--accent);
+.ai-pick-sw.on { background: var(--accent); }
+.ai-pick-sw.on > i { left: 18px; background: var(--btn-primary-text); }
+/* 连接中：轨道淡蓝、圆钮已滑到右侧并套一圈转动的缺口环 */
+.ai-pick-sw.connecting { background: color-mix(in oklab, var(--accent) 32%, transparent); }
+.ai-pick-sw.connecting > i { left: 18px; background: var(--panel); }
+.ai-pick-sw.connecting > i::after {
+  content: ''; position: absolute; inset: -3px; border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent; border-right-color: transparent;
+  animation: ai-sw-spin .8s linear infinite;
 }
-.ai-pick-box.on {
-  border-color: var(--accent); background: var(--accent); color: var(--btn-primary-text);
+@keyframes ai-sw-spin { to { transform: rotate(360deg); } }
+/* 半选只出现在目录行：左半已连接、右半未连接，圆钮居中 */
+.ai-pick-sw.half {
+  background: linear-gradient(90deg, var(--accent) 0 50%, var(--border) 50% 100%);
 }
+.ai-pick-sw.half > i { left: 10px; background: var(--btn-primary-text); }
+.ai-pick-dir-sw { margin-left: 2px; }
 
 .ai-pick-host {
   display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px 0 25px;
@@ -1528,7 +1541,7 @@ body.is-fullscreen #win-controls { display: none; }
 /* 失败原因独立成行:不再挤进 26px 的步骤头(会压掉标题、与 @主机 胶囊叠字) */
 .ai-step-err {
   display: flex; align-items: center; gap: 6px; min-height: 24px;
-  margin: 0 8px 6px; padding: 3px 7px; border-left: 2px solid var(--danger); border-radius: 4px;
+  margin: 0 8px 6px; padding: 3px 7px; border-left: 2px solid var(--danger); border-radius: var(--radius-xs, 4px);
   background: color-mix(in oklab, var(--danger) 7%, transparent);
   color: var(--danger); font-size: 11.5px;
 }
@@ -1536,7 +1549,7 @@ body.is-fullscreen #win-controls { display: none; }
 /* 原因文字允许换行:360 宽面板里整句 20 字装不进一行,截断会把「请先重新连接」这句关键指令吃掉 */
 .ai-step-err-txt { flex: 1 1 auto; min-width: 0; line-height: 1.35; overflow-wrap: anywhere; }
 .ai-step-err-act {
-  flex: none; padding: 0 6px; height: 18px; border: 1px solid currentColor; border-radius: 4px;
+  flex: none; padding: 0 6px; height: 18px; border: 1px solid currentColor; border-radius: var(--radius-xs, 4px);
   background: transparent; color: var(--danger); font: inherit; font-size: 11px; cursor: pointer;
 }
 .ai-step-err-act:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 12%, transparent); }
