@@ -66,15 +66,17 @@ function liveSessionForHost(host) {
 }
 
 /// 确保某主机在池里有一条可用链接(必要时建链)。返回池条目,失败返回 null。
-async function ensurePoolEntry(host) {
+/// force=true 时不复用任何现存会话(池里的、终端标签里的都不要):
+/// 后端已经判定这条会话没了的时候，「池里写着 connected」本身才是要丢掉的信息。
+async function ensurePoolEntry(host, { force = false } = {}) {
   const p = pool();
   const existing = p.get(host.id);
-  if (existing) {
+  if (existing && !force) {
     // 池里已有:可能被别的对话引着。掉线的复用型条目重连一次,无头失败条目重建。
     if (existing.status === 'connected' || existing.status === 'connecting') return existing;
   }
 
-  const live = liveSessionForHost(host);
+  const live = force ? null : liveSessionForHost(host);
   if (live) {
     // 复用标签会话:关链接只解除引用,绝不 disconnect。
     const entry = existing || {};
@@ -147,6 +149,32 @@ export async function linkHost(thread, hostId) {
   ids.push(hostId);
   emit();
   return { ok: true, reused: entry.headless === false };
+}
+
+/// 让一台本来就在 scope 里的主机重新接上会话（重连按钮、回合中途掉线自愈都走这里）。
+/// 不写 thread.scope —— 主机已经在范围内，这里只负责把池里的会话接上并占一个引用。
+export async function reviveLink(thread, hostKey, { force = false } = {}) {
+  const key = String(hostKey || '').trim();
+  if (!key) return { ok: false, error: '缺少主机' };
+  const host = (state.hosts || []).find((h) => h && (h.id === key || hostKeyOf(h) === key));
+  if (!host) return { ok: false, error: '主机不存在' };
+  const p = pool();
+  const prev = p.get(host.id);
+  const prevRefs = prev?.refs || 0;
+  if (force) {
+    // 后端说这条会话已经没了：旧的 sessionId 别再复用，先摘掉再从头接一次。
+    p.delete(host.id);
+    const sId = prev?.headless ? prev.sessionId : null;
+    if (sId) api('ssh:disconnect', { sessionId: sId }).catch(() => {});
+  }
+  const entry = await ensurePoolEntry(host, { force });
+  if (!entry || entry.status !== 'connected') {
+    emit();
+    return { ok: false, error: entry?.error || '连接失败' };
+  }
+  entry.refs = Math.max(entry.refs || 0, prevRefs || 0) || 1;
+  emit();
+  return { ok: true, sessionId: entry.sessionId };
 }
 
 /// 解除一台主机的链接。引用归零且是无头会话才真正断开;复用中的标签会话只解除引用。

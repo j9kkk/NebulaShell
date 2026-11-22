@@ -16,7 +16,7 @@ import {
 } from './ai-composer.js';
 import { readTerminalLines } from './terminal.js';
 import {
-  HEADLESS_PREFIX, clearThreadLinks, linkHost, linkedSessionIds, linksForThread, unlinkHost,
+  clearThreadLinks, linkHost, linkedSessionIds, linksForThread, reviveLink, unlinkHost,
 } from './ai-links.js';
 import {
   activeAiThread, aiRequest, aiSend, aiStickScroll, appendToThreadView, beginAiTurn,
@@ -87,15 +87,9 @@ function connectedSessionForKey(hostKey) {
       host: hostForKey(hostKey) || { id: link.hostKey || hostKey, name: link.hostName || hostKey },
     };
   }
-  const h = hostForKey(hostKey);
-  if (h && !hostUnreachableReason(h, hostKey)) {
-    return {
-      sessionId: HEADLESS_PREFIX + hostKey,
-      status: 'connected',
-      headless: true,
-      host: h,
-    };
-  }
+  // 没有任何活着的会话就是「未连接」。这里绝不能凭 hostKey 拼一个 sessionId 出来：
+  // 拼出来的 id 后端表里并不存在，工具调用只会回 session_gone「会话已断开」，
+  // 用户看到的是一串失败步骤，而不是「这台主机未连接、请重连」。
   return null;
 }
 
@@ -723,6 +717,21 @@ export async function runAgentSend(thread, binding, { content, display, md, ment
   const hostIndex = new Map();
   const connectedScopeNames = [];
 
+  // 预检补连：范围里「开关是开的」但池里的会话已经没了（合盖睡眠、网络切换后 keepalive 到期），
+  // 发回合前先就地重连一次 —— 用户打开过的主机就应该能用，而不是回一句「会话已断开」。
+  // 只有一台会话都没有的主机才走这条路，正常回合零额外延迟；整轮最多等 6s，超时按未连接处理。
+  const needsRevive = runScope.filter((key) => {
+    const h = hostForKey(key);
+    if (!h || hostUnreachableReason(h, key)) return false;
+    return !connectedSessionForKey(key);
+  });
+  if (needsRevive.length) {
+    await Promise.race([
+      Promise.allSettled(needsRevive.map((key) => reviveLink(thread, key))),
+      new Promise((resolve) => setTimeout(resolve, 6000)),
+    ]);
+  }
+
   for (const key of runScope) {
     const h = hostForKey(key) || { id: key, name: key };
     const name = hostLabelOf(h) || h.name || key;
@@ -792,11 +801,8 @@ export async function runAgentSend(thread, binding, { content, display, md, ment
               hostKey: u.hostKey,
               onClick: async (_e, row) => {
                 const targetHost = hostForKey(u.hostKey);
-                const res = await api('ssh:connect', {
-                  hostId: u.hostKey,
-                  sessionId: HEADLESS_PREFIX + u.hostKey,
-                }).catch(() => null);
-                if (targetHost && (!res || !res.error)) {
+                const res = await reviveLink(thread, u.hostKey).catch(() => null);
+                if (targetHost && res?.ok) {
                   targetHost.unreachable = false;
                   targetHost.statusError = '';
                 }
@@ -898,6 +904,45 @@ export async function runAgentSend(thread, binding, { content, display, md, ment
     }
   };
 
+  // 回合执行中会话断掉（最典型：合盖睡眠后 keepalive 到期）时把这台主机请出本轮：
+  // 从 runScope / 白名单 / 名称表一起摘掉，后续工具调用直接判越界，
+  // 不会再刷出第二、三张一模一样的「会话已断开」失败卡；开关回落到关，等用户重连。
+  const demoteHost = (hostKey, reason) => {
+    const key = String(hostKey || '').trim();
+    if (!key) return;
+    const rec = hostIndex.get(key.toLowerCase());
+    const name = rec?.hostName || hostLabelOf(hostForKey(key)) || key;
+    const idx = reachableEntries.findIndex((e) => String(e.hostKey).toLowerCase() === key.toLowerCase());
+    const entry = idx >= 0 ? reachableEntries.splice(idx, 1)[0] : null;
+    if (entry) {
+      entry.unreachable = true;
+      entry.errorText = reason || '会话已断开';
+      unreachableEntries.push(entry);
+      const nIdx = connectedScopeNames.indexOf(entry.name);
+      if (nIdx >= 0) connectedScopeNames.splice(nIdx, 1);
+      const sIdx = runScope.indexOf(entry.hostKey);
+      if (sIdx >= 0) runScope.splice(sIdx, 1);
+      const sid = entry.session?.sessionId;
+      const aIdx = sid ? allowedIds.indexOf(sid) : -1;
+      if (aIdx >= 0) allowedIds.splice(aIdx, 1);
+    }
+    for (const k of [...hostIndex.keys()]) {
+      if (hostIndex.get(k)?.hostName === name) hostIndex.delete(k);
+    }
+    unlinkHost(thread, key).catch(() => {});
+    appendToThreadView(thread, createAiNoticeElement({
+      kind: 'session-gone',
+      level: 'warn',
+      iconName: 'alert',
+      text: `${name} 的会话已断开，已移出本会话主机范围；重连后重新打开开关即可继续`,
+    }));
+    if (isActive()) aiStickScroll();
+    refreshThreadScopeChips(thread);
+    refreshThreadUi();
+    refreshAgentHostBar();
+    redrawTargetMenu();
+  };
+
   const baseAdapter = createAgentAdapter({
     mount: (node) => {
       if (thread.agentRun && !thread.agentRun.firstStepEl && node?.classList?.contains?.('ai-step')) {
@@ -933,10 +978,10 @@ export async function runAgentSend(thread, binding, { content, display, md, ment
     onReconnectHost: async (hostKey) => {
       const key = String(hostKey || '').trim();
       if (!key) return false;
-      // api() 失败会 throw，成功一律 resolve（ssh:connect 成功时 data 可能就是 null），
-      // 所以成功与否只看有没有抛错，不看返回值真假。
-      let ok = true;
-      try { await api('ssh:connect', { hostId: key, sessionId: HEADLESS_PREFIX + key }); } catch { ok = false; }
+      // 走池里的建链路径（而不是直接 ssh:connect 一个临时 sessionId）：
+      // 会话必须登记进 state.aiLinks，否则重连后下一轮又会被判成「未连接」。
+      const revived = await reviveLink(thread, key).catch(() => null);
+      const ok = !!revived?.ok;
       const targetHost = (state.hosts || []).find((h) => hostKeyOf(h) === key || hostLabelOf(h) === key);
       if (ok && targetHost) {
         targetHost.unreachable = false;
@@ -1036,14 +1081,27 @@ export async function runAgentSend(thread, binding, { content, display, md, ment
             tainted: isMultiTurn ? [] : (thread.taint || []),
           }
           : {};
-        const res = await api('ai:tool-exec', {
+        const send = (sessionId) => api('ai:tool-exec', {
           ...req,
           ...policy,
-          sessionId: target.sessionId,
+          sessionId,
           hostKey: target.hostKey,
           runScope,
           linkedSessions: allowedIds,
         });
+        const GONE = new Set(['session_gone', 'host_not_linked']);
+        let res = await send(target.sessionId);
+        if (res && GONE.has(res.code)) {
+          // 回合开始时还是活的，执行到这一步会话已经没了：先静默重连一次再重放这条命令，
+          // 重连也接不上才把这台主机请出本轮（不然模型会拿到同一句错误反复重试）。
+          const revived = await reviveLink(thread, target.hostKey, { force: true }).catch(() => null);
+          if (revived?.ok && revived.sessionId && revived.sessionId !== target.sessionId) {
+            target.sessionId = revived.sessionId;
+            if (!allowedIds.includes(revived.sessionId)) allowedIds.push(revived.sessionId);
+            res = await send(revived.sessionId);
+          }
+          if (res && GONE.has(res.code)) demoteHost(target.hostKey, res.message);
+        }
         if (res && typeof res === 'object') {
           if (!res.host && target.hostName) res.host = target.hostName;
           if (!res.hostKey && target.hostKey) res.hostKey = target.hostKey;

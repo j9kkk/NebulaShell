@@ -360,7 +360,10 @@ export function endAiTurn(thread, token) {
   // 收起来，这一轮就只剩一句提示，用户看不出到底跑到哪一步。
   const conclusion = (keep.querySelector('.ai-body')?.textContent || '').trim();
   if (/^（(已停止生成|AI 未返回内容)）$/.test(conclusion)) return;
-  const others = nodes.filter((n) => n !== keep);
+  // 状态注记（作用域声明、「已移出主机范围」这类）不进折叠块：它们是这一轮
+  // 发生了什么的结论性信息，收进默认收起的执行过程里就等于没提示。
+  const pinned = nodes.filter((n) => n !== keep && n.classList.contains('ai-notice'));
+  const others = nodes.filter((n) => n !== keep && !n.classList.contains('ai-notice'));
   const countIn = (sel) => others.reduce((n, x) => n + (x.matches(sel) ? 1 : x.querySelectorAll(sel).length), 0);
   const stepCount = countIn('.ai-step');
   // 没有工具步骤（模型直接作答）不折叠：一轮只有一条回复时，折叠块只是噪音。
@@ -401,6 +404,8 @@ export function endAiTurn(thread, token) {
   // 折叠块落在第一个被收起的节点处，保持「过程在上、结论在下」的时间顺序。
   container.insertBefore(fold, others[0]);
   for (const n of others) body.append(n);
+  // 注记留在折叠块之上、按原顺序紧贴折叠块，保证始终可见。
+  for (const n of pinned) container.insertBefore(n, fold);
   if (active) {
     if (shrinkAbove && box) {
       box.scrollTop = Math.max(0, box.scrollTop - shrinkAbove);
