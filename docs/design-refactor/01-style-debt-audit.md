@@ -164,7 +164,7 @@
 > 已落地：见 `05-b2-color-tokens.md`（29 个 token 暗亮双定义、透明度改走 `color-mix`、唯一可见变化是确认卡 chip）。
 | **B3** | 字号收敛 17→8 档 | 无 lint 规则覆盖（新规则 C-new 可加） | **高**：76 处位移 ≤1px |
 | **B4** | light 覆盖归位（19 条 → 主题层） | `token-color 19→0`；亮暗外观零变化 | 中：亮色下需逐屏复核 ✅ `07-b4-light-theme.md` |
-| **B5** | `media-sizing 7` 迁平台层 | warn **7→0** → 可开 `--strict` 门禁 | 低 |
+| **B5** | `media-sizing 7` 收口 | `--strict` 退出码 0；7 条经实测与平台无关 → 注释豁免并记账 | 低 ✅ `08-b5-media-sizing.md` |
 
 顺序不可颠倒：B0 修的是"声明失效"，B1/B2 依赖 token 层正确，B3 必须最后做（字号一动，所有对像素的视觉判断基线全变）。
 
@@ -229,4 +229,4 @@ node -e 'const fs=require("fs");const css=fs.readFileSync("src/style.css","utf8"
 | B2 色值 token 化 | — | ✅ `05-b2-color-tokens.md` |
 | B3 字号收敛 | — | ✅ `06-b3-type-scale.md` |
 | B4 light 覆盖归位 | — | ✅ `07-b4-light-theme.md` |
-| B5 media-sizing 迁平台层 | — | 未开始 |
+| B5 media-sizing 收口 | — | ✅ `08-b5-media-sizing.md` |

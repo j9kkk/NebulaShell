@@ -87,6 +87,11 @@ jobs:
       - name: 运行前端单测
         run: npm run test:unit
 
+      # 样式契约门禁(B0–B5 收口后 warn=0):token/圆角/字号/色值/@media 尺寸
+      # 逐条可审计,新引入的裸值与平台特值会当场失败。--all 只在本地排查时用。
+      - name: 样式契约 lint
+        run: npm run lint:css -- --strict
+
   ui-e2e:
     name: UI 端到端测试 (macOS)
     runs-on: macos-latest

@@ -12,7 +12,7 @@
 | **B2** | 色值 token 化（5 族 / 29 token）＋ 定 `--hover-bg`（B0 里留的 `.ai-confirm-host-tag`） | `token-color 96→19`，warn **103→26**；6 场景里只有 chip 一处净差 1424px，其余全 0 | 低-中：阴影统一会让部分浮层变浅/变深 | ✅ 已完成（`05-b2-color-tokens.md`） |
 | **B3** | 字号收敛 17→8 档（先加 `token-font` 规则） | `token-font 410→0`；唯一允许画面变化的一批：396 条声明 1:1 换档，净差 839–17875px，行高/列宽红线未破 | **高**：全屏重排，前面各批像素基线失效 | ✅ 已完成（`06-b3-type-scale.md`） |
 | **B4** | light 覆盖归位（19 条散落色值 → token 层） | `token-color 19→0`；亮色/暗色对外观零变化（6 场景 + 16 选择器探针 净差 0） | 中：亮色下逐屏复核 | ✅ 已完成（`07-b4-light-theme.md`） |
-| **B5** | `media-sizing 7` 迁平台层 | warn **7→0** → 开 `--strict` 门禁 | 低 | 未开始 |
+| **B5** | `media-sizing 7` 收口（实测不是平台差异 → `css-contract:allow` 记账） | `media-sizing 0`；warn **7→0**；`--strict` **退出码 0** | 低 | ✅ 已完成（`08-b5-media-sizing.md`） |
 
 顺序不可颠倒：B0 修「声明失效」→ B1/B2 依赖 token 层正确 → B3 必须最后（字号一动，所有对像素的判断基线全变）→ B4/B5 收尾。
 详见 `01-style-debt-audit.md`（含 332 条 findings 明细与 `01-audit-data.json`）。
@@ -48,6 +48,7 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 |---|---|
 | `up [--build] [--fresh]` | 起真实 Tauri 窗口（Xvfb + 应用自带测试桥）。`--fresh` 重置夹具数据 |
 | `down` / `status` | 停容器 / 看状态 |
+| `resize <W>x<H>` | 真实改窗口尺寸（验收 `@media` 断点；受 `tauri.conf` 的 `minWidth/minHeight` 夹取） |
 | `scene hosts\|import-preview\|rdp-advanced` | 把应用驱动到可复现状态（走真实点击与键盘事件） |
 | `eval '<js>'` | 在真实页面执行 JS（多语句需显式 `return`） |
 | `styles 'a,b,c'` | 取计算样式 JSON |
@@ -76,3 +77,4 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 | `05-b2-color-tokens.md` | B2 5 族映射、29 个 token 清单、color-mix 等价性证明、`ai-panel` 验收限缩 |
 | `06-b3-type-scale.md` | B3 17→8 映射表、每场景位移、行高/溢出红线断言、两处「被裁」的排除证明 |
 | `07-b4-light-theme.md` | B4 19 条覆盖去向表、`light-probe` 探针场景、两个级联坑（第二 `:root` / 同特异性靠位置） |
+| `08-b5-media-sizing.md` | B5 7 条去向、`css-contract:allow` 机制与反证、「断点在最小窗口下永不命中」的实测、六批总账 |

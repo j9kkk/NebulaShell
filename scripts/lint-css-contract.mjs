@@ -86,7 +86,10 @@ function flushDecls(chunk, start, stack, out, lineOf) {
     const prop = raw.slice(0, idx).trim();
     const value = raw.slice(idx + 1).trim();
     if (!prop) continue;
-    out.push({ prop, value, selector, atrules, line: lineOf(start), frame: stack.length });
+    // scopeStart = 这条声明所在作用域的最上行(最外层 @media / 规则块)，allow 注释从这里往下找
+    const starts = stack.map((f) => lineOf(f.start));
+    out.push({ prop, value, selector, atrules, line: lineOf(start), frame: stack.length,
+      scopeStartLine: Math.min(...starts) });
   }
 }
 
@@ -228,12 +231,27 @@ const rules = [
 /* ---------------- 执行 ---------------- */
 
 let total = 0;
+let allowedTotal = 0;
+const allowedByRule = new Map();
 const byRule = new Map();
+
+// 「这条尺寸是窗口断点造成的,不是平台差异」—— 注释写在声明的规则块里(块内任意位置),
+// 或写在该作用域上方一行,形如:
+//   /* css-contract:allow media-sizing — 窄窗(<480px)下把三列表单压成一列 */
+// 豁免按「规则 id + 声明所在的整个作用域」生效:只想放行一条声明,就把注释紧贴在
+// 那条声明上方,而不是挂在整个 @media 上。
+function allowComment(srcLines, d, ruleId) {
+  const re = new RegExp('css-contract:allow\\s+(?:' + ruleId + '|all)\\b');
+  const from = Math.max(1, (d.scopeStartLine || d.line) - 1);
+  for (let i = from; i <= d.line; i++) if (re.test(srcLines[i - 1] || '')) return true;
+  return false;
+}
 const findings = [];
 for (const rel of targets) {
   const file = path.isAbsolute(rel) ? rel : path.join(root, rel);
   if (!fs.existsSync(file)) { console.error(`[css-contract] 跳过不存在的文件 ${rel}`); continue; }
   const css = fs.readFileSync(file, 'utf8');
+  const srcLines = css.split('\n');
   const decls = scan(css);
   // 「平台覆盖层」段落起始行:平台选择器只允许出现在此行之后(见 R5)
   const markIdx = css.indexOf('平台覆盖层');
@@ -246,6 +264,7 @@ for (const rel of targets) {
     for (const rule of rules) {
       const msg = rule.check(d);
       if (!msg) continue;
+      if (allowComment(srcLines, d, rule.id)) { allowedByRule.set(rule.id, (allowedByRule.get(rule.id) || 0) + 1); allowedTotal++; continue; }
       findings.push({ rule: rule.id, level: rule.level, file: rel, line: d.line, selector: d.selector, prop: d.prop, value: d.value, msg });
       byRule.set(rule.id, (byRule.get(rule.id) || 0) + 1);
       total++;
@@ -277,4 +296,8 @@ if (!quiet) {
 
 console.log(`\n[css-contract] ${targets.join(', ')} — error ${counts.error} / warn ${counts.warn} / info ${counts.info}`);
 for (const [id, n] of byRule) console.log(`  ${id.padEnd(16)} ${n}`);
+if (allowedTotal) {
+  console.log(`  (另有 ${allowedTotal} 条按 css-contract:allow 注释豁免:` +
+    [...allowedByRule].map(([id, n]) => `${id} ${n}`).join(', ') + ')');
+}
 if (strict && (counts.error || counts.warn)) process.exit(1);

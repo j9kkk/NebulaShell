@@ -205,6 +205,25 @@ pub async fn start_bridge(
                     },
                     None => (404, json!({ "error": "pending" }).to_string()),
                 }
+            } else if let Some(q) = path.strip_prefix("/resize") {
+                // /resize?w=460&h=700 —— 定点验证要测「窄窗口断点」(@media max-width:480px),
+                // 而窗口尺寸来自 tauri.conf 且没有 WM 可拖拽,只能在测试桥里改一次。
+                let mut w = 1280u32;
+                let mut h = 820u32;
+                for kv in q.trim_start_matches('?').split('&') {
+                    let mut it = kv.splitn(2, '=');
+                    let k = it.next().unwrap_or("");
+                    let v = it.next().unwrap_or("").parse::<u32>().unwrap_or(0);
+                    match k {
+                        "w" if v > 0 => w = v,
+                        "h" if v > 0 => h = v,
+                        _ => {}
+                    }
+                }
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_size(tauri::LogicalSize::new(w as f64, h as f64));
+                }
+                (200, json!({ "ok": true, "w": w, "h": h }).to_string())
             } else if path.starts_with("/ping") {
                 (200, json!({ "ok": true }).to_string())
             } else {

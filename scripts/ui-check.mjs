@@ -503,6 +503,7 @@ function usage() {
   node scripts/ui-check.mjs down | status
   node scripts/ui-check.mjs eval '<js>'              在页面里执行（多语句需显式 return）
   node scripts/ui-check.mjs styles [a,b,c]           取计算样式（默认面见 DEFAULT_SELECTORS）
+  node scripts/ui-check.mjs resize <W>x<H>          真实改窗口尺寸（验收 @media 断点）
   node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
   node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
   node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel|light-probe   驱动到可复现场景
@@ -534,6 +535,18 @@ try {
     case 'shot': console.log(shot(rest[0] || `shot-${Date.now()}`)); break;
     case 'scene': await applyScene(rest[0] || 'hosts'); break;
     case 'theme': await cmdTheme(rest); break;
+    case 'resize': {
+      // resize <WxH> —— 真实改窗口尺寸，用来验收 @media 断点(max-width:480px 这类)
+      const spec = String(rest[0] || '');
+      if (!/^\d+x\d+$/.test(spec)) throw new Error('用法: resize <宽>x<高>，如 460x700');
+      const [w, h] = spec.split('x').map(Number);
+      const r = await fetch(`http://127.0.0.1:${readPort()}/resize?w=${w}&h=${h}`);
+      if (!r.ok) throw new Error(`/resize ${r.status} —— 应用里的测试桥还是旧版，需 up --build`);
+      await sleep(700);
+      const v = await evalJs('return {w: innerWidth, h: innerHeight, overflowX: document.documentElement.scrollWidth - innerWidth};');
+      console.log(JSON.stringify({ requested: spec, got: v }, null, 2));
+      break;
+    }
     case 'ab': await cmdAb(rest); break;
     case 'fixtures': writeFixtures(); console.log(`[ui-check] 夹具已写入 ${USERDATA} / ${IMPORT_FILE}`); break;
     default: usage();

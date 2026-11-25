@@ -4435,6 +4435,9 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   #batch-cmd { min-height: 160px; }
 }
 @media (max-width: 480px) {
+  /* css-contract:allow media-sizing — 窄窗(<480px)把表单压成一列后要收紧间距:
+     表单列间距 12→8、stack 后的 label 补 4px 上距、云账号卡片内边距 10px 12px→10px、
+     动作行间距 10→8、批量结果表单元格 5px 8px→5px 4px。都由窗口宽度决定。 */
   .form-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .form-grid label { margin-top: 4px; }
   .model-row { flex-wrap: wrap; }
@@ -4450,6 +4453,9 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   .batch-foot-btns { flex-wrap: wrap; }
 }
 @media (max-width: 700px), (max-height: 500px) {
+  /* css-contract:allow media-sizing — 小窗/矮窗把弹窗往视口边缘贴:
+     遮罩四周补 8px 留白(常态为 0)、卡片内边距 20→14、
+     卡片最大宽高各放宽 24px(100vw-40 → 100vw-16),换取表格的可用宽度。 */
   .modal { padding: 8px; }
   .modal-card { max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); padding: 14px; }
 }
