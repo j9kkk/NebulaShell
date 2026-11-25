@@ -998,9 +998,18 @@ async function aiHostToolRegressions() {
     await selectAllTargetScope();
     await evalJs(`document.querySelector('#ai-scope-menu .ai-pick-done')?.click(); return 1`);
     await waitEval(`return document.querySelector('#ai-mode-trigger')?.dataset?.mode`, 'manual');
+    // 范围落盘要过一次 IPC,主机钮文案在回复到达后才更新;同步读会读到上一帧的
+    // 「未选主机」(慢渲染/软件 GL 环境下必然踩到)。这里退化为有上限的轮询,
+    // 超时仍按失败上报,而不是把整轮 e2e 抛断。
+    let nameAfterScope = '';
+    for (let i = 0; i < 50; i += 1) {
+      nameAfterScope = await targetName();
+      if (nameAfterScope !== '未选主机') break;
+      await sleep(100);
+    }
     check('T-TM3 重新勾选主机范围:主机钮显示当前主机或台数,档位回手动',
-      (await targetName()) !== '未选主机',
-      await targetName());
+      nameAfterScope !== '未选主机',
+      nameAfterScope);
 
     // 故事 1:手动模式 —— 只读工具自动执行,exec 停在蓝卡,确认后输出回到模型。
     await evalJs(`document.querySelector('#ai-thread-new').click(); return 1`);
