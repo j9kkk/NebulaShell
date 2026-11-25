@@ -121,6 +121,25 @@ const rules = [
     },
   },
   {
+    // R6:字号必须来自 --fs-* 八档(半像素档一律不许回潮)
+    id: 'token-font',
+    level: 'warn',
+    check: ({ prop, value }) => {
+      if (prop === 'font-size') {
+        if (/^var\(--fs-/.test(value)) return null;
+        if (/^(inherit|initial|unset|smaller|larger|medium)$/.test(value)) return null;
+        return `字号字面量 ${value} —— 改用 var(--fs-*)`;
+      }
+      // font 简写里也藏着字号:`600 11px/1 var(--font-mono)`
+      if (prop === 'font') {
+        const m = /(?:^|\s)(\d+(?:\.\d+)?px)(?:\/|\s|$)/.exec(value);
+        if (!m) return null;
+        return `font 简写里的字号 ${m[1]} —— 拆成 font-family/weight/size 或改用 var(--fs-*)`;
+      }
+      return null;
+    },
+  },
+  {
     // R4 前置:引用了不存在的 token 且没写回落 → 整条声明在浏览器里作废(静默失效)
     id: 'token-undefined',
     level: 'warn',

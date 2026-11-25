@@ -227,6 +227,6 @@ node -e 'const fs=require("fs");const css=fs.readFileSync("src/style.css","utf8"
 | B0 失效 token 引用清理 | `02-b0-dead-token-fix.md`、`03-b0-real-ui-verification.md` | ✅ 已完成，待验收 |
 | B1 圆角 token 化 | — | ✅ `04-b1-radius-tokens.md` |
 | B2 色值 token 化 | — | ✅ `05-b2-color-tokens.md` |
-| B3 字号收敛 | — | 未开始 |
+| B3 字号收敛 | — | ✅ `06-b3-type-scale.md` |
 | B4 light 覆盖归位 | — | 未开始 |
 | B5 media-sizing 迁平台层 | — | 未开始 |
