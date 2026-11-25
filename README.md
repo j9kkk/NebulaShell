@@ -250,7 +250,20 @@ macOS 上 `Ctrl+C` 始终发送中断信号（SIGINT），不会复制选区。
 npm test                 # 全部（Rust + UI）
 npm run test:rust        # Rust 单元 + 集成测试
 npm run test:web         # UI 端到端测试(驱动真实窗口)
+npm run test:unit        # 前端单测(575)
+npm run lint:css         # 样式契约(零依赖,见 docs/ui-layout-contract.md)
 ```
+
+样式改动的定点验证（每批只跑自己改动的那块，不跑全量 e2e）：
+
+```bash
+npm run ui:check -- up --build                       # 起真实窗口(测试桥就绪即返回)
+npm run ui:check -- scene import-preview             # 驱动到可复现场景
+npm run ui:check -- ab bN --scene import-preview      # 基线 CSS vs 现状:计算样式 + 像素净差异
+npm run ui:check -- shot after-bN                    # 出稳定态截图
+```
+
+净差异非 0 时退出码为 2，可直接进 CI；用法与坑见 `docs/design-refactor/README.md`。
 
 测试分层：
 

@@ -155,7 +155,7 @@
 
 | 批次 | 内容 | lint 预期 | 视觉风险 |
 |---|---|---|---|
-| **B0** | 修 F1 的 13 处失效引用（`--line`/`--fg`/`--accent-contrast`） | warn 322→322（不改数量） | **中**：11 处边框首次出现，需看 `.io-*` 全流程截图 |
+| **B0** | 修 F1 的 14 处失效引用（`--line`/`--fg`/`--accent-contrast`） | warn 322→322（不改数量） | 低：用户已定「不要 io 描边」→ 删除声明而非补 token；实测零像素变化（见 `03`） |
 | **B1** | 圆角 token 化 + `--radius-pill` 进平台层 | `token-radius 199→0`、`platform-scope 20→0`；warn **322→103** | 低：绝对值映射，8px 主体不动 |
 | **B2** | 色值 token 化（5 族） | `token-color 96→19`(仅剩 light 覆盖)；warn **103→26** | 低-中：阴影统一会让部分浮层变浅/变深 |
 | **B3** | 字号收敛 17→8 档 | 无 lint 规则覆盖（新规则 C-new 可加） | **高**：76 处位移 ≤1px |
@@ -216,9 +216,11 @@ node -e 'const fs=require("fs");const css=fs.readFileSync("src/style.css","utf8"
 
 ## 9. 批次索引
 
+流程与定点验证入口见 `README.md`；每批都按「lint → 单测 → ui-check ab → 截图」四步验收。
+
 | 批次 | 记录 | 状态 |
 |---|---|---|
-| B0 失效 token 引用清理 | `02-b0-dead-token-fix.md` | ✅ 已完成，待验收 |
+| B0 失效 token 引用清理 | `02-b0-dead-token-fix.md`、`03-b0-real-ui-verification.md` | ✅ 已完成，待验收 |
 | B1 圆角 token 化 | — | 未开始 |
 | B2 色值 token 化 | — | 未开始 |
 | B3 字号收敛 | — | 未开始 |

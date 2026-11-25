@@ -1,0 +1,435 @@
+#!/usr/bin/env node
+// 真实窗口定点验证入口 —— 每个样式批次(B1–B5)验收都用它,不再靠手工起 Xvfb/截图。
+//
+// 它做的事:
+//   1) up    : 编好的二进制 + Xvfb + 应用自带测试桥(NEBULA_TEST=1),等桥就绪;
+//   2) eval  : 在**真实页面**里跑一段 JS(和写 Playwright 一样,但驱动的是 Tauri 窗口);
+//   3) shot  : 截一张窗口图(ImageMagick import,无窗口管理器也能用);
+//   4) theme : 走真实 UI 切主题(命令面板 → 设置 → 终端 → 主题 → 保存);
+//   5) ab    : 把任意 git ref 的 src/style.css 注入同窗口当基线,比「旧 CSS vs 现状」
+//              的计算样式与像素;像素比对自动扣掉光标闪烁/动画造成的时间噪声。
+//
+// 为什么不直接跑 e2e: 全量 e2e 慢且会连真机;这里只做「这一批改动的定点核对」。
+//
+// 用法:
+//   node scripts/ui-check.mjs up --build      # 首次编译并启动(约 1 分钟,之后增量几秒)
+//   node scripts/ui-check.mjs up              # 只启动
+//   node scripts/ui-check.mjs status|down
+//   node scripts/ui-check.mjs eval 'return document.title'
+//   node scripts/ui-check.mjs styles '.io-item,.io-chip'
+//   node scripts/ui-check.mjs shot after-b1
+//   node scripts/ui-check.mjs theme light
+//   node scripts/ui-check.mjs ab b1 --ref v0.7.6
+//
+// 约定/边界:
+//   - 需要 docker(本机需 `sg docker`,脚本会自动探测);镜像默认 nebula-buildenv:1 / nebula-runenv:1;
+//   - 数据目录默认 .ui-check/(git 忽略),可用 NEBULA_UI_DATA 覆盖;
+//   - 应用只认 NEBULA_TEST_* 这套测试注入,别在生产包上用;
+//   - 截图是 1600×1000 的 Xvfb 根窗口,窗口贴 0,0(无 WM 时不会飘);
+//   - styles/ab 的选择器只取**首个命中**(querySelector)。要量「非首行」的状态(比如冲突行
+//     以外的主机行),写更具体的选择器或用 :nth-child,否则会量到第一行(可能是 .has-diff 变体)。
+
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const DATA = process.env.NEBULA_UI_DATA || join(ROOT, '.ui-check');
+const CONTAINER = process.env.NEBULA_UI_CONTAINER || 'nebula-ui-check';
+const DISPLAY = process.env.NEBULA_UI_DISPLAY || ':101';
+const SCREEN = process.env.NEBULA_UI_SCREEN || '1600x1000x24';
+const BUILD_IMAGE = process.env.NEBULA_UI_BUILD_IMAGE || 'nebula-buildenv:1';
+const RUN_IMAGE = process.env.NEBULA_UI_RUN_IMAGE || 'nebula-runenv:1';
+const BASELINE_REF = process.env.NEBULA_UI_BASELINE_REF || 'v0.7.6';
+const BIN = join(DATA, 'bin', 'nebulashell');
+const PORT_FILE = join(DATA, 'run', 'bridge.port');
+const USERDATA = join(DATA, 'run', 'userdata');
+const IMPORT_FILE = join(DATA, 'run', 'work', 'hosts-export.json');
+const SHOTS = join(DATA, 'shots');
+
+// 默认比对的样式面:覆盖 B0 动过的地方(io 导入面板 / RDP 高级区 / AI 徽标)。
+// 后续批次改了别处,用 --selectors 传自己的。
+const DEFAULT_SELECTORS = [
+  '.io-import .io-list', '.io-import .io-list-head', '.io-import .io-item',
+  '.io-import .io-chip', '.io-import .io-stat', '.io-import .io-mini-sel',
+  '.io-import .io-foot', '.io-import .io-report', '.io-import .io-seg-row',
+  '.io-import .io-seg', '.io-import .io-label',
+  '.rdp-adv', '.rdp-adv-title', '.rdp-chk',
+  '.ai-thread-count-badge',
+];
+const PROPS = [
+  'borderTopWidth', 'borderTopStyle', 'borderTopColor', 'borderBottomWidth', 'borderBottomStyle',
+  'borderLeftWidth', 'borderLeftStyle', 'borderRightWidth', 'borderRightStyle',
+  'backgroundColor', 'color', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
+  'padding', 'margin', 'gap', 'borderRadius', 'boxShadow', 'opacity', 'height', 'width', 'textAlign',
+];
+
+// ── shell 工具 ────────────────────────────────────────────────────────────────
+
+const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+let dockerMode = null;
+function dk(argv, { input, allowFail = false } = {}) {
+  if (dockerMode === null) {
+    dockerMode = spawnSync('docker', ['info'], { stdio: 'ignore' }).status === 0 ? 'direct' : 'sg';
+  }
+  const opts = { encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 64 << 20 };
+  try {
+    return dockerMode === 'direct'
+      ? execFileSync('docker', argv, opts)
+      : execFileSync('sg', ['docker', '-c', ['docker', ...argv].map(q).join(' ')], opts);
+  } catch (e) {
+    if (allowFail) return null;
+    const msg = (e.stderr || e.message || '').toString().trim();
+    throw new Error(`docker ${argv[0]} 失败: ${msg}`);
+  }
+}
+// 容器内执行：走 argv 而不是 bash -lc，省掉一层引号地狱（ImageMagick 的 ( ) 很脆）
+const dkExec = (argv) => dk(['exec', '-e', `DISPLAY=${DISPLAY}`, CONTAINER, ...argv], { stdio: ['pipe', 'pipe', 'pipe'] });
+const dkShell = (script) => dk(['exec', CONTAINER, 'bash', '-c', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+const cpath = (hostPath) => hostPath.replace(DATA, '/data');   // 宿主 → 容器路径
+const dkAlive = () => (dk(['inspect', '-f', '{{.State.Running}}', CONTAINER], { allowFail: true }) || '').trim() === 'true';
+const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
+
+// ── 测试桥（应用自带：POST /eval，GET /result/<id>，/ping 探活）────────────────
+
+let seq = 0;
+async function evalJs(js, timeoutMs = 30000) {
+  const port = readPort();
+  const id = `ui-${Date.now()}-${++seq}`;
+  const res = await fetch(`http://127.0.0.1:${port}/eval`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, js }),
+  });
+  if (!res.ok) throw new Error(`/eval ${res.status}`);
+  const t0 = Date.now();
+  for (;;) {
+    const r = await fetch(`http://127.0.0.1:${port}/result/${id}`);
+    if (r.status === 200) {
+      const { value } = await r.json();
+      if (typeof value === 'string' && value.startsWith('ERR: ')) throw new Error(value.slice(5));
+      return value;
+    }
+    if (Date.now() - t0 > timeoutMs) throw new Error(`eval 超时 ${timeoutMs}ms: ${js.slice(0, 80)}`);
+    await sleep(120);
+  }
+}
+
+function readPort() {
+  if (!existsSync(PORT_FILE)) throw new Error(`找不到 ${PORT_FILE}，先跑 up`);
+  const port = readFileSync(PORT_FILE, 'utf8').trim();
+  if (!port) throw new Error('测试桥端口文件为空：应用可能还没启动完或启动失败(看 .ui-check/run/app.log)');
+  return port;
+}
+
+async function waitReady(timeoutMs = 120000) {
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      readPort();
+      const res = await fetch(`http://127.0.0.1:${readPort()}/ping`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) return readPort();
+    } catch { /* 还没起来 */ }
+    if (Date.now() - t0 > timeoutMs) {
+      const log = existsSync(join(DATA, 'run', 'app.log')) ? readFileSync(join(DATA, 'run', 'app.log'), 'utf8').slice(-2000) : '(无)';
+      throw new Error(`测试桥 ${timeoutMs}ms 内未就绪。app.log 末尾:\n${log}`);
+    }
+    await sleep(500);
+  }
+}
+
+const shot = (name) => {
+  mkdirSync(SHOTS, { recursive: true });
+  dkShell('mkdir -p /data/shots');
+  dkExec(['import', '-window', 'root', `/data/shots/${name}.png`]);
+  return join(SHOTS, `${name}.png`);
+};
+
+// ── 夹具：1 台本地主机 + 一个 4 台、含 1 条冲突的导入文件 ─────────────────────
+
+function writeFixtures() {
+  mkdirSync(USERDATA, { recursive: true });
+  mkdirSync(dirname(IMPORT_FILE), { recursive: true });
+  const cfg = join(USERDATA, 'nebulashell-config.json');
+  if (!existsSync(cfg)) {
+    writeFileSync(cfg, JSON.stringify({
+      hosts: [{
+        id: 'h-local-1', name: 'cache-prod-02', host: '10.0.4.12', port: 22, username: 'root',
+        authType: 'password', password: 'demo', group: '生产', tags: [], jumpIds: [],
+        createdAt: 1700000000000, updatedAt: 1700000000000,
+      }],
+      settings: { terminal: { theme: 'nebula' } },
+    }, null, 1));
+  }
+  const hosts = [
+    { name: 'cache-prod-02', host: '10.0.4.12', port: 22, username: 'root', group: '数据库', authType: 'password' },
+    { name: 'cache-prod-01', host: '10.0.4.11', port: 22, username: 'root', group: '生产', authType: 'password' },
+    { name: 'db-replica-3', host: '10.0.9.7', port: 22, username: 'admin', group: '数据库', authType: 'key', keyPath: '/home/demo/.ssh/id_ed25519' },
+    { name: 'jump-01', host: '10.0.1.2', port: 2222, username: 'ops', group: '跳板', authType: 'password' },
+  ].map((h, i) => ({ ...h, id: `imp-${i + 1}`, tags: [], jumpIds: [] }));
+  writeFileSync(IMPORT_FILE, JSON.stringify({ version: 4, hosts }, null, 1));
+}
+
+// ── 命令 ─────────────────────────────────────────────────────────────────────
+
+function buildBinary() {
+  console.log('[ui-check] cargo build（buildenv 容器，增量几秒）…');
+  // nebula-cargo 只放 registry 缓存，挂到 /cargo 并把 CARGO_HOME 指过去；
+  // 不能挂到 /usr/local/cargo —— 那会把镜像自带的 cargo 可执行文件整个遮掉
+  mkdirSync(join(DATA, 'bin'), { recursive: true });   // 先由宿主建目录，避免容器留下的 root 属主挡住后续 mkdir
+  dk(['run', '--rm', '-v', `${ROOT}:/w`, '-v', 'nebula-cargo:/cargo', '-v', 'nebula-target:/target',
+    '-w', '/w/src-tauri', '-e', 'CARGO_HOME=/cargo', '-e', 'CARGO_NET_OFFLINE=true', '-e', 'CARGO_TARGET_DIR=/target', BUILD_IMAGE,
+    // 注意用 bash -c 而不是 -lc：镜像的 /etc/profile 会把 PATH 重置掉，cargo 就不在 PATH 里了
+    'bash', '-c', 'cargo build && cp /target/debug/nebulashell /w/.ui-check/bin/nebulashell && chown -R 1000:1000 /w/.ui-check'],
+  { stdio: ['pipe', 'inherit', 'inherit'] });
+  if (!existsSync(BIN)) throw new Error('编译后仍找不到二进制');
+}
+
+async function cmdUp(argv) {
+  const build = argv.includes('--build');
+  const fresh = argv.includes('--fresh');
+  if (build || !existsSync(BIN)) buildBinary();
+  if (fresh) rmSync(USERDATA, { recursive: true, force: true });
+  writeFixtures();
+  dk(['rm', '-f', CONTAINER], { allowFail: true });
+  rmSync(PORT_FILE, { force: true });
+  dk(['run', '-d', '--name', CONTAINER, '--net', 'host', '--user', '1000:1000',
+    '-e', 'HOME=/tmp', '-e', 'NEBULA_TEST=1',
+    '-e', `NEBULA_USER_DATA=/data/run/userdata`,
+    '-e', 'NEBULA_TEST_BRIDGE_FILE=/data/run/bridge.port',
+    '-e', 'NEBULA_TEST_IMPORT_PATH=/data/run/work/hosts-export.json',
+    '-e', 'NEBULA_TEST_EXPORT_DIR=/data/run/work',
+    '-e', 'NEBULA_TEST_PICK_DIR=/data/run/work',
+    '-e', 'NEBULA_TEST_PICK_PATHS=/data/run/work/hosts-export.json',
+    '-v', `${DATA}:/data`, RUN_IMAGE, 'bash', '-c', [
+      `rm -f /tmp/.X${DISPLAY.replace(':', '')}-lock`,
+      'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg /data/run',
+      `Xvfb ${DISPLAY} -screen 0 ${SCREEN} -ac +extension GLX +extension RANDR +render -noreset > /data/run/xvfb.log 2>&1 &`,
+      'sleep 3',
+      `export DISPLAY=${DISPLAY} GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 XDG_RUNTIME_DIR=/tmp/xdg`,
+      'mkdir -p /data/shots',
+      '/data/bin/nebulashell > /data/run/app.log 2>&1 &',
+      'sleep 2',
+      'tail -f /dev/null',
+    ].join('\n')]);
+  const port = await waitReady();
+  console.log(`[ui-check] 就绪：http://127.0.0.1:${port}  (容器 ${CONTAINER}, 数据 ${DATA})`);
+}
+
+async function cmdTheme(argv) {
+  const want = (argv[0] || '').toLowerCase();
+  if (!['dark', 'light', 'nebula'].includes(want)) throw new Error('用法: theme <dark|light>');
+  const value = want === 'dark' ? 'nebula' : 'light';
+  // 走真实 UI：命令面板 → 设置 → 终端分区 → 主题 select → 保存
+  const out = await evalJs(`
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'P', code:'KeyP', ctrlKey:true, shiftKey:true, bubbles:true, cancelable:true}));
+    await new Promise(r => setTimeout(r, 300));
+    document.getElementById('modal-palette')?.classList.add('hidden');
+    window.__nbTest.openSettings();
+    await new Promise(r => setTimeout(r, 700));
+    const sel = document.getElementById('term-theme');
+    sel.value = ${JSON.stringify(value)};
+    sel.dispatchEvent(new Event('change', {bubbles:true}));
+    await new Promise(r => setTimeout(r, 400));
+    document.getElementById('btn-term-save').click();
+    await new Promise(r => setTimeout(r, 800));
+    return {theme: document.documentElement.dataset.theme,
+            bodyBg: getComputedStyle(document.body).backgroundColor,
+            settingsClosed: document.getElementById('modal-settings')?.classList.contains('hidden')};
+  `, 20000);
+  if (out.theme !== value) throw new Error(`主题没切过去: ${JSON.stringify(out)}`);
+  console.log(`[ui-check] 主题=${out.theme} (${out.bodyBg})`);
+}
+
+// 场景：把应用驱动到一个可复现的状态，ab/截图才有意义（默认面只在导入预览里存在）
+const SCENES = {
+  // 主机库 → 导入主机 → 选择文件 → 校验预览（4 行、1 条冲突）
+  'import-preview': `
+    for (const el of document.querySelectorAll('.modal:not(.hidden)')) el.classList.add('hidden');
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'P', code:'KeyP', ctrlKey:true, shiftKey:true, bubbles:true, cancelable:true}));
+    await new Promise(r => setTimeout(r, 350));
+    const pin = document.getElementById('palette-input');
+    pin.focus(); pin.value = '主机库'; pin.dispatchEvent(new Event('input', {bubbles:true}));
+    await new Promise(r => setTimeout(r, 350));
+    pin.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true, cancelable:true}));
+    await new Promise(r => setTimeout(r, 800));
+    document.getElementById('hl-import').click();
+    await new Promise(r => setTimeout(r, 600));
+    document.getElementById('io-import-pick').click();
+    for (let i = 0; i < 80; i++) {
+      if (document.querySelector('#io-steps li[aria-current=step]')?.dataset.step === '2') break;
+      await new Promise(r => setTimeout(r, 120));
+    }
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    await new Promise(r => setTimeout(r, 300));
+    return {step: document.querySelector('#io-steps li[aria-current=step]')?.dataset.step,
+            rows: document.querySelectorAll('.io-import .io-item').length};
+  `,
+  // 新建主机 → 分段控件选 RDP → 滚到底（显示与体验整块可见）
+  'rdp-advanced': `
+    for (const el of document.querySelectorAll('.modal:not(.hidden)')) el.classList.add('hidden');
+    document.getElementById('btn-add-host').click();
+    await new Promise(r => setTimeout(r, 700));
+    document.querySelector('#host-protocol-slider .segmented-item[data-value=rdp]').click();
+    await new Promise(r => setTimeout(r, 500));
+    const card = document.querySelector('#modal-host .modal-card');
+    card.scrollTop = card.scrollHeight;
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    await new Promise(r => setTimeout(r, 400));
+    return {protocol: document.getElementById('host-protocol').value,
+            port: document.getElementById('host-port').value,
+            checks: document.querySelectorAll('.rdp-chk').length};
+  `,
+  // 干净态：只关弹窗
+  'hosts': `
+    for (const el of document.querySelectorAll('.modal:not(.hidden)')) el.classList.add('hidden');
+    await new Promise(r => setTimeout(r, 300));
+    return 'hosts';
+  `,
+};
+
+async function applyScene(name) {
+  const js = SCENES[name];
+  if (!js) throw new Error(`未知场景 ${name}，可选: ${Object.keys(SCENES).join(' / ')}`);
+  const out = await evalJs(js, 40000);
+  await sleep(250);
+  console.log(`[ui-check] 场景 ${name} → ${JSON.stringify(out)}`);
+  return out;
+}
+
+function measureJs(selectors) {
+  return `
+    const sels = ${JSON.stringify(selectors)};
+    const props = ${JSON.stringify(PROPS)};
+    const out = {};
+    for (const s of sels) {
+      const el = document.querySelector(s);
+      if (!el) { out[s] = 'ABSENT'; continue; }
+      const cs = getComputedStyle(el);
+      const o = {};
+      for (const p of props) o[p] = cs[p];
+      out[s] = o;
+    }
+    return out;`;
+}
+
+function diffStyles(a, b) {
+  const out = {};
+  for (const sel of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const x = a[sel], y = b[sel];
+    if (x === y) continue;
+    if (x === 'ABSENT' || y === 'ABSENT') { out[sel] = {[x === 'ABSENT' ? 'old' : 'new']: 'ABSENT'}; continue; }
+    const d = {};
+    for (const p of new Set([...Object.keys(x), ...Object.keys(y)])) {
+      if (x[p] !== y[p]) d[p] = [x[p], y[p]];
+    }
+    if (Object.keys(d).length) out[sel] = d;
+  }
+  return out;
+}
+
+async function cmdAb(argv) {
+  const name = argv[0];
+  if (!name) throw new Error('用法: ab <名字> [--ref v0.7.6] [--selectors a,b,c]');
+  const refIdx = argv.indexOf('--ref');
+  const ref = refIdx >= 0 ? argv[refIdx + 1] : BASELINE_REF;
+  const cssIdx = argv.indexOf('--css');           // 直接指定基线文件（比 ref 更自由：可拿来比两个设计变体）
+  const sceneIdx = argv.indexOf('--scene');
+  const scene = sceneIdx >= 0 ? argv[sceneIdx + 1] : null;
+  const selIdx = argv.indexOf('--selectors');
+  const selectors = selIdx >= 0 ? argv[selIdx + 1].split(',').map((s) => s.trim()).filter(Boolean) : DEFAULT_SELECTORS;
+
+  if (scene) await applyScene(scene);
+  const baselineCss = cssIdx >= 0 ? readFileSync(argv[cssIdx + 1], 'utf8') : git(['show', `${ref}:src/style.css`]);
+  await evalJs('document.activeElement && document.activeElement.blur && document.activeElement.blur(); return 1;');
+  await sleep(300);
+
+  const newStyles = await evalJs(measureJs(selectors), 40000);
+  const newShot = shot(`ab-${name}-new`);
+
+  await evalJs(`
+    return (() => {
+      document.getElementById('ui-check-baseline')?.remove();
+      const st = document.createElement('style');
+      st.id = 'ui-check-baseline';
+      st.textContent = ${JSON.stringify(baselineCss)};
+      document.head.appendChild(st);
+      return st.sheet.cssRules.length;
+    })();`, 60000);
+  await sleep(400);
+  const oldStyles = await evalJs(measureJs(selectors), 40000);
+  const oldShot = shot(`ab-${name}-old`);
+  await evalJs("document.getElementById('ui-check-baseline')?.remove(); return 1;");
+  await sleep(400);
+  const newShot2 = shot(`ab-${name}-new2`);
+
+  // 像素比对全部在容器里用 ImageMagick 做：diff 掩码、噪声掩码、净差异
+  // 「净差异」= 旧/新之差 减去 同一状态连拍两帧的时间噪声（光标闪烁、动画）
+  const im = (...args) => dkExec(['convert', ...args]);
+  const diffPng = '/data/shots/.diff.png', noisePng = '/data/shots/.noise.png', netPng = '/data/shots/.net.png';
+  im(cpath(oldShot), cpath(newShot), '-compose', 'difference', '-composite', '-threshold', '0', diffPng);
+  im(cpath(newShot), cpath(newShot2), '-compose', 'difference', '-composite', '-threshold', '0', noisePng);
+  im(diffPng, '(', noisePng, '-negate', ')', '-compose', 'multiply', '-composite', '-threshold', '0', netPng);
+  const count = (f) => Number(dkExec(['convert', f, '-format', '%[fx:int(mean*w*h)]', 'info:']).trim());
+  const pixels = { changed: count(diffPng), noise: count(noisePng), net: count(netPng) };
+  const bbox = pixels.net ? dkExec(['convert', netPng, '-format', '%@', 'info:']).trim() : null;
+
+  const styleDiffs = diffStyles(oldStyles, newStyles);
+  console.log(JSON.stringify({
+    baseline: cssIdx >= 0 ? argv[cssIdx + 1] : `${ref}:src/style.css`,
+    selectors: selectors.length,
+    styles: Object.keys(styleDiffs).length ? styleDiffs : '无差异',
+    pixels, netBBox: bbox,
+    shots: { old: oldShot, new: newShot },
+  }, null, 2));
+  if (pixels.net || Object.keys(styleDiffs).length) process.exitCode = 2; // 有净差异 → 让 CI/脚本能判失败
+}
+
+function usage() {
+  console.log(`真实窗口定点验证（每批样式改动跑一次）
+
+  node scripts/ui-check.mjs up [--build] [--fresh]   起真实窗口（--build 顺带编译，--fresh 重置夹具）
+  node scripts/ui-check.mjs down | status
+  node scripts/ui-check.mjs eval '<js>'              在页面里执行（多语句需显式 return）
+  node scripts/ui-check.mjs styles [a,b,c]           取计算样式（默认面见 DEFAULT_SELECTORS）
+  node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
+  node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
+  node scripts/ui-check.mjs scene hosts|import-preview|rdp-advanced   把应用驱动到可复现场景
+  node scripts/ui-check.mjs ab <名字> [--ref R | --css 文件] [--scene S]
+                                                    旧 CSS(默认 ${BASELINE_REF}) vs 现状：样式+像素（净差异非 0 时退出码 2）
+
+环境变量：NEBULA_UI_DATA / NEBULA_UI_CONTAINER / NEBULA_UI_DISPLAY / NEBULA_UI_SCREEN
+          NEBULA_UI_BUILD_IMAGE / NEBULA_UI_RUN_IMAGE / NEBULA_UI_BASELINE_REF`);
+}
+
+// ── main ─────────────────────────────────────────────────────────────────────
+
+const [cmd = 'help', ...rest] = process.argv.slice(2);
+try {
+  switch (cmd) {
+    case 'up': await cmdUp(rest); break;
+    case 'down': dk(['rm', '-f', CONTAINER], { allowFail: true }); console.log('[ui-check] 已停止'); break;
+    case 'status': console.log(dkAlive() ? `running (port ${readPort()})` : 'not running'); break;
+    case 'eval': {
+      const js = rest[0] === '-' ? readFileSync(0, 'utf8') : rest.join(' ');
+      console.log(JSON.stringify(await evalJs(js), null, 2));
+      break;
+    }
+    case 'styles': {
+      const sels = rest[0] ? rest[0].split(',').map((s) => s.trim()) : DEFAULT_SELECTORS;
+      console.log(JSON.stringify(await evalJs(measureJs(sels), 40000), null, 2));
+      break;
+    }
+    case 'shot': console.log(shot(rest[0] || `shot-${Date.now()}`)); break;
+    case 'scene': await applyScene(rest[0] || 'hosts'); break;
+    case 'theme': await cmdTheme(rest); break;
+    case 'ab': await cmdAb(rest); break;
+    case 'fixtures': writeFixtures(); console.log(`[ui-check] 夹具已写入 ${USERDATA} / ${IMPORT_FILE}`); break;
+    default: usage();
+  }
+} catch (e) {
+  console.error(`[ui-check] ${e.message}`);
+  process.exit(1);
+}

@@ -39,6 +39,7 @@
     "test:unit": "node --experimental-vm-modules --test tests/*.test.mjs src/modules/*.test.mjs src/shared/*.test.mjs e2e/*.test.mjs",
     "lint:css": "node scripts/lint-css-contract.mjs",
     "lint:css:all": "node scripts/lint-css-contract.mjs --all",
+    "ui:check": "node scripts/ui-check.mjs",
     "bump": "node scripts/bump-version.mjs",
     "commit-review": "node scripts/commit-review.mjs"
   },
