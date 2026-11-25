@@ -101,6 +101,11 @@ const SIZING_PROPS = new Set(['width', 'height', 'padding', 'padding-top', 'padd
   'padding-right', 'padding-inline', 'padding-block', 'margin', 'margin-top', 'margin-bottom',
   'margin-left', 'margin-right', 'gap', 'row-gap', 'column-gap', 'border-radius']);
 const VAR_OK = /^var\(--/;
+// JS 运行时写到元素 style 上的自定义属性(--i/--n 列表序号、--x/--y 拖拽位移等),
+// 样式表里查不到定义是正常的,不参与 token-undefined。
+const JS_INLINE_VARS = new Set(['--x', '--y', '--s', '--delay', '--i', '--n']);
+// 本文件里定义过的自定义属性(scan 后填充),供 token-undefined 判定
+let definedVars = new Set();
 
 const rules = [
   {
@@ -116,12 +121,38 @@ const rules = [
     },
   },
   {
+    // R4 前置:引用了不存在的 token 且没写回落 → 整条声明在浏览器里作废(静默失效)
+    id: 'token-undefined',
+    level: 'warn',
+    check: ({ value }) => {
+      const missing = [];
+      for (const m of value.matchAll(/var\(\s*(--[a-z0-9-]+)\s*([,)])/gi)) {
+        const name = m[1];
+        if (m[2] === ',') continue;            // 有回落值,安全
+        if (definedVars.has(name)) continue;
+        if (JS_INLINE_VARS.has(name)) continue;
+        missing.push(name);
+      }
+      if (!missing.length) return null;
+      return `引用未定义的 token ${[...new Set(missing)].join(', ')} —— 没写回落时整条声明会失效`;
+    },
+  },
+  {
     // R4:圆角必须来自 token(0/50%/inherit 例外,胶囊也是 token)
     id: 'token-radius',
     level: 'warn',
     check: ({ prop, value }) => {
       if (prop !== 'border-radius') return null;
-      if (/^var\(|^(0|50%|inherit|none|unset)$/.test(value)) return null;
+      let v = value;
+      // calc() 允许同心圆角写法:calc(var(--radius-sm) - 3px)(外层 token 减内边距)
+      for (const c of v.match(/calc\(.*\)/g) || []) {
+        if (!/var\(--radius/.test(c)) return `圆角 calc 里没引用 token:${c} —— 同心圆角必须是 token 减内边距`;
+      }
+      v = v.replace(/calc\(.*\)/g, 'var(--radius-calc)');
+      // 简写逐角判定:`0 8px 8px 0` 这类只要每一角是 token / 0 / 50% 就合规
+      const parts = v.trim().split(/\s+/);
+      const ok = parts.every((p) => /^var\(--radius|^(0|50%|inherit|none|unset)$/.test(p));
+      if (ok) return null;
       return `圆角裸值 ${value} —— 改用 var(--radius-*)`;
     },
   },
@@ -189,6 +220,7 @@ for (const rel of targets) {
   const markIdx = css.indexOf('平台覆盖层');
   const sectionLine = markIdx < 0 ? Infinity : css.slice(0, markIdx).split('\n').length;
   for (const d of decls) d.sectionLine = sectionLine;
+  definedVars = new Set(decls.filter((d) => d.prop.startsWith('--')).map((d) => d.prop));
   for (const d of decls) {
     // token 定义处(:root 里的 --x)是唯一允许出现裸值的地方
     if (d.prop.startsWith('--') || /^:root\b|^html\b/.test(d.selector)) continue;

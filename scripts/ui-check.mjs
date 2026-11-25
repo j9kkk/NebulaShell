@@ -64,6 +64,8 @@ const PROPS = [
   'borderLeftWidth', 'borderLeftStyle', 'borderRightWidth', 'borderRightStyle',
   'backgroundColor', 'color', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
   'padding', 'margin', 'gap', 'borderRadius', 'boxShadow', 'opacity', 'height', 'width', 'textAlign',
+  // 圆角批次的红线:布局列宽/行高不得位移,所以这些也必须进比对
+  'gridTemplateColumns', 'gridTemplateRows', 'display', 'flexBasis',
 ];
 
 // ── shell 工具 ────────────────────────────────────────────────────────────────
@@ -182,7 +184,7 @@ function buildBinary() {
   dk(['run', '--rm', '-v', `${ROOT}:/w`, '-v', 'nebula-cargo:/cargo', '-v', 'nebula-target:/target',
     '-w', '/w/src-tauri', '-e', 'CARGO_HOME=/cargo', '-e', 'CARGO_NET_OFFLINE=true', '-e', 'CARGO_TARGET_DIR=/target', BUILD_IMAGE,
     // 注意用 bash -c 而不是 -lc：镜像的 /etc/profile 会把 PATH 重置掉，cargo 就不在 PATH 里了
-    'bash', '-c', 'cargo build && cp /target/debug/nebulashell /w/.ui-check/bin/nebulashell && chown -R 1000:1000 /w/.ui-check'],
+    'bash', '-c', 'cargo build && cp /target/debug/nebulashell /w/.ui-check/bin/nebulashell.new && mv -f /w/.ui-check/bin/nebulashell.new /w/.ui-check/bin/nebulashell && chown -R 1000:1000 /w/.ui-check'],
   { stdio: ['pipe', 'inherit', 'inherit'] });
   if (!existsSync(BIN)) throw new Error('编译后仍找不到二进制');
 }
@@ -190,7 +192,7 @@ function buildBinary() {
 async function cmdUp(argv) {
   const build = argv.includes('--build');
   const fresh = argv.includes('--fresh');
-  if (build || !existsSync(BIN)) buildBinary();
+  if (build || !existsSync(BIN)) { dk(['rm', '-f', CONTAINER], { allowFail: true }); buildBinary(); }
   if (fresh) rmSync(USERDATA, { recursive: true, force: true });
   writeFixtures();
   dk(['rm', '-f', CONTAINER], { allowFail: true });
@@ -247,7 +249,6 @@ async function cmdTheme(argv) {
 const SCENES = {
   // 主机库 → 导入主机 → 选择文件 → 校验预览（4 行、1 条冲突）
   'import-preview': `
-    for (const el of document.querySelectorAll('.modal:not(.hidden)')) el.classList.add('hidden');
     document.dispatchEvent(new KeyboardEvent('keydown', {key:'P', code:'KeyP', ctrlKey:true, shiftKey:true, bubbles:true, cancelable:true}));
     await new Promise(r => setTimeout(r, 350));
     const pin = document.getElementById('palette-input');
@@ -269,7 +270,6 @@ const SCENES = {
   `,
   // 新建主机 → 分段控件选 RDP → 滚到底（显示与体验整块可见）
   'rdp-advanced': `
-    for (const el of document.querySelectorAll('.modal:not(.hidden)')) el.classList.add('hidden');
     document.getElementById('btn-add-host').click();
     await new Promise(r => setTimeout(r, 700));
     document.querySelector('#host-protocol-slider .segmented-item[data-value=rdp]').click();
@@ -282,15 +282,66 @@ const SCENES = {
             port: document.getElementById('host-port').value,
             checks: document.querySelectorAll('.rdp-chk').length};
   `,
+  // 新建主机 → 协议选 RDP → 停在顶部（分段控件、字段、端口都在视口内）
+  'rdp-top': `
+    document.getElementById('btn-add-host').click();
+    await new Promise(r => setTimeout(r, 700));
+    document.querySelector('#host-protocol-slider .segmented-item[data-value=rdp]').click();
+    await new Promise(r => setTimeout(r, 500));
+    const top = document.querySelector('#modal-host .modal-card');
+    top.scrollTop = 0;
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    await new Promise(r => setTimeout(r, 400));
+    return {protocol: document.getElementById('host-protocol').value,
+            port: document.getElementById('host-port').value,
+            sliderRadius: getComputedStyle(document.getElementById('host-protocol-slider')).borderRadius,
+            thumbRadius: getComputedStyle(document.querySelector('#host-protocol-slider .segmented-thumb')).borderRadius};
+  `,
+  // 主机库（含分组栏、搜索框、行勾选）
+  'host-library': `
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'P', code:'KeyP', ctrlKey:true, shiftKey:true, bubbles:true, cancelable:true}));
+    await new Promise(r => setTimeout(r, 350));
+    const pin = document.getElementById('palette-input');
+    pin.focus(); pin.value = '主机库'; pin.dispatchEvent(new Event('input', {bubbles:true}));
+    await new Promise(r => setTimeout(r, 350));
+    pin.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true, cancelable:true}));
+    await new Promise(r => setTimeout(r, 800));
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    await new Promise(r => setTimeout(r, 250));
+    return {summary: document.getElementById('hl-summary')?.textContent.trim()};
+  `,
+  // 设置（标签页 + 表单控件）
+  'settings': `
+    window.__nbTest.openSettings();
+    await new Promise(r => setTimeout(r, 800));
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    await new Promise(r => setTimeout(r, 250));
+    return {theme: document.getElementById('term-theme')?.value,
+            open: !document.getElementById('modal-settings').classList.contains('hidden')};
+  `,
   // 干净态：只关弹窗
   'hosts': `
-    for (const el of document.querySelectorAll('.modal:not(.hidden)')) el.classList.add('hidden');
     await new Promise(r => setTimeout(r, 300));
     return 'hosts';
   `,
 };
 
+// 关掉所有打开的弹窗：走它们自己的关闭按钮（不是 classList hack）——
+// 直接删 hidden 类会把应用的 activeModals 记账搞乱，后续 openModal 不生效。
+const CLEAR_MODALS = `
+  const open = [...document.querySelectorAll('.modal:not(.hidden)')];
+  for (const m of open) {
+    const btn = m.querySelector('#io-import-close, #io-import-cancel, #io-export-close, [id$="-close"], [id$="-cancel"], button[aria-label*="关闭"]');
+    if (btn) btn.click(); else m.click();
+    await new Promise(r => setTimeout(r, 200));
+  }
+  await new Promise(r => setTimeout(r, 200));
+  return [...document.querySelectorAll('.modal:not(.hidden)')].map(m => m.id);
+`;
+
 async function applyScene(name) {
+  const left = await evalJs(CLEAR_MODALS, 20000);
+  if (left.length) console.log(`[ui-check] 警告：这些弹窗没关掉 ${left.join(', ')}`);
   const js = SCENES[name];
   if (!js) throw new Error(`未知场景 ${name}，可选: ${Object.keys(SCENES).join(' / ')}`);
   const out = await evalJs(js, 40000);
@@ -396,7 +447,7 @@ function usage() {
   node scripts/ui-check.mjs styles [a,b,c]           取计算样式（默认面见 DEFAULT_SELECTORS）
   node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
   node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
-  node scripts/ui-check.mjs scene hosts|import-preview|rdp-advanced   把应用驱动到可复现场景
+  node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings   驱动到可复现场景
   node scripts/ui-check.mjs ab <名字> [--ref R | --css 文件] [--scene S]
                                                     旧 CSS(默认 ${BASELINE_REF}) vs 现状：样式+像素（净差异非 0 时退出码 2）
 
