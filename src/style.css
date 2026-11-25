@@ -9,6 +9,8 @@
   --muted: #8b96a8;
   --accent: #5b8cff;
   --accent2: #3ddc97;
+  /* 强调色块上的文字:反白。B2 收敛 14 处 #fff 时统一引用它 */
+  --text-on-accent: #ffffff;
   /* 焦点光晕:文本输入类聚焦时 1px accent 描边外扩的 3px 柔光。
      颜色随主题走,规范见下方「焦点规范」块。 */
   --focus-halo: rgba(91, 140, 255, 0.3);
@@ -81,6 +83,7 @@
   --muted: #656d76;
   --accent: #0969da;
   --accent2: #1a7f37;
+  --text-on-accent: #ffffff;
   --focus-halo: rgba(9, 105, 218, 0.22);
   --danger: #cf222e;
   --warn: #9a6700;
@@ -725,7 +728,7 @@ body.is-fullscreen #win-controls { display: none; }
   display: none; position: absolute; top: 0; right: 0;
   font-size: 10px; font-weight: 600; line-height: 12px;
   padding: 0 4px; min-width: 12px; height: 12px; border-radius: 6px;
-  background: var(--accent); color: var(--accent-contrast, #fff);
+  background: var(--accent); color: var(--text-on-accent);
   text-align: center; box-sizing: border-box; pointer-events: none;
 }
 .ai-thread-count-badge.visible { display: block; }
@@ -780,7 +783,7 @@ body.is-fullscreen #win-controls { display: none; }
   font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; flex: none;
 }
 .ai-drawer-badge.busy {
-  background: var(--accent); color: var(--accent-contrast, #fff);
+  background: var(--accent); color: var(--text-on-accent);
 }
 .ai-drawer-badge.unread {
   background: var(--warn, #eab308); color: #fff;
@@ -1622,7 +1625,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 /* 「总是允许」按钮的站点可能很长：允许换行，不撑破确认卡 */
 .ai-confirm-actions .btn.ai-confirm-allow { height: auto; min-height: 26px; white-space: normal; text-align: left; overflow-wrap: anywhere; }
 .ai-confirm-hint { font-size: 11px; color: var(--muted); }
-.ai-confirm-targets { font-size: 11px; color: var(--text-dim, var(--muted)); overflow-wrap: anywhere; }
+.ai-confirm-targets { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 
 .ai-turn-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }.ai-turn-summary-title { color: var(--muted); }
 .ai-turn-summary ul { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
@@ -1692,12 +1695,12 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .ai-notice.warn {
   border-color: var(--warn);
   color: var(--warn);
-  background: var(--warn-bg, var(--bg2));
+  background: var(--bg2);
 }
 .ai-notice.danger {
   border-color: var(--danger);
   color: var(--danger);
-  background: var(--danger-bg, var(--bg2));
+  background: var(--bg2);
 }
 .ai-notice-icon {
   flex: none;
@@ -1742,7 +1745,9 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs, 4px);
-  background: var(--accent-soft, var(--bg3));
+  /* --accent-soft 与 --bg3 都不存在 → 本条一直失效(底色透明)。B0 保持现状不动,
+     B2 色值 token 化时定为 --hover-bg(软强调层)并做视觉复核。 */
+  background: transparent;
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1762,7 +1767,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   padding: 0 7px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-xs, 4px);
-  background: var(--accent-soft, var(--bg2));
+  background: var(--bg2);
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -2356,7 +2361,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   font-size: 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--input-bg, var(--panel));
+  background: var(--panel);
   color: var(--text);
 }
 .modal-snippet-add input#snippet-name {
@@ -5081,7 +5086,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   gap: 8px;
   min-height: 56px;
   padding: 10px 16px;
-  border-top: 1px solid var(--line);
   background: var(--bg2);
   flex: none;
 }
@@ -5249,7 +5253,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 
 /* 导入:主机列表 */
 .io-list {
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -5264,7 +5267,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-list-head {
   height: 26px;
   background: var(--bg2);
-  border-bottom: 1px solid var(--line);
   font-size: 10.5px;
   color: var(--muted);
 }
@@ -5276,7 +5278,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-item {
   height: 34px;
   font-size: 11.5px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
 }
 .io-item:last-child { border-bottom: 0; }
 .io-r-name,
@@ -5306,7 +5307,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   width: 100%;
   padding: 6px 10px;
   border: 0;
-  border-top: 1px solid var(--line);
   background: var(--bg2);
   font: inherit;
   font-size: 10.5px;
@@ -5325,14 +5325,13 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 }
 .io-chip {
   padding: 1px 8px;
-  border: 1px solid var(--line);
   border-radius: 999px;
   font-size: 10.5px;
   line-height: 16px;
   color: var(--muted);
 }
 .io-chip b { color: var(--text); font-family: var(--font-mono); font-weight: 500; }
-.io-chip.warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn-text) 40%, transparent); }
+.io-chip.warn { color: var(--warn-text); }
 
 /* 导入:一次性写入(不伪造逐台百分比) */
 .io-progress { padding: 6px 0 10px; }
@@ -5436,7 +5435,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   flex: 1 1 0;
   min-width: 72px;
   padding: 7px 9px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-sm, 6px);
   background: var(--bg2);
 }
@@ -5455,7 +5453,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-stat.invalid .io-stat-v { color: var(--danger); }
 
 .io-report {
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   /* 6 行整(30px/行):不做半行截断,剩余部分靠列表内滚动 */
   max-height: 180px;
@@ -5567,7 +5564,8 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   height: 22px;
   max-width: 70px;
   padding: 0 4px;
-  border: 1px solid var(--line);
+  /* 显式无框:删掉失效的 var(--line) 描边后,不写 border 会让 UA 默认框冒出来 */
+  border: 0;
   border-radius: var(--radius-sm, 6px);
   background: var(--bg2);
   color: var(--text);
@@ -5623,7 +5621,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-conflict-head { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; }
 .io-conflict-head b { color: var(--warn-text); font-weight: 600; }
 .io-conflict-head span { color: var(--muted); font-size: 10.5px; }
-.io-seg-row { display: inline-flex; gap: 0; border: 1px solid var(--line); border-radius: var(--radius-sm, 6px); overflow: hidden; align-self: flex-start; }
+.io-seg-row { display: inline-flex; gap: 0; border-radius: var(--radius-sm, 6px); overflow: hidden; align-self: flex-start; }
 .io-seg {
   height: 26px;
   padding: 0 14px;
@@ -5634,7 +5632,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   font-size: 11.5px;
   cursor: pointer;
 }
-.io-seg + .io-seg { border-left: 1px solid var(--line); }
 .io-seg.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); font-weight: 600; }
 .io-warn-text { font-size: 10.5px; line-height: 1.5; color: var(--warn-text); }
 
@@ -5891,7 +5888,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   border-radius: var(--radius-sm);
   background: var(--field);
 }
-.rdp-adv-title { font-size: 12px; font-weight: 600; color: var(--fg); }
+.rdp-adv-title { font-size: 12px; font-weight: 600; color: var(--text); }
 .rdp-adv-grid {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr) 72px minmax(0, 1fr);
@@ -5914,7 +5911,8 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   min-width: 0;
   font-size: 12px;
   line-height: 18px;
-  color: var(--fg);
+  /* 原写 color: var(--fg)(该变量不存在,声明一直失效 → 靠继承)。这里删掉整条,
+     保持"继承父级色"的既有行为,不钉死具体 token —— 字体/字色统一留到 B3。 */
   cursor: pointer;
 }
 .rdp-chk input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
