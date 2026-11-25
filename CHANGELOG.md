@@ -7,6 +7,11 @@
 > （最后到 1.5.0），那些版本均未作为正式版发布，相关 tag 与 Release 已移除；
 > 其间积累的全部功能都包含在 0.1.0 中。
 
+## [0.7.6] - 2026-11-25
+
+### 修复
+- **Windows 安装向导左侧宣传图与顶部横幅不显示**：`bundle.windows.nsis` 的 `sidebarImage` / `headerImage` 原来指向 PNG，而 Tauri 打包器只把配置的文件**原样复制**成安装器里的 `$PLUGINSDIR/modern-wizard.bmp` / `modern-header.bmp`，不做格式转换；NSIS 的 MUI2 只能从真正的 BMP 加载位图，喂 PNG 就静默留白——0.7.5 的 `NebulaShell_0.7.5_x64-setup.exe` 解包后这两个"bmp"的魔数是 `89 50 4e 47`（PNG），可复现。现在提交真正的 24 位 BMP（侧栏 164×314、横幅 150×57），PNG 保留作可编辑源文件与导出母版。
+
 ## [0.7.5] - 2026-11-22
 
 ### 修复
