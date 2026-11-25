@@ -1,0 +1,72 @@
+/* 候选 A ·「深空冷调 · 克制」
+   只改 token 值,不新增 token、不写组件选择器、不动布局。
+   目标:保留星云蓝身份,把表面四级拉开到可辨、把两处对比度缺陷修掉。
+   台阶口径(bg→panel→bg2 的 L* 差):4.8 / 6.0 —— 首版 3.3/4.4 在实机截图里被判定
+   「侧栏与主区容易融成一块」,故按视觉复核结论拉开。 */
+
+[data-theme="nebula"] {
+  /* ── 表面四级:field(凹陷) < bg(底) < panel(侧栏) < bg2(卡片) ── */
+  --field:        #04060a;   /* 输入框/凹陷槽:比底色再暗一档,边界靠 --border 收 */
+  --bg:           #070a11;   /* 窗口底 */
+  --panel:        #101722;   /* 侧栏/面板:+4.8 L* */
+  --bg2:          #1a2333;   /* 卡片/浮层:+6.0 L* */
+  --titlebar-bg:  #05070c;   /* 标题栏压到窗口底之下,标题栏自成一档 */
+  --surface-sunken:      rgba(0, 0, 0, 0.28);
+  --surface-sunken-deep: rgba(0, 0, 0, 0.38);
+
+  /* ── 边框:常态比原来亮一档(底色变深后原边框几乎消失),悬停明显 ── */
+  --border:       #333e4f;
+  --border-hover: #4d5a73;
+  --table-divider: rgba(51, 62, 79, 0.6);
+  --row-hover:    #222d3f;
+  --row-active:   #2a3750;
+
+  /* ── 文字:辅助字提亮到 #9aa5b6(10px 辅助说明在任何一个表面上都 ≥6:1) ── */
+  --text:  #e6edf3;
+  --muted: #9aa5b6;
+
+  /* ── 强调:主色不动(身份),但按钮上的字改成深墨 —— 白字在 #5b8cff 上只有 3.16:1,
+        深墨 #08101c 是 6.0:1;同一墨色在 --danger(6.9:1)/--warn(11.9:1) 上也达标 ── */
+  --accent: #5b8cff;
+  --text-on-accent: #08101c;
+
+  /* 主按钮真正画的是渐变 + 白字:亮端 #4f7dff 上白字只有 3.68:1,压深到 #3a68d9(5.05) */
+  --btn-primary-bg: linear-gradient(135deg, #3a68d9, #2f57c4);
+  --btn-primary-solid: #3a68d9;
+
+  /* ── 语义色:两个绿合并成一个;网络上下行收进冷色族(原来的蓝+紫是跨色相) ── */
+  --accent2:  #3ddc97;
+  --ok-color: #3ddc97;
+  --warn:     #ffc24b;
+  --warn-text:#ffc24b;
+  --danger:   #ff6b6b;
+  --net-rx-color: #38bdf8;
+  --net-tx-color: #9d8cff;
+
+  /* ── 悬停叠加:底色变深后 0.08 略看不见,提到 0.09 / 凹陷面 0.07 ── */
+  --surface-hover: rgba(255, 255, 255, 0.09);
+  --surface-inset: rgba(255, 255, 255, 0.07);
+}
+
+[data-theme="light"] {
+  /* ── 表面四级:bg(底) < panel(侧栏) < bg2(卡片) 且 field 明显低于卡片 ── */
+  --bg:    #f2f5f9;
+  --panel: #e7ecf3;
+  --bg2:   #ffffff;
+  --field: #eef2f7;
+
+  --border:       #cfd7e2;
+  --border-hover: #9aa6b8;
+  --table-divider: rgba(31, 35, 40, 0.12);
+  --row-hover:    #e9eef6;
+  --row-active:   #dbe6f5;
+
+  --text:  #1f2328;
+  --muted: #57606a;
+
+  --accent: #0969da;
+  --text-on-accent: #ffffff;
+  --accent2:  #1a7f37;
+  --ok-color: #1a7f37;
+  --net-tx-color: #6d4aff;
+}

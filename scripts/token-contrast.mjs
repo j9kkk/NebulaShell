@@ -32,9 +32,26 @@ function readTokens(css) {
     for (const m of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) out[m[1]] = m[2].trim();
     return out;
   };
+  // 选择器写法在基线与候选里不一定一致(`:root, [data-theme="nebula"]` vs 只有
+  // `[data-theme="nebula"]`),按「块头里含哪个主题标记」来找，别按字符串精确匹配。
+  const grabBy = (test) => {
+    let out = {};
+    for (const m of css.matchAll(/([^{}]+)\{/g)) {
+      const head = m[1].trim();
+      if (!test(head) || /@/.test(head)) continue;
+      let d = 0, end = -1;
+      for (let k = m.index + m[0].length - 1; k < css.length; k++) {
+        if (css[k] === '{') d++;
+        else if (css[k] === '}') { d--; if (d === 0) { end = k; break; } }
+      }
+      const body = css.slice(m.index + m[0].length, end);
+      for (const t of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) out[t[1]] = t[2].trim();
+    }
+    return out;
+  };
   return {
-    dark: grab(':root, [data-theme="nebula"] {'),
-    light: grab('[data-theme="light"] {'),
+    dark: grabBy((h) => /:root\b/.test(h) || /theme="nebula"/.test(h)),
+    light: grabBy((h) => /theme="light"/.test(h)),
   };
 }
 
@@ -110,6 +127,19 @@ for (const theme of ['dark', 'light']) {
   }
   step(`${'--text-on-accent'.padEnd(15)} on --accent`, find(t, '--text-on-accent'), find(t, '--accent'), 4.5);
   step(`${'--text-on-accent'.padEnd(15)} on --danger`, find(t, '--text-on-accent'), find(t, '--danger'), 4.5);
+  // 主按钮真正画出来的是 --btn-primary-text on --btn-primary-bg(渐变),不是 --accent。
+  // 渐变每个色标都要够 —— 取最亮的那个色标作为最坏情况。
+  const stops = [...String(t['--btn-primary-bg'] || '').matchAll(/#[0-9a-fA-F]{6}/g)].map((m) => parseColor(m[0]));
+  const txt = find(t, '--btn-primary-text');
+  if (stops.length) {
+    const worst = stops.reduce((a, b) => (a && lum(a) > lum(b) ? a : b));
+    step(`${'--btn-primary-text'.padEnd(15)} on 主按钮渐变最亮色标`, txt, worst, 4.5);
+  }
+  if (t['--btn-primary-solid']) step(`${'--btn-primary-text'.padEnd(15)} on --btn-primary-solid`, txt, find(t, '--btn-primary-solid'), 4.5);
+  // 语义色当文字用时(状态文字/链接)也必须达标
+  for (const [n, on] of [['--ok-color', '--bg'], ['--accent2', '--bg'], ['--warn-text', '--bg'], ['--danger', '--bg']]) {
+    if (t[n] && t[on]) step(`${n.padEnd(15)} 作为文字 on ${on}`, find(t, n), find(t, on), 3.0);
+  }
   // 表面台阶
   const present = SURFACES.filter((s) => parseColor(t[s]));
   const Ls = present.map((s) => lstar(parseColor(t[s])));
