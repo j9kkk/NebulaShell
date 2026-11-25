@@ -160,6 +160,8 @@
 
 > 已落地：见 `04-b1-radius-tokens.md`（含 `--radius-xs` 补定义、分段滑块同心圆角、`token-undefined` 新规则）。
 | **B2** | 色值 token 化（5 族） | `token-color 96→19`(仅剩 light 覆盖)；warn **103→26** | 低-中：阴影统一会让部分浮层变浅/变深 |
+
+> 已落地：见 `05-b2-color-tokens.md`（29 个 token 暗亮双定义、透明度改走 `color-mix`、唯一可见变化是确认卡 chip）。
 | **B3** | 字号收敛 17→8 档 | 无 lint 规则覆盖（新规则 C-new 可加） | **高**：76 处位移 ≤1px |
 | **B4** | light 覆盖归位（19 条 → 主题层） | warn **26→7** | 中：亮色下需逐屏复核 |
 | **B5** | `media-sizing 7` 迁平台层 | warn **7→0** → 可开 `--strict` 门禁 | 低 |
@@ -224,7 +226,7 @@ node -e 'const fs=require("fs");const css=fs.readFileSync("src/style.css","utf8"
 |---|---|---|
 | B0 失效 token 引用清理 | `02-b0-dead-token-fix.md`、`03-b0-real-ui-verification.md` | ✅ 已完成，待验收 |
 | B1 圆角 token 化 | — | ✅ `04-b1-radius-tokens.md` |
-| B2 色值 token 化 | — | 未开始 |
+| B2 色值 token 化 | — | ✅ `05-b2-color-tokens.md` |
 | B3 字号收敛 | — | 未开始 |
 | B4 light 覆盖归位 | — | 未开始 |
 | B5 media-sizing 迁平台层 | — | 未开始 |

@@ -222,8 +222,8 @@ async function cmdUp(argv) {
 
 async function cmdTheme(argv) {
   const want = (argv[0] || '').toLowerCase();
-  if (!['dark', 'light', 'nebula'].includes(want)) throw new Error('用法: theme <dark|light>');
-  const value = want === 'dark' ? 'nebula' : 'light';
+  if (!['dark', 'light', 'nebula'].includes(want)) throw new Error('用法: theme <light|dark>（dark 与 nebula 等价）');
+  const value = want === 'light' ? 'light' : 'nebula';
   // 走真实 UI：命令面板 → 设置 → 终端分区 → 主题 select → 保存
   const out = await evalJs(`
     document.dispatchEvent(new KeyboardEvent('keydown', {key:'P', code:'KeyP', ctrlKey:true, shiftKey:true, bubbles:true, cancelable:true}));
@@ -237,7 +237,7 @@ async function cmdTheme(argv) {
     await new Promise(r => setTimeout(r, 400));
     document.getElementById('btn-term-save').click();
     await new Promise(r => setTimeout(r, 800));
-    return {theme: document.documentElement.dataset.theme,
+    return {want: ${JSON.stringify(value)}, theme: document.documentElement.dataset.theme,
             bodyBg: getComputedStyle(document.body).backgroundColor,
             settingsClosed: document.getElementById('modal-settings')?.classList.contains('hidden')};
   `, 20000);
@@ -319,6 +319,33 @@ const SCENES = {
     return {theme: document.getElementById('term-theme')?.value,
             open: !document.getElementById('modal-settings').classList.contains('hidden')};
   `,
+  // AI 侧栏抽屉:验收阴影(--floating-shadow)、上下文条、能力徽章这些只在 AI 面板出现的 token 站点
+  'ai-panel': `
+    // 抽屉是 toggle:先看状态再点,否则 ab 连跑两次会把它关回去
+    if (document.getElementById('ai-drawer').classList.contains('hidden')) {
+      document.getElementById('ai-drawer-toggle').click();
+    }
+    await new Promise(r => setTimeout(r, 900));
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    await new Promise(r => setTimeout(r, 300));
+    const drawer = document.getElementById('ai-drawer');
+    return {open: drawer ? !drawer.classList.contains('hidden') : false,
+            w: drawer ? Math.round(drawer.getBoundingClientRect().width) : 0,
+            bars: document.querySelectorAll('.ai-ctx-bar-seg').length};
+  `,
+  // 造一个「确认卡里的主机名 chip」:真实类名 + 真实样式,但不触发真实命令执行。
+  // 用来验收 B2 里 .ai-confirm-host-tag 从 transparent → var(--hover-bg) 这一处可见变化。
+  'host-tag-probe': `
+    const old = document.getElementById('__probe-tag'); if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = '__probe-tag';
+    box.style.cssText = 'position:fixed;left:40px;top:60px;z-index:99999;padding:10px 12px;display:flex;gap:8px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)';
+    box.innerHTML = '<span style="font-size:12px;color:var(--muted)">导入到</span><span class="ai-confirm-host-tag">prod-web-01</span>';
+    document.body.appendChild(box);
+    const tag = box.querySelector('.ai-confirm-host-tag');
+    const cs = getComputedStyle(tag);
+    return {bg: cs.backgroundColor, color: cs.color, rect: JSON.stringify(tag.getBoundingClientRect())};
+  `,
   // 干净态：只关弹窗
   'hosts': `
     await new Promise(r => setTimeout(r, 300));
@@ -340,6 +367,7 @@ const CLEAR_MODALS = `
 `;
 
 async function applyScene(name) {
+  await evalJs("document.getElementById('__probe-tag')?.remove(); return 1;", 10000);
   const left = await evalJs(CLEAR_MODALS, 20000);
   if (left.length) console.log(`[ui-check] 警告：这些弹窗没关掉 ${left.join(', ')}`);
   const js = SCENES[name];
@@ -447,7 +475,7 @@ function usage() {
   node scripts/ui-check.mjs styles [a,b,c]           取计算样式（默认面见 DEFAULT_SELECTORS）
   node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
   node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
-  node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings   驱动到可复现场景
+  node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel   驱动到可复现场景
   node scripts/ui-check.mjs ab <名字> [--ref R | --css 文件] [--scene S]
                                                     旧 CSS(默认 ${BASELINE_REF}) vs 现状：样式+像素（净差异非 0 时退出码 2）
 

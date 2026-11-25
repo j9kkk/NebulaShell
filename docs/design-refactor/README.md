@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | **B0** | 14 处失效 token 引用清理（`--line`/`--fg`/`--accent-contrast`/幻名） | warn 322→322 | 低，实测零像素变化 | ✅ 已完成（验收中） |
 | **B1** | 圆角 token 化（15 种裸值 → `--radius*`）+ `--radius-pill` 进平台层 + `token-undefined` 规则 | `token-radius 199→0`、`platform-scope 20→0`，warn **322→103**；实测 232 条 1:1 替换，可见变化仅「控件 6→8」「标记 6→4」 | 低：绝对值映射，8px 主体不动 | ✅ 已完成（`04-b1-radius-tokens.md`） |
-| **B2** | 色值 token 化（5 族）＋ 定 `--hover-bg`（B0 里留的 `.ai-confirm-host-tag`） | `token-color 96→19`，warn **103→26** | 低-中：阴影统一会让部分浮层变浅/变深 | 未开始 |
+| **B2** | 色值 token 化（5 族 / 29 token）＋ 定 `--hover-bg`（B0 里留的 `.ai-confirm-host-tag`） | `token-color 96→19`，warn **103→26**；6 场景里只有 chip 一处净差 1424px，其余全 0 | 低-中：阴影统一会让部分浮层变浅/变深 | ✅ 已完成（`05-b2-color-tokens.md`） |
 | **B3** | 字号收敛 17→8 档 | 无 lint 规则覆盖（可加 C-new） | **高**：76 处位移 ≤1px，全部像素基线失效 | 未开始 |
 | **B4** | light 覆盖归位（19 条散落覆盖 → 主题层） | warn **26→7** | 中：亮色下逐屏复核 | 未开始 |
 | **B5** | `media-sizing 7` 迁平台层 | warn **7→0** → 开 `--strict` 门禁 | 低 | 未开始 |
@@ -68,3 +68,4 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 | `02-b0-dead-token-fix.md` | B0 实施口径与两处非纯删除改动（含 UA 边框陷阱） |
 | `03-b0-real-ui-verification.md` | B0 在真实窗口内的 A/B 方法与操作路径断言 |
 | `04-b1-radius-tokens.md` | B1 验收表、232 条映射表、两次返工（`--radius-xs` 未定义 / 滑块同心圆角） |
+| `05-b2-color-tokens.md` | B2 5 族映射、29 个 token 清单、color-mix 等价性证明、`ai-panel` 验收限缩 |
