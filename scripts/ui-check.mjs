@@ -504,6 +504,7 @@ function usage() {
   node scripts/ui-check.mjs eval '<js>'              在页面里执行（多语句需显式 return）
   node scripts/ui-check.mjs styles [a,b,c]           取计算样式（默认面见 DEFAULT_SELECTORS）
   node scripts/ui-check.mjs resize <W>x<H>          真实改窗口尺寸（验收 @media 断点）
+  node scripts/ui-check.mjs inject <css>|-c         运行时注入/清除候选 token 覆盖（换皮对比）
   node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
   node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
   node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel|light-probe   驱动到可复现场景
@@ -535,6 +536,30 @@ try {
     case 'shot': console.log(shot(rest[0] || `shot-${Date.now()}`)); break;
     case 'scene': await applyScene(rest[0] || 'hosts'); break;
     case 'theme': await cmdTheme(rest); break;
+    case 'inject': {
+      // inject <css 文件> | inject -c(清除) —— 运行时注入候选 token 覆盖(换皮对比用),
+      // 不重编译二进制:注入的 <style> 排在 app.css 之后,token 层直接生效。
+      const arg = String(rest[0] || '');
+      if (arg === '-c' || arg === '--clear') {
+        await evalJs("document.getElementById('ui-check-inject')?.remove(); return 1;");
+        console.log('[ui-check] 已移除注入样式');
+        break;
+      }
+      if (!arg) throw new Error('用法: inject <css 文件> | inject -c');
+      const css = readFileSync(arg, 'utf8');
+      const n = await evalJs(`
+        document.getElementById('ui-check-inject')?.remove();
+        const st = document.createElement('style');
+        st.id = 'ui-check-inject';
+        st.textContent = ${JSON.stringify(css)};
+        document.head.appendChild(st);
+        return st.sheet ? st.sheet.cssRules.length : -1;
+      `, 20000);
+      await sleep(400);
+      const probe = await evalJs("const cs=getComputedStyle(document.documentElement); return {bg: cs.getPropertyValue('--bg').trim(), accent: cs.getPropertyValue('--accent').trim(), theme: document.documentElement.dataset.theme};");
+      console.log(JSON.stringify({ file: arg, rules: n, resolved: probe }, null, 2));
+      break;
+    }
     case 'resize': {
       // resize <WxH> —— 真实改窗口尺寸，用来验收 @media 断点(max-width:480px 这类)
       const spec = String(rest[0] || '');
