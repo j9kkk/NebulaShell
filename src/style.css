@@ -94,6 +94,20 @@
   --particle: rgba(255, 255, 255, 0.55);
   --particle-strong: rgba(255, 255, 255, 0.8);
 
+  /* 亮色差异层(B4):同一组件在亮色下需要不同色值时只在这里给 light 值,
+     组件规则一律引用 token —— 组件段不再出现 [data-theme="light"] .某组件 的色值覆盖 */
+  --surface-hover-weak: rgba(255, 255, 255, 0.08);   /* 图标按钮 hover 叠加(亮色更淡) */
+  --ring-track: var(--progress-track);               /* 环形进度底槽 */
+  --shadow-overlay: var(--menu-shadow);              /* 浮层阴影(亮色另给一套) */
+  --shadow-hairline: none;                           /* 亮色给实心面板补的 1px 发丝影 */
+  --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.25);     /* 滑杆拇指(亮色需补描边) */
+  --glow-accent: 0 0 6px var(--accent);
+  --glow-mem: 0 0 6px var(--mem-color);
+  --glow-net: 0 0 6px var(--net-tx-color);
+  --mem-color: var(--accent2);                       /* 内存走势色(亮色换深绿) */
+  --net-rx-color: #38bdf8;                           /* 网络下行(亮色块里压深) */
+  --net-tx-color: #a78bfa;                           /* 网络上行(亮色块里压深) */
+
   /* 字号八档(B3):只允许引用这里,半像素档(11.5/10.5/12.5/9.5)一律归并 */
   --fs-2xs: 10px;   /* 辅助/角标、密集表格里的次级信息 */
   --fs-xs: 11px;    /* 次要文本:说明、标签、状态 */
@@ -187,18 +201,30 @@
   --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
   --shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --shadow-popover: 0 10px 30px rgba(0, 0, 0, 0.55), 0 0 1px rgba(255, 255, 255, 0.1);
+  --shadow-popover: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
   --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.18);
   --ring-ok: 0 0 0 3px color-mix(in srgb, var(--accent2) 10%, transparent);
   --ring-danger: 0 0 0 3px color-mix(in srgb, var(--danger) 10%, transparent);
-  --surface-inset: rgba(255, 255, 255, 0.08);
-  --surface-inset-dim: rgba(255, 255, 255, 0.04);
+  --surface-inset: rgba(0, 0, 0, 0.08);
+  --surface-inset-dim: rgba(0, 0, 0, 0.04);
   --surface-raise: rgba(255, 255, 255, 0.22);
   --surface-sunken: rgba(0, 0, 0, 0.22);
   --surface-sunken-deep: rgba(0, 0, 0, 0.3);
-  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-grid: rgba(31, 35, 40, 0.08);
   --particle: rgba(255, 255, 255, 0.55);
   --particle-strong: rgba(255, 255, 255, 0.8);
+  /* B4 亮色差异层:这些值原先散落在组件段的 [data-theme="light"] 覆盖里 */
+  --surface-hover-weak: rgba(0, 0, 0, 0.05);
+  --ring-track: rgba(0, 0, 0, 0.08);
+  --shadow-overlay: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
+  --shadow-hairline: 0 1px 2px rgba(31, 35, 40, 0.04);
+  --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(31, 35, 40, 0.25);
+  --glow-accent: 0 0 4px rgba(9, 105, 218, 0.35);
+  --glow-mem: 0 0 4px rgba(5, 150, 105, 0.35);
+  --glow-net: 0 0 4px rgba(124, 58, 237, 0.35);
+  --mem-color: #059669;
+  --net-rx-color: #0284c7;                 /* 网络下行(亮色压深) */
+  --net-tx-color: #7c3aed;                 /* 网络上行(亮色压深) */
   --reasoning-gradient-max: linear-gradient(90deg, #46bf72 0%, #12bf9a 22%, #00b4c4 42%, #00a3e8 64%, #0090f8 84%, #38a1ff 100%);
   --switch-off-bg: rgba(0, 0, 0, 0.12);
   --tab-active-bg: #ffffff;
@@ -207,6 +233,27 @@
   --tab-active-shadow: 0 1px 3px rgba(31, 35, 40, 0.12), 0 1px 1px rgba(31, 35, 40, 0.06);
   --tab-inactive-bg: rgba(235, 238, 242, 0.7);
 }
+
+/* ── 亮色组件覆盖（B4 收口）────────────────────────────────────
+   口径:亮色与暗色的「色值」差异一律走 :root 的 token(见「亮色差异层」);
+   这里只保留「结构不同」的覆盖 —— 亮色下用实心底(--bg2)代替半透明叠加,
+   或压掉一个阴影。规则内只允许引用 token,lint 的 token-color 在这里守着。 */
+[data-theme="light"] .ai-context-trigger {
+  background: none; border: none; box-shadow: none;
+}
+[data-theme="light"] .ai-context-popover { background: var(--bg2); }
+[data-theme="light"] .mon-deck { background: var(--bg2); border-color: var(--border); }
+[data-theme="light"] .mon-lat-item .mon-item { background: var(--bg2); border-color: var(--border); }
+[data-theme="light"] .mon-cpu-popover { background: var(--bg2); border-color: var(--border); }
+/* AI 上下文环的底槽:同一个 .mon-ring-bg 在监控里要跟 --progress-track 走,
+   在触发钮里要跟 --ring-track 走,两条规则同特异性、后者位置更靠后 —— 
+   所以亮色下必须显式压一次(暗色两值相同,压不压都一样)。 */
+[data-theme="light"] .ai-context-ring .mon-ring-bg { stroke: var(--ring-track); }
+[data-theme="light"] .mon-pop-chart { background: var(--panel); }
+[data-theme="light"] #mon-pop-point { stroke: var(--bg2); }
+[data-theme="light"] #mon-net-pop-rx-point,
+[data-theme="light"] #mon-net-pop-tx-point { stroke: var(--bg2); }
+
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -1957,7 +2004,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .ai-context-trigger:hover {
-  background: var(--surface-hover); color: var(--text);
+  background: var(--surface-hover-weak); color: var(--text);
 }
 .ai-context-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -1972,7 +2019,6 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 }
 .ai-context-ring .mon-ring-bg {
   fill: none;
-  stroke: var(--progress-track, rgba(255, 255, 255, 0.12));
   stroke-width: 2.4;
 }
 .ai-context-ring .mon-ring-fg {
@@ -1997,7 +2043,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   width: 270px;
   background: var(--panel);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  box-shadow: var(--menu-shadow);
+  box-shadow: var(--shadow-overlay);
   padding: 12px 14px;
   font-size: var(--fs-xs);
   color: var(--text);
@@ -2083,26 +2129,6 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   padding-top: 8px; border-top: 1px solid var(--border);
 }
 .ai-ctx-pop-trimmed.hidden { display: none; }
-
-[data-theme="light"] .ai-context-trigger {
-  background: none;
-  border: none;
-  box-shadow: none;
-}
-[data-theme="light"] .ai-context-trigger:hover {
-  background: rgba(0, 0, 0, 0.05);
-}
-[data-theme="light"] .ai-context-ring .mon-ring-bg {
-  stroke: rgba(0, 0, 0, 0.08);
-}
-[data-theme="light"] .ai-ctx-pop-bar-wrap {
-  background: rgba(0, 0, 0, 0.08);
-}
-[data-theme="light"] .ai-context-popover {
-  background: var(--bg2);
-  border-color: var(--border);
-  box-shadow: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
-}
 
 /* 模型触发钮:无边框纯文字样式(当前模型名 + 下箭头),与参考稿一致。
    宽度:弹性收缩但有保底(91px,窄档在 .ai-composer 的容器查询里逐档下调)——
@@ -3216,6 +3242,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   background: var(--surface-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-hairline);
   padding: 0 10px;
   height: 26px;
   flex: 0 0 auto;
@@ -3305,6 +3332,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   padding: 2px 7px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border);
+  box-shadow: var(--shadow-hairline);
 }
 /* 连接延迟按阈值着色(阈值同 monitor.js setLat):#monitor-bar b 的颜色是 ID 级,
    这里用 ID+类 压过它。 */
@@ -3354,7 +3382,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .mon-pop-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--accent, #38bdf8);
-  box-shadow: 0 0 6px var(--accent);
+  box-shadow: var(--glow-accent);
 }
 .mon-pop-cur {
   font-size: var(--fs-md); font-weight: 700; font-variant-numeric: tabular-nums;
@@ -3397,25 +3425,21 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 
 /* 内存走势卡片样式 */
 .mon-mem-dot {
-  background: var(--accent2, #34d399) !important;
-  box-shadow: 0 0 6px var(--accent2) !important;
+  background: var(--mem-color) !important;
+  box-shadow: var(--glow-mem) !important;
 }
 .mon-mem-cur {
-  color: var(--accent2, #34d399) !important;
+  color: var(--mem-color) !important;
 }
-#mon-mem-pop-line { stroke: var(--accent2, #34d399); }
-#mon-mem-pop-point { fill: var(--accent2, #34d399); stroke: var(--bg2, #0d131f); }
-#mon-mem-grad stop:first-child { stop-color: var(--accent2, #34d399); }
-#mon-mem-grad stop:last-child { stop-color: var(--accent2, #34d399); }
+#mon-mem-pop-line { stroke: var(--mem-color); }
+#mon-mem-pop-point { fill: var(--mem-color); stroke: var(--bg2, #0d131f); }
+#mon-mem-grad stop:first-child { stop-color: var(--mem-color); }
+#mon-mem-grad stop:last-child { stop-color: var(--mem-color); }
 
-/* 网络吞吐双向走势卡片样式 */
-:root {
-  --net-rx-color: #38bdf8;
-  --net-tx-color: #a78bfa;
-}
+/* 网络吞吐双向走势卡片样式（色值定义见 :root 的网络段） */
 .mon-net-dot {
   background: var(--net-tx-color, #a78bfa) !important;
-  box-shadow: 0 0 6px var(--net-tx-color) !important;
+  box-shadow: var(--glow-net) !important;
 }
 .net-legends {
   display: flex;
@@ -3448,64 +3472,6 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .rx-val { color: var(--net-rx-color, #38bdf8) !important; }
 .tx-val { color: var(--net-tx-color, #a78bfa) !important; }
 
-/* 日蚀亮 (light) 模式：监控底板、连接胶囊、方向符与 CPU/内存/网络 走势卡片浅色适配 */
-[data-theme="light"] {
-  --net-rx-color: #0284c7;
-  --net-tx-color: #7c3aed;
-}
-[data-theme="light"] .mon-deck {
-  background: var(--bg2);
-  border-color: var(--border);
-  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
-}
-[data-theme="light"] .mon-lat-item .mon-item {
-  background: var(--bg2);
-  border-color: var(--border);
-  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
-}
-[data-theme="light"] .mon-dir.mon-up {
-  color: #0284c7;
-}
-[data-theme="light"] .mon-dir.mon-down {
-  color: #7c3aed;
-}
-[data-theme="light"] .mon-cpu-popover {
-  background: var(--bg2);
-  border-color: var(--border);
-  box-shadow: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
-}
-[data-theme="light"] .mon-pop-dot {
-  box-shadow: 0 0 4px rgba(9, 105, 218, 0.35);
-}
-[data-theme="light"] .mon-mem-dot {
-  background: #059669 !important;
-  box-shadow: 0 0 4px rgba(5, 150, 105, 0.35) !important;
-}
-[data-theme="light"] .mon-mem-cur {
-  color: #059669 !important;
-}
-[data-theme="light"] #mon-mem-pop-line { stroke: #059669; }
-[data-theme="light"] #mon-mem-pop-point { fill: #059669; stroke: var(--bg2); }
-[data-theme="light"] #mon-mem-grad stop:first-child { stop-color: #059669; }
-[data-theme="light"] #mon-mem-grad stop:last-child { stop-color: #059669; }
-
-[data-theme="light"] .mon-net-dot {
-  background: #7c3aed !important;
-  box-shadow: 0 0 4px rgba(124, 58, 237, 0.35) !important;
-}
-[data-theme="light"] #mon-net-pop-rx-point,
-[data-theme="light"] #mon-net-pop-tx-point {
-  stroke: var(--bg2);
-}
-[data-theme="light"] .mon-pop-chart {
-  background: var(--panel);
-}
-[data-theme="light"] .mon-pop-grid {
-  stroke: rgba(31, 35, 40, 0.08);
-}
-[data-theme="light"] #mon-pop-point {
-  stroke: var(--bg2);
-}
 
 /* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page)。
    行内按钮几何统一 26×26 圆角方块:▶/✏/🗑 全部常显(0.4.x 起,悬停显隐
@@ -4733,7 +4699,8 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   border-radius: 50%;
   translate: 0 0;
   background: var(--knob-bg);
-  box-shadow: var(--shadow-xs);
+  /* 亮色下面板底色接近白色,纯白滑块仅靠阴影无法辨认 → --shadow-thumb 在亮色里带一圈灰描边 */
+  box-shadow: var(--shadow-thumb);
   transition: translate var(--dur) var(--ease);
   pointer-events: none;
 }
@@ -4767,10 +4734,6 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .ai-reasoning-slider::-moz-range-thumb {
   width: 22px; height: 22px; border-radius: 50%;
   background: transparent; border: none; cursor: grab;
-}
-/* 亮色主题:面板底色接近白色,纯白滑块仅靠阴影无法辨认,补一圈灰描边 */
-[data-theme="light"] .ai-reasoning-thumb {
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(31, 35, 40, 0.25);
 }
 /* 刻度标签:中心锚定在各档位的滑块停靠点上(space-between 会把首尾标签的
    外缘贴到容器两端,与滑块停靠点错开半个标签宽,档位越多错得越多)。

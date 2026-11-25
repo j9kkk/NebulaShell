@@ -66,6 +66,8 @@ const PROPS = [
   'padding', 'margin', 'gap', 'borderRadius', 'boxShadow', 'opacity', 'height', 'width', 'textAlign',
   // 圆角批次的红线:布局列宽/行高不得位移,所以这些也必须进比对
   'gridTemplateColumns', 'gridTemplateRows', 'display', 'flexBasis',
+  // 亮色批次(B4)的红线:SVG 上的 stroke/fill/stop-color 与 !important 描边也算可见差异
+  'stroke', 'fill', 'stopColor', 'outlineColor',
 ];
 
 // ── shell 工具 ────────────────────────────────────────────────────────────────
@@ -346,6 +348,34 @@ const SCENES = {
     const cs = getComputedStyle(tag);
     return {bg: cs.backgroundColor, color: cs.color, rect: JSON.stringify(tag.getBoundingClientRect())};
   `,
+  // 亮色差异层的定点探针(B4):把「只在亮色下改过值」的那批组件塞进真实 DOM,
+  // 用它们的计算样式对照旧 CSS —— 元素不在真实页面里出现也能逐项验等价。
+  'light-probe': `
+    const old = document.getElementById('__probe-light'); if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = '__probe-light';
+    box.style.cssText = 'position:fixed;left:30px;top:50px;z-index:99999;width:300px;padding:10px;display:flex;flex-direction:column;gap:6px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius)';
+    box.innerHTML = [
+      '<div class="mon-deck" id="p-deck">cpu 12%</div>',
+      '<div class="mon-lat-item"><span class="mon-item" id="p-lat">ssh 18ms</span></div>',
+      '<div style="display:flex;gap:8px;align-items:center"><i class="mon-dir mon-up" id="p-up">↑</i><i class="mon-dir mon-down" id="p-down">↓</i>',
+      '<div class="mon-pop-dot" id="p-cpudot"></div><div class="mon-mem-dot" id="p-memdot"></div><div class="mon-net-dot" id="p-netdot"></div>',
+      '<span class="mon-mem-cur" id="p-memcur">内存</span></div>',
+      '<div class="ai-ctx-pop-bar-wrap" id="p-barwrap" style="height:6px"><div style="width:40%;height:100%"></div></div>',
+      // 真实结构:触发钮挂在 .mon-ring 包裹里(监控环与上下文环共用 .mon-ring-bg,
+      // 两条规则同特异性靠位置决胜)—— 探针必须复刻这层包裹才不会漏判
+      '<div class="mon-ring"><button class="ai-context-trigger" id="p-ctxbtn"><svg class="ai-context-ring" viewBox="0 0 20 20"><circle class="mon-ring-bg" id="p-ring" cx="10" cy="10" r="7.5"></circle></svg></button></div>',
+      '<div class="ai-reasoning-slider" style="--thumb-s:22px"><div class="ai-reasoning-thumb" id="p-thumb" style="--i:1;--n:3"></div></div>',
+      '<svg width="120" height="30"><line class="mon-pop-grid" id="p-grid" x1="0" y1="15" x2="120" y2="15"></line>',
+      '<line id="mon-mem-pop-line" x1="0" y1="15" x2="60" y2="8"></line><circle id="mon-mem-pop-point" cx="60" cy="8" r="2"></circle>',
+      '<circle id="mon-pop-point" cx="20" cy="6" r="2"></circle></svg>',
+    ].join('');
+    document.body.appendChild(box);
+    await new Promise(r => setTimeout(r, 150));
+    const g = (id, p) => getComputedStyle(document.getElementById(id))[p];
+    return {memDot: g('p-memdot','backgroundColor') + ' / ' + g('p-memdot','boxShadow'),
+            memCur: g('p-memcur','color'), netUp: g('p-up','color'), deckShadow: g('p-deck','boxShadow')};
+  `,
   // 干净态：只关弹窗
   'hosts': `
     await new Promise(r => setTimeout(r, 300));
@@ -475,7 +505,7 @@ function usage() {
   node scripts/ui-check.mjs styles [a,b,c]           取计算样式（默认面见 DEFAULT_SELECTORS）
   node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
   node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
-  node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel   驱动到可复现场景
+  node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel|light-probe   驱动到可复现场景
   node scripts/ui-check.mjs ab <名字> [--ref R | --css 文件] [--scene S]
                                                     旧 CSS(默认 ${BASELINE_REF}) vs 现状：样式+像素（净差异非 0 时退出码 2）
 

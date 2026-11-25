@@ -11,7 +11,7 @@
 | **B1** | 圆角 token 化（15 种裸值 → `--radius*`）+ `--radius-pill` 进平台层 + `token-undefined` 规则 | `token-radius 199→0`、`platform-scope 20→0`，warn **322→103**；实测 232 条 1:1 替换，可见变化仅「控件 6→8」「标记 6→4」 | 低：绝对值映射，8px 主体不动 | ✅ 已完成（`04-b1-radius-tokens.md`） |
 | **B2** | 色值 token 化（5 族 / 29 token）＋ 定 `--hover-bg`（B0 里留的 `.ai-confirm-host-tag`） | `token-color 96→19`，warn **103→26**；6 场景里只有 chip 一处净差 1424px，其余全 0 | 低-中：阴影统一会让部分浮层变浅/变深 | ✅ 已完成（`05-b2-color-tokens.md`） |
 | **B3** | 字号收敛 17→8 档（先加 `token-font` 规则） | `token-font 410→0`；唯一允许画面变化的一批：396 条声明 1:1 换档，净差 839–17875px，行高/列宽红线未破 | **高**：全屏重排，前面各批像素基线失效 | ✅ 已完成（`06-b3-type-scale.md`） |
-| **B4** | light 覆盖归位（19 条散落覆盖 → 主题层） | warn **26→7** | 中：亮色下逐屏复核 | 未开始 |
+| **B4** | light 覆盖归位（19 条散落色值 → token 层） | `token-color 19→0`；亮色/暗色对外观零变化（6 场景 + 16 选择器探针 净差 0） | 中：亮色下逐屏复核 | ✅ 已完成（`07-b4-light-theme.md`） |
 | **B5** | `media-sizing 7` 迁平台层 | warn **7→0** → 开 `--strict` 门禁 | 低 | 未开始 |
 
 顺序不可颠倒：B0 修「声明失效」→ B1/B2 依赖 token 层正确 → B3 必须最后（字号一动，所有对像素的判断基线全变）→ B4/B5 收尾。
@@ -29,6 +29,11 @@ npm run ui:check -- ab bN --scene import-preview   # 4) 旧 CSS vs 现状：样�
 `ab` 的判定：`styles: "无差异"` 且 `pixels.net === 0` 才算「与基线一致」；
 只要有一项非 0，退出码就是 **2**（可直接进 CI），并打印净差异的 bbox 与两张截图路径。
 净差异已经**扣掉了光标闪烁/动画造成的时间噪声**，不需要人肉分辨。
+
+> **改完 CSS 必须重编译二进制。** 前端资源在 `build.rs` 里嵌进可执行文件，
+> 只跑 `npm run build:web` 的话真实窗口加载的仍是上一次 `up --build` 时的 `dist/`——
+> 会拿着旧样式做验收、得出「改错了」的假结论（B4 在这个坑上浪费过两轮）。
+> 顺序固定为 `build:web` → `up --build` → 再取数据。
 
 有意的视觉改变（B2 的阴影、B3 的字号）本来就会让 `net > 0`，这时用 `shot` 出稳定态截图，人看一眼再拍板：
 
@@ -70,3 +75,4 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 | `04-b1-radius-tokens.md` | B1 验收表、232 条映射表、两次返工（`--radius-xs` 未定义 / 滑块同心圆角） |
 | `05-b2-color-tokens.md` | B2 5 族映射、29 个 token 清单、color-mix 等价性证明、`ai-panel` 验收限缩 |
 | `06-b3-type-scale.md` | B3 17→8 映射表、每场景位移、行高/溢出红线断言、两处「被裁」的排除证明 |
+| `07-b4-light-theme.md` | B4 19 条覆盖去向表、`light-probe` 探针场景、两个级联坑（第二 `:root` / 同特异性靠位置） |
