@@ -1,4 +1,4 @@
-# 样式重构批次（B0–B6 + C1）：流程与定点验证入口
+# 样式重构批次（B0–B6 + C1–C2）：流程与定点验证入口
 
 本轮只换视觉、不动信息架构。样式改动全部落在 `src/style.css` 的 token 层与覆盖层，
 按批次推进，**每批独立验收，通过后才动下一批**。
@@ -15,15 +15,19 @@
 | **B5** | `media-sizing 7` 收口（实测不是平台差异 → `css-contract:allow` 记账） | `media-sizing 0`；warn **7→0**；`--strict` **退出码 0** | 低 | ✅ 已完成（`08-b5-media-sizing.md`） |
 | **B6** | 清死代码：52 处 `var(--token, 落回值)` 的落回值（token 全部已定义）+ 3 个永不命中的窄窗 `@media` 块 | warn 0 / info 10；7 场景 `ab --ref fd364f5` 全部 `styles 无差异` + `net 0` | 无：净差 0 | ✅ 已完成 |
 | **C1** | 换皮第一轮：31 个 token 值（暗 20 / 亮 11），采方向 A「深空冷调·克制」 | 组件规则零改动；`token-contrast` 26/26；修掉基线 8 项不达标（主按钮白字 3.68→5.05、表面台阶 1.8/2.4→4.8/6.0 等） | 中：全站观感变化，逐屏截图复核 | ✅ 已完成（`09-c1-skin.md`） |
+| **C2-1** | 门禁真归零：`border` 简写族纳入 `token-color` + 清 9 处漏网硬编码描边 + `row-decoration` 修正 + `token-contrast` 进 CI | **error 0 / warn 0 / info 0**；技能脚本交叉扫 `rgb/rgba` 0 处 | 低：暗色下 `color-mix` 与原 `rgba` 逐像素等价 | ✅ 已完成（`10-c2-gates-selection-import.md`） |
+| **C2-2** | 侧栏激活态实测调优（亮色 `--row-active` ΔL 2.3→3.9 + inset 描边 + 3px 指示条）+ 侧栏「+ 新建」降为次级强调态 | `lint:css` 0/0/0；真机 `dx=0`、`actH=normH=44` | 中：色阶/权重变化，暗亮双拍 | ✅ 已完成（同上） |
+| **C2-3** | 导入预览冲突行设「跳过」后不再计入「将导入 N 台」（抽 `src/shared/import-plan.js` 单一口径） | 单测 575→**580**；真机五态断言 | 无：`ab --ref b1b0dad` 净差 0 | ✅ 已完成（同上） |
 
-顺序不可颠倒：B0 修「声明失效」→ B1/B2 依赖 token 层正确 → B3 必须最后（字号一动，所有对像素的判断基线全变）→ B4/B5/B6 收尾（B6 把死回落与不可达断点删干净，换皮时才不会被残留值干扰）→ C1 起才换皮。
+顺序不可颠倒：B0 修「声明失效」→ B1/B2 依赖 token 层正确 → B3 必须最后（字号一动，所有对像素的判断基线全变）→ B4/B5/B6 收尾（B6 把死回落与不可达断点删干净，换皮时才不会被残留值干扰）→ C1 起才换皮 → C2 把门禁补严、用实测收敛视觉层级。
 详见 `01-style-debt-audit.md`（含 332 条 findings 明细与 `01-audit-data.json`）。
 
 ## 2. 每批的验收动作（四步，缺一不算过）
 
 ```bash
-npm run build:web && npm run lint:css      # 1) 契约 lint：看 warn 是否落在本批预期
-npm run test:unit                          # 2) 单测（575 用例，日常必跑；全量 e2e 不跑）
+npm run build:web && npm run lint:css      # 1) 契约 lint：C2 起基线就是 0/0/0
+node scripts/token-contrast.mjs            #    对比度/表面台阶门禁（C2-1 起进 CI）
+npm run test:unit                          # 2) 单测（580 用例，日常必跑；全量 e2e 不跑）
 npm run ui:check -- up --build             # 3) 起真实窗口（首次 --build 约 1 分钟，之后增量几秒）
 npm run ui:check -- ab bN --scene import-preview   # 4) 旧 CSS vs 现状：样式 + 像素净差异
 ```
@@ -51,7 +55,7 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 | `up [--build] [--fresh]` | 起真实 Tauri 窗口（Xvfb + 应用自带测试桥）。`--fresh` 重置夹具数据 |
 | `down` / `status` | 停容器 / 看状态 |
 | `resize <W>x<H>` | 真实改窗口尺寸（验收 `@media` 断点；受 `tauri.conf` 的 `minWidth/minHeight` 夹取） |
-| `scene hosts\|import-preview\|rdp-advanced` | 把应用驱动到可复现状态（走真实点击与键盘事件） |
+| `scene hosts\|hosts-active\|import-preview\|rdp-advanced` | 把应用驱动到可复现状态（走真实点击与键盘事件）。`hosts-active` 克隆 2 行临时主机演示选中态，切走自动清理 |
 | `eval '<js>'` | 在真实页面执行 JS（多语句需显式 `return`） |
 | `styles 'a,b,c'` | 取计算样式 JSON |
 | `shot <名字>` | 截图 → `.ui-check/shots/<名字>.png` |
@@ -81,3 +85,4 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 | `07-b4-light-theme.md` | B4 19 条覆盖去向表、`light-probe` 探针场景、两个级联坑（第二 `:root` / 同特异性靠位置） |
 | `08-b5-media-sizing.md` | B5 7 条去向、`css-contract:allow` 机制与反证、「断点在最小窗口下永不命中」的实测、六批总账 |
 | `09-c1-skin.md` | C1 换皮：A/B 拍板记录、31 条 token 变更全表、8 项缺陷 before→after、一次「带结论提问」的误判纠正 |
+| `10-c2-gates-selection-import.md` | C2：`border` 简写族漏检的发现路径、`--row-active` 选值推导、次级强调态对比度预算、导入计数单一口径 |
