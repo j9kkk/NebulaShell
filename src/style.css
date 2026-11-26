@@ -1,33 +1,33 @@
 /* NebulaShell 渲染层样式 */
 :root, [data-theme="nebula"] {
-  --bg: #0d1117;
-  --bg2: #131a26;
-  --panel: #10151f;
-  --border: #232c3d;
-  --border-hover: #33405a;
+  --bg:  #070a11;
+  --bg2:  #1a2333;
+  --panel:  #101722;
+  --border:  #333e4f;
+  --border-hover:  #4d5a73;
   --text: #e6edf3;
-  --muted: #8b96a8;
+  --muted:  #9aa5b6;
   --accent: #5b8cff;
   --accent2: #3ddc97;
   /* 强调色块上的文字:反白。B2 收敛 14 处 #fff 时统一引用它 */
-  --text-on-accent: #ffffff;
+  --text-on-accent:  #08101c;
   /* 焦点光晕:文本输入类聚焦时 1px accent 描边外扩的 3px 柔光。
      颜色随主题走,规范见下方「焦点规范」块。 */
   --focus-halo: rgba(91, 140, 255, 0.3);
   --danger: #ff6b6b;
   --warn: #ffc24b;
   --warn-text: #ffc24b;
-  --titlebar-bg: #0a0e15;
+  --titlebar-bg:  #05070c;
   --color-scheme: dark;
   --select-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%238b96a8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --surface-hover: rgba(255, 255, 255, 0.08);
-  --row-hover: #171e2a;
-  --row-active: #1a253c;
-  --field: #0b1018;
-  --btn-primary-solid: #3a62d9;
+  --surface-hover:  rgba(255, 255, 255, 0.09);
+  --row-hover:  #222d3f;
+  --row-active:  #2a3750;
+  --field:  #04060a;
+  --btn-primary-solid:  #3a68d9;
   --hover-bg: rgba(91, 140, 255, 0.12);
   --active-bg: rgba(91, 140, 255, 0.18);
-  --btn-primary-bg: linear-gradient(135deg, #4f7dff, #3a5fd9);
+  --btn-primary-bg:  linear-gradient(135deg, #3a68d9, #2f57c4);
   --btn-primary-text: #ffffff;
   --ai-user-bubble: #23407e;
   --ai-user-text: #e6edf3;
@@ -38,7 +38,7 @@
   --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   --floating-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   --scrollbar-thumb-hover: #2e3a52;
-  --table-divider: rgba(35, 44, 61, 0.5);
+  --table-divider:  rgba(58, 70, 90, 0.72);
   --progress-track: rgba(128, 140, 160, 0.2);
   /* 思考强度滑块的未走完沟槽:比 --progress-track 更实,否则在面板底色上
      几乎看不出轨道存在(参考稿的灰槽是明确可见的实体块)。 */
@@ -65,7 +65,7 @@
   --scope-sys: #38bdf8;                /* 上下文条·系统提示 */
   --scope-hist: #818cf8;               /* 上下文条·历史 */
   --scope-draft: #34d399;              /* 上下文条·草稿 */
-  --ok-color: #34d399;                 /* 成功态文字/圆点(与 --accent2 的绿不同色号,历史值) */
+  --ok-color:  #3ddc97;                 /* 成功态文字/圆点(与 --accent2 的绿不同色号,历史值) */
   --reasoning-color: #46bf72;          /* 思考强度进度条 */
   --reasoning-gradient-max: linear-gradient(90deg, #46bf72 0%, #12bf9a 22%, #00b4c4 42%, #00a3e8 64%, #0090f8 84%, #38a1ff 100%);
   /* 云厂商品牌色 */
@@ -85,11 +85,11 @@
   --ring-ok: 0 0 0 3px color-mix(in srgb, var(--accent2) 10%, transparent);
   --ring-danger: 0 0 0 3px color-mix(in srgb, var(--danger) 10%, transparent);
   /* 表面层:叠加(白)与内凹(黑);--surface-hover 已有 */
-  --surface-inset: rgba(255, 255, 255, 0.08);
+  --surface-inset:  rgba(255, 255, 255, 0.07);
   --surface-inset-dim: rgba(255, 255, 255, 0.04);
   --surface-raise: rgba(255, 255, 255, 0.22);
-  --surface-sunken: rgba(0, 0, 0, 0.22);
-  --surface-sunken-deep: rgba(0, 0, 0, 0.3);
+  --surface-sunken:  rgba(0, 0, 0, 0.28);
+  --surface-sunken-deep:  rgba(0, 0, 0, 0.38);
   --chart-grid: rgba(255, 255, 255, 0.06);
   --particle: rgba(255, 255, 255, 0.55);
   --particle-strong: rgba(255, 255, 255, 0.8);
@@ -106,7 +106,7 @@
   --glow-net: 0 0 6px var(--net-tx-color);
   --mem-color: var(--accent2);                       /* 内存走势色(亮色换深绿) */
   --net-rx-color: #38bdf8;                           /* 网络下行(亮色块里压深) */
-  --net-tx-color: #a78bfa;                           /* 网络上行(亮色块里压深) */
+  --net-tx-color:  #9d8cff;                           /* 网络上行(亮色块里压深) */
 
   /* 字号八档(B3):只允许引用这里,半像素档(11.5/10.5/12.5/9.5)一律归并 */
   --fs-2xs: 10px;   /* 辅助/角标、密集表格里的次级信息 */
@@ -143,13 +143,13 @@
 }
 
 [data-theme="light"] {
-  --bg: #f6f8fa;
+  --bg:  #f2f5f9;
   --bg2: #ffffff;
-  --panel: #f0f2f5;
-  --border: #d0d7de;
-  --border-hover: #8c959f;
+  --panel:  #e7ecf3;
+  --border:  #cfd7e2;
+  --border-hover:  #9aa6b8;
   --text: #1f2328;
-  --muted: #656d76;
+  --muted:  #57606a;
   --accent: #0969da;
   --accent2: #1a7f37;
   --text-on-accent: #ffffff;
@@ -161,9 +161,9 @@
   --color-scheme: light;
   --select-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%23656d76' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   --surface-hover: rgba(31, 35, 40, 0.08);
-  --row-hover: #e9edf2;
-  --row-active: #e3edfb;
-  --field: #ffffff;
+  --row-hover:  #e9eef6;
+  --row-active:  #dbe6f5;
+  --field:  #eef2f7;
   --btn-primary-solid: #0969da;
   --hover-bg: rgba(9, 105, 218, 0.08);
   --active-bg: rgba(9, 105, 218, 0.14);
@@ -178,7 +178,7 @@
   --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
   --floating-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   --scrollbar-thumb-hover: #afb8c1;
-  --table-divider: rgba(208, 215, 222, 0.7);
+  --table-divider:  rgba(31, 35, 40, 0.16);
   --progress-track: rgba(140, 150, 165, 0.25);
   --reasoning-track-empty: rgba(31, 35, 40, 0.12);
   --drag-accent: rgba(9, 105, 218, 0.12);
@@ -190,7 +190,7 @@
   --scope-sys: #38bdf8;
   --scope-hist: #818cf8;
   --scope-draft: #34d399;
-  --ok-color: #34d399;
+  --ok-color:  #1a7f37;
   --reasoning-color: #46bf72;
   --vendor-tencent: var(--accent-sky);
   --vendor-aliyun: #fb923c;
@@ -224,7 +224,7 @@
   --glow-net: 0 0 4px rgba(124, 58, 237, 0.35);
   --mem-color: #059669;
   --net-rx-color: #0284c7;                 /* 网络下行(亮色压深) */
-  --net-tx-color: #7c3aed;                 /* 网络上行(亮色压深) */
+  --net-tx-color:  #6d4aff;                 /* 网络上行(亮色压深) */
   --reasoning-gradient-max: linear-gradient(90deg, #46bf72 0%, #12bf9a 22%, #00b4c4 42%, #00a3e8 64%, #0090f8 84%, #38a1ff 100%);
   --switch-off-bg: rgba(0, 0, 0, 0.12);
   --tab-active-bg: #ffffff;
