@@ -151,6 +151,9 @@
   --dur-2: 140ms;                                    /* 颜色、描边、图标填充、hover 离开 */
   --dur-3: 220ms;                                    /* 位移:指示器滑动、展开收起、抽屉进出 */
   --dur-4: 320ms;                                    /* 整块切换、面板/浮层出现 */
+  --stagger-1: 24ms;                                 /* 抽屉/列表交错步进 1 */
+  --stagger-2: 48ms;                                 /* 抽屉/列表交错步进 2 */
+  --stagger-3: 72ms;                                 /* 抽屉/列表交错步进 3 */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);    /* 进入:位移、展开、面板出现 */
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);     /* 退出:收起、消失 */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* 只用于出现/回弹,永不用于退出 */
@@ -405,7 +408,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   overflow: hidden;
   /* 收起态的停靠卡片以 left:calc(100% + 8px) 贴在本节点右缘,需要定位上下文 */
   position: relative;
-  transition: width var(--dur) var(--ease), min-width var(--dur) var(--ease), max-width var(--dur) var(--ease);
+  transition: width var(--dur-3) var(--ease-out-expo), min-width var(--dur-3) var(--ease-out-expo), max-width var(--dur-3) var(--ease-out-expo);
 }
 /* 侧栏头部：标题 26px 动作 + 28px 搜索；低频操作收进「⠇」，去掉与分组条之间冗余的双重横线。 */
 .side-header { flex: none; padding: 12px 12px 6px; }
@@ -509,20 +512,48 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .host-group-chip.fav.active { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); }
 .host-group-chip.fav.active .chip-cnt { color: var(--warn); }
 
-#host-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
+#host-list {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 8px;
+  position: relative;
+}
+/* 活动主机滑动指示条(D2):靠 ::before + --ind-y/--ind-h 跟随激活行平滑滑移,不增加子节点 */
+#host-list::before {
+  content: "";
+  position: absolute;
+  left: 10px; top: 0; width: 3px;
+  height: var(--ind-h, 28px);
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+  opacity: var(--ind-o, 0);
+  transform: translateY(var(--ind-y, 0px));
+  pointer-events: none;
+  z-index: 3;
+}
+#host-list[data-ind="ready"]::before {
+  transition: transform var(--dur-3) var(--ease-out-expo), height var(--dur-3) var(--ease-out-expo), opacity var(--dur-2) var(--ease-out-expo);
+}
+#host-list[data-ind="ready"] .host-item.active::before { opacity: 0; }
 
-/* 行：44px 两行；状态点在左，星标在行尾 */
+/* 行：44px 两行；状态点在左，星标在行尾；进入快(--dur-1 out-expo)、离开柔(--dur-2 in-out) */
 .host-item {
   display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 8px;
   border-radius: var(--radius-sm); cursor: pointer; border: 0; position: relative; overflow: hidden;
   margin-bottom: 1px;
+  transition: background var(--dur-2) var(--ease-in-out), box-shadow var(--dur-2) var(--ease-in-out), transform var(--dur-2) var(--ease-in-out);
 }
-.host-item:hover { background: var(--row-hover); }
+.host-item:hover {
+  background: var(--row-hover);
+  transition: background var(--dur-1) var(--ease-out-expo), box-shadow var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
+}
+.host-item:active {
+  transform: scale(0.985);
+  transition-duration: var(--dur-1);
+}
 .host-item.active {
   background: var(--row-active);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
-/* 选中指示条：3px，不参与布局，文字不位移 */
+/* 选中指示条兜底：无 JS 量测前由行内伪元素兜底，量测就绪后交由 #host-list::before 滑移 */
 .host-item.active::before {
   content: ""; position: absolute; left: 2px; top: 8px; bottom: 8px; width: 3px;
   border-radius: var(--radius-xs); background: var(--accent);
@@ -556,11 +587,14 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .host-actions {
   position: absolute; right: 4px; top: 4px; bottom: 4px;
   display: flex; align-items: center; gap: 2px; padding-left: 20px; z-index: 2;
-  opacity: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  opacity: 0; transform: translateX(4px);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition: opacity var(--dur-2) var(--ease-in-out), transform var(--dur-2) var(--ease-in-out);
 }
 .host-item:hover .host-actions {
-  opacity: 1;
+  opacity: 1; transform: translateX(0);
   background: linear-gradient(90deg, transparent, var(--row-hover) 42%);
+  transition: opacity var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
 }
 .host-item.active:hover .host-actions {
   background: linear-gradient(90deg, transparent, var(--row-active) 42%);
@@ -636,8 +670,32 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 }
 #tabbar::-webkit-scrollbar { height: 0; }
 #tabs { display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto; position: relative; }
+/* 活动标签滑动药丸(D2):用 ::before 承接平滑位移,不在 #tabs 里插额外子节点 */
+#tabs::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: var(--pill-w, 0px);
+  transform: translateX(var(--pill-x, 0px));
+  opacity: var(--pill-o, 0);
+  background: var(--tab-active-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--tab-active-shadow);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 0;
+}
+#tabs[data-pill="ready"]::before {
+  transition: transform var(--dur-3) var(--ease-out-expo), width var(--dur-3) var(--ease-out-expo), opacity var(--dur-2) var(--ease-out-expo);
+}
+body.tab-dragging #tabs::before {
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-in-out);
+}
 .tab {
   position: relative;
+  z-index: 1;
   display: flex; align-items: center; gap: 6px;
   padding: 4px 10px;
   background: transparent;
@@ -647,12 +705,19 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   font-size: var(--fs-sm);
   color: var(--muted);
   max-width: 200px;
-  transition: background var(--dur-2) var(--ease-out-expo), color var(--dur-2) var(--ease-out-expo), border-color var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) var(--ease-out-expo), opacity var(--dur-2) var(--ease-out-expo), transform var(--dur-2) var(--ease-out-expo);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out), border-color var(--dur-2) var(--ease-in-out), box-shadow var(--dur-2) var(--ease-in-out), opacity var(--dur-2) var(--ease-in-out), transform var(--dur-1) var(--ease-out-expo);
+}
+.tab.tab-entering {
+  animation: tab-in var(--dur-3) var(--ease-spring) both;
 }
 .tab:hover:not(.active):not(.dragging) {
   background: var(--surface-hover);
   color: var(--text);
   border-color: transparent;
+  transition: background var(--dur-1) var(--ease-out-expo), color var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
+}
+.tab:active:not(.dragging) {
+  transform: scale(0.985);
 }
 .tab.active {
   color: var(--text);
@@ -660,6 +725,11 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   border-color: var(--border-subtle);
   font-weight: 500;
   box-shadow: var(--tab-active-shadow);
+}
+#tabs[data-pill="ready"] .tab.active:not(.dragging) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 .tab.dragging {
   color: var(--muted) !important;
@@ -888,8 +958,16 @@ body.is-fullscreen #win-controls { display: none; }
   display: flex; flex-direction: column;
   overflow: hidden;
   position: relative;
-  transition: width var(--dur) var(--ease), min-width var(--dur) var(--ease), margin-left var(--dur) var(--ease), visibility var(--dur) var(--ease);
+  transition: width var(--dur-4) var(--ease-out-expo), min-width var(--dur-4) var(--ease-out-expo), margin-left var(--dur-4) var(--ease-out-expo), visibility var(--dur-4) var(--ease-out-expo);
 }
+/* 展开时内部区块方向性滑入 + 轻量交错(24/48ms);收起时快退且零延迟,拖拽调宽时禁用过渡 */
+#ai-panel > .ai-header,
+#ai-panel > .ai-messages-wrap,
+#ai-panel > .ai-input-row {
+  transition: transform var(--dur-4) var(--ease-out-expo), opacity var(--dur-3) var(--ease-out-expo);
+}
+#ai-panel > .ai-messages-wrap { transition-delay: var(--stagger-1); }
+#ai-panel > .ai-input-row { transition-delay: var(--stagger-2); }
 /* 收起态仍留在布局里(宽度与左缝隙压到 0 + visibility:hidden),宽度过渡才能双向生效,
    因此显式覆盖 .hidden 的 display:none !important(width 需 !important 压过拖拽写入的内联宽)。 */
 #ai-panel.hidden {
@@ -898,6 +976,15 @@ body.is-fullscreen #win-controls { display: none; }
   margin-left: 0 !important;
   box-shadow: none;
   visibility: hidden;
+  transition: width var(--dur-3) var(--ease-in-out), min-width var(--dur-3) var(--ease-in-out), margin-left var(--dur-3) var(--ease-in-out), visibility var(--dur-3) var(--ease-in-out);
+}
+#ai-panel.hidden > .ai-header,
+#ai-panel.hidden > .ai-messages-wrap,
+#ai-panel.hidden > .ai-input-row {
+  transform: translateX(14px);
+  opacity: 0;
+  transition: transform var(--dur-2) var(--ease-in-out), opacity var(--dur-2) var(--ease-in-out);
+  transition-delay: 0s;
 }
 /* 头部:标题 / 模型下拉 / 设置 / 关闭 之间留出统一间距。
    高度 = 左侧 #tabbar 的 --tabbar-h,内边距上下对称,两条底部分隔线横向对齐。 */
@@ -924,6 +1011,9 @@ body.is-fullscreen #win-controls { display: none; }
   position: absolute; top: var(--tabbar-h); left: 0; right: 0; bottom: 0; z-index: 20;
   background: var(--panel); display: flex; flex-direction: column; overflow: hidden;
   box-shadow: var(--floating-shadow);
+}
+.ai-drawer:not(.hidden) {
+  animation: drawer-in-right var(--dur-3) var(--ease-out-expo) both;
 }
 .ai-drawer.hidden { display: none !important; }
 .ai-drawer-head {
@@ -2357,9 +2447,13 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color var(--dur-2) var(--ease-out-expo), background var(--dur-2) var(--ease-out-expo), color var(--dur-2) var(--ease-out-expo);
+  transition: border-color var(--dur-2) var(--ease-in-out), background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out), transform var(--dur-1) var(--ease-out-expo);
 }
-.btn:hover { border-color: var(--accent); }
+.btn:hover {
+  border-color: var(--accent);
+  transition: border-color var(--dur-1) var(--ease-out-expo), background var(--dur-1) var(--ease-out-expo), color var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
+}
+.btn:active:not(:disabled) { transform: scale(0.98); }
 .btn.primary {
   background: var(--btn-primary-bg);
   color: var(--btn-primary-text);
@@ -3068,9 +3162,18 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 }
 .picker-empty { color: var(--muted); font-size: var(--fs-md); text-align: center; padding: 30px 0; }
 
-/* 命令面板:贴近顶部(视线起点),输入框常驻焦点,结果用 activedescendant 高亮 */
-.modal.palette-modal { align-items: flex-start; padding-top: 12vh; background: var(--modal-backdrop-palette); }
+/* 命令面板:贴近顶部(视线起点),输入框常驻焦点,结果用 activedescendant 高亮;
+   全站唯一允许 backdrop-filter 的场景(仅遮罩背板,绝不作用于常驻面板或终端区)。 */
+.modal.palette-modal {
+  align-items: flex-start; padding-top: 12vh;
+  background: var(--modal-backdrop-palette);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
 .palette-card { width: 600px; padding: 10px; display: flex; flex-direction: column; overflow: hidden; }
+.modal.palette-modal:not(.hidden) .palette-card {
+  animation: palette-in var(--dur-3) var(--ease-out-expo) both;
+}
 #palette-input { width: 100%; margin: 0; font-size: var(--fs-lg); }
 #palette-list {
   max-height: min(420px, 56vh); overflow-y: auto; margin-top: 8px;
@@ -3083,6 +3186,10 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .pal-row {
   display: flex; align-items: center; gap: 8px; min-height: 30px;
   padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs-md);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.pal-row:hover, .pal-row.active {
+  transition: background var(--dur-1) var(--ease-out-expo), color var(--dur-1) var(--ease-out-expo);
 }
 .pal-row.active { background: var(--active-bg); }
 .pal-row[aria-disabled="true"] { cursor: default; }
@@ -4474,12 +4581,32 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
      统一定义在文件顶部的主 :root 块(禁止再开第二个 :root 块)。
    - 尊重 prefers-reduced-motion:全站统一在下方单一块收拢兜底。 */
 
-/* 浮动面板/菜单:淡入 + 轻微上浮,提示"从哪冒出来的" */
+/* 浮动面板/菜单/弹窗/标签/抽屉方向性进出 keyframes (D2) */
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(-6px) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
-#ctx-menu:not(.hidden) { animation: pop-in var(--dur) var(--ease); }
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes palette-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tab-in {
+  from { opacity: 0; transform: scale(0.92) translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes drawer-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+#ctx-menu:not(.hidden) { animation: pop-in var(--dur-2) var(--ease-out-expo) both; }
 
 /* ===== 模型配置与思考强度 (阶段 2/3) ===== */
 .model-config-section {
@@ -4756,22 +4883,20 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   transform: translateX(-50%); white-space: nowrap;
 }
 
-.modal:not(.hidden) { animation: fade-in var(--dur-2) var(--ease-out-expo); }
-.modal:not(.hidden) .modal-card { animation: card-in var(--dur-3) var(--ease-out-expo); }
+.modal:not(.hidden) { animation: fade-in var(--dur-2) var(--ease-out-expo) both; }
+.modal:not(.hidden) .modal-card { animation: card-in var(--dur-3) var(--ease-out-expo) both; }
 
 /* 侧边面板(#sidebar / #ai-panel)展开与收起:宽度过渡,规则写在各自定义处。
    早期版本用 transform 滑入规避宽度动画(每帧重排 + xterm fit 的开销),但
    transform 撑不开布局,收起方向也无从动画;实际每帧 fit 与手动拖拽调宽走的是
    同一条 ResizeObserver 路径,开销可接受,故改为双向宽度过渡。
    拖拽调宽逐帧写 width,过渡必须关掉,否则拖动不跟手。 */
-body.resizing #sidebar, body.resizing #ai-panel { transition: none; }
-
-/* 标签页:新建/切换时轻微反馈,让"切到哪一个"更明确 */
-.tab { transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
-.tab:active { transform: translateY(1px); }
+body.resizing #sidebar,
+body.resizing #ai-panel,
+body.resizing #ai-panel > * { transition: none; }
 
 /* 窗格:聚焦描边淡入,减少分屏时焦点跳变的突兀感 */
-.term-pane { transition: outline-color var(--dur-fast) var(--ease); }
+.term-pane { transition: outline-color var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-3) var(--ease-out-expo); }
 
 /* 终端设置等表单控件与按钮的过渡已在 .btn 上;这里补齐输入控件的焦点反馈
    (box-shadow 一并过渡,「焦点规范」的 3px 柔光才是渐显而不是硬跳) */

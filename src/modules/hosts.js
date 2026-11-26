@@ -415,6 +415,41 @@ export function renderHosts() {
     nav.appendChild(renderRow(h));
   }
   nav.scrollTop = keepTop;
+  syncHostIndicator();
+}
+
+let hostIndObserver = null;
+/// D2 活动主机滑动指示条：量测活动 .host-item 的 offsetTop/offsetHeight 写入 #host-list CSS 变量，
+/// 驱动 #host-list::before 沿列表平滑滑移；同时挂轻型观察器覆盖非 renderHosts 的 DOM 激活。
+export function syncHostIndicator() {
+  const list = $('#host-list');
+  if (!list || typeof list.style?.setProperty !== 'function') return;
+  if (!hostIndObserver && typeof MutationObserver === 'function') {
+    hostIndObserver = new MutationObserver(() => syncHostIndicator());
+    hostIndObserver.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  }
+  const active = list.querySelector?.('.host-item.active');
+  const h = typeof active?.offsetHeight === 'number' ? active.offsetHeight : 0;
+  if (!active || !(h > 0)) {
+    list.style.setProperty('--ind-o', '0');
+    if (list.dataset) delete list.dataset.ind;
+    return;
+  }
+  const y = (typeof active.offsetTop === 'number' ? active.offsetTop : 0) + 8;
+  const barH = Math.max(12, h - 16);
+  const wasReady = list.dataset?.ind === 'ready';
+  list.style.setProperty('--ind-y', y + 'px');
+  list.style.setProperty('--ind-h', barH + 'px');
+  list.style.setProperty('--ind-o', '1');
+  if (!wasReady && list.dataset) {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if (list.querySelector?.('.host-item.active')) list.dataset.ind = 'ready';
+      });
+    } else {
+      list.dataset.ind = 'ready';
+    }
+  }
 }
 
 export function isActiveHost(hostId) {

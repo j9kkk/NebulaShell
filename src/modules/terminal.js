@@ -53,6 +53,10 @@ export function makeTab(tabId) {
     e.stopPropagation(); // 别让窗口级处理器(终端菜单)再插一手
     openTabCtxMenu(e.clientX, e.clientY, tabId);
   });
+  if (typeof el.classList?.add === 'function' && typeof el.addEventListener === 'function') {
+    el.classList.add('tab-entering');
+    el.addEventListener('animationend', () => el.classList.remove('tab-entering'), { once: true });
+  }
   $('#tabs').appendChild(el);
   return el;
 }
@@ -173,6 +177,35 @@ export function setActiveTabId(tabId) {
   state.activeTabId = tabId;
   for (const [id, t] of state.tabs) t.el.classList.toggle('active', id === tabId);
   if (changed) revealActiveTab();
+  syncTabPill();
+}
+
+/// D2 活动标签滑动药丸：量测活动 .tab 的 offsetLeft/offsetWidth 写入 #tabs CSS 变量，
+/// 驱动 #tabs::before 平滑滑移；不向 #tabs 插入任何额外子元素（保持 children 纯标签契约）。
+export function syncTabPill() {
+  const strip = $('#tabs');
+  if (!strip || typeof strip.style?.setProperty !== 'function') return;
+  const active = strip.querySelector?.('.tab.active');
+  const w = typeof active?.offsetWidth === 'number' ? active.offsetWidth : 0;
+  if (!active || !(w > 0)) {
+    strip.style.setProperty('--pill-o', '0');
+    if (strip.dataset) delete strip.dataset.pill;
+    return;
+  }
+  const x = typeof active.offsetLeft === 'number' ? active.offsetLeft : 0;
+  const wasReady = strip.dataset?.pill === 'ready';
+  strip.style.setProperty('--pill-x', x + 'px');
+  strip.style.setProperty('--pill-w', w + 'px');
+  strip.style.setProperty('--pill-o', '1');
+  if (!wasReady && strip.dataset) {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if (strip.querySelector?.('.tab.active')) strip.dataset.pill = 'ready';
+      });
+    } else {
+      strip.dataset.pill = 'ready';
+    }
+  }
 }
 
 // —— 标签条溢出:滚动条已隐藏(见 style.css #tabs),改由滚轮横向滚动、活动标签
@@ -201,6 +234,7 @@ function syncTabOverflow() {
   strip.classList.toggle('at-end', strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1);
   button.classList.toggle('hidden', !over);
   button.querySelector('.tab-count').textContent = String(state.tabs.size);
+  syncTabPill();
 }
 
 /// 全部标签列表(「全部标签」按钮与 tabs.list 命令共用):活动项打勾,选中即切换。
@@ -400,12 +434,14 @@ export function bindTabStrip() {
             tabEl.classList.remove('tab-snapping');
             ghost.remove?.();
             cleanOthers();
+            syncTabPill();
           };
           ghost.addEventListener('transitionend', settle, { once: true });
           setTimeout(settle, 180);
         } else {
           ghost?.remove?.();
           cleanOthers();
+          syncTabPill();
         }
       },
     });
@@ -575,6 +611,7 @@ export function syncTabChrome() {
   const home = $('#tab-home');
   if (home) home.hidden = state.tabs.size > 0;
   syncWorkspaceChrome(state.tabs, state.activeTabId);
+  syncTabPill();
 }
 
 // —— 分屏布局(E3):二叉布局树,leaf 持有 paneId ——
