@@ -18,6 +18,7 @@
 | **C2-1** | 门禁真归零：`border` 简写族纳入 `token-color` + 清 9 处漏网硬编码描边 + `row-decoration` 修正 + `token-contrast` 进 CI | **error 0 / warn 0 / info 0**；技能脚本交叉扫 `rgb/rgba` 0 处 | 低：暗色下 `color-mix` 与原 `rgba` 逐像素等价 | ✅ 已完成（`10-c2-gates-selection-import.md`） |
 | **C2-2** | 侧栏激活态实测调优（亮色 `--row-active` ΔL 2.3→3.9 + inset 描边 + 3px 指示条）+ 侧栏「+ 新建」降为次级强调态 | `lint:css` 0/0/0；真机 `dx=0`、`actH=normH=44` | 中：色阶/权重变化，暗亮双拍 | ✅ 已完成（同上） |
 | **C2-3** | 导入预览冲突行设「跳过」后不再计入「将导入 N 台」（抽 `src/shared/import-plan.js` 单一口径） | 单测 575→**580**；真机五态断言 | 无：`ab --ref b1b0dad` 净差 0 | ✅ 已完成（同上） |
+| **C2-4** | 导入预览「处置」表头右对齐 + 主机库「凭据」列宽 48→62px（「待补全」零截断）+ `.hl-th-act` 特异性提权 | `lint:css` 0/0/0；真机 `dR=0`、9 列 `trunc: false` | 低：仅改两处表格列宽与对齐，暗亮 4 屏复核通过 | ✅ 已完成（同上） |
 
 顺序不可颠倒：B0 修「声明失效」→ B1/B2 依赖 token 层正确 → B3 必须最后（字号一动，所有对像素的判断基线全变）→ B4/B5/B6 收尾（B6 把死回落与不可达断点删干净，换皮时才不会被残留值干扰）→ C1 起才换皮 → C2 把门禁补严、用实测收敛视觉层级。
 详见 `01-style-debt-audit.md`（含 332 条 findings 明细与 `01-audit-data.json`）。

@@ -4898,12 +4898,13 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 /* 排序落点:改用 inset box-shadow 代替 border-top，避免改变行高导致整表抖动 */
 .hl-table tbody tr.insert-top td, .hl-table tbody tr.insert td { box-shadow: inset 0 2px 0 var(--accent) !important; }
 .hl-table tbody tr.insert-bottom td { box-shadow: inset 0 -2px 0 var(--accent) !important; }
-/* 列宽预算(表格区约 756px):固定列 494 + 名称 160 + 标签自适应 ≈ 102。
-   名称列必须保底 160 —— `OpenCloudOS-u058` 在 12px 下约 118px,
-   table-layout:fixed 会把无宽度的 auto 列平分,名称曾被挤到截断。 */
+/* 列宽预算(表格区约 746–756px):固定列 500 + 名称 160 + 标签自适应 ≈ 86–96。
+   名称列必须保底 160 —— `OpenCloudOS-u058` 在 12px 下约 118px;
+   凭据列保底 62 —— `待补全`(36px) + 左右内距 16px = 52px，加 10px 跨平台字体余量，不再截成 `待…`。 */
 .hl-w-h { width: 28px; } .hl-w-chk { width: 34px; } .hl-w-name { width: 160px; } .hl-w-user { width: 64px; }
-.hl-w-addr { width: 132px; } .hl-w-grp { width: 92px; } .hl-w-cred { width: 48px; } .hl-w-act { width: 104px; }
-.hl-th-act { text-align: right; }
+.hl-w-addr { width: 132px; } .hl-w-grp { width: 84px; } .hl-w-cred { width: 62px; } .hl-w-act { width: 104px; }
+/* 操作表头需同 .hl-th-chk 一样提权，否则被 .hl-table thead th (0,1,2) 的 text-align:left 压过 */
+.hl-table thead th.hl-th-act { text-align: right; }
 /* 勾选/拖拽列:表头与行内一律水平零内距 + 居中,二者才对得齐。
    垂直内距不动(th 8px / td 6px 各自保留),否则表头会莫名被压矮 4px。
    表头还需单独提权:`.hl-table thead th` 的 text-align:left 是 (0,1,2),
@@ -5545,6 +5546,8 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 .io-list-head,
 .io-item { grid-template-columns: 24px 34px minmax(0, 1.15fr) minmax(0, 1.35fr) minmax(0, 0.6fr) 30px 74px; }
 .io-list-head span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 末列「处置」与行内 .io-r-dec（justify-self: end）保持同侧右对齐 */
+.io-list-head > span:last-child { justify-self: end; text-align: right; }
 .io-foot { flex-wrap: wrap; row-gap: 6px; justify-content: flex-end; }
 .io-hint { white-space: normal; flex: 1 1 auto; }
 

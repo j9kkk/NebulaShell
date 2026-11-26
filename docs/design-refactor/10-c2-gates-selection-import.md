@@ -227,7 +227,21 @@ const writableRows = () =>
 
 ---
 
-## 4. 三条可复用的结论
+## 4. C2-4：导入预览「处置」列对齐 + 主机库「凭据」列宽与「操作」表头对齐
+
+视觉复核里额外标出的两处既有表格排版细节（外加同行查出的 1 条死规则），单独成批收口：
+
+| 位置 | 根因（真机实测） | 修法 | 复核结果 |
+|---|---|---|---|
+| 导入预览 `.io-list-head` 末列「处置」（`style.css:5549`） | 行内 `.io-r-dec` 是 `justify-self: end` 右对齐（右缘 `893px`），表头走默认左对齐，与下方下拉/标签错开 20–38px | `.io-list-head > span:last-child { justify-self: end; text-align: right; }` | `dR1 = 0`、`dR2 = 0`，表头与「跳过」下拉/「新增」标签右缘同线 |
+| 主机库 `.hl-w-cred`（`style.css:4905`） | 宽 48px 扣 16px 内距仅余 32px，「待补全」实测 `scrollWidth 52 > clientWidth 48` 被截成 `待…` | `.hl-w-cred` 48→62px、`.hl-w-grp` 92→84px（标签列仅微缩 6px 至 78px） | `cw 62 === sw 62`，`trunc: false`，全 9 列零截断 |
+| 主机库 `.hl-th-act`（`style.css:4907`） | 特异性 `(0,1,0)` 被 `.hl-table thead th` `(0,1,2)` 的 `text-align: left` 压过，与右对齐的 `.hl-acts` 错位 | 提权为 `.hl-table thead th.hl-th-act { text-align: right; }` | `ta: "right"`，暗/亮 4 屏截图复核均对齐整齐 |
+
+门禁保持全绿：`lint:css --strict --all` 0/0/0、`css-token-audit` `rgb/rgba` 0 处、`token-contrast` 26/26、`test:unit` 580/580。
+
+---
+
+## 5. 三条可复用的结论
 
 1. **门禁报 0 不等于真的 0**。要拿**另一个口径**（技能脚本 `css-token-audit.mjs`）交叉扫一遍：
    这次正是两套工具的并集才暴露出 `border` 简写整族漏检。
