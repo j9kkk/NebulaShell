@@ -120,10 +120,17 @@ for (const theme of ['dark', 'light']) {
   const bg = find(t, '--bg');
   process.stdout.write(`\n${theme === 'dark' ? '暗色' : '亮色'}\n`);
   const local = [];
-  for (const s of SURFACES) {
+  for (const s of ['--canvas', ...SURFACES]) {
     if (!t[s]) continue;
-    step(`${'--text'.padEnd(15)} on ${s.padEnd(7)}`, find(t, '--text'), find(t, s), 4.5);
-    step(`${'--muted'.padEnd(15)} on ${s.padEnd(7)}`, find(t, '--muted'), find(t, s), 4.5);
+    step(`${'--text'.padEnd(15)} on ${s.padEnd(8)}`, find(t, '--text'), find(t, s), 4.5);
+    step(`${'--muted'.padEnd(15)} on ${s.padEnd(8)}`, find(t, '--muted'), find(t, s), 4.5);
+  }
+  // 浮岛台阶(D1):画布底板 → 浮岛表面必须 ≥ 4.0 L*,去通栏描边后暗亮两套才能自然分层不糊
+  if (find(t, '--canvas') && find(t, '--panel')) {
+    const d = Math.abs(lstar(find(t, '--panel')) - lstar(find(t, '--canvas')));
+    const ok = d >= 4.0;
+    if (!ok) bad++;
+    local.push({ label: '--canvas → --panel 浮岛 L* 台阶', value: d.toFixed(1), min: '4.0', ok });
   }
   step(`${'--text-on-accent'.padEnd(15)} on --accent`, find(t, '--text-on-accent'), find(t, '--accent'), 4.5);
   step(`${'--text-on-accent'.padEnd(15)} on --danger`, find(t, '--text-on-accent'), find(t, '--danger'), 4.5);
