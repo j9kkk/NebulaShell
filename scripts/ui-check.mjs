@@ -381,6 +381,39 @@ const SCENES = {
     await new Promise(r => setTimeout(r, 300));
     return 'hosts';
   `,
+  // 侧栏多主机 + 1 台激活态探针（非破坏性：只克隆临时 DOM 行，切走场景自动清理）
+  'hosts-active': `
+    const list = document.getElementById('host-list');
+    if (!list) return { ok: false, reason: 'no-host-list' };
+    list.querySelectorAll('[data-probe-host]').forEach(e => e.remove());
+    const orig = list.querySelector('.host-item');
+    if (!orig) return { ok: false, reason: 'no-host-item' };
+    const mk = (name, ip, active, dotCls) => {
+      const d = orig.cloneNode(true);
+      d.dataset.probeHost = '1';
+      d.className = 'host-item' + (active ? ' active' : '');
+      const t = d.querySelector('.host-name .t'); if (t) t.textContent = name;
+      const ipEl = d.querySelector('.host-sub .ip'); if (ipEl) ipEl.textContent = ip;
+      const dot = d.querySelector('.host-dot'); if (dot) dot.className = 'host-dot' + (dotCls ? ' ' + dotCls : '');
+      return d;
+    };
+    const act = mk('api-prod-01', '10.0.4.11', true, 'connected');
+    const sib = mk('db-prod-01', '10.0.4.15', false, '');
+    list.insertBefore(act, orig);
+    list.appendChild(sib);
+    await new Promise(r => setTimeout(r, 200));
+    const rAct = act.querySelector('.host-name .t').getBoundingClientRect();
+    const rNorm = orig.querySelector('.host-name .t').getBoundingClientRect();
+    return {
+      rows: list.querySelectorAll('.host-item').length,
+      dx: +(rAct.left - rNorm.left).toFixed(2),
+      actH: Math.round(act.getBoundingClientRect().height),
+      normH: Math.round(orig.getBoundingClientRect().height),
+      actBg: getComputedStyle(act).backgroundColor,
+      actFw: getComputedStyle(act.querySelector('.host-name')).fontWeight,
+      normFw: getComputedStyle(orig.querySelector('.host-name')).fontWeight,
+    };
+  `,
 };
 
 // 关掉所有打开的弹窗：走它们自己的关闭按钮（不是 classList hack）——
@@ -397,7 +430,7 @@ const CLEAR_MODALS = `
 `;
 
 async function applyScene(name) {
-  await evalJs("document.getElementById('__probe-tag')?.remove(); return 1;", 10000);
+  await evalJs("document.getElementById('__probe-tag')?.remove(); document.getElementById('__probe-light')?.remove(); document.querySelectorAll('[data-probe-host]').forEach(e => e.remove()); return 1;", 10000);
   const left = await evalJs(CLEAR_MODALS, 20000);
   if (left.length) console.log(`[ui-check] 警告：这些弹窗没关掉 ${left.join(', ')}`);
   const js = SCENES[name];
@@ -507,7 +540,7 @@ function usage() {
   node scripts/ui-check.mjs inject <css>|-c         运行时注入/清除候选 token 覆盖（换皮对比）
   node scripts/ui-check.mjs shot <名字>               截图 → ${SHOTS}/<名字>.png
   node scripts/ui-check.mjs theme dark|light          走真实 UI 切主题并保存
-  node scripts/ui-check.mjs scene hosts|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel|light-probe   驱动到可复现场景
+  node scripts/ui-check.mjs scene hosts|hosts-active|import-preview|rdp-top|rdp-advanced|host-library|settings|host-tag-probe|ai-panel|light-probe   驱动到可复现场景
   node scripts/ui-check.mjs ab <名字> [--ref R | --css 文件] [--scene S]
                                                     旧 CSS(默认 ${BASELINE_REF}) vs 现状：样式+像素（净差异非 0 时退出码 2）
 

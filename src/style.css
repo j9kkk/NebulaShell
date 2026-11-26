@@ -162,7 +162,7 @@
   --select-arrow: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 5.5l4 4 4-4' fill='none' stroke='%23656d76' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   --surface-hover: rgba(31, 35, 40, 0.08);
   --row-hover:  #e9eef6;
-  --row-active:  #dbe6f5;
+  --row-active: #d2e2f7;
   --field:  #eef2f7;
   --btn-primary-solid: #0969da;
   --hover-bg: rgba(9, 105, 218, 0.08);
@@ -387,8 +387,17 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 .side-title .btn.icon { --ctl-h: 26px; width: 26px; border-radius: var(--radius-sm); }
 .side-title .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .side-title .btn.ghost:hover { background: var(--surface-hover); border-color: transparent; color: var(--text); }
-#btn-add-host.btn.primary { background: var(--btn-primary-solid); border-color: transparent; box-shadow: none; }
-#btn-add-host.btn.primary:hover { filter: brightness(1.08); }
+/* 侧栏「+ 新建」用次级强调态（描边 + 品牌字色），避免在欢迎空态与主区「新建主机」主按钮抢焦 */
+#btn-add-host {
+  background: var(--bg2);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  box-shadow: none;
+}
+#btn-add-host:hover {
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg2));
+  border-color: var(--accent);
+}
 /* 侧栏本体包住头部与列表：展开态占满侧栏，收起后悬停时整体变成停靠卡片（同一份 DOM）。
    容器查询挂在这里而不是 #sidebar：两种形态共用这份 DOM，查询必须按面板实际宽度
    评估 —— #sidebar 收起后恒为 40px，挂在它上面会让查询永远命中「窄」档。 */
@@ -474,12 +483,16 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   margin-bottom: 1px;
 }
 .host-item:hover { background: var(--row-hover); }
-.host-item.active { background: var(--row-active); }
-/* 选中指示条：2px，不参与布局，文字不位移 */
+.host-item.active {
+  background: var(--row-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* 选中指示条：3px，不参与布局，文字不位移 */
 .host-item.active::before {
-  content: ""; position: absolute; left: 2px; top: 11px; bottom: 11px; width: 2px;
+  content: ""; position: absolute; left: 2px; top: 8px; bottom: 8px; width: 3px;
   border-radius: var(--radius-xs); background: var(--accent);
 }
+.host-item.active .host-name { font-weight: 650; color: var(--text); }
 .host-st { width: 12px; flex: none; display: flex; justify-content: center; }
 .host-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: .38; }
 .host-dot.connected { background: var(--accent2); opacity: 1; box-shadow: var(--ring-ok); }
