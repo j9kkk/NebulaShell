@@ -97,9 +97,10 @@ function flushDecls(chunk, start, stack, out, lineOf) {
 
 const COLOR_LITERAL = /(#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(|\b(?:red|blue|green|white|black|gray|grey|yellow|orange|purple)\b)/;
 const PLATFORM_SCOPE = /platform-(?:darwin|nonmacos)/;
-const COLOR_PROPS = new Set(['color', 'background', 'background-color', 'border-color', 'border-top-color',
-  'border-bottom-color', 'border-left-color', 'border-right-color', 'outline-color', 'fill', 'stroke',
-  'box-shadow', 'text-shadow', 'caret-color', 'text-decoration-color']);
+const COLOR_PROPS = new Set(['color', 'background', 'background-color', 'border', 'border-top',
+  'border-bottom', 'border-left', 'border-right', 'border-color', 'border-top-color',
+  'border-bottom-color', 'border-left-color', 'border-right-color', 'outline', 'outline-color',
+  'fill', 'stroke', 'box-shadow', 'text-shadow', 'caret-color', 'text-decoration-color']);
 const SIZING_PROPS = new Set(['width', 'height', 'padding', 'padding-top', 'padding-bottom', 'padding-left',
   'padding-right', 'padding-inline', 'padding-block', 'margin', 'margin-top', 'margin-bottom',
   'margin-left', 'margin-right', 'gap', 'row-gap', 'column-gap', 'border-radius']);
@@ -119,7 +120,9 @@ const rules = [
       if (!COLOR_PROPS.has(prop)) return null;
       if (VAR_OK.test(value) || /^(transparent|inherit|currentColor|none|unset|initial)$/i.test(value)) return null;
       if (/^var\(/.test(value)) return null;
-      const m = COLOR_LITERAL.exec(value);
+      // 剥掉无回落的 var(--name)，避免变量名含颜色词(如 --gray/--red)误报；有回落的 var(--x, #fff) 仍会被拦
+      const stripped = value.replace(/var\(\s*--[\w-]+\s*\)/g, '');
+      const m = COLOR_LITERAL.exec(stripped);
       return m ? `颜色字面量 ${m[1]} —— 改用 var(--…)` : null;
     },
   },
@@ -216,13 +219,15 @@ const rules = [
     },
   },
   {
-    // R1:td/th/li 上画线需确认「数据槽位只放数据行」;值必须是变量或 none/0
+    // R1:td/th/li 上画线需确认「数据槽位只放数据行」;颜色必须走 token(支持 1px solid var(--…))或 none/0
     id: 'row-decoration',
     level: 'info',
     check: ({ prop, value, selector }) => {
       if (!/^(border|border-top|border-bottom|border-left|border-right)$/.test(prop)) return null;
       if (!/\b(td|th|li)\b/.test(selector)) return null;
-      if (/^(none|0)$|^var\(--/.test(value.trim())) return null;
+      const v = value.trim();
+      if (/^(none|0)$|^var\(--/.test(v)) return null;
+      if (/var\(--/.test(v) && !COLOR_LITERAL.test(v.replace(/var\(\s*--[\w-]+\s*\)/g, ''))) return null;
       return `${selector} 上的 ${prop} 为字面量;行级装饰应走 token,且必须保证空态不占行槽位`;
     },
   },

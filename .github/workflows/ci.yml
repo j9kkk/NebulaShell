@@ -87,10 +87,14 @@ jobs:
       - name: 运行前端单测
         run: npm run test:unit
 
-      # 样式契约门禁(B0–B5 收口后 warn=0):token/圆角/字号/色值/@media 尺寸
+      # 样式契约门禁(B0–C2 收口后 error/warn/info 全 0):token/圆角/字号/色值/@media 尺寸
       # 逐条可审计,新引入的裸值与平台特值会当场失败。--all 只在本地排查时用。
       - name: 样式契约 lint
         run: npm run lint:css -- --strict
+
+      # 主题对比度与表面 L* 台阶门禁(C1 起 26/26 全绿):防止调色把对比度或层级拉回不达标
+      - name: 主题对比度与层次体检
+        run: node scripts/token-contrast.mjs
 
   ui-e2e:
     name: UI 端到端测试 (macOS)

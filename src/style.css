@@ -3082,10 +3082,10 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   font-size: var(--fs-xs); font-weight: 600; padding: 2px 7px; border-radius: var(--radius-xs); letter-spacing: 0.2px; flex-shrink: 0;
 }
 .cloud-vendor-pill.tencent {
-  background: color-mix(in srgb, var(--vendor-tencent) 15%, transparent); color: var(--vendor-tencent); border: 1px solid rgba(0, 164, 255, 0.3);
+  background: color-mix(in srgb, var(--vendor-tencent) 15%, transparent); color: var(--vendor-tencent); border: 1px solid color-mix(in srgb, var(--vendor-tencent) 30%, transparent);
 }
 .cloud-vendor-pill.aliyun {
-  background: color-mix(in srgb, var(--vendor-aliyun) 15%, transparent); color: var(--vendor-aliyun); border: 1px solid rgba(255, 106, 0, 0.3);
+  background: color-mix(in srgb, var(--vendor-aliyun) 15%, transparent); color: var(--vendor-aliyun); border: 1px solid color-mix(in srgb, var(--vendor-aliyun) 30%, transparent);
 }
 .cloud-card-label { font-size: var(--fs-md); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 .cloud-card-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
@@ -3110,10 +3110,10 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   word-break: break-all;
 }
 .cloud-card-test-result.success {
-  background: color-mix(in srgb, var(--ok-color) 10%, transparent); border: 1px solid rgba(52, 211, 153, 0.25); color: var(--ok-color);
+  background: color-mix(in srgb, var(--ok-color) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ok-color) 25%, transparent); color: var(--ok-color);
 }
 .cloud-card-test-result.error {
-  background: color-mix(in srgb, var(--danger) 10%, transparent); border: 1px solid rgba(255, 107, 107, 0.25); color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); color: var(--danger);
 }
 
 /* 设置中心云账号分区工具栏与注记 */
@@ -3181,7 +3181,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .strip-muted { color: var(--muted); font-size: var(--fs-sm); }
 .strip-manage-link {
   font-size: var(--fs-sm); color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
-  padding: 2px 8px; border-radius: var(--radius-xs); border: 1px solid rgba(56, 189, 248, 0.2);
+  padding: 2px 8px; border-radius: var(--radius-xs); border: 1px solid color-mix(in srgb, var(--accent-sky) 20%, transparent);
   background: color-mix(in srgb, var(--accent-sky) 8%, transparent); font-weight: 500; height: 26px; box-sizing: border-box;
 }
 .strip-manage-link:hover { background: color-mix(in srgb, var(--accent-sky) 16%, transparent); color: var(--accent2); }
@@ -3859,7 +3859,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .rp-head { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border); }
 .rp-ic {
   width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm); display: grid; place-items: center;
-  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); border: 1px solid rgba(91, 140, 255, .16);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .rp-ic svg { width: 14px; height: 14px; }
 .rp-title { font-size: var(--fs-sm); font-weight: 600; letter-spacing: .1px; }
@@ -3928,7 +3928,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 }
 .rp-host.on .rp-cb { background: var(--accent); border-color: var(--accent); }
 .rp-host.on .rp-cb::after {
-  content: ''; width: 6px; height: 3px; border-left: 1.5px solid #fff; border-bottom: 1.5px solid #fff;
+  content: ''; width: 6px; height: 3px; border-left: 1.5px solid var(--text-on-accent); border-bottom: 1.5px solid var(--text-on-accent);
   transform: rotate(-45deg) translateY(-1px); display: block;
 }
 .rp-nm { font-size: var(--fs-xs); color: var(--text); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4906,7 +4906,7 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 .hl-tag {
   display: inline-block; font-size: var(--fs-2xs); line-height: 15px; padding: 0 5px;
   border-radius: var(--radius-xs); background: var(--hover-bg); color: var(--accent);
-  border: 1px solid rgba(91, 140, 255, 0.28); margin-right: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); margin-right: 3px;
 }
 /* 把手长显:它是排序的唯一入口,藏进 hover 里等于不存在(用户实测反馈)。
    竖向六点是行排序的通用把手形状;横向三点是"更多"的语义,不能混用。 */
@@ -4980,7 +4980,7 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 .hl-batch-empty.hidden, .hl-batch-active.hidden { display: none !important; }
 .hl-sel {
   font-weight: 600; color: var(--accent);
-  background: var(--hover-bg); border: 1px solid rgba(91, 140, 255, 0.3);
+  background: var(--hover-bg); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   padding: 2px 8px; border-radius: var(--radius-pill); font-size: var(--fs-xs); margin-right: 4px;
 }
 /* 「取消选择 Esc」里的键位徽章(原 hl-foot 的快捷键提示并入底栏) */
@@ -5061,7 +5061,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   overflow: hidden;
   max-height: calc(100vh - 110px);
 }
-/* 卡片宽度:永远不超出视口宽度(窄屏下 calc 兜底,见文件末尾的 @media) */
+/* 卡片宽度:永远不超出视口宽度(calc 兜底) */
 .modal-card.io-export { width: min(560px, calc(100vw - 24px)); }
 .modal-card.io-import,
 .modal-card.io-conflict { width: min(560px, calc(100vw - 24px)); }
