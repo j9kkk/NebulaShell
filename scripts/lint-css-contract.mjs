@@ -104,6 +104,10 @@ const COLOR_PROPS = new Set(['color', 'background', 'background-color', 'border'
 const SIZING_PROPS = new Set(['width', 'height', 'padding', 'padding-top', 'padding-bottom', 'padding-left',
   'padding-right', 'padding-inline', 'padding-block', 'margin', 'margin-top', 'margin-bottom',
   'margin-left', 'margin-right', 'gap', 'row-gap', 'column-gap', 'border-radius']);
+const MOTION_PROPS = new Set(['transition', 'transition-duration', 'transition-timing-function',
+  'animation', 'animation-duration', 'animation-timing-function']);
+const MOTION_DUR_LITERAL = /(?<![\w.-])(?:0?\.[0-9]+|[1-9][0-9]*(?:\.[0-9]+)?)(?:ms|s)\b/;
+const MOTION_EASE_LITERAL = /\b(?:ease-in-out|ease-in|ease-out|ease)\b|\bcubic-bezier\s*\(/;
 const VAR_OK = /^var\(--/;
 // JS 运行时写到元素 style 上的自定义属性(--i/--n 列表序号、--x/--y 拖拽位移等),
 // 样式表里查不到定义是正常的,不参与 token-undefined。
@@ -179,6 +183,25 @@ const rules = [
       const ok = parts.every((p) => /^var\(--radius|^(0|50%|inherit|none|unset)$/.test(p));
       if (ok) return null;
       return `圆角裸值 ${value} —— 改用 var(--radius-*)`;
+    },
+  },
+  {
+    // D0:动效时长与缓动必须走 token(--dur-1/2/3/4、--ease-out-expo/in-out/spring)
+    // 例外:1) prefers-reduced-motion 复位块;2) infinite 循环状态动画(服务状态,不服务切换);3) none / 0s / linear / step-*
+    id: 'token-motion',
+    level: 'warn',
+    check: ({ prop, value, atrules }) => {
+      if (!MOTION_PROPS.has(prop)) return null;
+      if (atrules.some((a) => /prefers-reduced-motion/.test(a))) return null;
+      const v = value.trim();
+      if (/^(none|inherit|initial|unset|0m?s)$/i.test(v)) return null;
+      if (prop.startsWith('animation') && /\binfinite\b/.test(v)) return null;
+      const stripped = v.replace(/var\(\s*--[\w-]+\s*\)/g, '');
+      const dur = MOTION_DUR_LITERAL.exec(stripped);
+      if (dur) return `动效时长字面量 ${dur[0]} —— 改用 var(--dur-1/2/3/4)`;
+      const ease = MOTION_EASE_LITERAL.exec(stripped);
+      if (ease) return `缓动曲线字面量 ${ease[0]} —— 改用 var(--ease-out-expo / --ease-in-out / --ease-spring)`;
+      return null;
     },
   },
   {
@@ -258,6 +281,44 @@ for (const rel of targets) {
   const css = fs.readFileSync(file, 'utf8');
   const srcLines = css.split('\n');
   const decls = scan(css);
+  // D0:全文件只允许一个 :root 块(补 token 回顶部块写,避免靠后的 :root 静默盖掉亮色值)
+  const rootStarts = [...new Set(decls.filter((d) => /^:root\b/.test(d.selector)).map((d) => d.scopeStartLine))].sort((a, b) => a - b);
+  for (const ln of rootStarts.slice(1)) {
+    const sample = decls.find((d) => d.scopeStartLine === ln);
+    if (sample && allowComment(srcLines, sample, 'single-root')) {
+      allowedByRule.set('single-root', (allowedByRule.get('single-root') || 0) + 1);
+      allowedTotal++;
+      continue;
+    }
+    findings.push({
+      rule: 'single-root', level: 'warn', file: rel, line: ln,
+      selector: sample?.selector || ':root', prop: ':root', value: '(duplicate block)',
+      msg: `第 ${ln} 行出现第二个 :root 块(主块在第 ${rootStarts[0]} 行) —— 补 token 请合回顶部主块`,
+    });
+    byRule.set('single-root', (byRule.get('single-root') || 0) + 1);
+    total++;
+  }
+  // D0:全文件只允许一个 @media (prefers-reduced-motion: reduce) 兜底块(集中收拢,不散落模块)
+  const cleanCss = blank(css);
+  const rmLines = [];
+  for (const m of cleanCss.matchAll(/@media[^{]*prefers-reduced-motion\s*:\s*reduce/g)) {
+    rmLines.push(cleanCss.slice(0, m.index).split('\n').length);
+  }
+  for (const ln of rmLines.slice(1)) {
+    const fakeDecl = { line: ln, scopeStartLine: ln };
+    if (allowComment(srcLines, fakeDecl, 'single-reduced-motion')) {
+      allowedByRule.set('single-reduced-motion', (allowedByRule.get('single-reduced-motion') || 0) + 1);
+      allowedTotal++;
+      continue;
+    }
+    findings.push({
+      rule: 'single-reduced-motion', level: 'warn', file: rel, line: ln,
+      selector: '@media (prefers-reduced-motion: reduce)', prop: '@media', value: '(duplicate block)',
+      msg: `第 ${ln} 行出现第二个 prefers-reduced-motion 块(主块在第 ${rmLines[0]} 行) —— 降级规则请集中写进全站单一兜底块`,
+    });
+    byRule.set('single-reduced-motion', (byRule.get('single-reduced-motion') || 0) + 1);
+    total++;
+  }
   // 「平台覆盖层」段落起始行:平台选择器只允许出现在此行之后(见 R5)
   const markIdx = css.indexOf('平台覆盖层');
   const sectionLine = markIdx < 0 ? Infinity : css.slice(0, markIdx).split('\n').length;

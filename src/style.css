@@ -140,6 +140,20 @@
   /* 标签栏高度:#tabbar 与 AI 面板 .ai-header 共用,保证两者底部分隔线横向对齐
      (两列分属不同 flex 容器,只能靠同一把尺子对齐,不能用内容自然高度)。 */
   --tabbar-h: 36px;
+
+  /* ── 动效语言(D0):四档时长 + 两曲线 + 一条只用于出现的弹簧 ───────────────
+     组件层禁止写裸时长/裸缓动(由 lint:css 的 token-motion 守门)。
+     --dur-fast / --dur / --ease 保留为语义别名指向新刻度,保证存量规则无缝继承。 */
+  --dur-1: 80ms;                                     /* 按压、图标微转、焦点环展开 */
+  --dur-2: 140ms;                                    /* 颜色、描边、图标填充、hover 离开 */
+  --dur-3: 220ms;                                    /* 位移:指示器滑动、展开收起、抽屉进出 */
+  --dur-4: 320ms;                                    /* 整块切换、面板/浮层出现 */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);    /* 进入:位移、展开、面板出现 */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);     /* 退出:收起、消失 */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* 只用于出现/回弹,永不用于退出 */
+  --dur-fast: var(--dur-2);
+  --dur: var(--dur-3);
+  --ease: var(--ease-out-expo);
 }
 
 [data-theme="light"] {
@@ -606,7 +620,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   font-size: var(--fs-sm);
   color: var(--muted);
   max-width: 200px;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+  transition: background var(--dur-2) var(--ease-out-expo), color var(--dur-2) var(--ease-out-expo), border-color var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) var(--ease-out-expo), opacity var(--dur-2) var(--ease-out-expo), transform var(--dur-2) var(--ease-out-expo);
 }
 .tab:hover:not(.active):not(.dragging) {
   background: var(--surface-hover);
@@ -903,7 +917,7 @@ body.is-fullscreen #win-controls { display: none; }
 .ai-drawer-card {
   padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg2); cursor: pointer; display: flex; flex-direction: column; gap: 6px;
-  transition: background var(--dur), border-color var(--dur);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .ai-drawer-card:hover {
   background: var(--hover-bg); border-color: var(--accent);
@@ -1011,9 +1025,6 @@ body.is-fullscreen #win-controls { display: none; }
 }
 .ai-thread-trigger.has-unread .ai-thread-dot {
   display: inline-block; background: var(--accent);
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-thread-trigger.has-busy .ai-thread-dot { animation: none; }
 }
 .ai-thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-thread-caret { flex: none; display: inline-flex; color: var(--muted); }
@@ -2041,7 +2052,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   stroke-linecap: round;
   stroke-dasharray: 47.12;
   stroke-dashoffset: 47.12;
-  transition: stroke-dashoffset 0.3s ease, stroke 0.3s ease;
+  transition: stroke-dashoffset var(--dur-4) var(--ease-out-expo), stroke var(--dur-4) var(--ease-out-expo);
 }
 .ai-context-trigger[data-status="warn"] .ai-context-ring .mon-ring-fg {
   stroke: var(--warn);
@@ -2091,7 +2102,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 }
 .ai-ctx-bar-seg {
   height: 100%;
-  transition: width 0.3s ease;
+  transition: width var(--dur-4) var(--ease-out-expo);
 }
 .ai-ctx-bar-seg.sys { background: var(--scope-sys); }
 .ai-ctx-bar-seg.hist { background: var(--scope-hist); }
@@ -2319,7 +2330,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  transition: border-color var(--dur-2) var(--ease-out-expo), background var(--dur-2) var(--ease-out-expo), color var(--dur-2) var(--ease-out-expo);
 }
 .btn:hover { border-color: var(--accent); }
 .btn.primary {
@@ -2413,7 +2424,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   justify-content: center;
   cursor: pointer;
   padding: 0;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-2) var(--ease-out-expo), color var(--dur-2) var(--ease-out-expo);
 }
 .search-clear-btn:hover {
   background: var(--accent);
@@ -2629,7 +2640,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   position: relative; flex: none; width: 38px; height: 22px;
   border-radius: var(--radius-pill); background: var(--switch-off-bg);
   border: 1px solid var(--border); box-sizing: border-box;
-  transition: background-color 0.24s ease, border-color 0.24s ease;
+  transition: background-color var(--dur-3) var(--ease-out-expo), border-color var(--dur-3) var(--ease-out-expo);
 }
 /* 果冻位移:先冲过头约 6%,再回弹到位 */
 .switch-slider::after {
@@ -2637,8 +2648,8 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
   width: 16px; height: 16px; border-radius: 50%; background: var(--knob-bg);
   box-shadow: var(--shadow-xs);
   transition:
-    transform 0.36s cubic-bezier(0.34, 1.56, 0.64, 1),
-    width 0.16s ease-out;
+    transform var(--dur-4) var(--ease-spring),
+    width var(--dur-2) var(--ease-out-expo);
   will-change: transform;
 }
 .switch input[type="checkbox"]:checked + .switch-slider {
@@ -2656,11 +2667,6 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .switch:hover .switch-slider { border-color: var(--border-hover); }
 .switch-label { font-size: var(--fs-md); line-height: 20px; color: var(--text); }
 .switch input[type="checkbox"]:disabled + .switch-slider { opacity: 0.5; cursor: not-allowed; }
-@media (prefers-reduced-motion: reduce) {
-  .switch-slider, .switch-slider::after { transition-duration: 0.01s; }
-  .switch:active .switch-slider::after,
-  .switch input[type="checkbox"]:checked:active + .switch-slider::after { width: 16px; }
-}
 .key-status { color: var(--muted); font-size: var(--fs-sm); line-height: 1.5; overflow-wrap: anywhere; }
 .key-status:empty { display: none; }
 .key-path { color: var(--muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2861,7 +2867,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   background: var(--accent);
   /* 同心圆角:轨道圆角 − 内边距(3px)。滑块和轨道必须同心,直接用标记档 4px 会显得"方块塞进圆轨道" */
   border-radius: calc(var(--radius-sm) - 3px);
-  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--dur-3) var(--ease-out-expo);
   box-shadow: var(--shadow-sm);
   pointer-events: none;
 }
@@ -2883,7 +2889,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   color: var(--muted);
   cursor: pointer;
   padding: 0;
-  transition: color 0.15s ease;
+  transition: color var(--dur-2) var(--ease-out-expo);
   border-radius: var(--radius-sm);
   outline: none;
 }
@@ -3085,7 +3091,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   display: flex; flex-direction: column; gap: 8px;
   padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg2); font-size: var(--fs-sm);
-  transition: border-color 0.15s ease;
+  transition: border-color var(--dur-2) var(--ease-out-expo);
   width: 100%; box-sizing: border-box; min-width: 0;
   overflow: hidden;
 }
@@ -3288,7 +3294,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   stroke-linecap: round;
   stroke-dasharray: 47.12;
   stroke-dashoffset: 47.12;
-  transition: stroke-dashoffset 0.4s ease, stroke 0.3s ease;
+  transition: stroke-dashoffset var(--dur-4) var(--ease-out-expo), stroke var(--dur-4) var(--ease-out-expo);
 }
 .mon-ring.ring-warn .mon-ring-fg { stroke: var(--warn); }
 .mon-ring.ring-danger .mon-ring-fg { stroke: var(--danger); }
@@ -3299,7 +3305,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   border-radius: var(--radius-xs);
   padding: 1px 4px;
   margin: -1px -4px;
-  transition: background 0.15s ease;
+  transition: background var(--dur-2) var(--ease-out-expo);
 }
 .mon-cpu-item:hover, .mon-mem-item:hover, .mon-net-item:hover {
   background: var(--hover-bg);
@@ -3309,7 +3315,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   color: var(--muted);
   opacity: 0.6;
   margin-left: -2px;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--dur-2) var(--ease-out-expo);
 }
 .mon-cpu-item:hover .mon-cpu-hint { opacity: 1; color: var(--text); }
 
@@ -3636,7 +3642,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .fp-task-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .fp-task-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 .fp-task-bar { height: 3px; margin-left: 22px; border-radius: var(--radius-xs); background: var(--progress-track); overflow: hidden; }
-.fp-task-bar > i { display: block; width: 0; height: 100%; background: var(--accent); transition: width 0.3s ease; }
+.fp-task-bar > i { display: block; width: 0; height: 100%; background: var(--accent); transition: width var(--dur-4) var(--ease-out-expo); }
 /* 状态图标(替代圆点):图形即状态,颜色沿用状态色板 */
 .fp-task-dot {
   width: 16px; height: 16px; flex: none;
@@ -3726,7 +3732,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   background: var(--bg2); border: 1px solid var(--border); color: var(--text);
   padding: 9px 14px; border-radius: var(--radius); font-size: var(--fs-md);
   box-shadow: var(--menu-shadow);
-  animation: toast-in 0.2s ease-out;
+  animation: toast-in var(--dur-3) var(--ease-out-expo);
   display: flex; align-items: flex-start; gap: 9px;
   max-width: 480px;
 }
@@ -3844,7 +3850,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   overflow: hidden;
-  animation: side-dock-in 160ms var(--ease) both;
+  animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;
 }
 @keyframes side-dock-in { from { opacity: 0; transform: translateX(-6px); } }
 /* 4px 间隙的透明桥：属于 #sidebar 的伪元素，横向滑入卡片不会触发 pointerleave */
@@ -3863,7 +3869,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   max-height: calc(100% - var(--tabbar-h) - var(--footer-h) - 16px);
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
-  overflow: hidden; animation: side-dock-in 160ms var(--ease) both;
+  overflow: hidden; animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;
 }
 #sidebar.collapsed .rail-pop[hidden] { display: none; }
 #sidebar.collapsed .rail-pop[data-kind="batch"] { width: 340px; }
@@ -4405,11 +4411,6 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .pane-rec-badge svg { display: block; width: 12px; height: 12px; }
 /* 断开横幅占据底部时角标上移让位(横幅高约 30px,底距 4px) */
 .term-pane.pane-rec:has(.pane-status-banner) .pane-rec-badge { bottom: 38px; }
-/* 减弱动态:两者一起常亮,不呼吸 */
-@media (prefers-reduced-motion: reduce) {
-  .term-pane.pane-rec::after,
-  .term-pane.pane-rec .pane-rec-badge { animation: none; opacity: 0.85; }
-}
 /* 窗格状态横幅:分屏后状态栏只反映活动会话,断开的窗格在这里就地说明原因与
    重连方式。悬浮于底部避开右上角的常驻窗格按钮,也不遮盖中上部的最后输出。 */
 .pane-status-banner {
@@ -4442,14 +4443,9 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
    原则:只做"解释状态变化"的动效,不做装饰性动画。
    - 只动 transform / opacity(合成层属性):不触发布局重排,终端滚动与
      fit() 重算不会被拖慢;宽高/位置类动效在终端区是性能雷区。
-   - 时长 0.12–0.2s:超过 0.2s 就成了"等动画",反而拖慢连续操作
-     (如连点分屏、连续切标签)。
-   - 尊重 prefers-reduced-motion:系统开了"减弱动态效果"就全部关掉。 */
-:root {
-  --dur-fast: 0.12s;
-  --dur: 0.18s;
-  --ease: cubic-bezier(0.2, 0, 0.2, 1);
-}
+   - 动效 token(--dur-1/2/3/4、--ease-out-expo/in-out/spring 及向后兼容别名)
+     统一定义在文件顶部的主 :root 块(禁止再开第二个 :root 块)。
+   - 尊重 prefers-reduced-motion:全站统一在下方单一块收拢兜底。 */
 
 /* 浮动面板/菜单:淡入 + 轻微上浮,提示"从哪冒出来的" */
 @keyframes pop-in {
@@ -4733,8 +4729,8 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   transform: translateX(-50%); white-space: nowrap;
 }
 
-.modal:not(.hidden) { animation: fade-in var(--dur-fast) ease-out; }
-.modal:not(.hidden) .modal-card { animation: card-in var(--dur) var(--ease); }
+.modal:not(.hidden) { animation: fade-in var(--dur-2) var(--ease-out-expo); }
+.modal:not(.hidden) .modal-card { animation: card-in var(--dur-3) var(--ease-out-expo); }
 
 /* 侧边面板(#sidebar / #ai-panel)展开与收起:宽度过渡,规则写在各自定义处。
    早期版本用 transform 滑入规避宽度动画(每帧重排 + xterm fit 的开销),但
@@ -4754,13 +4750,21 @@ body.resizing #sidebar, body.resizing #ai-panel { transition: none; }
    (box-shadow 一并过渡,「焦点规范」的 3px 柔光才是渐显而不是硬跳) */
 input, select, textarea { transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
 
-/* 系统开启"减弱动态效果"时全部关闭(无障碍要求,不是可选项) */
+/* 系统开启"减弱动态效果"时全站统一收拢(无障碍要求,不是可选项;集中于此,不散落各模块) */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+  /* 呼吸/雷达/按压形变类状态元素的静态可见兜底 */
+  .ai-thread-trigger.has-busy .ai-thread-dot { animation: none; }
+  .switch:active .switch-slider::after,
+  .switch input[type="checkbox"]:checked:active + .switch-slider::after { width: 16px; }
+  .term-pane.pane-rec::after,
+  .term-pane.pane-rec .pane-rec-badge { animation: none; opacity: 0.85; }
+  .rdp-radar > span { animation: none; opacity: 0.5; }
 }
 
 /* ===== 主机库弹窗(百台级批量管理) ===== */
@@ -4870,6 +4874,7 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   from { background: var(--active-bg); box-shadow: inset 0 0 0 1px var(--accent); }
   to { background: transparent; box-shadow: inset 0 0 0 1px transparent; }
 }
+/* css-contract:allow token-motion — 新建分组 1.2s 一次性高亮停留,不属交互切换时长 */
 .hl-group.just-added { animation: hl-just-added 1.2s var(--ease) forwards; }
 /* 可接受的落点高亮 */
 .hl-group.drop {
@@ -5271,7 +5276,7 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
   border-radius: var(--radius);
   text-align: center;
   cursor: pointer;
-  transition: border-color .15s ease, background-color .15s ease;
+  transition: border-color var(--dur-2) var(--ease-out-expo), background-color var(--dur-2) var(--ease-out-expo);
 }
 .io-drop:hover {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
@@ -5904,10 +5909,6 @@ body.platform-darwin #btn-ai-toggle { margin-right: 8px; }
 
 /* 协议分段控件的滑块位移:与认证方式(第二档 = key)同一套机制 */
 .segmented-slider[data-value="rdp"] .segmented-thumb { transform: translateX(100%); }
-
-@media (prefers-reduced-motion: reduce) {
-  .rdp-radar > span { animation: none; opacity: 0.5; }
-}
 
 /* ── 远程桌面「显示与体验」:对标 mstsc 的显示/体验页 ───────────────── */
 .rdp-adv {
