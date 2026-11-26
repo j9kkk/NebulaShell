@@ -11,6 +11,12 @@ import { refreshHosts, groupOf, escapeHtml } from './hosts.js';
 import { icon } from '../shared/icons.js';
 // 全局滚动容器规则(底部渐隐):导入预览列表静止时最后一行被切一半时,用它提示"还能滚"
 import { observeScrollFade } from '../shared/scroll-fade.js';
+import {
+  effectiveConflictDecision,
+  selectWritableRows,
+  countOverwrites,
+  buildImportDecisions,
+} from '../shared/import-plan.js';
 
 const PASS_MIN = 8;
 const today = () => {
@@ -458,13 +464,12 @@ export function openImportDialog() {
 }
 
 const conflictRows = () => (im.inspect?.rows || []).filter((r) => r.kind === 'conflict');
-const effectiveDecision = (row) => im.perRow[row.key] || (row.kind === 'conflict' ? im.decision : '');
+const effectiveDecision = (row) => effectiveConflictDecision(row, im);
 const isExcluded = (row) => im.excluded.has(row.key);
 /// 问题行:校验没通过,永远不勾选、永远不写盘(F-09)。
 const isInvalid = (row) => row.kind === 'invalid';
-/// 会真正写盘的行:未排除、不是「一致」、也不是问题行。
-const writableRows = () =>
-  (im.inspect?.rows || []).filter((r) => !isExcluded(r) && r.kind !== 'identical' && !isInvalid(r));
+/// 会真正写盘的行:未排除、不是「一致」、也不是问题行，且冲突行未被设为「跳过」。
+const writableRows = () => selectWritableRows(im.inspect?.rows, im);
 /// 有坏行且用户还没勾「只导有效行」:主按钮不可点,默认整份拒绝。
 const partialBlocked = () => im.invalid.length > 0 && !im.partial;
 
@@ -565,9 +570,7 @@ function renderImport() {
   if (ok) {
     const writable = writableRows().length;
     const blocked = partialBlocked();
-    const overwriteCount = (im.inspect?.rows || []).filter(
-      (r) => !isExcluded(r) && r.kind === 'conflict' && effectiveDecision(r) === 'overwrite',
-    ).length;
+    const overwriteCount = countOverwrites(im.inspect?.rows, im);
     ok.textContent =
       stage === 'done'
         ? '完成'
@@ -591,7 +594,7 @@ function renderImport() {
           : blocked
             ? `文件里有 ${im.invalid.length} 行问题数据;勾选「跳过这些问题行」后才能导入其余主机`
             : writable === 0
-              ? '没有选中任何主机'
+              ? '没有可导入的主机'
               : '';
   }
   cancel?.classList.toggle('hidden', stage === 'done');
@@ -629,7 +632,6 @@ function renderImport() {
 function renderSummary() {
   const rows = im.inspect?.rows || [];
   const counts = im.inspect?.counts || {};
-  const writable = rows.filter((r) => r.kind !== 'identical').length;
   const box = $('#io-import-summary');
   if (!box) return;
   const picked = writableRows().length;
@@ -888,12 +890,7 @@ function reportText() {
 async function runApply() {
   if (im.busy || !im.path || !im.inspect?.rows?.length) return;
   if (partialBlocked()) return; // 有坏行且用户没勾「只导有效行」:默认整份拒绝
-  const decisions = {};
-  for (const row of im.inspect.rows) {
-    if (isInvalid(row)) continue;
-    if (isExcluded(row)) decisions[row.key] = 'skip';
-    else if (row.kind === 'conflict') decisions[row.key] = effectiveDecision(row) === 'overwrite' ? 'overwrite' : 'skip';
-  }
+  const decisions = buildImportDecisions(im.inspect.rows, im);
   im.busy = true;
   im.error = '';
   im.failed = '';

@@ -4936,7 +4936,7 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
   border: 1.5px solid var(--border-hover); vertical-align: middle; cursor: pointer;
 }
 .hl-box.on { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
-.hl-box.on svg { display: block; }
+.hl-box.on svg { display: block; stroke-width: 2.8; }
 /* 半选:当前筛选结果里只有部分被选中 */
 .hl-box.part { background: var(--accent); border-color: var(--accent); }
 .hl-box.part::after { content: ''; width: 7px; height: 2px; background: var(--text-on-accent); border-radius: var(--radius-xs); }
