@@ -1,0 +1,1998 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="nebula">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NebulaShell · 候选 A：Nebula Flow 浮岛</title>
+<!--
+================================================================================
+Nebula Flow · 浮岛 动效规格表（data-motion 与真实代码选择器一一对应）
+================================================================================
+Token 定义：
+  --dur-1: 80ms   | 按压/hover 微反馈
+  --dur-2: 140ms  | 颜色/描边/图标/hover 离开（防闪烁）
+  --dur-3: 220ms  | 位移、指示器滑动、展开收起
+  --dur-4: 320ms  | 面板/抽屉进出、场景切换
+  --ease-out-expo: cubic-bezier(.16, 1, .3, 1)  | 进入、位移
+  --ease-in-out:   cubic-bezier(.65, 0, .35, 1) | 退出
+  --ease-spring:   cubic-bezier(.34, 1.56, .64, 1) | 只用于出现，不用于退出
+
+动效名 | 触发 | 属性 | 时长 | 曲线 | 对应真实代码选择器
+---|---|---|---|---|---
+host-row-expand | :hover | height(40->56), meta opacity/translateY(2px->0) | 220ms | --ease-out-expo | .host-item
+host-row-press | :active | transform scale(.985) | 80ms | --ease-out-expo | .host-item:active
+host-indicator-flip | 点击选中主机 | transform translateY + height (FLIP) | 220ms | --ease-out-expo | .host-indicator (替代 .host-item.active::before)
+tab-pill-flip | 切换标签 | transform translateX + width (FLIP) | 220ms | --ease-out-expo | .tab-pill (替代 .tab.active 背景)
+tab-enter | 新建标签 | transform scale(.92->1) + opacity(0->1) | 220ms | --ease-spring | .tab
+tab-close | 关闭标签 | width->0 + opacity->0 | 160ms | --ease-in-out | .tab.closing
+launch-card-hover | :hover | translateY(-2px) + ::after 流光扫过 | 220ms / 600ms | --ease-out-expo | .launch-card
+cmd-chip-hover | :hover | svg rotate(8deg) scale(1.06) | 140ms | --ease-out-expo | .cmd-chip
+drawer-slide | 打开/关闭 AI 抽屉 | translateX(16px->0) + opacity + 区块 stagger 25ms | 320ms | --ease-out-expo / --ease-in-out | #ai-panel
+term-dim-filter | AI 抽屉打开时 | filter saturate(.85) brightness(.92) | 320ms | --ease-in-out | #term-stack
+palette-modal | ⌘⇧P 打开/关闭 | backdrop-filter blur(8px) + scale(.96->1) translateY(8px->0) + 列表 stagger 18ms | 320ms | --ease-out-expo / --ease-in-out | .modal.palette-modal / .palette-card
+pane-focus-ring | 点击分屏窗格 | box-shadow 焦点环 + 非聚焦遮罩 | 220ms | --ease-out-expo | .term-pane.focused
+status-dot-breathe | 已连接状态 | opacity / box-shadow 呼吸 | 2000ms 循环 | ease-in-out | #status-dot.connected / .host-dot.connected
+transfer-shimmer | 传输中任务 | background-position 流动光泽 | 1200ms 循环 | linear | .fp-task-bar > i
+================================================================================
+-->
+<style>
+:root {
+  /* 现有色板（严格复用，不另起一套色） */
+  --bg: #070a11;
+  --bg2: #1a2333;
+  --panel: #101722;
+  --border: #333e4f;
+  --border-hover: #4d5a73;
+  --text: #e6edf3;
+  --muted: #9aa5b6;
+  --accent: #5b8cff;
+  --accent2: #3ddc97;
+  --danger: #ff6b6b;
+  --warn: #ffc24b;
+  --titlebar-bg: #05070c;
+  --row-hover: #222d3f;
+  --row-active: #2a3750;
+  --field: #04060a;
+  --btn-primary-bg: linear-gradient(135deg, #3a68d9, #2f57c4);
+  --btn-primary-text: #ffffff;
+  --surface-overlay: rgba(255, 255, 255, .07);
+  --surface-sunken: rgba(0, 0, 0, .28);
+  --accent-sky: #38bdf8;
+  --vendor-aliyun: #fb923c;
+
+  /* 字号八档：10 / 11 / 12 / 13 / 14 / 16 / 20 / 44 px */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 20px;
+  --fs-hero: 44px;
+
+  /* 圆角五档：4 / 8 / 10 / 12 / 999 px */
+  --r-xs: 4px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+
+  /* 字体 */
+  --font-ui: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 骨架尺寸 */
+  --win-w: 1280px;
+  --win-h: 820px;
+  --titlebar-h: 36px;
+  --tabbar-h: 36px;
+  --statusbar-h: 45px;
+  --sidebar-w: 264px;
+  --island-gap: 8px;
+
+  /* 动效 Token */
+  --dur-1: 80ms;
+  --dur-2: 140ms;
+  --dur-3: 220ms;
+  --dur-4: 320ms;
+  --ease-out-expo: cubic-bezier(.16, 1, .3, 1);
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+}
+
+/* 980×640 紧凑尺寸 */
+body.size-compact {
+  --win-w: 980px;
+  --win-h: 640px;
+  --sidebar-w: 200px;
+}
+
+/* 动效开关：关闭后所有过渡与动画归零，用于验证静态布局 */
+body.motion-off *,
+body.motion-off *::before,
+body.motion-off *::after {
+  transition-duration: 0ms !important;
+  animation-duration: 0ms !important;
+  transition-delay: 0ms !important;
+  animation-delay: 0ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-property: opacity, background-color, border-color, color !important;
+    animation-name: none !important;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  min-height: 100%;
+  background: var(--field);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  justify-content: safe center;
+  padding: 20px 16px 24px;
+  gap: 14px;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+svg.ico {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+  display: block;
+}
+
+/* ============================================================================
+   应用窗口外框（1280×820 / 980×640，浮在深空画布上）
+   ============================================================================ */
+.app-window {
+  width: var(--win-w);
+  height: var(--win-h);
+  background: var(--titlebar-bg);
+  border-radius: 14px;
+  box-shadow: 0 40px 120px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .05);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  transition: width var(--dur-4) var(--ease-out-expo), height var(--dur-4) var(--ease-out-expo);
+}
+
+/* ============================================================================
+   标题栏：36px，无底部分隔线，改为顶部 1px 高光 + 向下 10px 渐隐
+   ============================================================================ */
+#titlebar {
+  height: var(--titlebar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .03) 0%, transparent 10px), var(--titlebar-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+  user-select: none;
+  z-index: 20;
+}
+
+.tb-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.logo-star {
+  background: linear-gradient(135deg, var(--accent-sky), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: var(--fs-xl);
+  line-height: 1;
+}
+
+.logo-text {
+  background: linear-gradient(90deg, var(--accent-sky), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.tb-btn {
+  width: 28px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.tb-btn:hover {
+  background: var(--surface-overlay);
+  color: var(--text);
+  transition-duration: var(--dur-1);
+}
+.tb-btn.active {
+  background: var(--surface-overlay);
+  color: var(--text);
+}
+
+.tb-sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, .08);
+  margin: 0 4px;
+}
+
+#menubar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.menubar-item {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
+  color: var(--muted);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.menubar-item:hover {
+  background: var(--surface-overlay);
+  color: var(--text);
+  transition-duration: var(--dur-1);
+}
+
+.tb-drag { flex: 1; }
+
+#win-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+.win-ctl {
+  width: 32px;
+  height: 26px;
+  border-radius: var(--r-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.win-ctl:hover { background: var(--surface-overlay); color: var(--text); transition-duration: var(--dur-1); }
+.win-ctl-close:hover { background: var(--danger); color: var(--btn-primary-text); }
+
+/* ============================================================================
+   三块浮岛容器：8px 缝隙露出深空画布底 #05070c
+   ============================================================================ */
+#app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--island-gap);
+  padding: 0 var(--island-gap) var(--island-gap);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 左岛：主机面板 */
+#sidebar {
+  width: var(--sidebar-w);
+  flex: none;
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+  transition: width var(--dur-3) var(--ease-out-expo), opacity var(--dur-3) var(--ease-out-expo), margin-right var(--dur-3) var(--ease-out-expo);
+}
+#sidebar.collapsed {
+  width: 0;
+  opacity: 0;
+  margin-right: calc(-1 * var(--island-gap));
+  pointer-events: none;
+}
+
+.side-header {
+  padding: 12px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+}
+.side-title-name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.side-count {
+  font-size: var(--fs-2xs);
+  color: var(--muted);
+  background: var(--surface-overlay);
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+}
+.side-spacer { flex: 1; }
+
+.btn-new-host {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-shadow: inset 0 0 0 1px rgba(91, 140, 255, .32);
+  transition: background var(--dur-2) var(--ease-in-out), box-shadow var(--dur-2) var(--ease-in-out);
+}
+.btn-new-host:hover {
+  background: rgba(91, 140, 255, .14);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  transition-duration: var(--dur-1);
+}
+.btn-dots {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.btn-dots:hover { background: var(--surface-overlay); color: var(--text); transition-duration: var(--dur-1); }
+
+body.size-compact .btn-new-host .lbl { display: none; }
+body.size-compact .btn-new-host { width: 26px; padding: 0; justify-content: center; }
+
+.search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.search-field .ico {
+  position: absolute;
+  left: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.search-field input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px 0 28px;
+  border-radius: var(--r-sm);
+  background: var(--field);
+  border: 1px solid rgba(255, 255, 255, .06);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  outline: none;
+  transition: border-color var(--dur-2) var(--ease-in-out);
+}
+.search-field input:focus {
+  border-color: var(--accent);
+}
+
+.host-group-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 12px 8px;
+}
+
+.host-group-chip {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.host-group-chip:hover { background: var(--surface-overlay); color: var(--text); transition-duration: var(--dur-1); }
+.host-group-chip.active { background: var(--row-active); color: var(--accent); font-weight: 600; }
+.host-group-chip.fav .ico { color: var(--warn); }
+.host-group-chip .cnt { font-size: var(--fs-2xs); opacity: .75; }
+
+/* 主机列表与独立滑动指示器（FLIP） */
+#host-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+  position: relative;
+}
+
+.host-indicator {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 0;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: rgba(91, 140, 255, .08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+  pointer-events: none;
+  z-index: 1;
+  transition: transform var(--dur-3) var(--ease-out-expo), height var(--dur-3) var(--ease-out-expo), opacity var(--dur-2) var(--ease-in-out);
+}
+.host-indicator::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+
+.host-item {
+  position: relative;
+  z-index: 2;
+  height: 40px;
+  padding: 0 10px 0 12px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  margin-bottom: 2px;
+  overflow: hidden;
+  transition: height var(--dur-3) var(--ease-in-out), background var(--dur-2) var(--ease-in-out), transform var(--dur-1) var(--ease-out-expo);
+}
+.host-item:hover,
+.host-item.is-hovered {
+  height: 56px;
+  background: rgba(255, 255, 255, .04);
+  transition-timing-function: var(--ease-out-expo), var(--ease-out-expo), var(--ease-out-expo);
+  transition-duration: var(--dur-3), var(--dur-1), var(--dur-1);
+}
+.host-item:active {
+  transform: scale(.985);
+}
+
+.host-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  opacity: .45;
+  flex: none;
+}
+.host-dot.connected {
+  background: var(--accent2);
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(61, 220, 151, .16);
+  animation: dot-breathe 2s ease-in-out infinite;
+}
+
+.host-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.host-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.host-name {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.host-item.active .host-name { font-weight: 600; color: var(--text); }
+.host-key { color: var(--warn); opacity: .85; flex: none; }
+.host-key .ico { width: 12px; height: 12px; }
+
+.host-meta {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity var(--dur-2) var(--ease-in-out), transform var(--dur-2) var(--ease-in-out), max-height var(--dur-3) var(--ease-in-out);
+}
+.host-item:hover .host-meta,
+.host-item.is-hovered .host-meta {
+  max-height: 18px;
+  opacity: 1;
+  transform: translateY(0);
+  margin-top: 2px;
+  transition-duration: var(--dur-3), var(--dur-3), var(--dur-3);
+  transition-timing-function: var(--ease-out-expo);
+}
+
+/* ============================================================================
+   中岛：工作区（标签行 + 欢迎发射台/终端/分屏 + 状态栏）
+   ============================================================================ */
+#main {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+
+/* 标签行 36px：独立滑动 pill */
+#tabbar {
+  height: var(--tabbar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: rgba(16, 23, 34, .65);
+  position: relative;
+}
+
+.tabs-track {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+  min-width: 0;
+}
+
+.tab-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 2px 8px rgba(0, 0, 0, .28);
+  pointer-events: none;
+  z-index: 1;
+  transition: transform var(--dur-3) var(--ease-out-expo), width var(--dur-3) var(--ease-out-expo);
+}
+
+.tab {
+  position: relative;
+  z-index: 2;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: color var(--dur-2) var(--ease-in-out), width 160ms var(--ease-in-out), opacity 160ms var(--ease-in-out), padding 160ms var(--ease-in-out);
+}
+.tab:hover { color: var(--text); transition-duration: var(--dur-1); }
+.tab.active { color: var(--text); font-weight: 500; }
+
+.tab.entering {
+  animation: tab-enter var(--dur-3) var(--ease-spring) forwards;
+}
+@keyframes tab-enter {
+  from { opacity: 0; transform: scale(.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+.tab.closing {
+  width: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  opacity: 0 !important;
+  margin: 0 !important;
+}
+
+.tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent2);
+  flex: none;
+}
+
+.tab-close {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  opacity: .7;
+  transition: background var(--dur-1) var(--ease-out-expo), color var(--dur-1) var(--ease-out-expo), opacity var(--dur-1);
+}
+.tab-close:hover { background: rgba(255, 107, 107, .16); color: var(--danger); opacity: 1; }
+.tab-close .ico { width: 11px; height: 11px; }
+
+.btn-newtab {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.btn-newtab:hover { background: var(--surface-overlay); color: var(--text); transition-duration: var(--dur-1); }
+
+/* 工作区内容栈（带 AI 抽屉打开时的 filter 过渡） */
+#term-stack {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  transition: filter var(--dur-4) var(--ease-in-out);
+}
+#app.drawer-open #term-stack {
+  filter: saturate(.85) brightness(.92);
+}
+
+.scene-view {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity var(--dur-3) var(--ease-out-expo), transform var(--dur-3) var(--ease-out-expo);
+}
+.scene-view.active {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* ============================================================================
+   欢迎区「发射台」：左 2/3 最近连接 3 卡 + 右上快捷命令 6 胶囊 + 右下云发现横幅
+   ============================================================================ */
+#welcome-view {
+  padding: 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  overflow-y: auto;
+}
+
+.launch-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.launch-hero-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.launch-emblem {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-lg);
+  background: var(--surface-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-2xl);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+.launch-hero h2 {
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -.2px;
+}
+.launch-hero p {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.launch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-primary {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: transform var(--dur-1) var(--ease-out-expo), filter var(--dur-2) var(--ease-in-out);
+}
+.btn-primary:hover { filter: brightness(1.08); transition-duration: var(--dur-1); }
+.btn-primary:active { transform: scale(.97); }
+
+.btn-secondary {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background var(--dur-2) var(--ease-in-out), box-shadow var(--dur-2) var(--ease-in-out);
+}
+.btn-secondary:hover { background: var(--bg2); box-shadow: inset 0 0 0 1px var(--border-hover); transition-duration: var(--dur-1); }
+
+.launch-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  align-items: start;
+}
+
+.section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .4px;
+  margin-bottom: 10px;
+}
+
+.recent-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.launch-card {
+  position: relative;
+  overflow: hidden;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  transition: transform var(--dur-3) var(--ease-out-expo), background var(--dur-2) var(--ease-in-out);
+}
+.launch-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, .07) 50%, transparent 70%);
+  background-size: 200% 100%;
+  background-position: 150% 0;
+  pointer-events: none;
+  transition: background-position 600ms var(--ease-out-expo);
+}
+.launch-card:hover {
+  transform: translateY(-2px);
+  background: var(--bg2);
+}
+.launch-card:hover::after {
+  background-position: -50% 0;
+}
+
+.lc-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.lc-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.lc-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.lc-sub {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-top: 3px;
+}
+.lc-arrow {
+  color: var(--muted);
+  transition: transform var(--dur-2) var(--ease-out-expo), color var(--dur-2);
+}
+.launch-card:hover .lc-arrow {
+  transform: translateX(3px);
+  color: var(--accent);
+}
+
+.launch-right {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cmd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cmd-chip {
+  height: 30px;
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  transition: background var(--dur-2) var(--ease-in-out);
+}
+.cmd-chip .ico {
+  color: var(--accent);
+  transition: transform var(--dur-2) var(--ease-in-out);
+}
+.cmd-chip:hover {
+  background: var(--bg2);
+  transition-duration: var(--dur-1);
+}
+.cmd-chip:hover .ico {
+  transform: rotate(8deg) scale(1.06);
+  transition-duration: var(--dur-1);
+  transition-timing-function: var(--ease-out-expo);
+}
+
+.cloud-banner {
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: linear-gradient(135deg, rgba(56, 189, 248, .08), rgba(91, 140, 255, .06));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cloud-banner-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.cloud-banner-head .ico { color: var(--accent-sky); }
+.cloud-banner-desc {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.cloud-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cloud-badge {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+}
+.cloud-badge.tencent {
+  background: rgba(56, 189, 248, .15);
+  color: var(--accent-sky);
+}
+.cloud-badge.aliyun {
+  background: rgba(251, 146, 60, .15);
+  color: var(--vendor-aliyun);
+}
+
+/* ============================================================================
+   终端 & 分屏双窗格视图
+   ============================================================================ */
+.terminal-surface {
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--text);
+  height: 100%;
+  overflow-y: auto;
+}
+.term-prompt { color: var(--accent2); }
+.term-cmd { color: var(--text); font-weight: 600; }
+.term-muted { color: var(--muted); }
+.term-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: cursor-blink 1.1s steps(2, start) infinite;
+}
+@keyframes cursor-blink { 50% { opacity: 0; } }
+
+.split-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 8px;
+  height: 100%;
+}
+.term-pane {
+  position: relative;
+  border-radius: var(--r-sm);
+  background: var(--field);
+  overflow: hidden;
+  cursor: pointer;
+  transition: box-shadow var(--dur-3) var(--ease-out-expo);
+}
+.term-pane::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, .28);
+  pointer-events: none;
+  transition: opacity var(--dur-3) var(--ease-out-expo);
+}
+.term-pane.focused {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px rgba(91, 140, 255, .22);
+}
+.term-pane.focused::after {
+  opacity: 0;
+}
+.pane-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: var(--fs-2xs);
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-overlay);
+  color: var(--muted);
+  z-index: 2;
+}
+.term-pane.focused .pane-badge {
+  color: var(--accent);
+  background: rgba(91, 140, 255, .15);
+}
+.term-pane .terminal-surface {
+  padding-top: 34px;
+}
+
+/* ============================================================================
+   状态栏 45px：连接圆点呼吸 2s + 传输进度条 1.2s 流动光泽
+   ============================================================================ */
+#statusbar {
+  height: var(--statusbar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: rgba(16, 23, 34, .65);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+#status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  flex: none;
+}
+#status-dot.connected {
+  background: var(--accent2);
+  box-shadow: 0 0 0 3px rgba(61, 220, 151, .16);
+  animation: dot-breathe 2s ease-in-out infinite;
+}
+@keyframes dot-breathe {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px rgba(61, 220, 151, .15); }
+  50% { opacity: .65; box-shadow: 0 0 0 5px rgba(61, 220, 151, .28); }
+}
+
+.status-spacer { flex: 1; }
+
+.transfer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--surface-sunken);
+  font-size: var(--fs-xs);
+  color: var(--text);
+}
+.fp-task-bar {
+  width: 64px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .1);
+  overflow: hidden;
+}
+.fp-task-bar > i {
+  display: block;
+  width: 68%;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-sky) 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  animation: transfer-shimmer 1.2s linear infinite;
+}
+@keyframes transfer-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.status-btn:hover { background: var(--surface-overlay); color: var(--text); transition-duration: var(--dur-1); }
+
+/* ============================================================================
+   右岛：工具抽屉（默认收起，打开时浮在中岛右侧上方）
+   ============================================================================ */
+#ai-panel {
+  position: absolute;
+  top: 0;
+  right: var(--island-gap);
+  bottom: var(--island-gap);
+  width: 320px;
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .07);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 30;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(16px);
+  transition: transform var(--dur-4) var(--ease-in-out), opacity var(--dur-4) var(--ease-in-out), visibility 0s linear var(--dur-4);
+}
+#app.drawer-open #ai-panel {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition: transform var(--dur-4) var(--ease-out-expo), opacity var(--dur-4) var(--ease-out-expo), visibility 0s linear 0s;
+}
+
+.ai-header {
+  height: var(--tabbar-h);
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .05);
+}
+.ai-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.ai-title .ico { color: var(--accent-sky); }
+
+.ai-body {
+  flex: 1;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.ai-block {
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  opacity: 0;
+  transform: translateX(10px);
+  transition: opacity var(--dur-3) var(--ease-out-expo), transform var(--dur-3) var(--ease-out-expo);
+}
+#app.drawer-open .ai-block {
+  opacity: 1;
+  transform: translateX(0);
+}
+#app.drawer-open .ai-block:nth-child(1) { transition-delay: 25ms; }
+#app.drawer-open .ai-block:nth-child(2) { transition-delay: 50ms; }
+#app.drawer-open .ai-block:nth-child(3) { transition-delay: 75ms; }
+
+.ai-block-label {
+  font-size: var(--fs-xs);
+  color: var(--accent-sky);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.ai-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  background: var(--field);
+  padding: 6px 8px;
+  border-radius: var(--r-xs);
+  margin-top: 6px;
+  color: var(--accent2);
+}
+
+.ai-composer {
+  margin: 0 12px 12px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+/* ============================================================================
+   命令面板（⌘⇧P）：全站唯一允许 backdrop-filter: blur(8px) 的场景
+   ============================================================================ */
+.palette-modal {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 10, .48);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 90px;
+  z-index: 50;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-4) var(--ease-in-out);
+}
+.palette-modal.open {
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--ease-out-expo);
+}
+
+.palette-card {
+  width: 540px;
+  max-width: calc(100% - 32px);
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .65), inset 0 1px 0 rgba(255, 255, 255, .08);
+  padding: 10px;
+  transform: scale(.96) translateY(8px);
+  opacity: 0;
+  transition: transform var(--dur-4) var(--ease-in-out), opacity var(--dur-4) var(--ease-in-out);
+}
+.palette-modal.open .palette-card {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+  transition-timing-function: var(--ease-out-expo);
+}
+
+.palette-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  background: var(--field);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-md);
+  outline: none;
+}
+.palette-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pal-row {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-md);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity var(--dur-3) var(--ease-out-expo), transform var(--dur-3) var(--ease-out-expo), background var(--dur-1);
+}
+.palette-modal.open .pal-row {
+  opacity: 1;
+  transform: translateY(0);
+}
+.palette-modal.open .pal-row:nth-child(1) { transition-delay: 18ms; }
+.palette-modal.open .pal-row:nth-child(2) { transition-delay: 36ms; }
+.palette-modal.open .pal-row:nth-child(3) { transition-delay: 54ms; }
+.palette-modal.open .pal-row:nth-child(4) { transition-delay: 72ms; }
+.palette-modal.open .pal-row:nth-child(5) { transition-delay: 90ms; }
+.pal-row.active, .pal-row:hover { background: var(--row-active); }
+.pal-key {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* ============================================================================
+   原型控制条（位于窗口下方，#101722 底 + 10px 圆角）
+   ============================================================================ */
+.proto-controls {
+  width: var(--win-w);
+  max-width: 100%;
+  background: var(--panel);
+  border-radius: var(--r-md);
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  transition: width var(--dur-4) var(--ease-out-expo);
+}
+
+.ctrl-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctrl-label {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin-right: 2px;
+}
+.ctrl-btn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
+}
+.ctrl-btn:hover { background: var(--row-hover); color: var(--text); transition-duration: var(--dur-1); }
+.ctrl-btn.active { background: var(--accent); color: var(--btn-primary-text); font-weight: 600; }
+
+.replay-status {
+  font-size: var(--fs-xs);
+  color: var(--accent-sky);
+  margin-left: auto;
+  white-space: nowrap;
+}
+</style>
+</head>
+<body>
+
+<div class="app-window" id="app-window">
+  <!-- 标题栏 36px -->
+  <header id="titlebar">
+    <div class="tb-brand">
+      <span class="logo-star">✦</span>
+      <span class="logo-text">NebulaShell</span>
+    </div>
+    <button class="tb-btn active" id="btn-sidebar-toggle" type="button" title="主机侧栏">
+      <svg class="ico" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+    </button>
+    <span class="tb-sep"></span>
+    <nav id="menubar" aria-label="主菜单">
+      <button class="menubar-item" type="button">文件</button>
+      <button class="menubar-item" type="button">编辑</button>
+      <button class="menubar-item" type="button">视图</button>
+      <button class="menubar-item" type="button">主机</button>
+      <button class="menubar-item" type="button">会话</button>
+      <button class="menubar-item" type="button">帮助</button>
+    </nav>
+    <div class="tb-drag"></div>
+    <button class="tb-btn" id="btn-drawer-toggle" type="button" title="AI 助手">
+      <svg class="ico" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+    </button>
+    <span class="tb-sep"></span>
+    <div id="win-controls">
+      <button class="win-ctl" type="button" title="最小化">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+      </button>
+      <button class="win-ctl" type="button" title="最大化">
+        <svg class="ico" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/></svg>
+      </button>
+      <button class="win-ctl win-ctl-close" type="button" title="关闭">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- 三块浮岛 -->
+  <div id="app">
+    <!-- 左岛：主机面板 -->
+    <aside id="sidebar">
+      <div class="side-header">
+        <div class="side-title">
+          <span class="side-title-name">主机</span>
+          <span class="side-count">4</span>
+          <span class="side-spacer"></span>
+          <button class="btn-new-host" type="button">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+            <span class="lbl">新建</span>
+          </button>
+          <button class="btn-dots" type="button" title="主机管理">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
+          </button>
+        </div>
+        <div class="search-field">
+          <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="text" placeholder="搜索主机…" aria-label="搜索主机" />
+        </div>
+      </div>
+
+      <div class="host-group-strip">
+        <button class="host-group-chip active" type="button">全部 <span class="cnt">4</span></button>
+        <button class="host-group-chip fav" type="button">
+          <svg class="ico" viewBox="0 0 24 24"><path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg>
+          常用 <span class="cnt">1</span>
+        </button>
+        <button class="host-group-chip" type="button">生产 <span class="cnt">3</span></button>
+      </div>
+
+      <nav id="host-list">
+        <div class="host-indicator" id="host-indicator" data-motion="host-indicator-flip"></div>
+
+        <div class="host-item active" data-host="api-prod-01" data-motion="host-row-expand host-row-press">
+          <span class="host-dot connected" data-motion="status-dot-breathe"></span>
+          <div class="host-main">
+            <div class="host-row-top">
+              <span class="host-name">api-prod-01</span>
+              <span class="host-key"><svg class="ico" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9"/><path d="m17 6 3 3"/></svg></span>
+            </div>
+            <div class="host-meta">2 分钟前连接 · 负载 0.42</div>
+          </div>
+        </div>
+
+        <div class="host-item" data-host="cache-prod-02" data-motion="host-row-expand host-row-press">
+          <span class="host-dot"></span>
+          <div class="host-main">
+            <div class="host-row-top">
+              <span class="host-name">cache-prod-02</span>
+              <span class="host-key"><svg class="ico" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9"/><path d="m17 6 3 3"/></svg></span>
+            </div>
+            <div class="host-meta">18 分钟前连接 · 负载 0.19</div>
+          </div>
+        </div>
+
+        <div class="host-item" data-host="db-prod-01" data-motion="host-row-expand host-row-press">
+          <span class="host-dot"></span>
+          <div class="host-main">
+            <div class="host-row-top">
+              <span class="host-name">db-prod-01</span>
+              <span class="host-key"><svg class="ico" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9"/><path d="m17 6 3 3"/></svg></span>
+            </div>
+            <div class="host-meta">1 小时前连接 · 负载 0.85</div>
+          </div>
+        </div>
+
+        <div class="host-item" data-host="web-staging-03" data-motion="host-row-expand host-row-press">
+          <span class="host-dot"></span>
+          <div class="host-main">
+            <div class="host-row-top">
+              <span class="host-name">web-staging-03</span>
+              <span class="host-key"><svg class="ico" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9"/><path d="m17 6 3 3"/></svg></span>
+            </div>
+            <div class="host-meta">昨天连接 · 负载 0.12</div>
+          </div>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- 中岛：工作区 -->
+    <main id="main">
+      <!-- 标签行 36px -->
+      <div id="tabbar">
+        <div class="tabs-track" id="tabs-track">
+          <div class="tab-pill" id="tab-pill" data-motion="tab-pill-flip"></div>
+          <div class="tab active" data-tab="welcome" data-motion="tab-enter">
+            <svg class="ico" viewBox="0 0 24 24"><path d="m3 9.5 9-7 9 7V20a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22v-9h6v9"/></svg>
+            <span>发射台</span>
+          </div>
+          <div class="tab" data-tab="terminal" data-motion="tab-enter">
+            <span class="tab-dot"></span>
+            <span>api-prod-01</span>
+            <button class="tab-close" type="button" title="关闭标签" data-motion="tab-close">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
+          <div class="tab" data-tab="split" data-motion="tab-enter">
+            <span class="tab-dot"></span>
+            <span>分屏 · 生产集群</span>
+            <button class="tab-close" type="button" title="关闭标签" data-motion="tab-close">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <button class="btn-newtab" id="btn-newtab" type="button" title="新建标签">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+        </button>
+      </div>
+
+      <!-- 工作区内容 -->
+      <div id="term-stack" data-motion="term-dim-filter">
+        <!-- 场景 1：欢迎发射台 -->
+        <section class="scene-view active" id="welcome-view">
+          <div class="launch-hero">
+            <div class="launch-hero-left">
+              <div class="launch-emblem"><span class="logo-star">✦</span></div>
+              <div>
+                <h2>欢迎使用 NebulaShell</h2>
+                <p>跨平台 SSH 客户端 · 内置 AI 助手 · 腾讯云 / 阿里云主机自动发现</p>
+              </div>
+            </div>
+            <div class="launch-actions">
+              <button class="btn-primary" type="button">
+                <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                新建主机
+              </button>
+              <button class="btn-secondary" type="button">
+                <svg class="ico" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                导入主机
+              </button>
+            </div>
+          </div>
+
+          <div class="launch-grid">
+            <div>
+              <div class="section-label">最近连接</div>
+              <div class="recent-cards">
+                <div class="launch-card" data-motion="launch-card-hover">
+                  <div class="lc-left">
+                    <div class="lc-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
+                    <div>
+                      <div class="lc-title">api-prod-01</div>
+                      <div class="lc-sub">10.0.4.11 · 2 分钟前连接</div>
+                    </div>
+                  </div>
+                  <svg class="ico lc-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                </div>
+
+                <div class="launch-card" data-motion="launch-card-hover">
+                  <div class="lc-left">
+                    <div class="lc-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
+                    <div>
+                      <div class="lc-title">cache-prod-02</div>
+                      <div class="lc-sub">10.0.4.12 · 18 分钟前连接</div>
+                    </div>
+                  </div>
+                  <svg class="ico lc-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                </div>
+
+                <div class="launch-card" data-motion="launch-card-hover">
+                  <div class="lc-left">
+                    <div class="lc-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
+                    <div>
+                      <div class="lc-title">db-prod-01</div>
+                      <div class="lc-sub">10.0.4.15 · 1 小时前连接</div>
+                    </div>
+                  </div>
+                  <svg class="ico lc-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="launch-right">
+              <div>
+                <div class="section-label">快捷命令</div>
+                <div class="cmd-chips">
+                  <button class="cmd-chip" type="button" data-motion="cmd-chip-hover">
+                    <svg class="ico" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>
+                    uptime
+                  </button>
+                  <button class="cmd-chip" type="button" data-motion="cmd-chip-hover">
+                    <svg class="ico" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>
+                    docker ps
+                  </button>
+                  <button class="cmd-chip" type="button" data-motion="cmd-chip-hover">
+                    <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                    htop
+                  </button>
+                  <button class="cmd-chip" type="button" data-motion="cmd-chip-hover">
+                    <svg class="ico" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M15 2v5h5"/></svg>
+                    tail -f
+                  </button>
+                  <button class="cmd-chip" type="button" data-motion="cmd-chip-hover">
+                    <svg class="ico" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/></svg>
+                    ss -tulnp
+                  </button>
+                  <button class="cmd-chip" type="button" data-motion="cmd-chip-hover">
+                    <svg class="ico" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                    df -h
+                  </button>
+                </div>
+              </div>
+
+              <div class="cloud-banner">
+                <div class="cloud-banner-head">
+                  <svg class="ico" viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 0 0 .42-8.98A7 7 0 0 0 4.06 12.2 4 4 0 0 0 6 19.9z"/></svg>
+                  云主机发现
+                </div>
+                <div class="cloud-banner-desc">配置只读 API 密钥后，自动并发扫描所有可用地域实例并同步至主机列表。</div>
+                <div class="cloud-badges">
+                  <span class="cloud-badge tencent">腾讯云</span>
+                  <span class="cloud-badge aliyun">阿里云</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 场景 2：终端视图 -->
+        <section class="scene-view" id="terminal-view">
+          <div class="terminal-surface">
+<div class="term-muted">Last login: Thu Nov 26 10:12:03 2026 from 10.0.4.2</div>
+<div><span class="term-prompt">root@api-prod-01:~#</span> <span class="term-cmd">uptime</span></div>
+<div> 10:14:22 up 42 days,  3:18,  1 user,  load average: 0.42, 0.38, 0.31</div>
+<div><span class="term-prompt">root@api-prod-01:~#</span> <span class="term-cmd">docker ps --format 'table {{.Names}}\t{{.Status}}'</span></div>
+<div>NAMES              STATUS</div>
+<div>nginx-proxy        Up 42 days</div>
+<div>api-service        Up 12 days (healthy)</div>
+<div>redis-cache        Up 42 days</div>
+<div><span class="term-prompt">root@api-prod-01:~#</span> <span class="term-cursor"></span></div>
+          </div>
+        </section>
+
+        <!-- 场景 3：分屏双窗格 -->
+        <section class="scene-view" id="split-view">
+          <div class="split-grid">
+            <div class="term-pane focused" data-motion="pane-focus-ring">
+              <span class="pane-badge">api-prod-01 · 焦点</span>
+              <div class="terminal-surface">
+<div class="term-muted">Last login: Thu Nov 26 10:12:03 2026 from 10.0.4.2</div>
+<div><span class="term-prompt">root@api-prod-01:~#</span> <span class="term-cmd">uptime</span></div>
+<div> 10:14:22 up 42 days,  3:18,  1 user,  load average: 0.42, 0.38, 0.31</div>
+<div><span class="term-prompt">root@api-prod-01:~#</span> <span class="term-cursor"></span></div>
+              </div>
+            </div>
+            <div class="term-pane" data-motion="pane-focus-ring">
+              <span class="pane-badge">cache-prod-02</span>
+              <div class="terminal-surface">
+<div class="term-muted">Last login: Thu Nov 26 09:56:11 2026 from 10.0.4.2</div>
+<div><span class="term-prompt">root@cache-prod-02:~#</span> <span class="term-cmd">docker ps --format 'table {{.Names}}\t{{.Status}}'</span></div>
+<div>NAMES              STATUS</div>
+<div>redis-cache        Up 42 days</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 状态栏 45px -->
+      <footer id="statusbar">
+        <span id="status-dot" data-motion="status-dot-breathe"></span>
+        <span id="status-text">就绪 — 尚未建立连接</span>
+        <span class="transfer-pill">
+          <span>传输中 2 个任务</span>
+          <span class="fp-task-bar"><i data-motion="transfer-shimmer"></i></span>
+        </span>
+        <span class="status-spacer"></span>
+        <div class="status-actions">
+          <button class="status-btn" type="button" title="记录会话日志">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button class="status-btn" type="button" title="只读模式">
+            <svg class="ico" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          </button>
+          <button class="status-btn" type="button" title="重连">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+          </button>
+          <button class="status-btn" type="button" title="断开连接">
+            <svg class="ico" viewBox="0 0 24 24"><path d="M12 2v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+          </button>
+        </div>
+      </footer>
+    </main>
+
+    <!-- 右岛：AI 工具抽屉（默认收起，打开时浮在中岛右侧上方） -->
+    <aside id="ai-panel" data-motion="drawer-slide" aria-label="AI 助手">
+      <div class="ai-header">
+        <div class="ai-title">
+          <svg class="ico" viewBox="0 0 24 24"><path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></svg>
+          <span>AI 助手 · api-prod-01</span>
+        </div>
+        <button class="tb-btn" id="btn-drawer-close" type="button" title="收起抽屉">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+      <div class="ai-body">
+        <div class="ai-block">
+          <div class="ai-block-label">诊断摘要</div>
+          <div>api-prod-01 当前负载 0.42，3 个核心容器全部健康运行。</div>
+        </div>
+        <div class="ai-block">
+          <div class="ai-block-label">建议检查命令</div>
+          <div>查看 nginx-proxy 最近 50 行错误日志：</div>
+          <div class="ai-code">docker logs --tail 50 nginx-proxy</div>
+        </div>
+        <div class="ai-block">
+          <div class="ai-block-label">执行范围</div>
+          <div>手动确认 · 仅作用于 api-prod-01</div>
+        </div>
+      </div>
+      <div class="ai-composer">
+        <span>输入 @ 引用主机，或直接提问…</span>
+        <svg class="ico" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 命令面板（⌘⇧P）：唯一允许 backdrop-filter: blur(8px) -->
+  <div class="palette-modal" id="palette-modal" data-motion="palette-modal">
+    <div class="palette-card">
+      <input class="palette-input" type="text" value="连接" readonly aria-label="命令面板搜索" />
+      <div class="palette-list">
+        <div class="pal-row active"><span>连接主机：api-prod-01 (10.0.4.11)</span><span class="pal-key">↵</span></div>
+        <div class="pal-row"><span>新建主机配置</span><span class="pal-key">⌘N</span></div>
+        <div class="pal-row"><span>切换 AI 工具抽屉</span><span class="pal-key">⌥⌘B</span></div>
+        <div class="pal-row"><span>水平分屏当前会话</span><span class="pal-key">⌘D</span></div>
+        <div class="pal-row"><span>从腾讯云 / 阿里云导入主机</span><span class="pal-key">⌘I</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 窗口下方原型控制条 -->
+<div class="proto-controls" id="proto-controls">
+  <div class="ctrl-group" id="scene-btns">
+    <span class="ctrl-label">场景</span>
+    <button class="ctrl-btn active" data-scene="welcome" type="button">欢迎台</button>
+    <button class="ctrl-btn" data-scene="terminal" type="button">终端</button>
+    <button class="ctrl-btn" data-scene="split" type="button">分屏双窗格</button>
+    <button class="ctrl-btn" data-scene="drawer" type="button">AI 工具抽屉</button>
+    <button class="ctrl-btn" data-scene="palette" type="button">命令面板</button>
+  </div>
+
+  <div class="ctrl-group">
+    <button class="ctrl-btn" id="btn-replay" type="button">▶ 重放动效</button>
+    <button class="ctrl-btn active" id="btn-motion-toggle" type="button">动效：开</button>
+  </div>
+
+  <div class="ctrl-group" id="size-btns">
+    <span class="ctrl-label">尺寸</span>
+    <button class="ctrl-btn active" data-size="default" type="button">1280×820</button>
+    <button class="ctrl-btn" data-size="compact" type="button">980×640</button>
+  </div>
+
+  <span class="replay-status" id="replay-status"></span>
+</div>
+
+<script>
+(() => {
+  const appEl = document.getElementById('app');
+  const hostList = document.getElementById('host-list');
+  const hostIndicator = document.getElementById('host-indicator');
+  const hostItems = [...document.querySelectorAll('.host-item')];
+  const tabsTrack = document.getElementById('tabs-track');
+  const tabPill = document.getElementById('tab-pill');
+  const paletteModal = document.getElementById('palette-modal');
+  const drawerToggleBtn = document.getElementById('btn-drawer-toggle');
+  const sidebarToggleBtn = document.getElementById('btn-sidebar-toggle');
+  const sidebarEl = document.getElementById('sidebar');
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const replayStatus = document.getElementById('replay-status');
+
+  function setDrawerOpen(open) {
+    appEl.classList.toggle('drawer-open', open);
+    drawerToggleBtn.classList.toggle('active', open);
+  }
+
+  sidebarToggleBtn.addEventListener('click', () => {
+    const collapsed = sidebarEl.classList.toggle('collapsed');
+    sidebarToggleBtn.classList.toggle('active', !collapsed);
+    setTimeout(() => syncTabPill(), 240);
+  });
+
+  // 1. 主机选中指示器 FLIP 定位
+  function syncHostIndicator(target) {
+    const active = target || hostList.querySelector('.host-item.active');
+    if (!active) return;
+    hostIndicator.style.transform = `translateY(${active.offsetTop}px)`;
+    hostIndicator.style.height = `${active.offsetHeight}px`;
+  }
+
+  hostItems.forEach((item) => {
+    item.addEventListener('mouseenter', () => {
+      if (item.classList.contains('active')) {
+        requestAnimationFrame(() => syncHostIndicator(item));
+      } else {
+        setTimeout(() => syncHostIndicator(), 110);
+      }
+    });
+    item.addEventListener('mouseleave', () => {
+      setTimeout(() => syncHostIndicator(), 140);
+    });
+    item.addEventListener('click', () => {
+      hostItems.forEach((el) => el.classList.remove('active'));
+      item.classList.add('active');
+      syncHostIndicator(item);
+      const name = item.dataset.host;
+      statusText.textContent = `${name} 已连接 · 12ms`;
+      statusDot.classList.add('connected');
+    });
+  });
+
+  // 2. 标签行 Pill FLIP 定位与切换
+  function syncTabPill(target) {
+    const active = target || tabsTrack.querySelector('.tab.active');
+    if (!active) return;
+    tabPill.style.width = `${active.offsetWidth}px`;
+    tabPill.style.transform = `translateX(${active.offsetLeft}px)`;
+  }
+
+  function activateTab(tabEl) {
+    tabsTrack.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+    tabEl.classList.add('active');
+    syncTabPill(tabEl);
+    const key = tabEl.dataset.tab;
+    if (key === 'welcome' || key === 'terminal' || key === 'split') {
+      switchScene(key);
+    }
+  }
+
+  tabsTrack.addEventListener('click', (e) => {
+    const closeBtn = e.target.closest('.tab-close');
+    if (closeBtn) {
+      const tab = closeBtn.closest('.tab');
+      tab.classList.add('closing');
+      setTimeout(() => {
+        const wasActive = tab.classList.contains('active');
+        tab.remove();
+        if (wasActive) {
+          const first = tabsTrack.querySelector('.tab');
+          if (first) activateTab(first);
+        } else {
+          syncTabPill();
+        }
+      }, 160);
+      return;
+    }
+    const tab = e.target.closest('.tab');
+    if (tab) activateTab(tab);
+  });
+
+  // 新建标签（scale .92 -> 1 + opacity）
+  let newTabIdx = 1;
+  document.getElementById('btn-newtab').addEventListener('click', () => {
+    const tab = document.createElement('div');
+    tab.className = 'tab entering';
+    tab.dataset.tab = 'terminal';
+    tab.dataset.motion = 'tab-enter';
+    tab.innerHTML = `<span class="tab-dot"></span><span>ssh-session-${newTabIdx++}</span>
+      <button class="tab-close" type="button" title="关闭标签" data-motion="tab-close">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>`;
+    tabsTrack.appendChild(tab);
+    activateTab(tab);
+  });
+
+  // 3. 分屏窗格焦点切换
+  document.querySelectorAll('.term-pane').forEach((pane) => {
+    pane.addEventListener('click', () => {
+      document.querySelectorAll('.term-pane').forEach((p) => p.classList.remove('focused'));
+      pane.classList.add('focused');
+    });
+  });
+
+  // 4. 场景切换
+  const sceneBtns = [...document.querySelectorAll('#scene-btns .ctrl-btn')];
+  let replayTimers = [];
+  function cancelReplay() {
+    replayTimers.forEach(clearTimeout);
+    replayTimers = [];
+    hostItems.forEach((el) => el.classList.remove('is-hovered'));
+  }
+
+  function switchScene(scene) {
+    sceneBtns.forEach((b) => b.classList.toggle('active', b.dataset.scene === scene));
+
+    // 先重置浮层状态
+    if (scene !== 'drawer') setDrawerOpen(false);
+    if (scene !== 'palette') paletteModal.classList.remove('open');
+
+    if (scene === 'welcome' || scene === 'terminal' || scene === 'split') {
+      document.querySelectorAll('.scene-view').forEach((v) => v.classList.remove('active'));
+      document.getElementById(`${scene}-view`).classList.add('active');
+      const matchingTab = tabsTrack.querySelector(`.tab[data-tab="${scene}"]`);
+      if (matchingTab) {
+        tabsTrack.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+        matchingTab.classList.add('active');
+        syncTabPill(matchingTab);
+      }
+      if (scene === 'welcome') {
+        statusText.textContent = '就绪 — 尚未建立连接';
+        statusDot.classList.remove('connected');
+      } else {
+        statusText.textContent = 'api-prod-01 已连接 · 12ms';
+        statusDot.classList.add('connected');
+      }
+    } else if (scene === 'drawer') {
+      document.querySelectorAll('.scene-view').forEach((v) => v.classList.remove('active'));
+      document.getElementById('terminal-view').classList.add('active');
+      const termTab = tabsTrack.querySelector('.tab[data-tab="terminal"]');
+      if (termTab) {
+        tabsTrack.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+        termTab.classList.add('active');
+        syncTabPill(termTab);
+      }
+      setDrawerOpen(true);
+      statusText.textContent = 'api-prod-01 已连接 · 12ms';
+      statusDot.classList.add('connected');
+    } else if (scene === 'palette') {
+      paletteModal.classList.add('open');
+    }
+  }
+
+  sceneBtns.forEach((btn) => btn.addEventListener('click', () => {
+    cancelReplay();
+    replayStatus.textContent = '';
+    switchScene(btn.dataset.scene);
+  }));
+  drawerToggleBtn.addEventListener('click', () => {
+    setDrawerOpen(!appEl.classList.contains('drawer-open'));
+  });
+  document.getElementById('btn-drawer-close').addEventListener('click', () => {
+    setDrawerOpen(false);
+  });
+  paletteModal.addEventListener('click', (e) => {
+    if (e.target === paletteModal) paletteModal.classList.remove('open');
+  });
+
+  // 5. 动效开关 & 尺寸切换
+  const motionBtn = document.getElementById('btn-motion-toggle');
+  motionBtn.addEventListener('click', () => {
+    const off = document.body.classList.toggle('motion-off');
+    motionBtn.textContent = off ? '动效：关' : '动效：开';
+    motionBtn.classList.toggle('active', !off);
+    syncHostIndicator();
+    syncTabPill();
+  });
+
+  document.querySelectorAll('#size-btns .ctrl-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#size-btns .ctrl-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.body.classList.toggle('size-compact', btn.dataset.size === 'compact');
+      setTimeout(() => { syncHostIndicator(); syncTabPill(); }, 340);
+    });
+  });
+
+  // 6. 重放动效（约 7.2 秒完整演示）
+  document.getElementById('btn-replay').addEventListener('click', () => {
+    cancelReplay();
+    tabsTrack.querySelectorAll('.tab.replay-temp').forEach((t) => t.remove());
+
+    const steps = [
+      [0,    '1/8 回到欢迎台', () => {
+        switchScene('welcome');
+        hostItems[0].click();
+        statusText.textContent = '就绪 — 尚未建立连接';
+        statusDot.classList.remove('connected');
+      }],
+      [750,  '2/8 hover 主机行（展开 meta）', () => {
+        hostItems[1].classList.add('is-hovered');
+        replayTimers.push(setTimeout(() => syncHostIndicator(), 140));
+      }],
+      [1700, '3/8 选中主机（滑块 FLIP）', () => {
+        hostItems[1].classList.remove('is-hovered');
+        hostItems[1].click();
+        replayTimers.push(setTimeout(() => syncHostIndicator(hostItems[1]), 220));
+      }],
+      [2700, '4/8 新建标签（Spring 出现）', () => {
+        const beforeCount = tabsTrack.querySelectorAll('.tab').length;
+        document.getElementById('btn-newtab').click();
+        const tabs = tabsTrack.querySelectorAll('.tab');
+        if (tabs.length > beforeCount) tabs[tabs.length - 1].classList.add('replay-temp');
+      }],
+      [3700, '5/8 切到终端视图', () => switchScene('terminal')],
+      [4700, '6/8 打开 AI 抽屉（Stagger）', () => switchScene('drawer')],
+      [5800, '7/8 打开命令面板（Blur + Stagger）', () => switchScene('palette')],
+      [6750, '8/8 关闭浮层并回到欢迎台', () => {
+        paletteModal.classList.remove('open');
+        const temp = tabsTrack.querySelector('.tab.replay-temp');
+        if (temp) temp.classList.add('closing');
+      }],
+      [6950, '演示完成', () => {
+        tabsTrack.querySelectorAll('.tab.replay-temp').forEach((t) => t.remove());
+        switchScene('welcome');
+      }],
+      [8100, '', () => { replayStatus.textContent = ''; }]
+    ];
+
+    steps.forEach(([delay, label, fn]) => {
+      replayTimers.push(setTimeout(() => {
+        if (label) replayStatus.textContent = label;
+        fn();
+      }, delay));
+    });
+  });
+
+  // 初始化定位
+  requestAnimationFrame(() => {
+    syncHostIndicator();
+    syncTabPill();
+  });
+})();
+</script>
+</body>
+</html>

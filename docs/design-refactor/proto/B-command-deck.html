@@ -1,0 +1,1601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NebulaShell · 候选 B：Command Deck · 编排</title>
+  <!--
+  =============================================================================
+  NebulaShell · Command Deck (候选 B) 动效规格表
+  =============================================================================
+  动效名               | 触发             | 属性                          | 时长   | 曲线                           | 对应真实代码选择器
+  =====================|==================|===============================|========|================================|====================================
+  rail-item-hover      | :hover / :active | background, color, transform  | 140ms  | cubic-bezier(.2,0,0,1)         | #sidebar.collapsed .side-rail .btn
+  stream-bar-grow      | .host-row:hover  | transform: scaleY(0->1)       | 140ms  | cubic-bezier(.16,1,.3,1)       | .host-item::before
+  stream-actions-in    | .host-row:hover  | opacity, transform (20ms错峰) | 140ms  | cubic-bezier(.16,1,.3,1)       | .host-actions button
+  stream-row-press     | .host-row:active | transform: scale(.985)        | 90ms   | cubic-bezier(.2,0,0,1)         | .host-item:active
+  stream-session-hover | .session-row:hover| background, color            | 140ms  | cubic-bezier(.2,0,0,1)         | .rp-sess
+  focus-ring-expand    | :focus-visible   | outline, outline-offset       | 120ms  | cubic-bezier(.16,1,.3,1)       | :where(button,[role=menuitem]):focus-visible
+  cmdbar-focus-halo    | :focus-within    | border-color, box-shadow      | 140ms  | cubic-bezier(.16,1,.3,1)       | :where(input,select,textarea):focus-visible
+  mosaic-flip          | 布局切换 / 新开  | transform (20ms错峰 FLIP)     | 320ms  | cubic-bezier(.16,1,.3,1)       | .workspace-tile
+  mosaic-tile-enter    | 新磁贴打开       | transform: scale(.96->1),opacity|200ms | cubic-bezier(.34,1.4,.64,1)    | .workspace-tile.entering > .tile-surface
+  transfer-progress    | 传输进行中       | transform: scaleX(...)        | 200ms  | cubic-bezier(.2,0,0,1)         | .fp-task-bar > i
+  pulse-bar-flow       | 有活跃连接       | transform: translateX         | 2400ms | linear (infinite)              | #statusbar (压缩为 2px 活动脉搏)
+  palette-backdrop     | ⌘⇧P 打开         | opacity, backdrop-filter      | 200ms  | cubic-bezier(.16,1,.3,1)       | .modal.palette-modal
+  palette-card-in      | ⌘⇧P 打开         | transform: scale+Y, opacity   | 200ms  | cubic-bezier(.16,1,.3,1)       | .palette-card
+  palette-row-stagger  | ⌘⇧P 打开         | opacity, transform (14ms错峰) | 140ms  | cubic-bezier(.16,1,.3,1)       | .pal-row
+  =============================================================================
+  -->
+  <style>
+    :root {
+      /* 必须复用的现有色板 */
+      --bg: #070a11;
+      --bg2: #1a2333;
+      --panel: #101722;
+      --border: #333e4f;
+      --border-hover: #4d5a73;
+      --text: #e6edf3;
+      --muted: #9aa5b6;
+      --accent: #5b8cff;
+      --accent2: #3ddc97;
+      --danger: #ff6b6b;
+      --warn: #ffc24b;
+      --titlebar-bg: #05070c;
+      --row-hover: #222d3f;
+      --row-active: #2a3750;
+      --field: #04060a;
+      --btn-primary-bg: linear-gradient(135deg, #3a68d9, #2f57c4);
+      --btn-primary-text: #fff;
+      --surface-overlay: rgba(255, 255, 255, .07);
+      --surface-sunken: rgba(0, 0, 0, .28);
+      --focus-halo: rgba(91, 140, 255, .3);
+      --tile-border: rgba(255, 255, 255, .06);
+      --palette-overlay: rgba(4, 6, 10, .55);
+
+      /* 字号八档（只许用这几档） */
+      --fs-2xs: 10px;
+      --fs-xs: 11px;
+      --fs-sm: 12px;
+      --fs-md: 13px;
+      --fs-lg: 14px;
+      --fs-xl: 16px;
+      --fs-2xl: 20px;
+      --fs-hero: 44px;
+
+      /* 圆角五档 */
+      --r-xs: 4px;
+      --r-sm: 8px;
+      --r-md: 10px;
+      --r-lg: 12px;
+      --r-pill: 999px;
+
+      /* 字体 */
+      --font-ui: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+      /* 动效 Token */
+      --dur-1: 90ms;
+      --dur-2: 140ms;
+      --dur-3: 200ms;
+      --dur-flip: 320ms;
+      --ease-out-expo: cubic-bezier(.16, 1, .3, 1);
+      --ease-standard: cubic-bezier(.2, 0, 0, 1);
+      --ease-overshoot: cubic-bezier(.34, 1.4, .64, 1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: var(--field);
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: var(--fs-md);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      gap: 14px;
+      overflow-x: hidden;
+    }
+
+    @media (max-width: 1320px) {
+      body { padding: 8px 0; gap: 10px; }
+    }
+
+    /* 动效开关关闭：所有 transition-duration 与 animation-duration 归零 */
+    body.motion-off *,
+    body.motion-off *::before,
+    body.motion-off *::after {
+      transition-duration: 0ms !important;
+      transition-delay: 0ms !important;
+      animation-duration: 0ms !important;
+      animation-delay: 0ms !important;
+    }
+
+    /* prefers-reduced-motion: 关闭位移与缩放，只保留 opacity */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition-property: opacity, background-color, border-color, color !important;
+        animation-name: none !important;
+      }
+      .palette-card,
+      .mosaic-tile,
+      .tile-surface,
+      .host-row,
+      .host-act-btn,
+      .pal-row,
+      .rail-btn:active,
+      .host-row:active {
+        transform: none !important;
+      }
+      .host-row-bar {
+        transform: none !important;
+        opacity: 0;
+        transition: opacity var(--dur-2) var(--ease-standard);
+      }
+      .host-row:hover .host-row-bar,
+      .host-row.is-hover .host-row-bar {
+        opacity: 1;
+      }
+      .transfer-fill {
+        transition: none !important;
+      }
+    }
+
+    /* 键盘焦点环：2px accent + 2px offset，120ms 展开 */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      transition: outline-offset 120ms var(--ease-out-expo);
+    }
+
+    /* 应用窗口外壳 */
+    .app-window {
+      width: 1280px;
+      height: 820px;
+      max-width: 100%;
+      background: var(--bg);
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      box-shadow: 0 40px 120px rgba(0, 0, 0, .6);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      transition: width var(--dur-3) var(--ease-out-expo), height var(--dur-3) var(--ease-out-expo);
+    }
+
+    .app-window.size-980 {
+      width: 980px;
+      height: 640px;
+    }
+
+    /* 标题栏 36px */
+    .titlebar {
+      height: 36px;
+      flex: none;
+      background: var(--titlebar-bg);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 12px;
+      user-select: none;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: var(--fs-md);
+      font-weight: 600;
+      letter-spacing: .01em;
+      flex: none;
+    }
+
+    .brand-star {
+      font-size: var(--fs-lg);
+      background: linear-gradient(135deg, #38bdf8, #5b8cff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .menubar {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-left: 6px;
+      flex: none;
+    }
+
+    .menu-item {
+      background: transparent;
+      border: 0;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: var(--fs-sm);
+      padding: 4px 8px;
+      border-radius: var(--r-xs);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
+    }
+    .menu-item:hover {
+      background: var(--surface-overlay);
+      color: var(--text);
+    }
+
+    .titlebar-spacer { flex: 1; }
+
+    .win-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: none;
+    }
+    .win-btn {
+      width: 24px;
+      height: 24px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: var(--r-xs);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: background var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
+    }
+    .win-btn:hover { background: var(--surface-overlay); color: var(--text); }
+    .win-btn.close:hover { background: var(--danger); color: var(--btn-primary-text); }
+
+    /* 主体工作区 */
+    .deck-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* 左轨 48px */
+    .icon-rail {
+      width: 48px;
+      flex: none;
+      background: var(--titlebar-bg);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px 0;
+      gap: 8px;
+    }
+
+    .rail-btn {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: var(--r-sm);
+      background: transparent;
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      position: relative;
+      transition: background var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard), transform var(--dur-1) var(--ease-standard);
+    }
+    .rail-btn:hover {
+      background: var(--surface-overlay);
+      color: var(--text);
+    }
+    .rail-btn:active {
+      transform: scale(.94);
+    }
+    .rail-btn.active {
+      background: var(--row-active);
+      color: var(--accent);
+    }
+    .rail-btn.active::before {
+      content: "";
+      position: absolute;
+      left: -7px;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      border-radius: var(--r-pill);
+      background: var(--accent);
+    }
+
+    .rail-spacer { flex: 1; }
+
+    .rail-session-badge {
+      width: 32px;
+      height: 28px;
+      border-radius: var(--r-sm);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--accent2);
+      font-family: var(--font-mono);
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .rail-session-badge .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: var(--r-pill);
+      background: var(--accent2);
+    }
+
+    /* 左栏 232px「统一流」（980w 时收窄到 196px） */
+    .unified-stream {
+      width: 232px;
+      flex: none;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      transition: width var(--dur-3) var(--ease-out-expo);
+    }
+    .app-window.size-980 .unified-stream {
+      width: 196px;
+    }
+
+    .stream-scroll {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px; /* 组间 14px 空隙，不用分隔线 */
+    }
+    .stream-scroll::-webkit-scrollbar { width: 4px; }
+    .stream-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--r-pill); }
+
+    .stream-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    /* 组间小标题：按字号八档归并至 --fs-2xs (10px)，保持紧凑信息密度 */
+    .stream-label {
+      font-size: var(--fs-2xs);
+      font-weight: 600;
+      letter-spacing: .08em;
+      color: var(--muted);
+      padding: 0 8px 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+    }
+
+    .stream-kbd-sim {
+      display: inline-flex;
+      gap: 3px;
+    }
+    .stream-kbd-btn {
+      width: 18px;
+      height: 18px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--muted);
+      border-radius: var(--r-xs);
+      font-size: var(--fs-2xs);
+      line-height: 1;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: border-color var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard), transform var(--dur-1) var(--ease-standard);
+    }
+    .stream-kbd-btn:hover { border-color: var(--border-hover); color: var(--text); }
+    .stream-kbd-btn:active { transform: scale(.94); }
+
+    /* 主机行：hover 时左侧 2px 竖线由 0 长到 100%（140ms），右侧 3 个快捷动作按 20ms 递延淡入 */
+    .host-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 44px;
+      padding: 0 8px;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      background: transparent;
+      border: 0;
+      text-align: left;
+      width: 100%;
+      color: var(--text);
+      font-family: inherit;
+      overflow: hidden;
+      transition: background var(--dur-2) var(--ease-standard), transform var(--dur-1) var(--ease-standard);
+    }
+    .host-row-bar {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--accent);
+      transform: scaleY(0);
+      transform-origin: center;
+      transition: transform var(--dur-2) var(--ease-out-expo);
+      pointer-events: none;
+    }
+    .host-row:hover,
+    .host-row.is-hover {
+      background: var(--row-hover);
+    }
+    .host-row:hover .host-row-bar,
+    .host-row.is-hover .host-row-bar {
+      transform: scaleY(1);
+    }
+    .host-row.selected {
+      background: var(--row-active);
+    }
+    .host-row:active {
+      transform: scale(.985);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: var(--r-pill);
+      flex: none;
+      background: var(--muted);
+      opacity: .45;
+    }
+    .status-dot.connected {
+      background: var(--accent2);
+      opacity: 1;
+    }
+
+    .host-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .host-name-line {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+    }
+    .host-name {
+      font-size: var(--fs-sm);
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .host-tag {
+      font-size: var(--fs-2xs);
+      color: var(--accent2);
+      background: var(--surface-overlay);
+      padding: 0 5px;
+      border-radius: var(--r-pill);
+      line-height: 15px;
+      flex: none;
+    }
+    .host-ip {
+      font-family: var(--font-mono);
+      font-size: var(--fs-2xs);
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 绝对定位悬浮在右侧，避免平时挤压主机名列宽 */
+    .host-actions {
+      position: absolute;
+      right: 4px;
+      top: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding-left: 18px;
+      pointer-events: none;
+    }
+    .host-row:hover .host-actions,
+    .host-row.is-hover .host-actions {
+      background: linear-gradient(90deg, transparent, var(--row-hover) 28%);
+      pointer-events: auto;
+    }
+    .host-row.selected:hover .host-actions,
+    .host-row.selected.is-hover .host-actions {
+      background: linear-gradient(90deg, transparent, var(--row-active) 28%);
+    }
+
+    .host-act-btn {
+      width: 22px;
+      height: 22px;
+      border: 0;
+      border-radius: var(--r-xs);
+      background: var(--bg2);
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      opacity: 0;
+      transform: translateX(4px);
+      transition: opacity var(--dur-2) var(--ease-out-expo), transform var(--dur-2) var(--ease-out-expo), color var(--dur-1) var(--ease-standard), background var(--dur-1) var(--ease-standard);
+    }
+    .host-row:hover .host-act-btn,
+    .host-row.is-hover .host-act-btn {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    .host-row:hover .host-act-btn:nth-child(1),
+    .host-row.is-hover .host-act-btn:nth-child(1) { transition-delay: 0ms; }
+    .host-row:hover .host-act-btn:nth-child(2),
+    .host-row.is-hover .host-act-btn:nth-child(2) { transition-delay: 20ms; }
+    .host-row:hover .host-act-btn:nth-child(3),
+    .host-row.is-hover .host-act-btn:nth-child(3) { transition-delay: 40ms; }
+    .host-act-btn:hover,
+    .host-act-btn.is-active {
+      background: var(--accent);
+      color: var(--btn-primary-text);
+    }
+
+    /* 活跃会话行 */
+    .session-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 32px;
+      padding: 0 8px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+      text-align: left;
+      width: 100%;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      transition: background var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
+    }
+    .session-row:hover { background: var(--row-hover); }
+    .session-row.active { background: var(--row-active); }
+    .session-name {
+      flex: 1;
+      min-width: 0;
+      font-size: var(--fs-sm);
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .session-lat {
+      font-family: var(--font-mono);
+      font-size: var(--fs-2xs);
+      color: var(--accent2);
+      flex: none;
+    }
+    .session-lat.warn { color: var(--warn); }
+
+    /* 传输任务行 */
+    .transfer-row {
+      padding: 6px 8px;
+      border-radius: var(--r-sm);
+      background: var(--surface-sunken);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .transfer-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: var(--fs-xs);
+    }
+    .transfer-file {
+      font-family: var(--font-mono);
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .transfer-sub {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: var(--fs-2xs);
+      color: var(--muted);
+    }
+    .transfer-dir.up { color: var(--accent); }
+    .transfer-dir.dl { color: var(--accent2); }
+    .transfer-track {
+      height: 3px;
+      background: var(--border);
+      border-radius: var(--r-pill);
+      overflow: hidden;
+    }
+    .transfer-fill {
+      height: 100%;
+      width: 100%;
+      background: var(--accent);
+      transform-origin: left center;
+      transition: transform var(--dur-3) var(--ease-standard);
+    }
+    .transfer-fill.dl { background: var(--accent2); }
+
+    /* 右侧主区 */
+    .main-deck {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+
+    /* 主区上方 44px「命令条」 */
+    .command-bar {
+      height: 44px;
+      flex: none;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+
+    .cmd-input-wrap {
+      flex: 1 1 320px;
+      max-width: 520px;
+      min-width: 260px;
+      height: 30px;
+      background: var(--field);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      transition: border-color var(--dur-2) var(--ease-out-expo), box-shadow var(--dur-2) var(--ease-out-expo);
+    }
+    .cmd-input-wrap:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--focus-halo);
+    }
+    .cmd-input-wrap svg { color: var(--muted); flex: none; }
+    .cmd-input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+      font-size: var(--fs-sm);
+      outline: none;
+    }
+    .cmd-input::placeholder { color: var(--muted); }
+    .kbd-chip {
+      font-family: var(--font-mono);
+      font-size: var(--fs-2xs);
+      color: var(--muted);
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-xs);
+      padding: 1px 5px;
+      flex: none;
+    }
+
+    .cmd-telemetry {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: var(--fs-xs);
+      color: var(--muted);
+      flex: none;
+    }
+    .tele-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .tele-val { color: var(--text); font-weight: 500; }
+    .tele-val.ok { color: var(--accent2); }
+
+    /* Mosaic 磁贴区 */
+    .mosaic-stage {
+      flex: 1;
+      min-height: 0;
+      padding: 10px;
+      display: grid;
+      gap: 10px;
+      overflow: hidden;
+    }
+    .mosaic-stage.grid-1 {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+    }
+    .mosaic-stage.grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: 1fr;
+    }
+    .mosaic-stage.grid-4 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: repeat(2, minmax(0, 1fr));
+    }
+
+    .mosaic-tile {
+      background: var(--bg);
+      border: 1px solid var(--tile-border);
+      border-radius: var(--r-lg); /* radius 12 */
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      transition: border-color var(--dur-2) var(--ease-standard), box-shadow var(--dur-2) var(--ease-standard);
+    }
+    .mosaic-tile.focused {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .tile-surface {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .mosaic-tile.entering .tile-surface {
+      animation: tileEnter var(--dur-3) var(--ease-overshoot) both;
+    }
+    @keyframes tileEnter {
+      from { opacity: 0; transform: scale(.96); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    /* 磁贴头 28px */
+    .tile-header {
+      height: 28px;
+      flex: none;
+      background: var(--panel);
+      border-bottom: 1px solid var(--tile-border);
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+    .tile-title {
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tile-ip {
+      font-family: var(--font-mono);
+      font-size: var(--fs-2xs);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .tile-spacer { flex: 1; }
+    .tile-lat {
+      font-family: var(--font-mono);
+      font-size: var(--fs-2xs);
+      color: var(--accent2);
+      padding: 1px 6px;
+      border-radius: var(--r-pill);
+      background: var(--surface-overlay);
+      flex: none;
+    }
+    .tile-lat.warn { color: var(--warn); }
+    .tile-more {
+      width: 20px;
+      height: 20px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: var(--r-xs);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      flex: none;
+    }
+    .tile-more:hover { background: var(--surface-overlay); color: var(--text); }
+
+    .tile-body {
+      flex: 1;
+      min-height: 0;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: var(--fs-xs);
+      line-height: 1.5;
+      color: var(--text);
+      overflow-y: auto;
+      overflow-x: hidden;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .t-prompt { color: var(--accent2); }
+    .t-cmd { color: var(--text); font-weight: 500; }
+    .t-ok { color: var(--accent2); }
+    .t-cursor {
+      display: inline-block;
+      width: 7px;
+      height: 13px;
+      background: var(--accent);
+      vertical-align: -2px;
+    }
+
+    /* 底部 2px 活动脉搏条 */
+    .activity-pulse {
+      height: 2px;
+      flex: none;
+      width: 100%;
+      background: var(--border);
+      position: relative;
+      overflow: hidden;
+    }
+    .activity-pulse.active::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      width: 35%;
+      background: linear-gradient(90deg, transparent, var(--accent), var(--accent2), transparent);
+      animation: pulseFlow 2.4s linear infinite;
+    }
+    @keyframes pulseFlow {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(300%); }
+    }
+
+    /* 命令面板 (⌘⇧P) 全屏浮层：唯一允许 backdrop-filter: blur(8px) */
+    .palette-backdrop {
+      position: absolute;
+      inset: 0;
+      background: var(--palette-overlay);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 84px;
+      z-index: 50;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--dur-3) var(--ease-out-expo);
+    }
+    .palette-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .palette-card {
+      width: 560px;
+      max-width: calc(100% - 32px);
+      background: var(--panel);
+      border: 1px solid var(--border-hover);
+      border-radius: var(--r-lg);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, .65);
+      overflow: hidden;
+      transform: scale(.97) translateY(6px);
+      opacity: 0;
+      transition: transform var(--dur-3) var(--ease-out-expo), opacity var(--dur-3) var(--ease-out-expo);
+    }
+    .palette-backdrop.open .palette-card {
+      transform: scale(1) translateY(0);
+      opacity: 1;
+    }
+
+    .palette-head {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .palette-head input {
+      flex: 1;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+      font-size: var(--fs-lg);
+      outline: none;
+    }
+    .palette-list {
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .pal-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: var(--r-sm);
+      font-size: var(--fs-sm);
+      color: var(--text);
+      cursor: pointer;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity var(--dur-2) var(--ease-out-expo), transform var(--dur-2) var(--ease-out-expo), background var(--dur-1) var(--ease-standard);
+    }
+    .palette-backdrop.open .pal-row {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .palette-backdrop.open .pal-row:nth-child(1) { transition-delay: 0ms; }
+    .palette-backdrop.open .pal-row:nth-child(2) { transition-delay: 14ms; }
+    .palette-backdrop.open .pal-row:nth-child(3) { transition-delay: 28ms; }
+    .palette-backdrop.open .pal-row:nth-child(4) { transition-delay: 42ms; }
+    .palette-backdrop.open .pal-row:nth-child(5) { transition-delay: 56ms; }
+    .pal-row.active,
+    .pal-row:hover {
+      background: var(--row-active);
+    }
+    .pal-sub { color: var(--muted); font-size: var(--fs-xs); margin-left: 8px; }
+
+    /* 窗口下方控制条（不属于应用窗口） */
+    .control-bar {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md); /* 10px 圆角 */
+      padding: 8px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px;
+      max-width: 100%;
+    }
+
+    .ctrl-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ctrl-label {
+      font-size: var(--fs-xs);
+      color: var(--muted);
+      margin-right: 2px;
+      white-space: nowrap;
+    }
+    .ctrl-btn {
+      height: 26px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text);
+      border-radius: var(--r-sm);
+      font-family: inherit;
+      font-size: var(--fs-xs);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background var(--dur-1) var(--ease-standard), border-color var(--dur-1) var(--ease-standard);
+    }
+    .ctrl-btn:hover { border-color: var(--border-hover); background: var(--row-hover); }
+    .ctrl-btn.active {
+      background: var(--btn-primary-bg);
+      border-color: var(--accent);
+      color: var(--btn-primary-text);
+    }
+    .replay-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .replay-progress {
+      width: 64px;
+      height: 4px;
+      border-radius: var(--r-pill);
+      background: var(--border);
+      overflow: hidden;
+      display: none;
+    }
+    .replay-progress.visible { display: inline-block; }
+    .replay-progress-fill {
+      width: 100%;
+      height: 100%;
+      background: var(--accent2);
+      transform-origin: left center;
+      transform: scaleX(0);
+      transition: transform var(--dur-3) var(--ease-out-expo);
+    }
+    .replay-status {
+      font-size: var(--fs-xs);
+      color: var(--accent2);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-window" id="appWindow">
+    <!-- 标题栏 36px -->
+    <header class="titlebar">
+      <div class="brand">
+        <span class="brand-star">✦</span>
+        <span>NebulaShell</span>
+      </div>
+      <nav class="menubar" aria-label="一级菜单">
+        <button class="menu-item" type="button" data-motion="focus-ring-expand">文件</button>
+        <button class="menu-item" type="button" data-motion="focus-ring-expand">编辑</button>
+        <button class="menu-item" type="button" data-motion="focus-ring-expand">视图</button>
+        <button class="menu-item" type="button" data-motion="focus-ring-expand">主机</button>
+        <button class="menu-item" type="button" data-motion="focus-ring-expand">会话</button>
+        <button class="menu-item" type="button" data-motion="focus-ring-expand">帮助</button>
+      </nav>
+      <div class="titlebar-spacer"></div>
+      <div class="win-controls">
+        <button class="win-btn" type="button" aria-label="最小化">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 12h14"/></svg>
+        </button>
+        <button class="win-btn" type="button" aria-label="最大化">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="14" height="14" rx="1"/></svg>
+        </button>
+        <button class="win-btn close" type="button" aria-label="关闭">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 主体 -->
+    <div class="deck-body">
+      <!-- 左轨 48px -->
+      <aside class="icon-rail" aria-label="功能轨">
+        <button class="rail-btn active" type="button" title="主机" data-rail="hosts" data-motion="rail-item-hover">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+        </button>
+        <button class="rail-btn" type="button" title="会话" data-rail="sessions" data-motion="rail-item-hover">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>
+        </button>
+        <button class="rail-btn" type="button" title="传输" data-rail="transfers" data-motion="rail-item-hover">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m3 8 4-4 4 4M7 4v12m14 0-4 4-4-4m4 4V8"/></svg>
+        </button>
+        <button class="rail-btn" type="button" title="AI 助手" data-rail="ai" data-motion="rail-item-hover">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></svg>
+        </button>
+        <div class="rail-spacer"></div>
+        <div class="rail-session-badge" title="活跃会话数">
+          <span class="dot"></span>
+          <span id="railSessionCount">3</span>
+        </div>
+      </aside>
+
+      <!-- 左栏 232px「统一流」 -->
+      <aside class="unified-stream" aria-label="统一流">
+        <div class="stream-scroll" id="streamScroll">
+          <!-- 组 1：主机 -->
+          <section class="stream-group" id="groupHosts">
+            <div class="stream-label">
+              <span>主机 · 4</span>
+              <span class="stream-kbd-sim">
+                <button class="stream-kbd-btn" id="btnStreamUp" type="button" title="向上移动选中">↑</button>
+                <button class="stream-kbd-btn" id="btnStreamDown" type="button" title="向下移动选中">↓</button>
+              </span>
+            </div>
+            <button class="host-row selected" type="button" data-host="api-prod-01" data-motion="stream-row-press">
+              <span class="host-row-bar" data-motion="stream-bar-grow"></span>
+              <span class="status-dot connected"></span>
+              <span class="host-info">
+                <span class="host-name-line">
+                  <span class="host-name">api-prod-01</span>
+                  <span class="host-tag">生产</span>
+                </span>
+                <span class="host-ip">10.0.4.11</span>
+              </span>
+              <span class="host-actions">
+                <span class="host-act-btn" title="新磁贴" data-act="open" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+                <span class="host-act-btn" title="SFTP" data-act="sftp" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></span>
+                <span class="host-act-btn" title="更多" data-act="more" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>
+              </span>
+            </button>
+            <button class="host-row" type="button" data-host="cache-prod-02" data-motion="stream-row-press">
+              <span class="host-row-bar" data-motion="stream-bar-grow"></span>
+              <span class="status-dot"></span>
+              <span class="host-info">
+                <span class="host-name-line">
+                  <span class="host-name">cache-prod-02</span>
+                </span>
+                <span class="host-ip">10.0.4.12</span>
+              </span>
+              <span class="host-actions">
+                <span class="host-act-btn" title="新磁贴" data-act="open" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+                <span class="host-act-btn" title="SFTP" data-act="sftp" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></span>
+                <span class="host-act-btn" title="更多" data-act="more" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>
+              </span>
+            </button>
+            <button class="host-row" type="button" data-host="db-prod-01" data-motion="stream-row-press">
+              <span class="host-row-bar" data-motion="stream-bar-grow"></span>
+              <span class="status-dot"></span>
+              <span class="host-info">
+                <span class="host-name-line">
+                  <span class="host-name">db-prod-01</span>
+                </span>
+                <span class="host-ip">10.0.4.15</span>
+              </span>
+              <span class="host-actions">
+                <span class="host-act-btn" title="新磁贴" data-act="open" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+                <span class="host-act-btn" title="SFTP" data-act="sftp" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></span>
+                <span class="host-act-btn" title="更多" data-act="more" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>
+              </span>
+            </button>
+            <button class="host-row" type="button" data-host="web-staging-03" data-motion="stream-row-press">
+              <span class="host-row-bar" data-motion="stream-bar-grow"></span>
+              <span class="status-dot"></span>
+              <span class="host-info">
+                <span class="host-name-line">
+                  <span class="host-name">web-staging-03</span>
+                </span>
+                <span class="host-ip">10.0.8.20</span>
+              </span>
+              <span class="host-actions">
+                <span class="host-act-btn" title="新磁贴" data-act="open" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+                <span class="host-act-btn" title="SFTP" data-act="sftp" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></span>
+                <span class="host-act-btn" title="更多" data-act="more" data-motion="stream-actions-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>
+              </span>
+            </button>
+          </section>
+
+          <!-- 组 2：活跃会话 -->
+          <section class="stream-group" id="groupSessions">
+            <div class="stream-label"><span>活跃会话 · 3</span></div>
+            <button class="session-row active" type="button" data-session="api-prod-01" data-motion="stream-session-hover">
+              <span class="status-dot connected"></span>
+              <span class="session-name">api-prod-01</span>
+              <span class="session-lat">12ms</span>
+            </button>
+            <button class="session-row" type="button" data-session="cache-prod-02" data-motion="stream-session-hover">
+              <span class="status-dot connected"></span>
+              <span class="session-name">cache-prod-02</span>
+              <span class="session-lat">28ms</span>
+            </button>
+            <button class="session-row" type="button" data-session="web-staging-03" data-motion="stream-session-hover">
+              <span class="status-dot connected"></span>
+              <span class="session-name">web-staging-03</span>
+              <span class="session-lat warn">110ms</span>
+            </button>
+          </section>
+
+          <!-- 组 3：传输任务 -->
+          <section class="stream-group" id="groupTransfers">
+            <div class="stream-label"><span>传输任务 · 2</span></div>
+            <div class="transfer-row">
+              <div class="transfer-top">
+                <span class="transfer-file">api-service.tar.gz</span>
+              </div>
+              <div class="transfer-sub">
+                <span class="transfer-dir up">↑ 上传</span>
+                <span id="txMeta1">62% · 4.2 MB/s</span>
+              </div>
+              <div class="transfer-track">
+                <div class="transfer-fill" id="txBar1" data-motion="transfer-progress" style="transform: scaleX(0.62);"></div>
+              </div>
+            </div>
+            <div class="transfer-row">
+              <div class="transfer-top">
+                <span class="transfer-file">access.log</span>
+              </div>
+              <div class="transfer-sub">
+                <span class="transfer-dir dl">↓ 下载</span>
+                <span id="txMeta2">18%</span>
+              </div>
+              <div class="transfer-track">
+                <div class="transfer-fill dl" id="txBar2" data-motion="transfer-progress" style="transform: scaleX(0.18);"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </aside>
+
+      <!-- 主区 -->
+      <main class="main-deck">
+        <!-- 44px 命令条 -->
+        <div class="command-bar">
+          <div class="cmd-input-wrap" data-motion="cmdbar-focus-halo">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input class="cmd-input" id="cmdInput" type="text" placeholder="搜索主机、命令或输入 user@host 快速连接" aria-label="命令条" />
+            <span class="kbd-chip">⌘K</span>
+          </div>
+          <div class="cmd-telemetry">
+            <span class="tele-item">连接 <span class="tele-val ok" id="teleConn">3</span></span>
+            <span class="tele-item">延迟 <span class="tele-val">50ms</span></span>
+            <span class="tele-item">RX/TX <span class="tele-val">1.8 / 4.2 MB/s</span></span>
+          </div>
+        </div>
+
+        <!-- Mosaic 磁贴 -->
+        <div class="mosaic-stage grid-2" id="mosaicStage"></div>
+      </main>
+    </div>
+
+    <!-- 底部 2px 活动脉搏 -->
+    <div class="activity-pulse active" id="activityPulse" data-motion="pulse-bar-flow"></div>
+
+    <!-- 命令面板 (⌘⇧P) 全屏浮层 -->
+    <div class="palette-backdrop" id="paletteModal" data-motion="palette-backdrop" aria-hidden="true">
+      <div class="palette-card" data-motion="palette-card-in" role="dialog" aria-label="命令面板">
+        <div class="palette-head">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="paletteInput" type="text" placeholder="输入命令、主机名或 user@host:port…" />
+          <span class="kbd-chip">⌘⇧P</span>
+        </div>
+        <div class="palette-list">
+          <div class="pal-row active" data-motion="palette-row-stagger">
+            <span>连接主机 · api-prod-01 <span class="pal-sub">10.0.4.11 · 生产</span></span>
+            <span class="kbd-chip">↵</span>
+          </div>
+          <div class="pal-row" data-motion="palette-row-stagger">
+            <span>切换布局 · 4 格平铺 <span class="pal-sub">Mosaic 编排</span></span>
+            <span class="kbd-chip">⌘4</span>
+          </div>
+          <div class="pal-row" data-motion="palette-row-stagger">
+            <span>打开 SFTP 文件传输 <span class="pal-sub">api-prod-01</span></span>
+            <span class="kbd-chip">⌘⇧F</span>
+          </div>
+          <div class="pal-row" data-motion="palette-row-stagger">
+            <span>连接主机 · db-prod-01 <span class="pal-sub">10.0.4.15</span></span>
+            <span class="kbd-chip">⌘3</span>
+          </div>
+          <div class="pal-row" data-motion="palette-row-stagger">
+            <span>新建主机会话 <span class="pal-sub">快速连接向导</span></span>
+            <span class="kbd-chip">⌘N</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 窗口下方控制条 -->
+  <div class="control-bar" role="region" aria-label="原型控制条">
+    <div class="ctrl-group">
+      <span class="ctrl-label">场景</span>
+      <button class="ctrl-btn" data-scene="1" type="button">1 格</button>
+      <button class="ctrl-btn active" data-scene="2" type="button">2 格</button>
+      <button class="ctrl-btn" data-scene="4" type="button">4 格</button>
+      <button class="ctrl-btn" data-scene="palette" type="button">命令面板</button>
+      <button class="ctrl-btn" data-scene="transfer" type="button">传输进行中</button>
+    </div>
+    <div class="ctrl-group replay-wrap">
+      <button class="ctrl-btn" id="btnReplay" type="button">重放动效</button>
+      <span class="replay-progress" id="replayProgress"><span class="replay-progress-fill" id="replayProgressFill"></span></span>
+      <span class="replay-status" id="replayStatus"></span>
+    </div>
+    <div class="ctrl-group">
+      <span class="ctrl-label">动效开关</span>
+      <button class="ctrl-btn active" id="btnMotionOn" type="button">开</button>
+      <button class="ctrl-btn" id="btnMotionOff" type="button">关</button>
+    </div>
+    <div class="ctrl-group">
+      <span class="ctrl-label">尺寸</span>
+      <button class="ctrl-btn active" id="btnSize1280" type="button">1280×820</button>
+      <button class="ctrl-btn" id="btnSize980" type="button">980×640</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const TILES_DATA = [
+        {
+          id: 'api-prod-01',
+          ip: '10.0.4.11',
+          lat: '12ms',
+          warn: false,
+          body: `Last login: Thu Nov 26 10:12:03 2026 from 10.0.4.2\n<span class="t-prompt">$</span> <span class="t-cmd">uptime</span>\n 10:14:22 up 42 days,  3:18,  1 user,  load average: 0.42, 0.38, 0.31\n<span class="t-prompt">$</span> <span class="t-cmd">docker ps --format 'table {{.Names}}\\t{{.Status}}'</span>\nNAMES              STATUS\nnginx-proxy        Up 42 days\napi-service        Up 12 days (<span class="t-ok">healthy</span>)\nredis-cache        Up 42 days\n<span class="t-prompt">$</span> <span class="t-cursor"></span>`
+        },
+        {
+          id: 'cache-prod-02',
+          ip: '10.0.4.12',
+          lat: '28ms',
+          warn: false,
+          body: `Last login: Thu Nov 26 09:58:11 2026 from 10.0.4.2\n<span class="t-prompt">$</span> <span class="t-cmd">redis-cli info stats | grep instantaneous</span>\ninstantaneous_ops_per_sec:14280\ninstantaneous_input_kbps:1184.22\ninstantaneous_output_kbps:2410.85\n<span class="t-prompt">$</span> <span class="t-cursor"></span>`
+        },
+        {
+          id: 'web-staging-03',
+          ip: '10.0.8.20',
+          lat: '110ms',
+          warn: true,
+          body: `Last login: Thu Nov 26 10:05:44 2026 from 10.0.4.2\n<span class="t-prompt">$</span> <span class="t-cmd">tail -n 3 /var/log/nginx/access.log</span>\n10.0.8.1 - [26/Nov/2026:10:14:19] "GET /healthz HTTP/1.1" 200 18\n10.0.8.1 - [26/Nov/2026:10:14:20] "POST /api/v1/jobs HTTP/1.1" 202 64\n<span class="t-prompt">$</span> <span class="t-cursor"></span>`
+        },
+        {
+          id: 'db-prod-01',
+          ip: '10.0.4.15',
+          lat: '19ms',
+          warn: false,
+          body: `Last login: Thu Nov 26 08:40:12 2026 from 10.0.4.2\n<span class="t-prompt">$</span> <span class="t-cmd">psql -U postgres -c "SELECT count(*) FROM pg_stat_activity;"</span>\n count \n-------\n    24\n<span class="t-prompt">$</span> <span class="t-cursor"></span>`
+        }
+      ];
+
+      const stage = document.getElementById('mosaicStage');
+      const paletteModal = document.getElementById('paletteModal');
+      const appWindow = document.getElementById('appWindow');
+      const replayStatus = document.getElementById('replayStatus');
+      const replayProgress = document.getElementById('replayProgress');
+      const replayProgressFill = document.getElementById('replayProgressFill');
+      const txBar1 = document.getElementById('txBar1');
+      const txBar2 = document.getElementById('txBar2');
+      const txMeta1 = document.getElementById('txMeta1');
+      const txMeta2 = document.getElementById('txMeta2');
+
+      let focusedTileId = 'api-prod-01';
+      let motionEnabled = true;
+      let transferTimer = null;
+      let replayTimers = [];
+
+      function setSceneButtonActive(sceneKey) {
+        document.querySelectorAll('[data-scene]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.scene === sceneKey);
+        });
+      }
+
+      function createTileEl(item, isEntering) {
+        const tile = document.createElement('section');
+        tile.className = 'mosaic-tile'
+          + (item.id === focusedTileId ? ' focused' : '')
+          + (isEntering ? ' entering' : '');
+        tile.dataset.tileId = item.id;
+        tile.setAttribute('data-motion', 'mosaic-flip');
+        tile.innerHTML = `
+          <div class="tile-surface" data-motion="mosaic-tile-enter">
+            <header class="tile-header">
+              <span class="status-dot connected"></span>
+              <span class="tile-title">${item.id}</span>
+              <span class="tile-ip">${item.ip}</span>
+              <span class="tile-spacer"></span>
+              <span class="tile-lat${item.warn ? ' warn' : ''}">${item.lat}</span>
+              <button class="tile-more" type="button" aria-label="更多" data-motion="focus-ring-expand">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+              </button>
+            </header>
+            <div class="tile-body">${item.body}</div>
+          </div>
+        `;
+        tile.addEventListener('click', () => {
+          focusedTileId = item.id;
+          stage.querySelectorAll('.mosaic-tile').forEach((t) => {
+            t.classList.toggle('focused', t.dataset.tileId === focusedTileId);
+          });
+        });
+        return tile;
+      }
+
+      function renderGrid(count, { enterLast = false } = {}) {
+        const firstRects = new Map();
+        stage.querySelectorAll('.mosaic-tile').forEach((el) => {
+          firstRects.set(el.dataset.tileId, el.getBoundingClientRect());
+        });
+
+        stage.className = `mosaic-stage grid-${count}`;
+        const visible = TILES_DATA.slice(0, count);
+
+        stage.innerHTML = '';
+        visible.forEach((item, idx) => {
+          const isNew = enterLast && idx === visible.length - 1;
+          const el = createTileEl(item, isNew && motionEnabled);
+          stage.appendChild(el);
+        });
+
+        if (!motionEnabled) return;
+
+        stage.querySelectorAll('.mosaic-tile').forEach((el, idx) => {
+          const first = firstRects.get(el.dataset.tileId);
+          if (!first) return;
+          const last = el.getBoundingClientRect();
+          const dx = first.left - last.left;
+          const dy = first.top - last.top;
+          const sx = first.width / (last.width || 1);
+          const sy = first.height / (last.height || 1);
+          if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01) return;
+
+          el.style.transformOrigin = 'top left';
+          el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+          el.style.transition = 'none';
+
+          requestAnimationFrame(() => {
+            el.style.transition = `transform 320ms cubic-bezier(.16,1,.3,1) ${idx * 20}ms`;
+            el.style.transform = 'translate(0, 0) scale(1, 1)';
+          });
+        });
+      }
+
+      function setPalette(open) {
+        paletteModal.classList.toggle('open', open);
+        paletteModal.setAttribute('aria-hidden', open ? 'false' : 'true');
+      }
+
+      function startTransferDemo() {
+        if (transferTimer) clearInterval(transferTimer);
+        let p1 = 0.62;
+        let p2 = 0.18;
+        const tick = () => {
+          p1 = p1 >= 0.98 ? 0.24 : p1 + 0.08;
+          p2 = p2 >= 0.95 ? 0.12 : p2 + 0.06;
+          txBar1.style.transform = `scaleX(${p1.toFixed(2)})`;
+          txBar2.style.transform = `scaleX(${p2.toFixed(2)})`;
+          txMeta1.textContent = `${Math.round(p1 * 100)}% · 4.2 MB/s`;
+          txMeta2.textContent = `${Math.round(p2 * 100)}%`;
+        };
+        tick();
+        transferTimer = setInterval(tick, 420);
+      }
+
+      function stopReplayTimers() {
+        replayTimers.forEach(clearTimeout);
+        replayTimers = [];
+        document.querySelectorAll('.host-row.is-hover').forEach((r) => r.classList.remove('is-hover'));
+        document.querySelectorAll('.host-act-btn.is-active').forEach((b) => b.classList.remove('is-active'));
+      }
+
+      // 场景按钮
+      document.querySelectorAll('[data-scene]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          stopReplayTimers();
+          replayProgress.classList.remove('visible');
+          replayStatus.textContent = '';
+          const sc = btn.dataset.scene;
+          setSceneButtonActive(sc);
+          if (sc === '1' || sc === '2' || sc === '4') {
+            setPalette(false);
+            renderGrid(Number(sc));
+          } else if (sc === 'palette') {
+            setPalette(true);
+          } else if (sc === 'transfer') {
+            setPalette(false);
+            startTransferDemo();
+          }
+        });
+      });
+
+      // 点击遮罩关闭命令面板
+      paletteModal.addEventListener('click', (e) => {
+        if (e.target === paletteModal) setPalette(false);
+      });
+
+      // 左轨切换
+      const railGroupMap = {
+        hosts: 'groupHosts',
+        sessions: 'groupSessions',
+        transfers: 'groupTransfers'
+      };
+      document.querySelectorAll('.rail-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.rail-btn').forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          const targetId = railGroupMap[btn.dataset.rail];
+          if (targetId) {
+            document.getElementById(targetId).scrollIntoView({ behavior: motionEnabled ? 'smooth' : 'auto', block: 'nearest' });
+          }
+        });
+      });
+
+      // 活跃会话点击聚焦磁贴
+      document.querySelectorAll('.session-row').forEach((row) => {
+        row.addEventListener('click', () => {
+          document.querySelectorAll('.session-row').forEach((r) => r.classList.remove('active'));
+          row.classList.add('active');
+          focusedTileId = row.dataset.session;
+          const idx = TILES_DATA.findIndex((t) => t.id === focusedTileId);
+          if (idx >= 2) {
+            setSceneButtonActive('4');
+            renderGrid(4);
+          } else {
+            stage.querySelectorAll('.mosaic-tile').forEach((t) => {
+              t.classList.toggle('focused', t.dataset.tileId === focusedTileId);
+            });
+          }
+        });
+      });
+
+      // 动效开关
+      const btnMotionOn = document.getElementById('btnMotionOn');
+      const btnMotionOff = document.getElementById('btnMotionOff');
+      btnMotionOn.addEventListener('click', () => {
+        motionEnabled = true;
+        document.body.classList.remove('motion-off');
+        btnMotionOn.classList.add('active');
+        btnMotionOff.classList.remove('active');
+      });
+      btnMotionOff.addEventListener('click', () => {
+        motionEnabled = false;
+        document.body.classList.add('motion-off');
+        btnMotionOff.classList.add('active');
+        btnMotionOn.classList.remove('active');
+      });
+
+      // 尺寸切换
+      const btnSize1280 = document.getElementById('btnSize1280');
+      const btnSize980 = document.getElementById('btnSize980');
+      btnSize1280.addEventListener('click', () => {
+        appWindow.classList.remove('size-980');
+        btnSize1280.classList.add('active');
+        btnSize980.classList.remove('active');
+      });
+      btnSize980.addEventListener('click', () => {
+        appWindow.classList.add('size-980');
+        btnSize980.classList.add('active');
+        btnSize1280.classList.remove('active');
+      });
+
+      // 统一流 ↑↓ 模拟选中
+      const hostRows = Array.from(document.querySelectorAll('.host-row'));
+      function moveHostSelection(delta) {
+        const cur = hostRows.findIndex((r) => r.classList.contains('selected'));
+        const next = (cur + delta + hostRows.length) % hostRows.length;
+        hostRows.forEach((r, i) => r.classList.toggle('selected', i === next));
+      }
+      hostRows.forEach((row) => {
+        row.addEventListener('click', () => {
+          hostRows.forEach((r) => r.classList.remove('selected'));
+          row.classList.add('selected');
+        });
+      });
+      document.getElementById('btnStreamUp').addEventListener('click', () => moveHostSelection(-1));
+      document.getElementById('btnStreamDown').addEventListener('click', () => moveHostSelection(1));
+
+      // 重放动效 (7.0 秒)
+      document.getElementById('btnReplay').addEventListener('click', () => {
+        stopReplayTimers();
+        setPalette(false);
+        setSceneButtonActive('1');
+        renderGrid(1);
+        replayProgress.classList.add('visible');
+        replayProgressFill.style.transform = 'scaleX(0)';
+
+        const targetHost = hostRows[1];
+        const openBtn = targetHost.querySelector('[data-act="open"]');
+        const steps = [
+          [200, 0.16, '1/6 悬停主机行', () => targetHost.classList.add('is-hover')],
+          [1300, 0.33, '2/6 展开快捷动作', () => openBtn.classList.add('is-active')],
+          [2300, 0.50, '3/6 点开新磁贴 (FLIP)', () => {
+            openBtn.classList.remove('is-active');
+            targetHost.classList.remove('is-hover');
+            setSceneButtonActive('2');
+            renderGrid(2, { enterLast: true });
+          }],
+          [3900, 0.68, '4/6 切换 4 格编排', () => {
+            setSceneButtonActive('4');
+            renderGrid(4);
+          }],
+          [5400, 0.85, '5/6 打开命令面板', () => {
+            setSceneButtonActive('palette');
+            setPalette(true);
+          }],
+          [7000, 1.00, '6/6 重放完成', () => {
+            setPalette(false);
+            setSceneButtonActive('4');
+          }]
+        ];
+
+        steps.forEach(([ms, pct, label, fn]) => {
+          replayTimers.push(setTimeout(() => {
+            replayStatus.textContent = label;
+            replayProgressFill.style.transform = `scaleX(${pct})`;
+            fn();
+          }, ms));
+        });
+      });
+
+      // 初始化 2 格（第 2 个磁贴带进入态以保证所有 data-motion 在初态可检）
+      renderGrid(2, { enterLast: true });
+    })();
+  </script>
+</body>
+</html>
