@@ -19,6 +19,14 @@
 | **C2-2** | 侧栏激活态实测调优（亮色 `--row-active` ΔL 2.3→3.9 + inset 描边 + 3px 指示条）+ 侧栏「+ 新建」降为次级强调态 | `lint:css` 0/0/0；真机 `dx=0`、`actH=normH=44` | 中：色阶/权重变化，暗亮双拍 | ✅ 已完成（同上） |
 | **C2-3** | 导入预览冲突行设「跳过」后不再计入「将导入 N 台」（抽 `src/shared/import-plan.js` 单一口径） | 单测 575→**580**；真机五态断言 | 无：`ab --ref b1b0dad` 净差 0 | ✅ 已完成（同上） |
 | **C2-4** | 导入预览「处置」表头右对齐 + 主机库「凭据」列宽 48→62px（「待补全」零截断）+ `.hl-th-act` 特异性提权 | `lint:css` 0/0/0；真机 `dR=0`、9 列 `trunc: false` | 低：仅改两处表格列宽与对齐，暗亮 4 屏复核通过 | ✅ 已完成（同上） |
+| **D0** | 统一四档动效 token（`--dur-1..4` / `--ease-*`）至主 `:root` 并补齐 `token-motion` 契约门禁 | `lint:css --strict` 0/0/0；`ab --ref` 净差 0 | 无 | ✅ 已完成（`12-d-direction-motion.md`） |
+| **D1** | 三栏浮岛分层、表面 L* 台阶拉开与减描边体系 | `lint:css --strict` 0/0/0；`token-contrast` 全绿 | 中：主工作区骨架与描边层次变化，暗亮双拍复核 | ✅ 已完成（同上） |
+| **D2** | 运动反馈层（标签/主机 FLIP 滑移指示器、面板方向性交错进场、命令面板动效） | `lint:css --strict` 0/0/0；支持 `prefers-reduced-motion` | 低-中：交互态动效升级 | ✅ 已完成（同上） |
+| **D3** | 发射台首屏、GPU 进度条、多窗格焦点环与列表底噪收尾 | `lint:css --strict` 0/0/0；单测全绿 | 中：欢迎页与多窗格聚焦态暗亮复核 | ✅ 已完成（同上） |
+| **E1** | 常驻 44px 全局图标轨、滑动激活指示条与主机跨组小标题 | `lint:css --strict` 0/0/0；`__uiContract` 0 issues | 中：左侧新增 44px 固定轨与收起态联动 | ✅ 已完成（`13-e-fusion-layout.md`） |
+| **E2** | 拆解底部 `#statusbar` 为简洁顶部会话条 + 底部轻量脉冲条 | `lint:css --strict` 0/0/0；`__uiContract` 0 issues | 中：终端会话上下栏重组，保持 xterm 零裁切 | ✅ 已完成（同上） |
+| **E3** | 右侧统一抽屉（AI 助手 / 实时监控 / 连接诊断）与 `<1024px` 窄屏浮层适配 | `lint:css --strict` 0/0/0；单测补齐监控模块 | 中：三合一右侧抽屉与 980px 窄窗浮层复核 | ✅ 已完成（同上） |
+| **E4** | 非 macOS 顶栏 6 组菜单收进左上角 Logo 级联下拉（macOS 保持原生菜单栏零影响） | `lint:css --strict` 0/0/0；`token-contrast` 44/44；单测 **584/584** | 中：顶栏减噪、级联子菜单对齐 `y=36px` 零侵入 | ✅ 已完成（同上） |
 
 顺序不可颠倒：B0 修「声明失效」→ B1/B2 依赖 token 层正确 → B3 必须最后（字号一动，所有对像素的判断基线全变）→ B4/B5/B6 收尾（B6 把死回落与不可达断点删干净，换皮时才不会被残留值干扰）→ C1 起才换皮 → C2 把门禁补严、用实测收敛视觉层级。
 详见 `01-style-debt-audit.md`（含 332 条 findings 明细与 `01-audit-data.json`）。
@@ -87,3 +95,5 @@ npm run ui:check -- theme light && npm run ui:check -- shot b3-after-import-ligh
 | `08-b5-media-sizing.md` | B5 7 条去向、`css-contract:allow` 机制与反证、「断点在最小窗口下永不命中」的实测、六批总账 |
 | `09-c1-skin.md` | C1 换皮：A/B 拍板记录、31 条 token 变更全表、8 项缺陷 before→after、一次「带结论提问」的误判纠正 |
 | `10-c2-gates-selection-import.md` | C2：`border` 简写族漏检的发现路径、`--row-active` 选值推导、次级强调态对比度预算、导入计数单一口径 |
+| `12-d-direction-motion.md` | D0–D3：四档动效 token、三栏浮岛减描边、FLIP 滑移指示器与发射台首屏规格 |
+| `13-e-fusion-layout.md` | E1–E4：44px 图标轨、顶/底会话脉冲栏拆解、右侧统一抽屉与非 macOS Logo 级联菜单规格（原型见 `proto/`） |
