@@ -265,6 +265,7 @@ export function renderHosts() {
   if (countEl) countEl.textContent = String(state.hosts.length);
   // 空窗格的主机选择器是同一份主机数据的另一个视图,必须跟着刷新
   refreshPickers();
+  renderWelcomeLaunchpad();
   if (!displayList.length) {
     // 三种空态共用一套结构：无主机（双出口）/ 搜索无结果（清除）/ 分组为空（查看全部）
     const query = String($('#host-search')?.value || '').trim();
@@ -449,6 +450,65 @@ export function syncHostIndicator() {
     } else {
       list.dataset.ind = 'ready';
     }
+  }
+}
+
+/// D3 发射台首屏：按「已连接/连接中 → 常用星标 → 主机列表顺位」挑最多 3 台直达卡；
+/// 无主机时渲染清晰引导空态，保持 #welcome 在空库与满库两种状态下都均衡可用。
+export function renderWelcomeLaunchpad() {
+  const wrap = $('#welcome-recent');
+  if (!wrap) return;
+  const countEl = $('#welcome-host-count');
+  const all = Array.isArray(state.hosts) ? state.hosts : [];
+  if (countEl) countEl.textContent = all.length ? `共 ${all.length} 台` : '';
+  wrap.innerHTML = '';
+  if (!all.length) {
+    const empty = document.createElement('div');
+    empty.className = 'launch-empty';
+    empty.innerHTML = `<div class="launch-empty-ico">${icon('server', { size: 18 })}</div>`
+      + '<div class="launch-empty-body"><b>还没有保存的主机</b><p>点击上方「新建主机」，或从 SSH 配置文件与云账号一键导入。</p></div>';
+    wrap.appendChild(empty);
+    return;
+  }
+  const favorites = new Set(uiPrefs().favoriteHostIds);
+  const rank = (h) => {
+    const st = hostStatus(h.id);
+    if (st === 'connected' || st === 'connecting') return 0;
+    if (favorites.has(h.id)) return 1;
+    return 2;
+  };
+  const top = [...all]
+    .map((h, i) => ({ h, r: rank(h), i }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .slice(0, 3)
+    .map((x) => x.h);
+  for (const h of top) {
+    const st = hostStatus(h.id);
+    const isStar = favorites.has(h.id);
+    const port = Number(h.port) === 22 ? '' : `:${h.port}`;
+    const user = h.username && h.username !== 'root' ? `${h.username}@` : '';
+    const subAddr = `${user}${h.host}${port}`;
+    const grp = groupOf(h);
+    const reg = regionLabel(h.cloud?.region || '');
+    const meta = [subAddr, reg || (grp && grp !== DEFAULT_GROUP ? grp : '')].filter(Boolean).join(' · ');
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'launch-card';
+    card.dataset.hostId = h.id;
+    card.innerHTML = `
+      <span class="lc-icon">${icon(h.protocol === 'rdp' ? 'layout' : 'server', { size: 16 })}</span>
+      <span class="lc-body">
+        <span class="lc-title-row">
+          <span class="lc-title">${escapeHtml(h.name)}</span>
+          ${h.protocol === 'rdp' ? '<span class="proto-badge rdp">RDP</span>' : ''}
+          ${isStar ? `<span class="lc-star" aria-hidden="true">${icon('star', { size: 11 })}</span>` : ''}
+          ${st !== 'idle' ? `<i class="host-dot ${st}" aria-hidden="true"></i>` : ''}
+        </span>
+        <span class="lc-sub">${escapeHtml(meta)}</span>
+      </span>
+      <span class="lc-arrow" aria-hidden="true">${icon('arrowRight', { size: 14 })}</span>`;
+    card.addEventListener('click', () => connectHost(h.id, null, { newTab: true }));
+    wrap.appendChild(card);
   }
 }
 

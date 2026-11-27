@@ -742,7 +742,9 @@ test('task center: single download shows bytes/speed/remaining, then size/durati
   h.module.taskProgressFromEvent({ taskId: task.taskId, op: 'download', name: 'big.tar', pct: 25, bytes: 1024 * 1024, total: 4 * 1024 * 1024 });
   h.module.toggleTaskPopover(true);
   assert.match(r.info.textContent, /^1\.0 MB \/ 4\.0 MB · [\d.]+ MB\/s · 剩余 /);
-  assert.equal(r.fill.style.width, '25%');
+  assert.equal(r.fill.dataset.pct, '25%');
+  assert.equal(r.fill.style['--pct'], '0.25');
+  assert.equal(r.bar.classes.has('is-running'), true);
   assert.equal(r.bar.classes.has('hidden'), false);
   assert.equal(r.actions.children[0], cancelBtn, '进度更新不重建按钮(按下与松开之间换元素会丢点击)');
   task.done();

@@ -113,13 +113,54 @@
       </div>
       <div id="term-stack">
         <div id="welcome">
-          <div class="welcome-icon">✦</div>
-          <h2>欢迎使用 NebulaShell 星云终端</h2>
-          <p>跨平台 SSH 客户端 · 内置 AI 助手 · 腾讯云 / 阿里云主机自动发现</p>
-          <div class="welcome-actions">
-            <button id="btn-welcome-add" class="btn primary"><span class="mi" data-icon="plus"></span>新建主机</button>
-            <button id="btn-welcome-import" class="btn"><span class="mi" data-icon="import"></span>导入主机</button>
-            <button id="btn-welcome-cloud" class="btn"><span class="mi" data-icon="cloud"></span>从云导入</button>
+          <div class="launch-shell">
+            <div class="launch-hero">
+              <div class="launch-hero-left">
+                <div class="launch-emblem" aria-hidden="true">✦</div>
+                <div class="launch-hero-copy">
+                  <h2>欢迎使用 NebulaShell</h2>
+                  <p>跨平台 SSH 客户端 · 内置 AI 助手 · 腾讯云 / 阿里云主机自动发现</p>
+                </div>
+              </div>
+              <div class="welcome-actions">
+                <button id="btn-welcome-add" class="btn primary" type="button"><span class="mi" data-icon="plus"></span>新建主机</button>
+                <button id="btn-welcome-import" class="btn" type="button"><span class="mi" data-icon="import"></span>导入主机</button>
+              </div>
+            </div>
+            <div class="launch-grid">
+              <div class="launch-main">
+                <div class="launch-sec-head">
+                  <span>快速连接</span>
+                  <span id="welcome-host-count" class="launch-sec-cnt"></span>
+                </div>
+                <div id="welcome-recent" class="launch-cards"></div>
+              </div>
+              <div class="launch-side">
+                <div class="launch-block">
+                  <div class="launch-sec-head"><span>工作台入口</span></div>
+                  <div class="cmd-chips">
+                    <button class="cmd-chip" type="button" data-command="palette.open"><span class="mi cmd-chip-ico" data-icon="command"></span><span>命令面板</span></button>
+                    <button class="cmd-chip" type="button" data-command="tab.new"><span class="mi cmd-chip-ico" data-icon="terminal"></span><span>新建标签</span></button>
+                    <button class="cmd-chip" type="button" data-command="hosts.library"><span class="mi cmd-chip-ico" data-icon="server"></span><span>主机库</span></button>
+                    <button class="cmd-chip" type="button" data-command="tools.snippets"><span class="mi cmd-chip-ico" data-icon="zap"></span><span>常用命令</span></button>
+                    <button class="cmd-chip" type="button" data-command="tools.batch"><span class="mi cmd-chip-ico" data-icon="listChecks"></span><span>批量执行</span></button>
+                    <button class="cmd-chip" type="button" data-command="tools.forwards"><span class="mi cmd-chip-ico" data-icon="plug"></span><span>端口转发</span></button>
+                  </div>
+                </div>
+                <div class="cloud-banner">
+                  <div class="cloud-banner-head">
+                    <span class="mi cloud-banner-ico" data-icon="cloud"></span>
+                    <span>云主机发现</span>
+                    <span class="cloud-badges">
+                      <span class="cloud-badge tencent">腾讯云</span>
+                      <span class="cloud-badge aliyun">阿里云</span>
+                    </span>
+                  </div>
+                  <p class="cloud-banner-desc">配置只读 API 密钥，扫描可用地域并一键同步主机。</p>
+                  <button id="btn-welcome-cloud" class="btn sm cloud-banner-btn" type="button"><span class="mi" data-icon="cloud"></span>从云导入</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div id="layout-root"></div>
@@ -955,7 +996,7 @@
       <input id="palette-input" class="inp" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list"
         aria-autocomplete="list" aria-label="搜索命令、标签或主机" placeholder="输入命令、标签名、主机名，或 user@host:port 快速连接…"
         autocomplete="off" spellcheck="false" />
-      <div id="palette-list" role="listbox" aria-label="命令面板结果"></div>
+      <div id="palette-list" role="listbox" aria-label="命令面板结果" data-scroll-fade></div>
       <div id="palette-foot" class="palette-foot" aria-hidden="true"></div>
     </div>
   </div>

@@ -665,7 +665,17 @@ function updateTaskRow(r, t) {
   r.row.classList.toggle('active', !isTerminal(t));
   const pct = barPercent(t);
   r.bar.classList.toggle('hidden', pct == null);
-  if (pct != null) r.fill.style.width = pct + '%';
+  r.bar.classList.toggle('is-running', pct != null && t.stage === 'transferring');
+  if (pct != null) {
+    const ratio = String(Math.max(0, Math.min(1, Number(pct) / 100)));
+    if (typeof r.fill.style?.setProperty === 'function') r.fill.style.setProperty('--pct', ratio);
+    else if (r.fill.style) r.fill.style['--pct'] = ratio;
+    r.fill.dataset.pct = pct + '%';
+  } else {
+    if (typeof r.fill.style?.setProperty === 'function') r.fill.style.setProperty('--pct', '0');
+    else if (r.fill.style) r.fill.style['--pct'] = '0';
+    delete r.fill.dataset.pct;
+  }
   const text = isTerminal(t) ? summaryText(t) : progressText(t);
   setText(r.info, text);
   r.info.title = infoTitle(t, text);

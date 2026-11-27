@@ -1333,7 +1333,7 @@ export async function boot() {
   await refreshHosts();
   await refreshAiModels();
   ensureDefaultAiThread();
-  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手 ✨');
+  renderAiMessage('assistant', '你好，我是 NebulaShell 内置 AI 助手');
   updateAiContextIndicator();
 }
 
@@ -1826,7 +1826,10 @@ if (window.__NB_E2E__ || window.nebula && window.nebula.testMode) {
         dot: row.querySelector('.fp-task-dot')?.className.replace('fp-task-dot', '').trim() ?? '',
         sub: row.querySelector('.fp-task-info')?.textContent ?? '',
         subTitle: row.querySelector('.fp-task-info')?.title ?? '',
-        bar: row.querySelector('.fp-task-bar:not(.hidden) > i')?.style.width || null,
+        bar: (() => {
+          const fill = row.querySelector('.fp-task-bar:not(.hidden) > i');
+          return fill ? (fill.dataset.pct || fill.style.width || null) : null;
+        })(),
         actions: [...row.querySelectorAll('.fp-task-actions button')].map((b) => b.dataset.action + (b.disabled ? ':disabled' : '')),
       })),
     }),

@@ -8,6 +8,7 @@ import { CATEGORY_LABEL, executeCommand, listCommands, PALETTE_MODAL_ID } from '
 import { accelOf } from './keymap.js';
 import { activateTab, connectHost, quickConnect } from './terminal.js';
 import { quickTargetOf, rankItems } from '../shared/palette-match.js';
+import { observeScrollFade, syncScrollFade } from '../shared/scroll-fade.js';
 
 const RECENT_MAX = 5;
 const HOST_MAX = 30;
@@ -149,6 +150,7 @@ function render() {
   }
   const firstEnabled = rows.findIndex((row) => !row.disabled);
   setActive(firstEnabled >= 0 ? firstEnabled : rows.length ? 0 : -1);
+  syncScrollFade(list);
 }
 
 function setActive(index) {
@@ -213,6 +215,7 @@ export function bindPalette() {
   const input = $('#palette-input');
   const list = $('#palette-list');
   if (!input || !list) return;
+  observeScrollFade(list);
   $('#palette-foot').textContent = `↑↓ 选择 · ↵ 连接 · ${accelOf('palette.connectNewTab')} 在新标签中连接 · Esc 关闭`;
   input.addEventListener('input', render);
   input.addEventListener('keydown', (event) => {
