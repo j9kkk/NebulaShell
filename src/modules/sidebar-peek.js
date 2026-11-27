@@ -5,6 +5,8 @@
 // 卡片是 `.side-panel` 本体（与展开态同一份 DOM），用 #sidebar.peek-open 控制显隐，
 // 不复制一份主机列表。
 
+import { closeRailCard, refreshRailState } from './rail-cards.js';
+
 let bound = false;
 
 function sidebar() {
@@ -28,6 +30,7 @@ function syncHostButton(on) {
   if (!btn) return;
   btn.classList.toggle('rail-on', on);
   btn.setAttribute('aria-expanded', String(on));
+  refreshRailState();
 }
 
 export function closePeek({ focusBack = false } = {}) {
@@ -72,7 +75,20 @@ export function bindSidebarPeek() {
   if (!sb || !btn) return;
   bound = true;
 
-  btn.addEventListener('click', togglePeek);
+  btn.addEventListener('click', () => {
+    const sbEl = sidebar();
+    if (!sbEl) return;
+    if (!sbEl.classList.contains('collapsed')) {
+      // 常驻图标轨：展开态若工具浮层打开则先收回浮层回切主机；否则直接收起侧栏面板
+      if (sbEl.classList.contains('rail-pop-open')) {
+        closeRailCard();
+        return;
+      }
+      document.getElementById('btn-sidebar-toggle')?.click();
+      return;
+    }
+    togglePeek();
+  });
 
   // 点卡片外立即收回（捕获阶段，抢在任何 click 处理之前）；点 #ctx-menu 不算外
   document.addEventListener('pointerdown', (e) => {

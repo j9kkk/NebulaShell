@@ -473,12 +473,19 @@ function syncTicker() {
   }
 }
 
-/// 浮层挂 body + fixed 定位:以状态栏 ⇅ 为锚,空间不足时 popupPosition 自动翻到上方。
+let taskAnchorEl = null;
+
+/// 浮层挂 body + fixed 定位:优先以触发它的入口钮(#rail-transfers / #btn-file-tasks-status)为锚,
+/// 空间不足时 popupPosition 自动翻到上方。
 function positionTaskPopover() {
   const pop = $('#file-task-popover');
   const sbBtn = $('#btn-file-tasks-status');
-  if (!pop || !sbBtn || pop.classList.contains('hidden')) return;
-  const anchor = sbBtn.getBoundingClientRect();
+  const railBtn = $('#rail-transfers');
+  const anchorEl = (taskAnchorEl && !taskAnchorEl.classList.contains('hidden') && taskAnchorEl.offsetParent)
+    ? taskAnchorEl
+    : (sbBtn && !sbBtn.classList.contains('hidden') ? sbBtn : railBtn);
+  if (!pop || !anchorEl || pop.classList.contains('hidden')) return;
+  const anchor = anchorEl.getBoundingClientRect();
   const size = { width: pop.offsetWidth, height: pop.offsetHeight };
   const position = popupPosition(anchor, size, { width: window.innerWidth, height: window.innerHeight });
   pop.style.left = `${position.left}px`;
@@ -711,15 +718,32 @@ function renderTaskCenter() {
   const active = activeCount();
   const failed = tasks.filter((t) => ['failed', 'partial', 'interrupted'].includes(t.stage)).length;
   const total = active + failed;
-  // 状态栏 ⇅ 是任务中心唯一入口:无任务隐藏,有任务显示计数,有失败加提醒色
+  const tipText = failed ? `传输任务：${active} 进行中，${failed} 需要注意` : `传输任务：${active} 进行中`;
   if (sbBtn) {
     sbBtn.classList.toggle('hidden', !tasks.length);
     sbBtn.classList.toggle('attention', !!failed);
-    sbBtn.title = failed ? `传输任务:${active} 进行中,${failed} 需要注意` : `传输任务:${active} 进行中`;
+    sbBtn.title = tipText;
   }
   if (badge) {
     badge.textContent = String(total);
     badge.classList.toggle('hidden', !total);
+  }
+  // E1 左轨底部传输入口同步
+  const railBtn = $('#rail-transfers');
+  const railTip = $('#rail-transfers-tip');
+  const railBadge = $('#rail-transfer-badge');
+  if (railBtn) {
+    railBtn.classList.toggle('hidden', !tasks.length);
+    railBtn.classList.toggle('attention', !!failed);
+    railBtn.setAttribute('aria-label', tipText);
+  }
+  if (railTip) {
+    railTip.hidden = !tasks.length;
+    railTip.dataset.tip = tipText;
+  }
+  if (railBadge) {
+    railBadge.textContent = String(total);
+    railBadge.classList.toggle('hidden', !total);
   }
   const pop = $('#file-task-popover');
   if (pop) pop.classList.toggle('hidden', !taskPopoverOpen || !tasks.length);
@@ -936,7 +960,9 @@ export function bindTransferUi() {
   if (pop && pop.parentElement !== document.body) document.body.appendChild(pop);
   window.addEventListener('resize', positionTaskPopover);
   const sbBtn = $('#btn-file-tasks-status');
-  if (sbBtn) sbBtn.addEventListener('click', () => toggleTaskPopover());
+  if (sbBtn) sbBtn.addEventListener('click', () => { taskAnchorEl = sbBtn; toggleTaskPopover(); });
+  const railBtn = $('#rail-transfers');
+  if (railBtn) railBtn.addEventListener('click', () => { taskAnchorEl = railBtn; toggleTaskPopover(); });
   const clearAll = $('#btn-file-tasks-clear-all');
   if (clearAll) {
     clearAll.addEventListener('click', () => {
@@ -947,10 +973,10 @@ export function bindTransferUi() {
       renderTaskCenter();
     });
   }
-  // 浮层外点击收起(状态栏按钮自身由上面的 toggle 处理)
+  // 浮层外点击收起(状态栏/左轨按钮自身由上面的 toggle 处理)
   document.addEventListener('pointerdown', (e) => {
     if (!taskPopoverOpen) return;
-    if (e.target.closest?.('#file-task-popover, #btn-file-tasks-status')) return;
+    if (e.target.closest?.('#file-task-popover, #btn-file-tasks-status, #rail-transfers')) return;
     toggleTaskPopover(false);
   }, true);
   renderTaskCenter();

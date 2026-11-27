@@ -40,24 +40,41 @@
     <!-- 侧边栏：主机列表。收起态窄条 + 侧栏本体(展开态=常驻侧栏,收起后悬停=停靠卡片),
          两态共用 .side-panel 同一份 DOM -->
     <aside id="sidebar">
-      <!-- 收起态窄条(只在 #sidebar.collapsed 显示)。主机 / 常用命令 / 批量执行 →
-           分隔线 → 会话胶囊。窄条不含固定 / 展开 / 管理入口:展开走标题栏开关
-           或 ⌘B,主机列表点「主机」出停靠卡,管理在展开态标题行的 ⋯ 里。
-           按钮用 data-tip 自定义 tooltip。 -->
-      <div class="side-rail" role="toolbar" aria-label="主机">
+      <!-- E1 常驻 44px 全局图标轨：展开与收起态均常驻左缘。
+           顶部模块入口（主机 / 常用命令 / 批量执行 / 命令历史 / 端口转发 → 活动会话），
+           底部固定工具区（传输任务 / AI 助手 / 设置）。滑块指示器由 .side-rail::before 驱动。 -->
+      <div class="side-rail" role="toolbar" aria-label="主导航">
         <span id="rail-hosts-tip" class="rail-tip rail-tip-host" data-tip="主机列表" role="presentation">
-          <button id="rail-hosts" class="btn icon rail-host-btn" type="button" aria-label="主机列表" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="server"></span></button>
+          <button id="rail-hosts" class="btn icon rail-host-btn rail-on" type="button" aria-label="主机列表" aria-haspopup="dialog" aria-expanded="true"><span class="mi" data-icon="server"></span></button>
         </span>
         <span class="rail-tip" data-tip="常用命令" role="presentation">
-          <button id="rail-commands" class="btn icon" type="button" aria-label="常用命令" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="command"></span></button>
+          <button id="rail-commands" class="btn icon" type="button" aria-label="常用命令" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="zap"></span></button>
         </span>
         <span class="rail-tip" data-tip="批量执行" role="presentation">
-          <button id="rail-batch" class="btn icon" type="button" aria-label="批量执行" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="zap"></span></button>
+          <button id="rail-batch" class="btn icon" type="button" aria-label="批量执行" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="listChecks"></span></button>
         </span>
-        <span id="rail-sep" class="rail-sep" aria-hidden="true"></span>
+        <span class="rail-tip" data-tip="命令历史" role="presentation">
+          <button id="rail-history" class="btn icon" type="button" data-command="tools.history" aria-label="命令历史"><span class="mi" data-icon="clock"></span></button>
+        </span>
+        <span class="rail-tip" data-tip="端口转发" role="presentation">
+          <button id="rail-forwards" class="btn icon" type="button" data-command="tools.forwards" aria-label="端口转发"><span class="mi" data-icon="plug"></span></button>
+        </span>
+        <span id="rail-sep" class="rail-sep" aria-hidden="true" hidden></span>
         <span id="rail-session-tip" class="rail-tip" data-tip="0 个活动会话" role="presentation" hidden>
           <button id="rail-session-status" class="rail-status" type="button" hidden aria-label="0 个活动会话" aria-haspopup="dialog" aria-expanded="false"><span class="dot"></span><span id="rail-session-count">0</span></button>
         </span>
+        <span class="rail-spacer" aria-hidden="true"></span>
+        <div class="rail-bottom">
+          <span id="rail-transfers-tip" class="rail-tip" data-tip="传输任务" role="presentation" hidden>
+            <button id="rail-transfers" class="btn icon rail-transfers-btn hidden" type="button" aria-label="传输任务"><span class="mi" data-icon="transfer"></span><span id="rail-transfer-badge" class="rail-badge hidden">0</span></button>
+          </span>
+          <span class="rail-tip" data-tip="AI 助手" role="presentation">
+            <button id="rail-ai" class="btn icon" type="button" data-command="panel.tools" aria-label="AI 助手"><span class="mi" data-icon="sparkles"></span></button>
+          </span>
+          <span class="rail-tip" data-tip="设置" role="presentation">
+            <button id="rail-settings" class="btn icon" type="button" data-command="app.settings" aria-label="设置"><span class="mi" data-icon="settings"></span></button>
+          </span>
+        </div>
       </div>
       <div class="side-panel">
         <div class="side-header">

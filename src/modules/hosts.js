@@ -412,8 +412,30 @@ export function renderHosts() {
     return item;
   };
 
-  for (const h of displayList) {
-    nav.appendChild(renderRow(h));
+  // E8 融合分组视图：「全部」未过滤且存在 2+ 分组时，按分组渲染轻量小标题，
+  // 活动主机滑动指示条（#host-list::before）跨组连续滑移。
+  const showGroupHeaders = !filtered && !activeSidebarGroup;
+  const distinctGroups = showGroupHeaders ? new Set(displayList.map((h) => groupOf(h))) : null;
+  if (showGroupHeaders && distinctGroups.size >= 2) {
+    const buckets = new Map();
+    for (const h of displayList) {
+      const g = groupOf(h);
+      if (!buckets.has(g)) buckets.set(g, []);
+      buckets.get(g).push(h);
+    }
+    const ordered = sortGroupsByPref([...buckets.keys()], uiPrefs().groupOrder);
+    for (const g of ordered) {
+      const rows = buckets.get(g);
+      const hd = document.createElement('div');
+      hd.className = 'host-group-hd';
+      hd.innerHTML = `<span>${escapeHtml(g)}</span><span class="hg-cnt">${rows.length}</span>`;
+      nav.appendChild(hd);
+      for (const h of rows) nav.appendChild(renderRow(h));
+    }
+  } else {
+    for (const h of displayList) {
+      nav.appendChild(renderRow(h));
+    }
   }
   nav.scrollTop = keepTop;
   syncHostIndicator();

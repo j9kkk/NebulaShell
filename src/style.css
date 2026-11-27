@@ -400,20 +400,22 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
    避免内容在收窄过程中换行挤动。flex-basis 必须保持 auto(跟随 width):
    若收起态写 flex:0 0 40px,basis(auto→40px)不可插值,过渡到一半会瞬间跳窄。 */
 #sidebar {
-  width: 264px;
+  width: 288px;
   flex-shrink: 0; min-height: 0;
-  min-width: 180px; max-width: 50vw;
+  min-width: 224px; max-width: 50vw;
   margin-right: 8px;
   background: var(--panel);
   border-radius: var(--radius);
   box-shadow: var(--shadow-island);
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  /* 收起态的停靠卡片以 left:calc(100% + 8px) 贴在本节点右缘,需要定位上下文 */
+  flex-direction: row;
+  /* 允许常驻图标轨的 tooltip 与浮层向外溢出，内部 .side-panel 独立裁圆角 */
+  overflow: visible;
   position: relative;
+  z-index: 30;
   transition: width var(--dur-3) var(--ease-out-expo), min-width var(--dur-3) var(--ease-out-expo), max-width var(--dur-3) var(--ease-out-expo);
 }
+#sidebar.rail-pop-open { z-index: 66; }
 /* 侧栏头部：标题 26px 动作 + 28px 搜索；低频操作收进「⠇」，去掉与分组条之间冗余的双重横线。 */
 .side-header { flex: none; padding: 12px 12px 6px; }
 .side-title { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; height: 26px; min-width: 0; }
@@ -444,12 +446,78 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
    容器查询挂在这里而不是 #sidebar：两种形态共用这份 DOM，查询必须按面板实际宽度
    评估 —— #sidebar 收起后恒为 40px，挂在它上面会让查询永远命中「窄」档。 */
 .side-panel {
-  flex: 1; min-height: 0;
+  flex: 1; min-width: 0; min-height: 0;
   display: flex; flex-direction: column;
+  overflow: hidden;
+  border-radius: 0 var(--radius) var(--radius) 0;
   container-type: inline-size; container-name: sidebar;
 }
-/* 窄条只属于收起形态，展开态一律隐藏 */
-.side-rail { display: none; }
+/* E1 常驻 44px 全局图标轨：展开/收起均常驻左缘；::before 为滑动激活指示条 */
+.side-rail {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: 44px; flex: 0 0 44px; min-height: 0; align-self: stretch;
+  padding: 10px 6px; box-sizing: border-box;
+  border-right: 1px solid var(--border-subtle);
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: color-mix(in srgb, var(--canvas) 30%, var(--panel));
+}
+.side-rail::before {
+  content: "";
+  position: absolute; left: 3px; top: 0;
+  width: 3px; height: var(--rail-pill-h, 18px);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  pointer-events: none;
+  opacity: var(--rail-pill-o, 0);
+  transform: translateY(var(--rail-pill-y, 0px));
+}
+.side-rail[data-pill="ready"]::before {
+  transition: transform var(--dur-3) var(--ease-out-expo), height var(--dur-3) var(--ease-out-expo), opacity var(--dur-2) var(--ease-in-out);
+}
+.side-rail .btn,
+.side-rail .btn.icon {
+  --ctl-h: 30px; width: 30px; height: 30px; padding: 0; border-radius: var(--radius-sm);
+  background: transparent; border-color: transparent; color: var(--muted);
+  position: relative;
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out), transform var(--dur-1) var(--ease-out-expo);
+}
+.side-rail .btn:hover,
+.side-rail .btn.icon:hover {
+  background: var(--surface-hover); color: var(--text); border-color: transparent;
+  transition: background var(--dur-1) var(--ease-out-expo), color var(--dur-1) var(--ease-out-expo);
+}
+.side-rail .btn:active { transform: scale(0.94); }
+.side-rail .btn svg { width: 16px; height: 16px; transition: transform var(--dur-1) var(--ease-out-expo); }
+.side-rail .btn:hover svg { transform: scale(1.08); }
+.side-rail .btn.rail-on,
+.side-rail .btn.active,
+.side-rail .btn.icon.rail-on,
+.side-rail .btn.icon.active {
+  background: var(--hover-bg); border-color: transparent; color: var(--accent);
+}
+.rail-spacer { flex: 1 1 auto; min-height: 8px; }
+.rail-bottom { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: none; }
+.rail-transfers-btn.attention { color: var(--warn); }
+.rail-badge {
+  position: absolute; top: 2px; right: 2px;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent); color: var(--text-on-accent);
+  font-size: var(--fs-2xs); font-weight: 600; line-height: 14px; text-align: center;
+  font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.rail-transfers-btn.attention .rail-badge { background: var(--danger); }
+.rail-badge.hidden, #rail-transfers-tip[hidden], #rail-transfers.hidden { display: none; }
+/* E8 主机列表分组小标题（多分组「全部」视图显现，活动指示条跨组连续滑移） */
+.host-group-hd {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 8px 10px 3px;
+  font-size: var(--fs-2xs); font-weight: 600; color: var(--muted);
+  letter-spacing: 0.3px; user-select: none;
+}
+.host-group-hd:first-child { padding-top: 2px; }
+.host-group-hd .hg-cnt { font-weight: 500; opacity: 0.78; font-variant-numeric: tabular-nums; }
 /* 收缩档位：标题 26 + 计数 26 + 两个 24px 按钮 + 间距 ≈ 26+22+24+24+18 = 114px，
    180px 面板只有 156px 内容宽，仍有余量；≤200px 时去掉「新建」文字。 */
 @container sidebar (max-width: 200px) {
@@ -4097,49 +4165,30 @@ body.file-dragging { user-select: none; cursor: grabbing; }
    卡片 = 展开态 .side-panel 同一份 DOM，从 tabbar 下方开始、止于状态栏上方，
    height:auto；主机多时封顶后列表内部滚动。
    约束：#sidebar 宽度 ≤44（e2e T63f），卡片 absolute 不参与文档流，静止时不渲染（T64）。 */
-#sidebar.collapsed { width: 40px; min-width: 40px; max-width: 40px; overflow: visible; z-index: 66; }
+#sidebar.collapsed { width: 44px; min-width: 44px; max-width: 44px; overflow: visible; z-index: 66; }
 #sidebar.collapsed .side-rail {
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  width: 40px; flex: 1 1 auto; min-height: 0; align-self: stretch;
-  padding: 8px 6px; box-sizing: border-box;
+  border-right-color: transparent;
+  border-radius: var(--radius);
+  background: transparent;
 }
-#sidebar.collapsed .side-rail .btn {
-  width: 28px; height: 28px; padding: 0; border-radius: var(--radius-sm);
-  background: transparent; border-color: transparent; color: var(--muted);
-}
-#sidebar.collapsed .side-rail .btn:hover { background: var(--surface-hover); color: var(--text); border-color: transparent; }
-#sidebar.collapsed .side-rail .btn svg { width: 15px; height: 15px; }
 #sidebar.collapsed #rail-hosts { position: relative; }
-/* tooltip 挂在 28px 按钮外面的薄包装上：pseudo 元素不进入按钮 scrollWidth，
+/* tooltip 挂在 30px 按钮外面的薄包装上：pseudo 元素不进入按钮 scrollWidth，
    否则窄面板审计会把"悬停提示"误判成按钮文字溢出。 */
 .rail-tip { position: relative; display: flex; flex: none; }
 .rail-tip-host { margin-bottom: 2px; }
 #rail-session-tip[hidden] { display: none !important; }
-/* 当前打开的主机浮层 / 工具卡在窄条上的锚点 */
-#sidebar.collapsed .side-rail .btn.rail-on {
-  background: var(--hover-bg); border-color: transparent; color: var(--accent); position: relative;
-}
-#sidebar.collapsed .side-rail .btn.rail-on::before {
-  content: ''; position: absolute; left: -6px; top: 6px; bottom: 6px; width: 2px;
-  border-radius: var(--radius-xs); background: var(--accent);
-}
-/* 主机按钮打开停靠卡时与工具按钮共用 .rail-on 激活态，不再有 hover 专属样式 */
 .rail-sep { width: 16px; height: 1px; background: var(--border); border: 0; margin: 2px 0; flex: none; }
 .rail-sep[hidden] { display: none; }
-/* 会话按钮：28×28 方块，和工具/主机按钮同一套 hover / 激活态；绿点 + 数量 */
+/* 会话按钮：30×30 方块，和工具/主机按钮同一套 hover / 激活态；绿点 + 数量 */
 .rail-status {
-  width: 28px; height: 28px; flex: none; padding: 0; border-radius: var(--radius-sm);
+  width: 30px; height: 30px; flex: none; padding: 0; border-radius: var(--radius-sm);
   border: 0; background: transparent; color: var(--muted); position: relative;
   display: inline-flex; align-items: center; justify-content: center; gap: 3px;
   font: var(--fs-2xs)/1 var(--font-ui); font-variant-numeric: tabular-nums; cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out);
 }
-.rail-status:hover { background: var(--surface-hover); color: var(--text); }
+.rail-status:hover { background: var(--surface-hover); color: var(--text); transition-duration: var(--dur-1); }
 .rail-status.rail-on { background: var(--hover-bg); color: var(--accent); }
-.rail-status.rail-on::before {
-  content: ''; position: absolute; left: -6px; top: 6px; bottom: 6px; width: 2px;
-  border-radius: var(--radius-xs); background: var(--accent);
-}
 .rail-status .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent2); flex: none; }
 .rail-status .dot.connecting { background: var(--warn); animation: pulse 1.1s infinite; }
 #rail-session-status[hidden] { display: none; }
@@ -4150,9 +4199,9 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   transform: translateY(-50%) translateX(-3px);
   background: var(--titlebar-bg); border: 1px solid var(--border-hover); color: var(--text);
   font: var(--fs-xs)/1 var(--font-ui); letter-spacing: .1px; padding: 5px 8px; border-radius: var(--radius-xs);
-  white-space: nowrap; opacity: 0; pointer-events: none; z-index: 9;
+  white-space: nowrap; opacity: 0; pointer-events: none; z-index: 80;
   box-shadow: var(--shadow-pop);
-  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  transition: opacity var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
 }
 .side-rail [data-tip]:hover::after { opacity: 1; transform: translateY(-50%) translateX(0); }
 
@@ -4176,22 +4225,19 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   content: ''; position: absolute; left: 100%; top: 0; bottom: 0; width: 10px;
 }
 
-
-
-/* 收起态工具/会话浮层：与停靠卡片同一套 left/top/圆角/投影，同屏一张 */
-#sidebar:not(.collapsed) .rail-pop { display: none !important; }
-#sidebar.collapsed .rail-pop {
-  position: absolute; left: calc(100% + 8px); top: calc(var(--tabbar-h) + 8px);
+/* 常驻轨道工具/会话浮层：展开态与收起态均贴住 44px 轨右缘 8px（left: 52px） */
+#sidebar .rail-pop {
+  position: absolute; left: 52px; top: calc(var(--tabbar-h) + 8px);
   z-index: 67; display: flex; flex-direction: column; width: 300px;
-  max-width: calc(100vw - 64px);
+  max-width: calc(100vw - 68px);
   max-height: calc(100% - var(--tabbar-h) - var(--footer-h) - 16px);
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   overflow: hidden; animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;
 }
-#sidebar.collapsed .rail-pop[hidden] { display: none; }
-#sidebar.collapsed .rail-pop[data-kind="batch"] { width: 340px; }
-#sidebar.collapsed .rail-pop[data-kind="session"] { width: 240px; }
+#sidebar .rail-pop[hidden] { display: none; }
+#sidebar .rail-pop[data-kind="batch"] { width: 340px; }
+#sidebar .rail-pop[data-kind="session"] { width: 240px; }
 
 .rp-head { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border-subtle); }
 .rp-ic {

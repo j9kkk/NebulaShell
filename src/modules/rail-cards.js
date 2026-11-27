@@ -43,6 +43,33 @@ function hostRegion(h) {
   return h.region ? regionLabel(h.region) : '';
 }
 
+/// E1 常驻图标轨滑块指示器：追踪当前激活的 .rail-on 模块按钮（主机 / 命令 / 批量 / 会话），
+/// 用 --rail-pill-y / --rail-pill-h 驱动 .side-rail::before 纵向平滑滑动。
+export function syncRailPill() {
+  const rail = sidebar()?.querySelector('.side-rail');
+  if (!rail || typeof rail.style?.setProperty !== 'function') return;
+  const active = rail.querySelector('.rail-on');
+  if (!active || active.hidden) {
+    rail.style.setProperty('--rail-pill-o', '0');
+    delete rail.dataset.pill;
+    return;
+  }
+  const railRect = rail.getBoundingClientRect();
+  const btnRect = active.getBoundingClientRect();
+  if (!(btnRect.height > 0)) return;
+  const h = Math.max(14, Math.round(btnRect.height - 12));
+  const y = Math.round(btnRect.top - railRect.top + (btnRect.height - h) / 2);
+  const wasReady = rail.dataset.pill === 'ready';
+  rail.style.setProperty('--rail-pill-y', y + 'px');
+  rail.style.setProperty('--rail-pill-h', h + 'px');
+  rail.style.setProperty('--rail-pill-o', '1');
+  if (!wasReady && typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      if (rail.querySelector('.rail-on')) rail.dataset.pill = 'ready';
+    });
+  }
+}
+
 function setRailActive(kind) {
   const map = { commands: 'rail-commands', batch: 'rail-batch', session: 'rail-session-status' };
   for (const [key, id] of Object.entries(map)) {
@@ -53,7 +80,13 @@ function setRailActive(kind) {
     el.setAttribute('aria-expanded', String(on));
   }
   const hostsBtn = document.getElementById('rail-hosts');
-  if (hostsBtn) hostsBtn.setAttribute('aria-expanded', String(!!sidebar()?.classList.contains('peek-open')));
+  if (hostsBtn) {
+    const sb = sidebar();
+    const hostsOn = !kind && (!isCollapsed() || !!sb?.classList.contains('peek-open'));
+    hostsBtn.classList.toggle('rail-on', hostsOn);
+    hostsBtn.setAttribute('aria-expanded', String(hostsOn));
+  }
+  syncRailPill();
 }
 
 function closeCard({ focusBack = false } = {}) {
@@ -63,6 +96,7 @@ function closeCard({ focusBack = false } = {}) {
   const kind = openKind;
   openKind = '';
   clearTimeout(sessionTimer);
+  sidebar()?.classList.remove('rail-pop-open');
   if (el) {
     el.hidden = true;
     el.innerHTML = '';
@@ -78,7 +112,6 @@ function closeCard({ focusBack = false } = {}) {
 }
 
 function openCard(kind) {
-  if (!isCollapsed()) return;
   if (openKind === kind) { closeCard({ focusBack: true }); return; }
   const el = pop();
   if (!el) return;
@@ -90,6 +123,7 @@ function openCard(kind) {
   }
   if (kind === 'batch' && !batchCard?.running) initBatchCard();
   openKind = kind;
+  sidebar()?.classList.add('rail-pop-open');
   el.hidden = false;
   el.dataset.kind = kind;
   el.style.top = '';
@@ -132,7 +166,7 @@ function commandsHTML() {
     </div>`).join('');
   return `
     <div class="rp-head">
-      <span class="rp-ic">${icon('command', { size: 14 })}</span>
+      <span class="rp-ic">${icon('zap', { size: 14 })}</span>
       <span class="rp-title">常用命令</span><span class="rp-count">${all.length}</span>
       <span class="rp-sp"></span>
       <button class="btn icon ghost" type="button" data-rp-manage aria-label="管理常用命令" title="管理全部">${icon('dots', { size: 13 })}</button>
@@ -305,7 +339,7 @@ function batchHTML() {
       : `<span class="rp-status">${escapeHtml(status)}</span><span class="rp-sp"></span><button class="rp-link" type="button" data-rp-full>完整面板</button><button class="btn small primary" type="button" data-rp-run ${canRun ? '' : 'disabled'}>▶ 执行</button>`;
   return `
     <div class="rp-head">
-      <span class="rp-ic">${icon('zap', { size: 14 })}</span>
+      <span class="rp-ic">${icon('listChecks', { size: 14 })}</span>
       <span class="rp-title">批量执行</span><span class="rp-count">${state.hosts.length} 台主机</span>
       <span class="rp-sp"></span>
       <button class="btn icon ghost" type="button" data-rp-full aria-label="完整面板" title="完整面板">${icon('dots', { size: 13 })}</button>
@@ -529,9 +563,15 @@ export function bindRailCards() {
   });
   window.addEventListener('resize', () => {
     if (openKind === 'session') positionSessionCard();
+    syncRailPill();
   });
+  refreshRailState();
 }
 
 export function closeRailCard() {
   closeCard();
+}
+
+export function refreshRailState() {
+  setRailActive(openKind);
 }
