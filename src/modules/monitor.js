@@ -546,6 +546,221 @@ function bindMonitorPopoversOnce() {
   window.addEventListener?.('resize', positionActivePopover);
 }
 
+function fmtDrawerPct(v) {
+  if (v == null || !Number.isFinite(v)) return '–';
+  return `${Number(v).toFixed(1)}%`;
+}
+
+function plotDrawerSeries(vals, maxVal, lineEl, areaEl, ptEl) {
+  const W = 260;
+  const H = 64;
+  const padX = 5;
+  const padY = 6;
+  const plotW = W - padX * 2;
+  const plotH = H - padY * 2;
+  if (!vals || !vals.length) {
+    if (lineEl) lineEl.setAttribute('d', '');
+    if (areaEl) areaEl.setAttribute('d', '');
+    if (ptEl) { ptEl.setAttribute('cx', '-10'); ptEl.setAttribute('cy', '-10'); }
+    return;
+  }
+  const pts = vals.length === 1 ? [vals[0], vals[0]] : vals;
+  const ceil = maxVal > 0 ? maxVal : 100;
+  const coords = pts.map((v, i) => {
+    const x = padX + (i / (pts.length - 1)) * plotW;
+    const clamped = Math.min(ceil, Math.max(0, v));
+    const y = H - padY - (clamped / ceil) * plotH;
+    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+  });
+  const { dLine } = buildSplinePath(coords, W, H);
+  const firstX = coords[0][0];
+  const lastX = coords[coords.length - 1][0];
+  const dArea = `${dLine} L ${lastX} ${H} L ${firstX} ${H} Z`;
+  if (lineEl) lineEl.setAttribute('d', dLine);
+  if (areaEl) areaEl.setAttribute('d', dArea);
+  if (ptEl) {
+    const last = coords[coords.length - 1];
+    ptEl.setAttribute('cx', String(last[0]));
+    ptEl.setAttribute('cy', String(last[1]));
+  }
+}
+
+/// 刷新右侧「监控」抽屉(E3):主机状态头卡、双层故障诊断卡、CPU/内存/磁盘/网络趋势图。
+/// 所有 DOM 访问均空值安全,兼容单元测试轻量 mock 环境。
+export function renderMonitorDrawer() {
+  const page = $('#rp-monitor');
+  if (!page) return;
+  const active = state.activeId ? state.sessions.get(state.activeId) : null;
+  const dot = $('#rp-mon-status-dot');
+  const hostEl = $('#rp-mon-host');
+  const pill = $('#rp-mon-state-pill');
+  const heroSub = $('#rp-mon-hero-sub');
+  const latEl = $('#rp-mon-lat');
+  const addrEl = $('#rp-mon-addr');
+  const emptyEl = $('#rp-mon-empty');
+  const diagCard = $('#rp-diag-card');
+  const unsupEl = $('#rp-mon-unsupported');
+  const cardsEl = $('#rp-mon-cards');
+  const tabDot = $('#rp-mon-dot');
+
+  const setText = (sel, txt) => { const el = $(sel); if (el) el.textContent = txt; };
+
+  if (!active) {
+    if (dot) dot.className = 'dot idle';
+    if (hostEl) hostEl.textContent = '尚未建立连接';
+    if (pill) { pill.textContent = '未连接'; pill.dataset.state = 'idle'; }
+    heroSub?.classList?.add('hidden');
+    setText('#rp-mon-empty-title', '暂无实时监控数据');
+    setText('#rp-mon-empty-desc', '从左侧主机列表连接任意 SSH 会话后，将自动展示 CPU、内存、磁盘、网络趋势与连接诊断。');
+    emptyEl?.classList?.remove('hidden');
+    diagCard?.classList?.add('hidden');
+    unsupEl?.classList?.add('hidden');
+    cardsEl?.classList?.add('hidden');
+    if (tabDot) { tabDot.classList.add('hidden'); tabDot.dataset.state = 'idle'; }
+    return;
+  }
+
+  emptyEl?.classList?.add('hidden');
+  const h = active.host || {};
+  const addr = h.host ? `${h.username ? `${h.username}@` : ''}${h.host}:${h.port || 22}` : '';
+  const hostTitle = h.name || active.label || addr || '当前会话';
+  const status = active.status || 'disconnected';
+  const connected = status === 'connected';
+  const connecting = status === 'connecting';
+
+  if (dot) dot.className = `dot ${status}`;
+  if (hostEl) { hostEl.textContent = hostTitle; hostEl.title = addr || hostTitle; }
+  if (pill) {
+    pill.textContent = connected ? '已连接' : connecting ? '连接中' : '已断开';
+    pill.dataset.state = connected ? 'connected' : connecting ? 'connecting' : 'disconnected';
+  }
+  if (addrEl) { addrEl.textContent = addr; addrEl.title = addr; }
+  if (tabDot) {
+    tabDot.classList.remove('hidden');
+    tabDot.dataset.state = connected ? 'connected' : connecting ? 'connecting' : 'disconnected';
+  }
+
+  // 非连接态:connecting 显示连接过渡态,disconnected / error 显示双层故障诊断卡
+  if (!connected) {
+    heroSub?.classList?.add('hidden');
+    unsupEl?.classList?.add('hidden');
+    cardsEl?.classList?.add('hidden');
+    if (connecting) {
+      diagCard?.classList?.add('hidden');
+      setText('#rp-mon-empty-title', '正在建立 SSH 连接…');
+      setText('#rp-mon-empty-desc', '握手完成后将自动开始采集 CPU、内存、磁盘与网络指标。');
+      emptyEl?.classList?.remove('hidden');
+      return;
+    }
+    diagCard?.classList?.remove('hidden');
+    const summary = active._diagSummary || (active.manualDisconnect ? '已手动断开连接' : '连接已断开');
+    const raw = active._diagRaw || (active.manualDisconnect ? '' : String(active.lastError || ''));
+    setText('#rp-diag-summary', summary);
+    setText('#rp-diag-sub', active.manualDisconnect
+      ? '你已主动断开当前会话，随时可以一键重连。'
+      : '检查网络连通性、端口或凭据，或交由 AI 排查。');
+    setText('#rp-diag-target', addr || hostTitle);
+    setText('#rp-diag-status', status);
+    setText('#rp-diag-raw', raw || '无额外底层错误输出（正常关闭或手动断开）');
+    return;
+  }
+
+  // 已连接态:隐藏诊断卡,展示延迟 + 四张实时趋势卡
+  diagCard?.classList?.add('hidden');
+  heroSub?.classList?.remove('hidden');
+  const m = state.metrics.get(state.activeId);
+  if (latEl) {
+    const ms = m?.latencyMs;
+    latEl.textContent = fmtLat(ms);
+    latEl.classList.toggle('lat-ok', ms != null && ms < 75);
+    latEl.classList.toggle('lat-mid', ms != null && ms >= 75 && ms < 200);
+    latEl.classList.toggle('lat-bad', ms != null && ms >= 200);
+  }
+  if (m && m.supported === false) {
+    unsupEl?.classList?.remove('hidden');
+    cardsEl?.classList?.add('hidden');
+    return;
+  }
+  unsupEl?.classList?.add('hidden');
+  cardsEl?.classList?.remove('hidden');
+
+  const rawHist = state.metricHistory.get(state.activeId);
+  const cpuHist = (Array.isArray(rawHist) ? rawHist : (rawHist?.cpu || [])).slice(-24);
+  const memHist = (Array.isArray(rawHist) ? [] : (rawHist?.mem || [])).slice(-24);
+  const rxHist = (Array.isArray(rawHist) ? [] : (rawHist?.rx || [])).slice(-24);
+  const txHist = (Array.isArray(rawHist) ? [] : (rawHist?.tx || [])).slice(-24);
+
+  // CPU 卡
+  setText('#rp-mon-cpu-val', m ? fmtDrawerPct(m.cpuPct) : '–');
+  if (cpuHist.length && m?.cpuPct != null) {
+    const maxCpu = Math.max(...cpuHist);
+    const avgCpu = cpuHist.reduce((a, b) => a + b, 0) / cpuHist.length;
+    setText('#rp-mon-cpu-max', fmtDrawerPct(maxCpu));
+    setText('#rp-mon-cpu-avg', fmtDrawerPct(avgCpu));
+    plotDrawerSeries(cpuHist, 100, $('#rp-mon-cpu-line'), $('#rp-mon-cpu-area'), $('#rp-mon-cpu-pt'));
+  } else {
+    setText('#rp-mon-cpu-max', '–');
+    setText('#rp-mon-cpu-avg', '–');
+    plotDrawerSeries([], 100, $('#rp-mon-cpu-line'), $('#rp-mon-cpu-area'), $('#rp-mon-cpu-pt'));
+  }
+
+  // 内存卡
+  setText('#rp-mon-mem-val', m ? fmtDrawerPct(m.memPct) : '–');
+  setText('#rp-mon-mem-det', m ? fmtMemPair(m.memUsedMB, m.memTotalMB) : '');
+  if (memHist.length && m?.memPct != null) {
+    setText('#rp-mon-mem-max', fmtDrawerPct(Math.max(...memHist)));
+    if (m.memUsedMB != null && m.memTotalMB != null) {
+      const availMB = Math.max(0, m.memTotalMB - m.memUsedMB);
+      setText('#rp-mon-mem-avail', m.memTotalMB >= 1024 ? `${trim1(availMB / 1024)}GB` : `${Math.round(availMB)}MB`);
+    } else {
+      setText('#rp-mon-mem-avail', fmtDrawerPct(100 - m.memPct));
+    }
+    plotDrawerSeries(memHist, 100, $('#rp-mon-mem-line'), $('#rp-mon-mem-area'), $('#rp-mon-mem-pt'));
+  } else {
+    setText('#rp-mon-mem-max', '–');
+    setText('#rp-mon-mem-avail', '–');
+    plotDrawerSeries([], 100, $('#rp-mon-mem-line'), $('#rp-mon-mem-area'), $('#rp-mon-mem-pt'));
+  }
+
+  // 磁盘卡
+  const diskPct = m?.diskPct;
+  setText('#rp-mon-disk-val', diskPct == null ? '–' : fmtDrawerPct(diskPct));
+  setText('#rp-mon-disk-det', m ? fmtDiskPair(m.diskUsedGB, m.diskTotalGB) : '');
+  if (m && m.diskUsedGB != null && m.diskTotalGB != null) {
+    const availGB = Math.max(0, m.diskTotalGB - m.diskUsedGB);
+    setText('#rp-mon-disk-avail', availGB >= 1024 ? `${trim1(availGB / 1024)}TB` : `${trim1(availGB)}GB`);
+  } else {
+    setText('#rp-mon-disk-avail', '–');
+  }
+  const diskFill = $('#rp-mon-disk-fill');
+  if (diskFill) {
+    const pct = diskPct == null ? 0 : Math.max(0, Math.min(100, diskPct));
+    diskFill.style.width = `${pct}%`;
+    diskFill.classList.toggle('warn', pct >= 70 && pct < 90);
+    diskFill.classList.toggle('hot', pct >= 90);
+  }
+
+  // 网络吞吐卡
+  setText('#rp-mon-net-rx', m ? fmtBytes(m.rxBps) : '–');
+  setText('#rp-mon-net-tx', m ? fmtBytes(m.txBps) : '–');
+  if ((rxHist.length || txHist.length) && m && (m.rxBps != null || m.txBps != null)) {
+    const maxRx = rxHist.length ? Math.max(...rxHist) : (m.rxBps || 0);
+    const maxTx = txHist.length ? Math.max(...txHist) : (m.txBps || 0);
+    const ceiling = calcNetCeiling(Math.max(maxRx, maxTx, m.rxBps || 0, m.txBps || 0));
+    setText('#rp-mon-net-max-rx', fmtBytes(maxRx));
+    setText('#rp-mon-net-max-tx', fmtBytes(maxTx));
+    setText('#rp-mon-net-scale', `标尺 ${fmtBytes(ceiling)}`);
+    plotDrawerSeries(rxHist.length ? rxHist : [0], ceiling, $('#rp-mon-net-rx-line'), $('#rp-mon-net-rx-area'), $('#rp-mon-net-rx-pt'));
+    plotDrawerSeries(txHist.length ? txHist : [0], ceiling, $('#rp-mon-net-tx-line'), null, $('#rp-mon-net-tx-pt'));
+  } else {
+    setText('#rp-mon-net-max-rx', '–');
+    setText('#rp-mon-net-max-tx', '–');
+    setText('#rp-mon-net-scale', '标尺 –');
+    plotDrawerSeries([], 10240, $('#rp-mon-net-rx-line'), $('#rp-mon-net-rx-area'), $('#rp-mon-net-rx-pt'));
+    plotDrawerSeries([], 10240, $('#rp-mon-net-tx-line'), null, $('#rp-mon-net-tx-pt'));
+  }
+}
+
 export function renderMonitorBar() {
   bindMonitorPopoversOnce();
   const bar = $('#monitor-bar');
@@ -558,6 +773,7 @@ export function renderMonitorBar() {
   if (!active || active.status !== 'connected') {
     bar.classList.add('hidden');
     hideAllPopovers();
+    renderMonitorDrawer();
     return;
   }
   bar.classList.remove('hidden');
@@ -587,6 +803,7 @@ export function renderMonitorBar() {
     renderCpuPopoverChart([], null);
     renderMemPopoverChart([], null, null, null);
     renderNetPopoverChart([], [], null, null);
+    renderMonitorDrawer();
     return;
   }
   if (m.supported === false) {
@@ -603,6 +820,7 @@ export function renderMonitorBar() {
     renderCpuPopoverChart([], null);
     renderMemPopoverChart([], null, null, null);
     renderNetPopoverChart([], [], null, null);
+    renderMonitorDrawer();
     return;
   }
   bar.classList.remove('mon-unsupported');
@@ -633,6 +851,7 @@ export function renderMonitorBar() {
   renderCpuPopoverChart(cpuHist, m.cpuPct);
   renderMemPopoverChart(memHist, m.memPct, m.memUsedMB, m.memTotalMB);
   renderNetPopoverChart(rxHist, txHist, m.rxBps, m.txBps);
+  renderMonitorDrawer();
 }
 
 /* ---------------- AI 设置弹窗 ---------------- */

@@ -24,7 +24,7 @@ import {
   resetExpandedFoldersForMenu, restoreOutChipsToScope, syncComposerScopeCheck, targetMenuHandlers,
 } from './ai-agent-run.js';
 import { clearThreadLinks, handleLinkSessionStatus, markLinkSessionClosed, setLinksChangeHandler } from './ai-links.js';
-import { addSnippet, openSnippetsModal, renderMonitorBar, renderSnippets } from './monitor.js';
+import { addSnippet, openSnippetsModal, renderMonitorBar, renderMonitorDrawer, renderSnippets } from './monitor.js';
 import {
   filePaneBookmarks, filePaneFromEl, focusedFilePane, paneSnapshot, routeProgress,
   selectAllEntries, syncFilePanesForSession, uploadLocalPaths,
@@ -512,7 +512,7 @@ function setupWorkspaceCommands() {
 // 兼容别名:老键位/旧脚本仍在用的入口名,指向迁移后的新命令。标记 internal
 // —— 不进命令面板,也不要求出现在一级菜单里(否则"所有注册命令可达"的校验
 // 会要求这些别名各自再上一遍菜单)。
-registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', internal: true, keywords: ['ai'], checked: () => rightPanelOpen(), run: toggleRightPanel });
+registerCommand('panel.ai', { label: 'AI 助手', category: 'panel', internal: true, keywords: ['ai'], checked: () => rightTabShown('ai'), run: () => toggleRightTab('ai') });
 registerCommand('panel.history', { label: '命令历史', category: 'panel', kind: 'dialog', internal: true, keywords: ['history'], run: openHistoryModal });
 registerCommand('panel.snippets', { label: '常用命令', category: 'panel', kind: 'dialog', internal: true, keywords: ['snippets'], run: openSnippetsModal });
 
@@ -1129,6 +1129,24 @@ export function bindEvents() {
   if ($('#btn-session-more')) {
     bindMenuButton($('#btn-session-more'), sessionMoreItems, { label: '更多会话操作' });
   }
+  // E3:点击顶部会话条的延迟/CPU 胶囊即可打开/切换右侧「监控」抽屉
+  const openMonDrawer = () => toggleRightTab('monitor');
+  $('#mon-cpu-trigger')?.addEventListener('click', openMonDrawer);
+  document.querySelector('#monitor-bar .mon-lat-item')?.addEventListener('click', openMonDrawer);
+  // E3:断开态双层诊断卡按钮(立即重连 / 用 AI 诊断 / 复制技术诊断详情)
+  $('#rp-diag-reconnect')?.addEventListener('click', () => executeCommand('session.reconnect'));
+  $('#rp-diag-ai')?.addEventListener('click', () => executeCommand('session.diagnose'));
+  $('#rp-diag-copy')?.addEventListener('click', async () => {
+    const target = $('#rp-diag-target')?.textContent || '';
+    const status = $('#rp-diag-status')?.textContent || '';
+    const summary = $('#rp-diag-summary')?.textContent || '';
+    const raw = $('#rp-diag-raw')?.textContent || '';
+    const payload = `目标主机: ${target}\n会话状态: ${status}\n诊断摘要: ${summary}\n原始错误:\n${raw}`;
+    const ok = await copyText(payload);
+    toast(ok ? '已复制诊断信息' : '复制失败', ok ? 'ok' : 'error');
+  });
+  // 会话状态变更时同步右侧监控抽屉(含断开态诊断卡)
+  document.addEventListener('nebula:session-status', () => renderMonitorDrawer());
   // 会话日志按钮/录制徽标悬停:录制中时查一次后端,刷新已记录的大小(悬停提示)
   const refreshLogHover = () => {
     const s = state.sessions.get(state.activeId);

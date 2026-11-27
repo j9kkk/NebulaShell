@@ -1,23 +1,27 @@
-// 右侧工具栏:专职 AI 助手(容器沿用 #ai-panel)。
-// 命令历史与常用命令已迁移至主菜单与独立弹窗。
+// 右侧上下文抽屉(E3):统一承接 AI 助手与主机监控/故障诊断两页签(容器沿用 #ai-panel)。
+// 980px 窄宽档(<= 1100px)自动切换为浮动覆盖抽屉(body.rp-overlay),避免挤压终端可视宽度。
+// 命令历史与常用命令仍路由到独立弹窗以兼容既有入口。
 import { $, state } from './core.js';
 import { refreshCommandStates } from './commands.js';
 import { aiStickScroll, closeAiDrawer } from './ai.js';
-import { openSnippetsModal, renderSnippets } from './monitor.js';
+import { openSnippetsModal, renderMonitorDrawer, renderSnippets } from './monitor.js';
 import { fitAllVisible, scheduleResizeSync } from './terminal.js';
 import { openHistoryModal, renderHistory } from './tools.js';
 
-export const RIGHT_TABS = ['ai', 'history', 'snippets'];
+export const RIGHT_TABS = ['ai', 'monitor', 'history', 'snippets'];
+const DRAWER_TABS = ['ai', 'monitor'];
+const OVERLAY_MQ = '(max-width: 1100px)';
 
 const panel = () => $('#ai-panel');
 export const rightPanelOpen = () => !panel().classList.contains('hidden');
-export const rightPanelTab = () => (RIGHT_TABS.includes(panel().dataset.tab) ? panel().dataset.tab : 'ai');
+export const rightPanelTab = () => (DRAWER_TABS.includes(panel().dataset.tab) ? panel().dataset.tab : 'ai');
 export const rightTabShown = (tab) => rightPanelOpen() && rightPanelTab() === tab;
+export const isRightPanelOverlay = () => document.body?.classList?.contains('rp-overlay') ?? false;
 
-/// 页签变为可见时刷新它的内容。历史每次都重新拉取(期间可能执行过新命令),
-/// 但保持阅读位置;AI 页补一次贴底(隐藏期间收到的回复)。
+/// 页签变为可见时刷新它的内容。
 function onShown(tab) {
   if (tab === 'ai') aiStickScroll();
+  else if (tab === 'monitor') renderMonitorDrawer();
   else if (tab === 'history') renderHistory($('#hist-search')?.value, { keepScroll: true });
   else if (tab === 'snippets') renderSnippets();
 }
@@ -31,6 +35,7 @@ function selectTab(tab) {
     button.tabIndex = on ? 0 : -1;
   }
   for (const page of root.querySelectorAll('.rp-page')) page.classList.toggle('active', page.dataset.page === tab);
+  for (const acts of root.querySelectorAll('.rp-head-acts')) acts.classList.toggle('hidden', acts.dataset.for !== tab);
 }
 
 function focusTerminal() {
@@ -39,7 +44,16 @@ function focusTerminal() {
   if (panel().contains(document.activeElement)) document.activeElement.blur();
 }
 
-/// 打开或收起面板;tab 给出时切到该页签。收起时焦点若在面板里,还给终端。
+function syncOverlayMode() {
+  if (typeof window === 'undefined' || !window.matchMedia || !document.body) return;
+  const overlay = window.matchMedia(OVERLAY_MQ).matches;
+  const changed = document.body.classList.contains('rp-overlay') !== overlay;
+  document.body.classList.toggle('rp-overlay', overlay);
+  // 浮层与停靠切换时刷新终端尺寸(从停靠切到浮层会释放右侧 360px 给主终端)
+  if (changed && rightPanelOpen()) { fitAllVisible(); scheduleResizeSync(); }
+}
+
+/// 打开或收起面板;tab 给出时切到该页签(ai / monitor)。收起时焦点若在面板里,还给终端。
 export function setRightPanel(open, tab = null) {
   if (tab === 'history') {
     if (open) openHistoryModal();
@@ -51,18 +65,21 @@ export function setRightPanel(open, tab = null) {
   }
   const wasOpen = rightPanelOpen();
   const before = rightPanelTab();
-  const target = 'ai';
+  const target = DRAWER_TABS.includes(tab) ? tab : before;
   if (open) selectTab(target);
   if (!open && wasOpen && panel().contains(document.activeElement)) focusTerminal();
-  if (!open) {
+  if (!open || target !== 'ai') {
     $('#ai-model-menu')?.classList.add('hidden');
     $('#ai-mode-menu')?.classList.add('hidden');
     $('#ai-thread-menu')?.classList.add('hidden');
+    $('#ai-scope-menu')?.classList.add('hidden');
   }
   panel().classList.toggle('hidden', !open);
-  $('#ai-resizer').classList.toggle('hidden', !open);
+  $('#ai-resizer')?.classList.toggle('hidden', !open);
+  document.body?.classList?.toggle('rp-monitor-open', open && target === 'monitor');
   if (open && (!wasOpen || target !== before)) onShown(target);
-  if (open !== wasOpen) { fitAllVisible(); scheduleResizeSync(); }
+  // 窄宽覆盖模式下不占用文档流,打开/关闭不触发终端重排
+  if (open !== wasOpen && !isRightPanelOverlay()) { fitAllVisible(); scheduleResizeSync(); }
   refreshCommandStates();
 }
 
@@ -77,6 +94,13 @@ export function toggleRightTab(tab) {
 
 export function bindRightPanel() {
   const root = panel();
+  syncOverlayMode();
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    const mql = window.matchMedia(OVERLAY_MQ);
+    mql.addEventListener?.('change', syncOverlayMode);
+  }
+  selectTab(rightPanelTab());
+  document.body?.classList?.toggle('rp-monitor-open', rightTabShown('monitor'));
   const tabs = [...root.querySelectorAll('.rp-tab')];
   for (const button of tabs) {
     button.addEventListener('click', () => setRightPanel(true, button.dataset.tab));
@@ -91,13 +115,22 @@ export function bindRightPanel() {
       to.focus();
     });
   }
-  // Esc:焦点在右侧栏里时把焦点还给终端,面板保持打开(收起由开关负责)。
-  // 会话菜单、模型菜单、代码块菜单打开时 Esc 先关它们(各自的 document 监听处理)。
+  $('#rp-close')?.addEventListener('click', () => setRightPanel(false));
+  // 窄宽覆盖模式:点击抽屉外部非触发区域自动收起
+  document.addEventListener('pointerdown', (event) => {
+    if (!isRightPanelOverlay() || !rightPanelOpen()) return;
+    const t = event.target;
+    if (!t || root.contains(t)) return;
+    if (t.closest?.('#btn-ai-toggle, #rail-ai, #monitor-bar, #ctx-menu, .modal, .ai-menu, #ai-model-menu, #ai-thread-menu, #ai-mode-menu, #ai-scope-menu, #ai-context-popover, #mon-cpu-popover')) return;
+    setRightPanel(false);
+  });
+  // Esc:浮层模式下直接收起抽屉;停靠模式下把焦点还给终端。
   root.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
     if (!$('#ai-thread-menu')?.classList.contains('hidden')) return;
     if (!$('#ai-model-menu')?.classList.contains('hidden')) return;
     if (!$('#ai-mode-menu')?.classList.contains('hidden')) return;
+    if (!$('#ai-scope-menu')?.classList.contains('hidden')) return;
     if (event.target.closest?.('.ai-code-menu[open]')) return;
     if (!$('#ai-drawer')?.classList.contains('hidden')) {
       closeAiDrawer({ focusToggle: true });
@@ -105,6 +138,7 @@ export function bindRightPanel() {
       return;
     }
     event.preventDefault();
-    focusTerminal();
+    if (isRightPanelOverlay()) setRightPanel(false);
+    else focusTerminal();
   });
 }

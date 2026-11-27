@@ -282,3 +282,83 @@ test('renderMonitorBar 在不支持的主机上显示 Linux / macOS 提示且保
   assert.equal(getEl('mon-lat').textContent, '42ms');
   assert.equal(getEl('mon-note').textContent, '该主机暂不支持资源监控(仅支持 Linux / macOS)');
 });
+
+test('renderMonitorDrawer 在无活动会话时显示空态并隐藏指标卡与诊断卡', async () => {
+  const { mod, state, getEl } = await createMonitorModule();
+  state.activeId = null;
+  mod.renderMonitorDrawer();
+  assert.equal(getEl('rp-mon-host').textContent, '尚未建立连接');
+  assert.equal(getEl('rp-mon-state-pill').dataset.state, 'idle');
+  assert.equal(getEl('rp-mon-empty').classList.contains('hidden'), false);
+  assert.equal(getEl('rp-diag-card').classList.contains('hidden'), true);
+  assert.equal(getEl('rp-mon-cards').classList.contains('hidden'), true);
+  assert.equal(getEl('rp-mon-dot').classList.contains('hidden'), true);
+});
+
+test('renderMonitorDrawer 在已连接采样下渲染四张指标卡、磁盘可用量与防裁切曲线端点', async () => {
+  const { mod, state, getEl } = await createMonitorModule();
+  state.sessions.set('sess-1', {
+    sessionId: 'sess-1',
+    status: 'connected',
+    host: { name: 'cache-prod-02', username: 'root', host: '10.0.4.12', port: 22 },
+  });
+  state.metricHistory.set('sess-1', {
+    cpu: [20, 56, 33.4],
+    mem: [57.0, 58.2],
+    rx: [200 * 1024, 475 * 1024],
+    tx: [50 * 1024, 110 * 1024],
+  });
+  state.metrics.set('sess-1', {
+    supported: true,
+    cpuPct: 33.4,
+    memPct: 58.2,
+    memUsedMB: 9523,
+    memTotalMB: 16384,
+    diskPct: 68.4,
+    diskUsedGB: 136.8,
+    diskTotalGB: 200,
+    rxBps: 475 * 1024,
+    txBps: 110 * 1024,
+    latencyMs: 18,
+  });
+
+  mod.renderMonitorDrawer();
+
+  assert.equal(getEl('rp-mon-host').textContent, 'cache-prod-02');
+  assert.equal(getEl('rp-mon-addr').textContent, 'root@10.0.4.12:22');
+  assert.equal(getEl('rp-mon-state-pill').dataset.state, 'connected');
+  assert.equal(getEl('rp-mon-lat').textContent, '18ms');
+  assert.equal(getEl('rp-mon-cards').classList.contains('hidden'), false);
+  assert.equal(getEl('rp-diag-card').classList.contains('hidden'), true);
+  assert.equal(getEl('rp-mon-cpu-val').textContent, '33.4%');
+  assert.equal(getEl('rp-mon-cpu-max').textContent, '56.0%');
+  assert.equal(getEl('rp-mon-mem-avail').textContent, '6.7GB');
+  assert.equal(getEl('rp-mon-disk-val').textContent, '68.4%');
+  assert.equal(getEl('rp-mon-disk-avail').textContent, '63.2GB');
+  assert.equal(getEl('rp-mon-disk-fill').style.width, '68.4%');
+  assert.equal(getEl('rp-mon-net-scale').textContent, '标尺 500KB/s');
+  assert.ok(getEl('rp-mon-cpu-line').getAttribute('d').startsWith('M '));
+  const cpuDotX = Number(getEl('rp-mon-cpu-pt').getAttribute('cx'));
+  assert.ok(cpuDotX > 0 && cpuDotX <= 255, `实时端点 cx(${cpuDotX}) 应留出右侧内边距防裁切`);
+});
+
+test('renderMonitorDrawer 在断开态呈现双层诊断卡并同步页签红点', async () => {
+  const { mod, state, getEl } = await createMonitorModule();
+  state.sessions.set('sess-1', {
+    sessionId: 'sess-1',
+    status: 'disconnected',
+    host: { name: 'cache-prod-02', username: 'root', host: '10.0.4.12', port: 2222 },
+    _diagSummary: '连接被拒绝',
+    _diagRaw: 'SSH handshake failed: ECONNREFUSED',
+  });
+
+  mod.renderMonitorDrawer();
+
+  assert.equal(getEl('rp-diag-card').classList.contains('hidden'), false);
+  assert.equal(getEl('rp-mon-cards').classList.contains('hidden'), true);
+  assert.equal(getEl('rp-mon-dot').dataset.state, 'disconnected');
+  assert.equal(getEl('rp-diag-summary').textContent, '连接被拒绝');
+  assert.equal(getEl('rp-diag-target').textContent, 'root@10.0.4.12:2222');
+  assert.equal(getEl('rp-diag-status').textContent, 'disconnected');
+  assert.equal(getEl('rp-diag-raw').textContent, 'SSH handshake failed: ECONNREFUSED');
+});

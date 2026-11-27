@@ -69,7 +69,7 @@
             <button id="rail-transfers" class="btn icon rail-transfers-btn hidden" type="button" aria-label="传输任务"><span class="mi" data-icon="transfer"></span><span id="rail-transfer-badge" class="rail-badge hidden">0</span></button>
           </span>
           <span class="rail-tip" data-tip="AI 助手" role="presentation">
-            <button id="rail-ai" class="btn icon" type="button" data-command="panel.tools" aria-label="AI 助手"><span class="mi" data-icon="sparkles"></span></button>
+            <button id="rail-ai" class="btn icon" type="button" data-command="panel.ai" aria-label="AI 助手"><span class="mi" data-icon="sparkles"></span></button>
           </span>
           <span class="rail-tip" data-tip="设置" role="presentation">
             <button id="rail-settings" class="btn icon" type="button" data-command="app.settings" aria-label="设置"><span class="mi" data-icon="settings"></span></button>
@@ -243,97 +243,285 @@
       <div id="session-pulse" class="session-pulse" data-state="idle" aria-hidden="true"></div>
     </main>
 
-    <!-- 右侧工具栏:AI 助手 / 命令历史 / 常用命令 三个页签(容器沿用 #ai-panel)。
-         页签页叠放在同一格,非活动页只是不可见 —— 滚动位置、过滤词、输入草稿
-         都留在原处(见 right-panel.js)。 -->
-    <div id="ai-resizer" class="resizer hidden" title="拖动调整 AI 助手宽度"></div>
-    <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="AI 助手">
-      <!-- 单层高集成度 AI 顶栏(高度 36px,与左侧标签栏严格对齐):切换会话、新建会话、历史抽屉、清空 -->
+    <!-- E3 统一右侧上下文抽屉:AI 助手 / 监控与诊断 两页签(容器沿用 #ai-panel)。
+         980px 窄宽自动切换为浮动覆盖抽屉(body.rp-overlay),不挤压主终端画布。 -->
+    <div id="ai-resizer" class="resizer hidden" title="拖动调整右侧面板宽度"></div>
+    <aside id="ai-panel" class="hidden" data-tab="ai" aria-label="右侧上下文面板">
+      <!-- 36px 顶栏(与 #tabbar 严格对齐):AI 助手 / 监控 两页签 + 当前页快捷动作 + 关闭 -->
       <div class="ai-header">
-        <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
-          <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
-          <span id="ai-thread-title" class="ai-thread-title">新对话</span>
-          <span class="ai-thread-dot" aria-hidden="true"></span>
-          <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
-        </button>
+        <div class="rp-tabs" role="tablist" aria-label="右侧面板页签">
+          <button id="rp-tab-ai" class="rp-tab" type="button" role="tab" data-tab="ai" aria-selected="true" tabindex="0">
+            <span class="mi" data-icon="sparkles" aria-hidden="true"></span>
+            <span class="rp-tab-lbl">AI 助手</span>
+          </button>
+          <button id="rp-tab-monitor" class="rp-tab" type="button" role="tab" data-tab="monitor" aria-selected="false" tabindex="-1">
+            <span class="mi" data-icon="activity" aria-hidden="true"></span>
+            <span class="rp-tab-lbl">监控</span>
+            <span id="rp-mon-dot" class="rp-tab-dot hidden" aria-hidden="true"></span>
+          </button>
+        </div>
         <span class="spacer"></span>
-        <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建 AI 对话" data-title="新建 AI 对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
-        <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
-        <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
+        <div class="rp-head-acts" data-for="ai">
+          <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建 AI 对话" data-title="新建 AI 对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
+          <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
+          <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
+          <span class="rp-head-sep" aria-hidden="true"></span>
+        </div>
+        <button id="rp-close" class="btn small icon-tb rp-close-btn" type="button" title="关闭右侧面板" aria-label="关闭右侧面板"><span class="mi" data-icon="x"></span></button>
       </div>
 
-      <!-- 会话管理抽屉:在面板内切出全量会话管理与搜索 -->
-      <div id="ai-drawer" class="ai-drawer hidden" aria-label="会话管理抽屉">
-        <div class="ai-drawer-head">
-          <span class="ai-drawer-title">全部对话</span>
-          <span class="spacer"></span>
-          <button id="ai-drawer-new" class="btn small" type="button">＋ 新建</button>
-          <button id="ai-drawer-close" class="btn icon small" type="button" title="收起抽屉" aria-label="收起抽屉"><span class="mi" data-icon="x"></span></button>
-        </div>
-        <div class="ai-drawer-search-row">
-          <input id="ai-drawer-search" class="inp" type="text" placeholder="搜索对话标题…" aria-label="搜索对话" autocomplete="off" spellcheck="false" />
-        </div>
-        <div id="ai-drawer-list" class="ai-drawer-list" role="list"></div>
-      </div>
-
-      <div class="ai-messages-wrap">
-        <div id="ai-messages"></div>
-        <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
-        <button id="ai-scroll-bottom" class="ai-scroll-bottom" type="button" title="回到底部" aria-label="回到底部">↓</button>
-      </div>
-      <!-- 输入区 composer:上边框刻意去掉,视觉与消息区连续;外框(圆角边框)
-             把 textarea 与工具行包成一体,textarea 自身无边框。
-             底边与状态栏共享面板边缘,无需锁高对齐。 -->
-      <!-- 执行模式选择器(原主机条已并入):触发钮显示「主机名 · 模式」,
-           菜单展开时顶部展示完整「将作用于 host · user」。内容与显隐由
-           ai-agent-ui.js updateModePicker 维护 -->
-      <div class="ai-input-row">
-        <div class="ai-composer">
-          <!-- @ 候选浮层(F9/A2/A3):在 #ai-input 内打单个 @ 立刻弹出,只列当前会话 scope 内主机 -->
-          <div id="ai-mention-pop" class="ai-mention-pop hidden" role="listbox" aria-label="引用会话内主机"></div>
-          <div id="ai-input" class="ai-input-ed" contenteditable="true" role="textbox" aria-multiline="true" data-empty="1" data-placeholder="输入 @ 从范围内选主机，或直接提问…"></div>
-          <!-- chip 被移出范围时的阻塞提示条(F13/A4):有失效 chip 时展开并禁用发送,二选一后放行 -->
-          <div id="ai-chip-warn" class="ai-chip-warn hidden" role="alert" hidden>
-            <span class="ai-chip-warn-icon mi" data-icon="alert" aria-hidden="true"></span>
-            <span id="ai-chip-warn-text" class="ai-chip-warn-text"></span>
-            <button id="ai-chip-warn-restore" class="ai-chip-warn-act" type="button">加回范围</button>
-            <button id="ai-chip-warn-remove" class="ai-chip-warn-act" type="button">移除引用</button>
+      <div class="rp-pages">
+        <!-- 页签 1:AI 助手 -->
+        <div id="rp-ai" class="rp-page active" data-page="ai" role="tabpanel" aria-labelledby="rp-tab-ai">
+          <div class="ai-thread-bar">
+            <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
+              <span class="mi" data-icon="messageSquare" aria-hidden="true"></span>
+              <span id="ai-thread-title" class="ai-thread-title">新对话</span>
+              <span class="ai-thread-dot" aria-hidden="true"></span>
+              <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+            </button>
           </div>
-          <div class="ai-composer-tools">
-            <!-- 会话主机范围按钮(最左,F1):点击列出主机列表勾选本会话允许操作的主机范围 -->
-            <button id="ai-scope-trigger" class="ai-scope-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-scope-menu" title="选择本会话允许操作的主机范围" data-empty="true">
-              <span class="ai-scope-icon mi" data-icon="server" aria-hidden="true"></span>
-              <span id="ai-scope-name" class="ai-scope-name">未选主机</span>
-              <span id="ai-scope-status" class="ai-scope-status" hidden></span>
-              <span class="ai-scope-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
-            </button>
-            <!-- 执行模式:当 scope 非空时显示档位(手动确认/自动执行/完全托管);scope 为空时隐藏并显示「纯对话」 -->
-            <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu" hidden>
-              <span class="ai-mode-icon mi" data-icon="lock" aria-hidden="true"></span>
-              <span id="ai-mode-name" class="ai-mode-name">手动确认</span>
-              <!-- 窄档(T3/T4)只显示双字:独立 span,不改变 #ai-mode-name 的 textContent -->
-              <span id="ai-mode-short" class="ai-mode-short" aria-hidden="true">手动</span>
-              <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
-            </button>
-            <span id="ai-chat-note" class="ai-chat-note">纯对话</span>
-            <span class="spacer"></span>
-            <!-- 上下文窗口指示器:微型环状仪表图标钮,悬停或点击展开详情卡片 -->
-            <button id="ai-context-trigger" class="ai-context-trigger" type="button" title="查看当前对话上下文窗口" aria-haspopup="dialog" aria-expanded="false" aria-controls="ai-context-popover">
-              <span id="ai-context-ring" class="mon-ring ai-context-ring" aria-hidden="true">
-                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
-              </span>
-            </button>
-            <!-- 模型选择:无边框触发钮 + 自定义浮层菜单(列已启用模型 + 管理模型入口)。
-                 不用原生 <select>:要展示"管理模型"入口与选中 ✓,原生下拉做不到。 -->
-            <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
-              <span id="ai-model-name">未启用模型</span>
-              <!-- 思考强度档位:仅当模型名能完整显示时才出现(JS 实测后切 hidden) -->
-              <span id="ai-model-effort" class="ai-model-effort hidden" aria-hidden="true"></span>
-              <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
-            </button>
-            <!-- 发送/停止同钮双状态:空闲=↑ 发送,流式=■ 停止(见 ai.js setAiBusy)。
-                 图标由 boot 时 setAiBusy(false) 初始化,不在 HTML 里放占位 —— 尺寸/逻辑单点收在 ai.js -->
-            <button id="ai-send" class="btn primary ai-send" type="button" title="发送"></button>
+
+          <!-- 会话管理抽屉:在 AI 页内切出全量会话管理与搜索 -->
+          <div id="ai-drawer" class="ai-drawer hidden" aria-label="会话管理抽屉">
+            <div class="ai-drawer-head">
+              <span class="ai-drawer-title">全部对话</span>
+              <span class="spacer"></span>
+              <button id="ai-drawer-new" class="btn small" type="button">＋ 新建</button>
+              <button id="ai-drawer-close" class="btn icon small" type="button" title="收起抽屉" aria-label="收起抽屉"><span class="mi" data-icon="x"></span></button>
+            </div>
+            <div class="ai-drawer-search-row">
+              <input id="ai-drawer-search" class="inp" type="text" placeholder="搜索对话标题…" aria-label="搜索对话" autocomplete="off" spellcheck="false" />
+            </div>
+            <div id="ai-drawer-list" class="ai-drawer-list" role="list"></div>
+          </div>
+
+          <div class="ai-messages-wrap">
+            <div id="ai-messages"></div>
+            <!-- 回到底部:阅读位置离开底部时浮现,显隐由 ai.js 滚动控制器同步 -->
+            <button id="ai-scroll-bottom" class="ai-scroll-bottom" type="button" title="回到底部" aria-label="回到底部">↓</button>
+          </div>
+          <!-- 输入区 composer -->
+          <div class="ai-input-row">
+            <div class="ai-composer">
+              <!-- @ 候选浮层(F9/A2/A3):在 #ai-input 内打单个 @ 立刻弹出,只列当前会话 scope 内主机 -->
+              <div id="ai-mention-pop" class="ai-mention-pop hidden" role="listbox" aria-label="引用会话内主机"></div>
+              <div id="ai-input" class="ai-input-ed" contenteditable="true" role="textbox" aria-multiline="true" data-empty="1" data-placeholder="输入 @ 从范围内选主机，或直接提问…"></div>
+              <!-- chip 被移出范围时的阻塞提示条(F13/A4):有失效 chip 时展开并禁用发送,二选一后放行 -->
+              <div id="ai-chip-warn" class="ai-chip-warn hidden" role="alert" hidden>
+                <span class="ai-chip-warn-icon mi" data-icon="alert" aria-hidden="true"></span>
+                <span id="ai-chip-warn-text" class="ai-chip-warn-text"></span>
+                <button id="ai-chip-warn-restore" class="ai-chip-warn-act" type="button">加回范围</button>
+                <button id="ai-chip-warn-remove" class="ai-chip-warn-act" type="button">移除引用</button>
+              </div>
+              <div class="ai-composer-tools">
+                <!-- 会话主机范围按钮(最左,F1):点击列出主机列表勾选本会话允许操作的主机范围 -->
+                <button id="ai-scope-trigger" class="ai-scope-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-scope-menu" title="选择本会话允许操作的主机范围" data-empty="true">
+                  <span class="ai-scope-icon mi" data-icon="server" aria-hidden="true"></span>
+                  <span id="ai-scope-name" class="ai-scope-name">未选主机</span>
+                  <span id="ai-scope-status" class="ai-scope-status" hidden></span>
+                  <span class="ai-scope-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+                </button>
+                <!-- 执行模式:当 scope 非空时显示档位(手动确认/自动执行/完全托管);scope 为空时隐藏并显示「纯对话」 -->
+                <button id="ai-mode-trigger" class="ai-mode-trigger" type="button" title="选择执行模式" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-mode-menu" hidden>
+                  <span class="ai-mode-icon mi" data-icon="lock" aria-hidden="true"></span>
+                  <span id="ai-mode-name" class="ai-mode-name">手动确认</span>
+                  <!-- 窄档(T3/T4)只显示双字:独立 span,不改变 #ai-mode-name 的 textContent -->
+                  <span id="ai-mode-short" class="ai-mode-short" aria-hidden="true">手动</span>
+                  <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+                </button>
+                <span id="ai-chat-note" class="ai-chat-note">纯对话</span>
+                <span class="spacer"></span>
+                <!-- 上下文窗口指示器:微型环状仪表图标钮,悬停或点击展开详情卡片 -->
+                <button id="ai-context-trigger" class="ai-context-trigger" type="button" title="查看当前对话上下文窗口" aria-haspopup="dialog" aria-expanded="false" aria-controls="ai-context-popover">
+                  <span id="ai-context-ring" class="mon-ring ai-context-ring" aria-hidden="true">
+                    <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+                  </span>
+                </button>
+                <!-- 模型选择 -->
+                <button id="ai-model-trigger" class="ai-model-trigger" type="button" title="切换模型">
+                  <span id="ai-model-name">未启用模型</span>
+                  <span id="ai-model-effort" class="ai-model-effort hidden" aria-hidden="true"></span>
+                  <span class="ai-model-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
+                </button>
+                <!-- 发送/停止同钮双状态 -->
+                <button id="ai-send" class="btn primary ai-send" type="button" title="发送"></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 页签 2:实时主机监控与双层故障诊断卡(E3) -->
+        <div id="rp-monitor" class="rp-page" data-page="monitor" role="tabpanel" aria-labelledby="rp-tab-monitor">
+          <div class="rp-mon-body">
+            <!-- 当前会话概览头卡 -->
+            <div id="rp-mon-hero" class="rp-mon-hero">
+              <div class="rp-mon-hero-top">
+                <span id="rp-mon-status-dot" class="dot idle" aria-hidden="true"></span>
+                <span id="rp-mon-host" class="rp-mon-host">尚未建立连接</span>
+                <span id="rp-mon-state-pill" class="rp-mon-pill">未连接</span>
+              </div>
+              <div id="rp-mon-hero-sub" class="rp-mon-hero-sub hidden">
+                <span class="rp-mon-sub-lbl">往返延迟</span>
+                <span id="rp-mon-lat" class="rp-mon-lat">–</span>
+                <span class="spacer"></span>
+                <span id="rp-mon-addr" class="rp-mon-addr"></span>
+              </div>
+            </div>
+
+            <!-- 空态:未打开会话 / 连接中 -->
+            <div id="rp-mon-empty" class="rp-mon-empty">
+              <span class="rp-mon-empty-ico mi" data-icon="activity" aria-hidden="true"></span>
+              <div id="rp-mon-empty-title" class="rp-mon-empty-title">暂无实时监控数据</div>
+              <div id="rp-mon-empty-desc" class="rp-mon-empty-desc">从左侧主机列表连接任意 SSH 会话后，将自动展示 CPU、内存、磁盘、网络趋势与连接诊断。</div>
+            </div>
+
+            <!-- 双层连接诊断卡(断开 / 错误时自动呈现) -->
+            <section id="rp-diag-card" class="diag-card hidden" aria-label="连接诊断">
+              <div class="diag-top">
+                <div class="diag-head">
+                  <span class="diag-ico mi" data-icon="alert" aria-hidden="true"></span>
+                  <div class="diag-copy">
+                    <div id="rp-diag-summary" class="diag-summary">连接已断开</div>
+                    <div id="rp-diag-sub" class="diag-sub">检查网络连通性、端口或凭据，或交由 AI 排查。</div>
+                  </div>
+                </div>
+                <div class="diag-actions">
+                  <button id="rp-diag-reconnect" class="btn primary small" type="button"><span class="mi" data-icon="rotate"></span>立即重连</button>
+                  <button id="rp-diag-ai" class="btn small" type="button"><span class="mi" data-icon="sparkles"></span>用 AI 诊断</button>
+                </div>
+              </div>
+              <details id="rp-diag-details" class="diag-details">
+                <summary class="diag-summary-toggle">
+                  <span>技术诊断详情</span>
+                  <span class="diag-chev mi" data-icon="chevronDown" aria-hidden="true"></span>
+                </summary>
+                <div class="diag-detail-body">
+                  <div class="diag-kv"><span>目标主机</span><code id="rp-diag-target">–</code></div>
+                  <div class="diag-kv"><span>会话状态</span><code id="rp-diag-status">–</code></div>
+                  <div class="diag-raw-wrap">
+                    <div class="diag-raw-head">
+                      <span>原始错误信息</span>
+                      <button id="rp-diag-copy" class="btn small diag-copy-btn" type="button"><span class="mi" data-icon="copy"></span>复制诊断</button>
+                    </div>
+                    <pre id="rp-diag-raw" class="diag-raw">无额外错误输出</pre>
+                  </div>
+                </div>
+              </details>
+            </section>
+
+            <!-- 非 Linux/macOS 主机提示 -->
+            <div id="rp-mon-unsupported" class="rp-mon-note hidden">
+              <span class="mi" data-icon="info" aria-hidden="true"></span>
+              <span>该主机暂不支持系统资源采样（仅支持 Linux / macOS），上方往返延迟仍实时监测。</span>
+            </div>
+
+            <!-- 四张实时指标卡:CPU / 内存 / 磁盘 / 网络 I/O -->
+            <div id="rp-mon-cards" class="rp-mon-cards hidden">
+              <!-- CPU 卡片 -->
+              <section class="rp-mon-card">
+                <div class="rp-mon-card-head">
+                  <span class="rp-mon-card-title">CPU 使用率</span>
+                  <span id="rp-mon-cpu-val" class="rp-mon-card-val">–</span>
+                </div>
+                <svg class="rp-mon-svg" viewBox="0 0 260 64" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="rp-cpu-grad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.34" />
+                      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
+                    </linearGradient>
+                  </defs>
+                  <line class="mon-grid-line" x1="0" y1="16" x2="260" y2="16" />
+                  <line class="mon-grid-line" x1="0" y1="32" x2="260" y2="32" />
+                  <line class="mon-grid-line" x1="0" y1="48" x2="260" y2="48" />
+                  <path id="rp-mon-cpu-area" fill="url(#rp-cpu-grad)" d="" />
+                  <path id="rp-mon-cpu-line" class="rp-mon-line rp-mon-line-cpu" d="" />
+                  <circle id="rp-mon-cpu-pt" class="rp-mon-pt rp-mon-pt-cpu" cx="-10" cy="-10" r="3" />
+                </svg>
+                <div class="rp-mon-card-foot">
+                  <span>峰值 <strong id="rp-mon-cpu-max">–</strong></span>
+                  <span>均值 <strong id="rp-mon-cpu-avg">–</strong></span>
+                </div>
+              </section>
+
+              <!-- 内存卡片 -->
+              <section class="rp-mon-card">
+                <div class="rp-mon-card-head">
+                  <span class="rp-mon-card-title">内存占用</span>
+                  <span class="rp-mon-card-val-wrap">
+                    <span id="rp-mon-mem-val" class="rp-mon-card-val">–</span>
+                    <span id="rp-mon-mem-det" class="rp-mon-card-det"></span>
+                  </span>
+                </div>
+                <svg class="rp-mon-svg" viewBox="0 0 260 64" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="rp-mem-grad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="var(--mem-color)" stop-opacity="0.32" />
+                      <stop offset="100%" stop-color="var(--mem-color)" stop-opacity="0.02" />
+                    </linearGradient>
+                  </defs>
+                  <line class="mon-grid-line" x1="0" y1="16" x2="260" y2="16" />
+                  <line class="mon-grid-line" x1="0" y1="32" x2="260" y2="32" />
+                  <line class="mon-grid-line" x1="0" y1="48" x2="260" y2="48" />
+                  <path id="rp-mon-mem-area" fill="url(#rp-mem-grad)" d="" />
+                  <path id="rp-mon-mem-line" class="rp-mon-line rp-mon-line-mem" d="" />
+                  <circle id="rp-mon-mem-pt" class="rp-mon-pt rp-mon-pt-mem" cx="-10" cy="-10" r="3" />
+                </svg>
+                <div class="rp-mon-card-foot">
+                  <span>峰值 <strong id="rp-mon-mem-max">–</strong></span>
+                  <span>可用 <strong id="rp-mon-mem-avail">–</strong></span>
+                </div>
+              </section>
+
+              <!-- 磁盘卡片 -->
+              <section class="rp-mon-card rp-mon-card-compact">
+                <div class="rp-mon-card-head">
+                  <span class="rp-mon-card-title">根分区磁盘</span>
+                  <span class="rp-mon-card-val-wrap">
+                    <span id="rp-mon-disk-val" class="rp-mon-card-val">–</span>
+                    <span id="rp-mon-disk-det" class="rp-mon-card-det"></span>
+                  </span>
+                </div>
+                <div class="rp-mon-bar-track" aria-hidden="true">
+                  <div id="rp-mon-disk-fill" class="rp-mon-bar-fill"></div>
+                </div>
+                <div class="rp-mon-card-foot">
+                  <span>可用 <strong id="rp-mon-disk-avail">–</strong></span>
+                  <span>挂载 <strong>/</strong></span>
+                </div>
+              </section>
+
+              <!-- 网络流量卡片 -->
+              <section class="rp-mon-card">
+                <div class="rp-mon-card-head">
+                  <span class="rp-mon-card-title">网络吞吐</span>
+                  <span class="rp-mon-net-now">
+                    <span class="rp-net-rx">↓ <strong id="rp-mon-net-rx">–</strong></span>
+                    <span class="rp-net-tx">↑ <strong id="rp-mon-net-tx">–</strong></span>
+                  </span>
+                </div>
+                <svg class="rp-mon-svg" viewBox="0 0 260 64" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="rp-net-grad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="var(--net-rx-color)" stop-opacity="0.30" />
+                      <stop offset="100%" stop-color="var(--net-rx-color)" stop-opacity="0.02" />
+                    </linearGradient>
+                  </defs>
+                  <line class="mon-grid-line" x1="0" y1="16" x2="260" y2="16" />
+                  <line class="mon-grid-line" x1="0" y1="32" x2="260" y2="32" />
+                  <line class="mon-grid-line" x1="0" y1="48" x2="260" y2="48" />
+                  <path id="rp-mon-net-rx-area" fill="url(#rp-net-grad)" d="" />
+                  <path id="rp-mon-net-rx-line" class="rp-mon-line rp-mon-line-rx" d="" />
+                  <circle id="rp-mon-net-rx-pt" class="rp-mon-pt rp-mon-pt-rx" cx="-10" cy="-10" r="2.8" />
+                  <path id="rp-mon-net-tx-line" class="rp-mon-line rp-mon-line-tx" d="" />
+                  <circle id="rp-mon-net-tx-pt" class="rp-mon-pt rp-mon-pt-tx" cx="-10" cy="-10" r="2.5" />
+                </svg>
+                <div class="rp-mon-card-foot">
+                  <span>峰值 <span class="rp-net-rx">↓</span> <strong id="rp-mon-net-max-rx">–</strong> · <span class="rp-net-tx">↑</span> <strong id="rp-mon-net-max-tx">–</strong></span>
+                  <span id="rp-mon-net-scale">标尺 –</span>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </div>

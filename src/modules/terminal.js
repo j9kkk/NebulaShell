@@ -2349,6 +2349,11 @@ export function updateStatusbar(session, error = session?.lastError) {
   // 禁用原因写进 title,而不是让用户点了才知道为什么没反应。
   // 处理函数里的状态防御保持不变(禁用按钮本就点不动)。
   const setBtn = (btn, enabled, why) => { if (!btn) return; btn.disabled = !enabled; if (why) btn.title = why; };
+  const emitStatus = (s) => {
+    if (typeof document !== 'undefined' && typeof CustomEvent !== 'undefined') {
+      document.dispatchEvent?.(new CustomEvent('nebula:session-status', { detail: { session: s } }));
+    }
+  };
   if (!session) {
     bar?.classList?.add?.('session-idle');
     if (pulse?.dataset) pulse.dataset.state = 'idle';
@@ -2359,6 +2364,7 @@ export function updateStatusbar(session, error = session?.lastError) {
     logBadge?.classList?.add?.('hidden');
     logBadge?.classList?.remove?.('paused');
     roBadge?.classList?.add?.('hidden');
+    emitStatus(null);
     return;
   }
   bar?.classList?.remove?.('session-idle');
@@ -2396,6 +2402,8 @@ export function updateStatusbar(session, error = session?.lastError) {
           : 'disconnected';
   }
   if (connected) {
+    session._diagSummary = '';
+    session._diagRaw = '';
     if (dot) dot.className = 'dot connected';
     if (text) {
       text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 广播中' : '');
@@ -2404,6 +2412,8 @@ export function updateStatusbar(session, error = session?.lastError) {
     setBtn(btnRe, false, '已连接');
     setBtn(btnDis, true, '断开连接');
   } else if (connecting) {
+    session._diagSummary = '';
+    session._diagRaw = '';
     if (dot) dot.className = 'dot connecting';
     if (text) {
       text.textContent = `正在连接 ${label}…`;
@@ -2420,6 +2430,8 @@ export function updateStatusbar(session, error = session?.lastError) {
     // 手动断开没有"原因"可言,lastError 可能还是上一次失败的残留,一并隐去。
     // 摘要要拿未剥离的原文:指纹标记只在 strip 前认得出来。
     const summary = session.manualDisconnect ? '' : disconnectReasonSummary(error);
+    session._diagSummary = summary || (session.manualDisconnect ? '已手动断开连接' : '连接已断开');
+    session._diagRaw = session.manualDisconnect ? '' : (displayError || '');
     if (text) {
       text.textContent = `已断开 ${label}` + (summary ? ` · ${summary}` : '') + retry;
       // 完整原因留在这里:状态栏只有一行,英文原文动辄 480px,只能靠悬停读全。
@@ -2436,6 +2448,7 @@ export function updateStatusbar(session, error = session?.lastError) {
     setBtn(btnRe, true, '重连（也可按 Enter）');
     setBtn(btnDis, !!session.reconnectScheduled, session.reconnectScheduled ? '取消自动重连' : '连接已断开');
   }
+  emitStatus(session);
 }
 
 // 窗格内的就地状态横幅:状态栏只反映活动会话,分屏里非活动窗格断开时终端画面
