@@ -140,6 +140,7 @@
      (模型 chip 容器、模型下拉)也能引用同一把尺子。 */
   --ctl-h: 30px;
   --footer-h: 45px;
+  --sessionbar-h: 34px;
   /* 顶层标题栏(窗口级:logo、面板开关、一级菜单、拖拽区、窗口按钮) */
   --titlebar-h: 36px;
   /* 标签栏高度:#tabbar 与 AI 面板 .ai-header 共用,保证两者底部分隔线横向对齐
@@ -1133,50 +1134,109 @@ body.is-fullscreen #win-controls { display: none; }
 .cloud-banner-desc { font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; }
 .cloud-banner-btn { align-self: flex-start; margin-top: 2px; }
 
+/* E2 会话条(#statusbar 升格到 #tabbar 正下方，取代原 45px 全局底部状态栏):
+   空欢迎态自动收起到 0px，活动会话时展开为 34px 轻薄会话条，
+   仅保留状态 + 紧凑延迟/CPU 药丸 + 重连/断开/⋯ 更多，底缘由 2px #session-pulse 承接。 */
 #statusbar {
-  position: relative; /* 任务中心浮层(#file-task-popover)的定位锚 */
+  position: relative;
   display: flex; align-items: center; gap: 8px;
-  border-top: 1px solid var(--border-subtle);
-  border-radius: 0 0 var(--radius) var(--radius);
-  background: var(--panel);
-  padding: 8px 12px;
-  font-size: var(--fs-sm); color: var(--muted);
-  height: var(--footer-h); min-height: var(--footer-h); flex: none;
+  border-top: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--canvas) 22%, var(--panel));
+  padding: 0 12px;
+  font-size: var(--fs-xs); color: var(--muted);
+  height: var(--sessionbar-h); min-height: var(--sessionbar-h); flex: none;
   flex-wrap: nowrap;
-  /* 最后的兜底:窄到连"按钮本身"都放不下时允许横向滚动,
-     而不是把按钮裁掉 —— 用户要求行尾按钮不能被遮挡。
-     (overflow-x:hidden 会直接裁掉按钮,这就是之前 155px 溢出的表现。)
-     scrollbar 宽度设为 0:否则滚动条会占 9px 高度,把状态栏撑高、
-     进而挤动终端区 —— 而状态栏高度本该恒定。 */
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none;
-  /* 容器:给内嵌的 #monitor-bar 提供降级档位依据。宽度由 #main 决定、与内容无关,
-     因此档位不会随采样值跳动(挂在监控条自身会因尺寸隔离而塌成 0)。 */
   container-type: inline-size;
+  transition: height var(--dur-3) var(--ease-out-expo), min-height var(--dur-3) var(--ease-out-expo), opacity var(--dur-2) var(--ease-in-out);
+}
+#statusbar.session-idle {
+  height: 0; min-height: 0;
+  padding-top: 0; padding-bottom: 0;
+  border-bottom-width: 0;
+  opacity: 0; overflow: hidden; pointer-events: none;
 }
 #statusbar::-webkit-scrollbar { height: 0; }
-/* 收缩优先级(窄窗口下):状态文字(可省略号) → 监控块(可降级/收缩) → 按钮(永不收缩)。
-   "已连接 root@127.0.0.1:22" 实测占 160px 且原先是 flex-shrink:0,窄窗口下
-   会把行尾整排按钮推出状态栏 —— 这正是要避免的遮挡。min-width:0 是 flex 子项
-   真正能缩到 0 的前提(默认 min-width:auto 会拒绝收缩)。 */
-#statusbar > #status-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* 断开态的重连引导:与会话信息分属两个语义段,用强调色区分,且绝不收缩
-   (它就是要被看见的),收缩压力全部交给左侧状态文字去省略号。 */
+#statusbar > #status-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 500; }
 #statusbar > #status-hint { flex: 0 0 auto; color: var(--accent); font-weight: 500; white-space: nowrap; }
 #statusbar > #status-hint.hidden { display: none; }
-/* 窄窗口优先牺牲这条提示,而不是把行尾按钮挤出去(按钮永不收缩的既有契约)。
-   收起后仍可读状态文字里的原因,并有 ↻ 按钮的 title 兜底。 */
 @container (max-width: 620px) {
   #statusbar > #status-hint { display: none; }
 }
-#statusbar > .dot, #statusbar > .ro-badge { flex: 0 0 auto; }
+#statusbar > .dot, #statusbar > .ro-badge, #statusbar > .log-badge { flex: 0 0 auto; }
 #statusbar > .spacer { flex: 1 1 0; min-width: 0; }
 #statusbar > .btn { flex: 0 0 auto; }
-/* 会话日志录制中:状态点脉动的同款语言,图标变红呼吸;
-   已暂停(录制中但未连接)红色常亮,不呼吸。 */
+#statusbar #btn-file-tasks-status { display: none; }
+.session-cmd-proxies[hidden] { display: none; }
+.session-actions { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+#statusbar .session-act {
+  --ctl-h: 26px; width: 26px; height: 26px; padding: 0;
+  background: transparent; border-color: transparent;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-2) var(--ease-in-out), color var(--dur-2) var(--ease-in-out), transform var(--dur-1) var(--ease-out-expo);
+}
+#statusbar .session-act svg { width: 14px; height: 14px; transition: transform var(--dur-1) var(--ease-out-expo); }
+#statusbar .session-act:not(:disabled):hover {
+  background: var(--hover-bg); color: var(--text); border-color: transparent;
+  transition: background var(--dur-1) var(--ease-out-expo), color var(--dur-1) var(--ease-out-expo);
+}
+#statusbar .session-act:not(:disabled):hover svg { transform: scale(1.08); }
+#statusbar .session-act:not(:disabled):active { transform: scale(0.94); }
+#statusbar #btn-disconnect:not(:disabled):hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+/* 录制中实时徽标:仅在录制会话日志时浮现在会话条，点击即可停止 */
+.log-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 8px; border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger); font-size: var(--fs-2xs); font-weight: 500; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
+}
+.log-badge:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+.log-badge:active { transform: scale(0.96); }
+.log-badge.hidden { display: none; }
+.log-badge-dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: currentColor; animation: pulse 1.1s infinite; }
+.log-badge.paused {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  color: var(--warn);
+}
+.log-badge.paused .log-badge-dot { animation: none; }
+/* 会话条内监控精简:只显示延迟与 CPU 紧凑药丸,其余完整监控卡片进右侧抽屉(E3) */
+#statusbar.session-bar .mon-mem-item,
+#statusbar.session-bar .mon-disk-item,
+#statusbar.session-bar .mon-net-item,
+#statusbar.session-bar .mon-spark { display: none; }
+#statusbar.session-bar #monitor-bar { gap: 6px; margin-left: 6px; font-size: var(--fs-xs); }
+#statusbar.session-bar .mon-lat-item { padding-right: 0; border-right: 0; }
+#statusbar.session-bar .mon-lat-item .mon-item { height: 22px; padding: 0 8px; }
+#statusbar.session-bar .mon-deck {
+  height: 22px; padding: 0 8px; gap: 0;
+  border-radius: var(--radius-pill);
+}
+#statusbar.session-bar .mon-cpu-item { padding: 0 2px; margin: 0; gap: 5px; }
+/* 主区域底缘 2px 状态细线脉冲(E2):不占高度、不裁切 #term-stack 终端画布 */
+.session-pulse {
+  height: 2px; flex: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: transparent;
+  transition: background var(--dur-3) var(--ease-out-expo), opacity var(--dur-3) var(--ease-out-expo);
+}
+.session-pulse[data-state="connected"] { background: color-mix(in srgb, var(--accent2) 60%, transparent); }
+.session-pulse[data-state="connecting"] { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.session-pulse[data-state="recording"] { background: var(--danger); animation: pulse 1.1s ease-in-out infinite; }
+.session-pulse[data-state="disconnected"],
+.session-pulse[data-state="error"] { background: color-mix(in srgb, var(--danger) 55%, transparent); }
 #btn-log-toggle.recording { color: var(--danger); animation: pulse 1s infinite; }
 #btn-log-toggle.paused { color: var(--danger); }
-.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot { width: 8px; height: 8px; border-radius: var(--radius-pill); }
 .dot.idle { background: var(--muted); }
 .dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
 .dot.connected { background: var(--accent2); }
@@ -3729,14 +3789,10 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #mon-lat.lat-mid { color: var(--warn); }
 #mon-lat.lat-bad { color: var(--danger); }
 
-/* 主区变窄时按优先级收起次要项,而不是让定宽槽位互相挤压。
-   配合微型圆环与方案 C 走势卡片,净宽大幅缩短,在多面板下依然能完整展示关键指标。 */
-@container (max-width: 1400px) { #monitor-bar .mon-det { display: none; } }
-@container (max-width: 1160px) { #monitor-bar .mon-spark { display: none; } }
-@container (max-width: 1046px) { #monitor-bar .mon-disk-item { display: none; } }
-@container (max-width: 960px) { #monitor-bar .mon-ring { display: none; } }
-@container (max-width: 848px) { #monitor-bar .mon-cpu-item { display: none; } }
-@container (max-width: 756px) { #statusbar #monitor-bar { display: none; } }
+/* E2 紧凑会话条只留延迟 + CPU(~160px),容器断点同步下调,多面板同开仍能看到核心指标 */
+@container (max-width: 560px) { #monitor-bar .mon-ring { display: none; } }
+@container (max-width: 480px) { #monitor-bar .mon-cpu-item { display: none; } }
+@container (max-width: 400px) { #statusbar #monitor-bar { display: none; } }
 
 /* "暂不支持"是终态而非数值状态:整组隐藏,只留说明与延迟 */
 #monitor-bar.mon-unsupported .mon-group { display: none; }
@@ -4212,7 +4268,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   display: flex; position: absolute; left: calc(100% + 8px);
   top: calc(var(--tabbar-h) + 8px);
   width: var(--side-dock-w, 264px); max-width: calc(100vw - 64px);
-  height: auto; max-height: calc(100% - var(--tabbar-h) - var(--footer-h) - 16px);
+  height: auto; max-height: calc(100% - var(--tabbar-h) - 16px);
   flex: 0 1 auto; min-height: 0;
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
@@ -4230,7 +4286,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   position: absolute; left: 52px; top: calc(var(--tabbar-h) + 8px);
   z-index: 67; display: flex; flex-direction: column; width: 300px;
   max-width: calc(100vw - 68px);
-  max-height: calc(100% - var(--tabbar-h) - var(--footer-h) - 16px);
+  max-height: calc(100% - var(--tabbar-h) - 16px);
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   overflow: hidden; animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;

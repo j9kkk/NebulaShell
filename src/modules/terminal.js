@@ -2323,13 +2323,18 @@ export function isPrivateHost(host) {
 
 export function updateStatusbar(session, error = session?.lastError) {
   notifyTerminalStateChange();
+  const bar = $('#statusbar');
   const dot = $('#status-dot');
   const text = $('#status-text');
+  const pulse = $('#session-pulse');
   const btnRe = $('#btn-reconnect');
   const btnDis = $('#btn-disconnect');
+  const btnMore = $('#btn-session-more');
   const btnRo = $('#btn-readonly');
   const btnClear = $('#btn-clear');
   const btnLog = $('#btn-log-toggle');
+  const logBadge = $('#log-badge');
+  const logBadgeText = $('#log-badge-text');
   const roBadge = $('#ro-badge');
   const hint = $('#status-hint');
   // 断线提示默认收起,只有"断开"分支按需打开,免得各分支各写一遍显隐
@@ -2343,15 +2348,20 @@ export function updateStatusbar(session, error = session?.lastError) {
   // 三个会话按钮随状态出现/消失,都会让整排按钮左右跳动,热区不固定。
   // 禁用原因写进 title,而不是让用户点了才知道为什么没反应。
   // 处理函数里的状态防御保持不变(禁用按钮本就点不动)。
-  const setBtn = (btn, enabled, why) => { btn.disabled = !enabled; if (why) btn.title = why; };
+  const setBtn = (btn, enabled, why) => { if (!btn) return; btn.disabled = !enabled; if (why) btn.title = why; };
   if (!session) {
-    dot.className = 'dot idle';
-    text.textContent = '就绪 — 尚未建立连接';
-    text.title = '';
-    for (const b of [btnRe, btnDis, btnRo, btnClear, btnLog]) setBtn(b, false, '未建立连接');
-    roBadge.classList.add('hidden');
+    bar?.classList?.add?.('session-idle');
+    if (pulse?.dataset) pulse.dataset.state = 'idle';
+    if (dot) dot.className = 'dot idle';
+    if (text) { text.textContent = '就绪 — 尚未建立连接'; text.title = ''; }
+    for (const b of [btnRe, btnDis, btnMore, btnRo, btnClear, btnLog]) setBtn(b, false, '未建立连接');
+    btnLog?.classList?.remove?.('recording', 'paused');
+    logBadge?.classList?.add?.('hidden');
+    logBadge?.classList?.remove?.('paused');
+    roBadge?.classList?.add?.('hidden');
     return;
   }
+  bar?.classList?.remove?.('session-idle');
   const label = `${session.host.username}@${session.host.host}:${session.host.port}`;
   const connected = session.status === 'connected';
   const connecting = session.status === 'connecting';
@@ -2359,33 +2369,50 @@ export function updateStatusbar(session, error = session?.lastError) {
   const logPaused = !!session.logActive && !connected;
   const logName = String(session.logFile || '').replace(/\\/g, '/').split('/').pop();
   const logSize = session.logBytes ? `（${fmtSize(session.logBytes)}）` : '';
-  roBadge.classList.toggle('hidden', !session.readOnly);
+  const logTitle = session.logBusy ? '正在处理日志操作…'
+    : logOn ? `停止记录会话日志${logName ? ' · ' + logName : ''}${logSize}`
+    : logPaused ? '会话日志已暂停（未连接），重连后自动继续 · 点击停止'
+    : connected ? '开始记录会话日志' : '连接后才能记录会话日志';
+  roBadge?.classList?.toggle?.('hidden', !session.readOnly);
+  setBtn(btnMore, true, '更多会话操作（日志 / 清屏 / 只读 / 广播 / 诊断）');
   setBtn(btnRo, connected, connected ? (session.readOnly ? '关闭只读模式' : '只读模式,防止误触') : '连接后才可切换只读');
   setBtn(btnClear, connected, connected ? '清屏并清空回滚' : '连接后才可清屏');
   // 日志按钮:已连接可开始;录制中断开=已暂停(红点常亮),仍可点击停止
-  setBtn(btnLog, (connected || session.logActive) && !session.logBusy,
-    session.logBusy ? '正在处理日志操作…'
-    : logOn ? `停止记录会话日志${logName ? ' · ' + logName : ''}${logSize}`
-    : logPaused ? '会话日志已暂停（未连接），重连后自动继续 · 点击停止'
-    : connected ? '开始记录会话日志' : '连接后才能记录会话日志');
+  setBtn(btnLog, (connected || session.logActive) && !session.logBusy, logTitle);
   // 录制中用红色呼吸点表达(此前靠文字"⏺ 记录中"切换,图标化后移到颜色与 title 上);
   // 已暂停(录制中但未连接)红色常亮,不呼吸。
-  btnLog.classList.toggle('recording', logOn);
-  btnLog.classList.toggle('paused', logPaused);
+  btnLog?.classList?.toggle?.('recording', logOn);
+  btnLog?.classList?.toggle?.('paused', logPaused);
+  if (logBadge) {
+    logBadge.classList?.toggle?.('hidden', !session.logActive);
+    logBadge.classList?.toggle?.('paused', logPaused);
+    logBadge.title = logTitle;
+    if (logBadgeText) logBadgeText.textContent = logPaused ? '日志暂停' : '记录中';
+  }
+  if (pulse?.dataset) {
+    pulse.dataset.state = logOn ? 'recording'
+      : connected ? 'connected'
+        : connecting ? 'connecting'
+          : 'disconnected';
+  }
   if (connected) {
-    dot.className = 'dot connected';
-    text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 广播中' : '');
-    text.title = '';
+    if (dot) dot.className = 'dot connected';
+    if (text) {
+      text.textContent = `已连接 ${label}` + (state.broadcast && state.broadcast.has(session.sessionId) ? ' · 广播中' : '');
+      text.title = '';
+    }
     setBtn(btnRe, false, '已连接');
     setBtn(btnDis, true, '断开连接');
   } else if (connecting) {
-    dot.className = 'dot connecting';
-    text.textContent = `正在连接 ${label}…`;
-    text.title = '';
+    if (dot) dot.className = 'dot connecting';
+    if (text) {
+      text.textContent = `正在连接 ${label}…`;
+      text.title = '';
+    }
     setBtn(btnRe, false, '正在连接');
     setBtn(btnDis, true, '取消连接');
   } else {
-    dot.className = 'dot ' + session.status;
+    if (dot) dot.className = 'dot ' + session.status;
     const seconds = Math.max(0, Math.ceil(((session.reconnectDueAt || 0) - Date.now()) / 1000));
     const retry = session.reconnectScheduled ? ` · 自动重连 ${session.reconnectAttempt}/3（${seconds} 秒后）` : '';
     // Strip only at the display boundary; lastError retains fingerprint metadata for trust/retry logic.
@@ -2393,9 +2420,11 @@ export function updateStatusbar(session, error = session?.lastError) {
     // 手动断开没有"原因"可言,lastError 可能还是上一次失败的残留,一并隐去。
     // 摘要要拿未剥离的原文:指纹标记只在 strip 前认得出来。
     const summary = session.manualDisconnect ? '' : disconnectReasonSummary(error);
-    text.textContent = `已断开 ${label}` + (summary ? ` · ${summary}` : '') + retry;
-    // 完整原因留在这里:状态栏只有一行,英文原文动辄 480px,只能靠悬停读全。
-    text.title = displayError || '';
+    if (text) {
+      text.textContent = `已断开 ${label}` + (summary ? ` · ${summary}` : '') + retry;
+      // 完整原因留在这里:状态栏只有一行,英文原文动辄 480px,只能靠悬停读全。
+      text.title = displayError || '';
+    }
     // 横幅不再覆盖活动窗格,这条提示是用户唯一能看见的「怎么连回去」。
     // 自动重连排期时改成"立即重连",与横幅此前同一套语义。
     // 局域网目标被 macOS「本地网络」隐私闸门拦截时同样报 No route to host(见

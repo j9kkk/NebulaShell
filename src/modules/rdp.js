@@ -333,14 +333,19 @@ function stopNetStat(pane) {
 /// 于是窗格标题行说「已连接」、底部状态栏说「尚未建立连接」,同一屏自相矛盾。
 /// 这里按窗格自己的四态写状态栏,并只点亮远程桌面真正支持的两个动作(断开 / 重连)。
 export function updateRdpStatusbar(pane) {
+  const bar = $('#statusbar');
   const dot = $('#status-dot');
   const text = $('#status-text');
+  const pulse = $('#session-pulse');
   if (!dot || !text || !pane) return;
+  bar?.classList.remove('session-idle');
   const host = pane.host || {};
   const label = `${host.username ? `${host.username}@` : ''}${host.host || ''}:${host.port || 3389}`;
   const connected = pane.phase === 'connected';
   const busy = pane.phase === 'connecting' || pane.phase === 'cert';
-  dot.className = `dot ${connected ? 'connected' : busy ? 'connecting' : pane.phase === 'down' ? 'disconnected' : 'idle'}`;
+  const stateKey = connected ? 'connected' : busy ? 'connecting' : pane.phase === 'down' ? 'disconnected' : 'idle';
+  if (pulse) pulse.dataset.state = stateKey;
+  dot.className = `dot ${stateKey}`;
   text.textContent = connected ? `已连接 ${label} · RDP`
     : busy ? `正在连接 ${label} · RDP`
       : pane.phase === 'down' ? `已断开 ${label} · ${pane.reason || '远程桌面会话已结束'}`
@@ -354,9 +359,11 @@ export function updateRdpStatusbar(pane) {
   };
   setBtn('#btn-disconnect', connected || busy, connected ? '断开连接' : '取消连接');
   setBtn('#btn-reconnect', pane.phase === 'down' || pane.phase === 'idle', '重新连接远程桌面');
+  setBtn('#btn-session-more', true, '更多会话操作');
   setBtn('#btn-readonly', connected, connected ? (pane.readOnly ? '关闭只读模式' : '只读模式,防止误触') : '连接后才可切换只读');
   setBtn('#btn-clear', false, '远程桌面不支持清屏');
   setBtn('#btn-log-toggle', false, '远程桌面不支持会话日志');
+  $('#log-badge')?.classList.add('hidden');
   $('#ro-badge')?.classList.toggle('hidden', !pane.readOnly);
   $('#status-hint')?.classList.add('hidden');
 }

@@ -128,6 +128,63 @@
         <!-- 分屏与布局(分屏 / 文件分屏 / 整理 / 平铺 / 放大 / 关闭窗格)自 2026-11 起
              只在标签右键菜单的「分屏与布局 ▸」里;标签行不再放 ⛶ / ▾ 两颗常驻按钮。 -->
       </div>
+      <!-- E2 会话条(#statusbar 升格至 #tabbar 正下方):空欢迎态自动收起到 0px,
+           活动会话时展开为 34px 轻薄会话条,只保留延迟 + CPU 紧凑指标与重连/断开/⋯ 更多。 -->
+      <div id="statusbar" class="session-bar session-idle">
+        <span id="status-dot" class="dot idle"></span>
+        <span id="status-text">就绪 — 尚未建立连接</span>
+        <!-- 断开时的重连引导:活动窗格不再挂横幅后,这条提示是"怎么连回去"的唯一
+             可见入口(按 Enter 亦可)。窄窗口由容器查询收起,见 style.css。 -->
+        <span id="status-hint" class="status-hint hidden"></span>
+        <span id="ro-badge" class="ro-badge hidden">只读</span>
+        <button id="log-badge" class="log-badge hidden" type="button" data-command="session.log" title="会话日志记录中 — 点击停止"><i class="log-badge-dot" aria-hidden="true"></i><span id="log-badge-text">记录中</span></button>
+        <!-- 紧凑内联监控(E2):仅显示延迟 + CPU 胶囊,内存/磁盘/网络/趋势由右侧监控抽屉(E3)承接;
+             DOM 槽位保留以确保 monitor.js 与单测零回归。 -->
+        <span id="monitor-bar" class="hidden">
+          <span class="mon-group mon-lat-item"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
+          <span class="mon-deck">
+            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger" title="悬停查看 CPU 负载历史趋势">
+              <span id="mon-cpu-bar" class="mon-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
+              <span class="mon-cpu-hint" aria-hidden="true">▾</span>
+            </span>
+            <span class="mon-group mon-mem-item" id="mon-mem-trigger" title="悬停查看内存使用历史趋势">
+              <span id="mon-mem-bar" class="mon-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
+            </span>
+            <span class="mon-group mon-disk-item">
+              <span id="mon-disk-bar" class="mon-ring" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
+              </span>
+              <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
+            </span>
+            <span class="mon-group mon-net-item" id="mon-net-trigger" title="悬停查看网络吞吐历史趋势">
+              <span class="mon-item">网络 <i class="mon-dir mon-up">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir mon-down">↓</i><b id="mon-tx" class="mon-val">–</b></span>
+            </span>
+            <span id="mon-note" class="muted"></span>
+          </span>
+          <span class="mon-spark" id="mon-spark-cpu" aria-hidden="true"></span>
+        </span>
+        <span class="spacer"></span>
+        <!-- 传输任务状态按钮保留 DOM 契约(主入口已迁至左轨 #rail-transfers) -->
+        <button id="btn-file-tasks-status" class="btn small icon-tb hidden" title="传输任务"><span class="mi" data-icon="transfer"></span><span id="file-task-badge" class="fp-badge hidden">0</span></button>
+        <span class="session-actions">
+          <button id="btn-reconnect" class="btn small icon-tb session-act" disabled title="重连" aria-label="重连"><span class="mi" data-icon="rotate"></span></button>
+          <!-- U+23FB ⏻ 在 Windows 默认字体无字形(渲染为方框),故用内联 SVG -->
+          <button id="btn-disconnect" class="btn small icon-tb session-act" disabled title="断开连接" aria-label="断开连接"><span class="mi" data-icon="power"></span></button>
+          <button id="btn-session-more" class="btn small icon-tb session-act" type="button" disabled title="更多会话操作" aria-label="更多会话操作" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
+        </span>
+        <!-- 日志/清屏/只读迁入 ⋯ 更多菜单;保留隐藏命令代理维持既有测试/自动化选择器兼容 -->
+        <span class="session-cmd-proxies" hidden aria-hidden="true">
+          <button id="btn-log-toggle" class="btn small icon-tb" disabled tabindex="-1" title="记录会话日志到文件"><span class="mi" data-icon="circleDot"></span></button>
+          <button id="btn-clear" class="btn small icon-tb" disabled tabindex="-1" title="清屏并清空回滚"><span class="mi" data-icon="broom"></span></button>
+          <button id="btn-readonly" class="btn small icon-tb" disabled tabindex="-1" title="只读模式,防止误触"><span class="mi" data-icon="lock"></span></button>
+        </span>
+      </div>
       <div id="term-stack">
         <div id="welcome">
           <div class="launch-shell">
@@ -183,62 +240,7 @@
         <div id="layout-root"></div>
         <div id="workspace-layout-hint" class="workspace-layout-hint hidden" role="status" aria-live="polite"></div>
       </div>
-      <div id="statusbar">
-        <span id="status-dot" class="dot idle"></span>
-        <span id="status-text">就绪 — 尚未建立连接</span>
-        <!-- 断开时的重连引导:活动窗格不再挂横幅后,这条提示是"怎么连回去"的唯一
-             可见入口(按 Enter 亦可)。窄窗口由容器查询收起,见 style.css。 -->
-        <span id="status-hint" class="status-hint hidden"></span>
-        <span id="ro-badge" class="ro-badge hidden">只读</span>
-        <!-- 资源监控固定显示在状态栏:跟着"已连接 xxx@ip"一行。
-             每个指标一个 mon-group(组间距大、组内紧凑),数值槽定宽左对齐 ——
-             标签与数值的间距恒定,数据含义靠标签+分组区分。
-             自身可收缩(min-width:0),行尾按钮不可压缩,窄窗口下先裁监控而非挤掉按钮。 -->
-        <span id="monitor-bar" class="hidden">
-          <span class="mon-group mon-lat-item"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
-          <span class="mon-deck">
-            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger" title="悬停查看 CPU 负载历史趋势">
-              <span id="mon-cpu-bar" class="mon-ring" aria-hidden="true">
-                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
-              </span>
-              <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
-              <span class="mon-cpu-hint" aria-hidden="true">▾</span>
-            </span>
-            <span class="mon-group mon-mem-item" id="mon-mem-trigger" title="悬停查看内存使用历史趋势">
-              <span id="mon-mem-bar" class="mon-ring" aria-hidden="true">
-                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
-              </span>
-              <span class="mon-item">内存 <b id="mon-mem" class="mon-val">–</b><i id="mon-mem-det" class="mon-det"></i></span>
-            </span>
-            <span class="mon-group mon-disk-item">
-              <span id="mon-disk-bar" class="mon-ring" aria-hidden="true">
-                <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
-              </span>
-              <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
-            </span>
-            <span class="mon-group mon-net-item" id="mon-net-trigger" title="悬停查看网络吞吐历史趋势">
-              <span class="mon-item">网络 <i class="mon-dir mon-up">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir mon-down">↓</i><b id="mon-tx" class="mon-val">–</b></span>
-            </span>
-            <span id="mon-note" class="muted"></span>
-          </span>
-          <span class="mon-spark" id="mon-spark-cpu" aria-hidden="true"></span>
-        </span>
-        <span class="spacer"></span>
-        <!-- 传输任务中心(状态栏入口):文件分屏方案下任务与布局解耦,常驻在此 -->
-        <button id="btn-file-tasks-status" class="btn small icon-tb hidden" title="传输任务"><span class="mi" data-icon="transfer"></span><span id="file-task-badge" class="fp-badge hidden">0</span></button>
-        <!-- 状态栏按钮一律常驻(禁用态表达可用性,禁用原因写进 title),
-              不再随连接状态显隐 —— 此前"断开↔重连"互换会让整排按钮跳动。
-              图标化 + tooltip,给监控和状态文字让出宽度(收缩契约见 style.css)。 -->
-        <!-- 状态栏 = 当前会话的控制面(作用域法则:标题栏管窗口、标签行管标签、
-             状态栏管会话)。广播的开始/停止在标签右键菜单里(2026-11 从状态栏移回),
-             这里不再放广播按钮 —— 广播状态由顶部广播横幅表达。 -->
-        <button id="btn-log-toggle" class="btn small icon-tb" disabled title="记录会话日志到文件"><span class="mi" data-icon="circleDot"></span></button>
-        <button id="btn-clear" class="btn small icon-tb" disabled title="清屏并清空回滚"><span class="mi" data-icon="broom"></span></button>
-        <button id="btn-readonly" class="btn small icon-tb" disabled title="只读模式,防止误触"><span class="mi" data-icon="lock"></span></button>
-        <button id="btn-reconnect" class="btn small icon-tb" disabled title="重连"><span class="mi" data-icon="rotate"></span></button>
-        <!-- U+23FB ⏻ 在 Windows 默认字体无字形(渲染为方框),故用内联 SVG -->
-        <button id="btn-disconnect" class="btn small icon-tb" disabled title="断开连接"><span class="mi" data-icon="power"></span></button>
-      </div>
+      <div id="session-pulse" class="session-pulse" data-state="idle" aria-hidden="true"></div>
     </main>
 
     <!-- 右侧工具栏:AI 助手 / 命令历史 / 常用命令 三个页签(容器沿用 #ai-panel)。

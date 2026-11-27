@@ -99,6 +99,19 @@ function hostManageItems() {
   ];
 }
 
+/// E2 会话条「⋯」更多菜单:收拢会话日志 / 清屏 / 只读 + 广播与 AI 诊断,
+/// 会话条主面只留重连与断开,避免五颗灰按钮并排压迫终端区。
+function sessionMoreItems() {
+  return [
+    commandMenuItem('session.log'),
+    commandMenuItem('session.clear'),
+    commandMenuItem('session.readonly'),
+    '-',
+    commandMenuItem('tools.broadcast'),
+    commandMenuItem('session.diagnose'),
+  ];
+}
+
 export function bindContextMenu() {
   // 全局屏蔽原生菜单:oncontextmenu 返回 false 即阻止默认行为。
   // 文件列表行有自己的菜单(见 sftp.js openFileCtxMenu),那里 stopPropagation
@@ -1112,8 +1125,12 @@ export function bindEvents() {
       toast(`磁盘写入跟不上，会话日志丢失部分输出，已在日志里标注${st.name ? `（${st.name}）` : ''}`, 'warn');
     }
   });
-  // 会话日志按钮悬停:录制中时查一次后端,刷新已记录的大小(悬停提示)
-  $('#btn-log-toggle').addEventListener('mouseenter', () => {
+  // 会话条「⋯」更多菜单(E2:日志 / 清屏 / 只读 / 广播 / AI 诊断)
+  if ($('#btn-session-more')) {
+    bindMenuButton($('#btn-session-more'), sessionMoreItems, { label: '更多会话操作' });
+  }
+  // 会话日志按钮/录制徽标悬停:录制中时查一次后端,刷新已记录的大小(悬停提示)
+  const refreshLogHover = () => {
     const s = state.sessions.get(state.activeId);
     if (!s || !s.logActive || s.logBusy) return;
     api('log:status', { sessionId: s.sessionId }).then((r) => {
@@ -1122,7 +1139,9 @@ export function bindEvents() {
         if (state.activeId === s.sessionId) updateStatusbar(s);
       }
     }).catch(() => {});
-  });
+  };
+  $('#btn-log-toggle')?.addEventListener('mouseenter', refreshLogHover);
+  $('#log-badge')?.addEventListener('mouseenter', refreshLogHover);
   // 进度按归属路由:任务中心(taskId)+ 会话/目录匹配的视图状态栏,
   // 不再把 A 主机的进度覆盖到 B 的面板上。
   window.nebula.on('sftp:progress', routeProgress);
