@@ -18,13 +18,13 @@
        开关 → logo)由 CSS order 调整,HTML 只写一份。 -->
   <header id="titlebar" data-tauri-drag-region>
     <div class="tb-traffic" data-tauri-drag-region aria-hidden="true"></div>
-    <div class="tb-brand" data-tauri-drag-region="deep">
-      <span class="logo">✦ <span class="logo-text">NebulaShell</span></span>
+    <div class="tb-brand">
+      <!-- macOS: 静态可拖拽品牌字样(一级菜单走系统菜单栏) -->
+      <span class="logo tb-mac" data-tauri-drag-region="deep">✦ <span class="logo-text">NebulaShell</span></span>
+      <!-- Windows/Linux(E4): 菜单收拢进 Logo 点击下拉,释放顶栏视觉与拖拽空间 -->
+      <nav id="menubar" class="tb-pc" role="menubar" aria-label="主菜单"></nav>
     </div>
     <button id="btn-sidebar-toggle" class="tb-btn" type="button" aria-label="主机侧栏" data-title="主机侧栏(%1)" data-accel="panel.sidebar"><span class="mi" data-icon="panelLeft"></span></button>
-    <span class="tb-sep tb-pc" aria-hidden="true"></span>
-    <!-- 一级菜单(Windows/Linux):menubar.js 按 shared/menu-spec.js 渲染;macOS 用系统菜单栏 -->
-    <nav id="menubar" class="tb-pc" role="menubar" aria-label="主菜单"></nav>
     <div class="tb-drag" data-tauri-drag-region></div>
     <button id="btn-ai-toggle" class="tb-btn" type="button" aria-label="AI 助手" data-title="AI 助手(%1)" data-accel="panel.tools"><span class="mi" data-icon="panelRight"></span></button>
     <span class="tb-sep tb-pc" aria-hidden="true"></span>

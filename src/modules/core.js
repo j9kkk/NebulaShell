@@ -609,12 +609,12 @@ export function bindMenuKeyboard(menu, close, back = null) {
     if (next) { event.preventDefault(); event.stopPropagation(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
     if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); close(); }
     if (event.key === 'ArrowLeft' && back) { event.preventDefault(); event.stopPropagation(); back(); }
-    // → 展开二级(标签右键的「分屏与布局」):只在指针/焦点停在父项上时生效
+    // → 展开二级(标签右键的「分屏与布局」与非 macOS Logo 主菜单):只在焦点停在父项上时生效
     if (event.key === 'ArrowRight') {
       const parent = active?.closest?.('.ctx-parent');
       if (parent && !isMenuItemDisabled(parent) && parent._submenuItems) {
         event.preventDefault(); event.stopPropagation();
-        parent.dispatchEvent(new MouseEvent('mouseenter'));
+        openCtxSubmenu(parent, parent._submenuItems);
       }
     }
   }, true);
@@ -631,10 +631,11 @@ export function bindMenuKeyboard(menu, close, back = null) {
 /// restore === false:关闭但不挪焦点(按在菜单外、或开新菜单前先关旧的)。
 export function closeCtxMenu(restore = true) {
   const m = $('#ctx-menu');
+  const inSub = !!$('#ctx-sub')?.contains?.(document.activeElement);
   closeCtxSubmenu(false);
   if (!m || m.classList.contains('hidden')) return;
-  // 焦点掉到 body(点了分隔线、组标题)也算还在菜单上,关闭后照样还给打开前的位置
-  const focused = m.contains(document.activeElement) || document.activeElement === document.body;
+  // 焦点在主菜单、二级子菜单或掉到 body(点了分隔线、组标题)都算还在菜单上,关闭后还给打开前的位置
+  const focused = m.contains(document.activeElement) || inSub || document.activeElement === document.body;
   m.classList.add('hidden');
   const trigger = m._trigger;
   m._trigger = null;
@@ -668,10 +669,12 @@ export function closeCtxSubmenu(restore = true) {
   if (restore && parent?.isConnected) parent.focus();
 }
 
-function openCtxSubmenu(parent, items, fallbackFocus) {
+function openCtxSubmenu(parent, items, { focus = true } = {}) {
   const sub = ctxSubEl();
+  if (sub._parent && sub._parent !== parent) sub._parent.setAttribute('aria-expanded', 'false');
   sub._parent = parent;
   parent.setAttribute('aria-expanded', 'true');
+  sub.style.zIndex = String((Number($('#ctx-menu')?.style.zIndex) || 520) + 1);
   sub.innerHTML = '';
   // 开关项(标签平铺之类的 ✓)与一级同一套:只要有一项带 checked,所有项都留这一列,
   // 文字起点才对齐。
@@ -752,21 +755,30 @@ function openCtxSubmenu(parent, items, fallbackFocus) {
       if (item) showMenuReason(sub, item);
     });
   }
-  // 贴着父项右侧;右边放不下就翻到左侧
+  // 贴着父项右侧;右边放不下就翻到左侧。
+  // 用布局坐标(style.left/top + offsetWidth/offsetTop)而非 getBoundingClientRect(),
+  // 避免一级菜单 pop-in 动画(scale/translateY)尚未结束时算偏导致子菜单顶边错位。
+  const menu = $('#ctx-menu');
   const pr = parent.getBoundingClientRect();
-  const mr = $('#ctx-menu')?.getBoundingClientRect();
+  const mr = menu?.getBoundingClientRect();
   const sr = sub.getBoundingClientRect();
-  const preferred = (mr ? mr.right : pr.right) + 2;
+  const menuLeft = menu && menu.style.left ? parseFloat(menu.style.left) : (mr ? mr.left : pr.left);
+  const menuTop = menu && menu.style.top ? parseFloat(menu.style.top) : (mr ? mr.top : pr.top);
+  const menuRight = menu && menu.offsetWidth ? menuLeft + menu.offsetWidth : (mr ? mr.right : pr.right);
+  const preferred = menuRight + 3;
   const left = preferred + sr.width > window.innerWidth - 8
-    ? Math.max(8, (mr ? mr.left : pr.left) - sr.width - 2)
+    ? Math.max(8, menuLeft - sr.width - 3)
     : preferred;
-  // 与父项对齐的是「第一行的行首」,不是面板外沿:面板自带 6px 内边距(见 style.css),
-  // 若把面板顶边贴到父项顶边,第一行反而会低 6px,眼睛看到的是一排错位的字。
-  const padTop = 6;
-  const top = Math.max(8, Math.min(pr.top - padTop, window.innerHeight - sr.height - 8));
+  // 与父项对齐的是「第一行的行首」,不是面板外沿:一级与二级面板各有 1px border + 6px padding,
+  // 用 offsetTop 与 clientTop 计算,保证第 0 项与父菜单顶边严丝合缝对齐(永不侵入标题栏)。
+  const parentTop = menu && typeof parent.offsetTop === 'number' && menu.offsetHeight
+    ? menuTop + (menu.clientTop || 0) + parent.offsetTop - (menu.scrollTop || 0)
+    : pr.top;
+  const subPadTop = (sub.clientTop || 0) + 6;
+  const top = Math.max(8, Math.min(parentTop - subPadTop, window.innerHeight - sr.height - 8));
   sub.style.left = `${Math.round(left)}px`;
   sub.style.top = `${Math.round(top)}px`;
-  (sub.querySelector('button:not([aria-disabled="true"])') || sub.querySelector('button') || fallbackFocus)?.focus();
+  if (focus) (sub.querySelector('button:not([aria-disabled="true"])') || sub.querySelector('button'))?.focus();
 }
 
 /// 在 (x, y) 弹出右键菜单。items 元素形如
@@ -787,7 +799,7 @@ export function showCtxMenu(x, y, items, opts = {}) {
   menu._trigger = opts.trigger || null;
   menu.setAttribute('aria-label', opts.label || '上下文菜单');
   if (opts.trigger) opts.trigger.setAttribute('aria-expanded', 'true');
-  menu.style.zIndex = modal ? String(Number(modal.style.zIndex) + 1) : '100';
+  menu.style.zIndex = modal ? String(Math.max(520, Number(modal.style.zIndex) + 1)) : '520';
   if (!menu._keyboardBound) { bindMenuKeyboard(menu, closeCtxMenu); menu._keyboardBound = true; }
   menu.innerHTML = '';
   const hasChecks = items.some((it) => it && it !== '-' && it.checked !== undefined);
@@ -837,7 +849,12 @@ export function showCtxMenu(x, y, items, opts = {}) {
         if (btn.getAttribute('aria-expanded') === 'true') closeCtxSubmenu(true);
         else openCtxSubmenu(btn, it.submenu);
       };
-      btn.addEventListener('mouseenter', () => { if (!it.disabled && btn.getAttribute('aria-expanded') !== 'true') openCtxSubmenu(btn, it.submenu); });
+      btn.addEventListener('mouseenter', () => {
+        if (it.disabled) return;
+        // 指针悬停到别的父项时清掉前一项上残留的键盘焦点环,避免"焦点停在首项、展开在第三项"的割裂感
+        if (menu.contains(document.activeElement) && document.activeElement !== btn) document.activeElement.blur?.();
+        if (btn.getAttribute('aria-expanded') !== 'true') openCtxSubmenu(btn, it.submenu, { focus: false });
+      });
       btn.addEventListener('click', (event) => { event.stopPropagation(); toggle(); });
     } else {
       btn.addEventListener('click', () => {

@@ -826,7 +826,7 @@ test('context menu items expose data-command and a check column only when a togg
   core.closeCtxMenu();
 });
 
-// ---- Windows/Linux 菜单栏(menubar.js):标题栏一级菜单,下拉复用 #ctx-menu ----
+// ---- Windows/Linux 收拢式 Logo 主菜单(menubar.js, E4):顶栏单按钮展开六分类级联下拉 ----
 
 async function menubarSetup() {
   const h = await setup({ platform: 'windows', width: 1000, height: 700 });
@@ -840,89 +840,125 @@ async function menubarSetup() {
   h.commands.registerCommand('palette.open', { label: '命令面板', kind: 'dialog', run: () => { runs.push('palette.open'); } });
   h.commands.registerCommand('app.about', { label: '关于 NebulaShell', run: () => { runs.push('app.about'); } });
   assert.equal(h.menubar.buildMenubar(), true);
-  const titles = () => bar.querySelectorAll('.menubar-item');
-  const title = (text) => titles().find((t) => t.textContent === text);
-  const items = () => h.ctx.querySelectorAll('.ctx-item').map((b) => ({ label: b.querySelector('.ctx-label').textContent,
-    checked: b.getAttribute('aria-checked'), disabled: b.getAttribute('aria-disabled') === 'true', command: b.dataset.command || '' }));
+  const trigger = () => bar.querySelector('.menubar-trigger');
+  const rootItems = () => h.ctx.querySelectorAll('.ctx-item');
+  const rootParent = (text) => rootItems().find((b) => b.classList.contains('ctx-parent') && b.querySelector('.ctx-label')?.textContent === text);
+  const subEl = () => h.document.querySelector('#ctx-sub');
+  const subItems = () => (subEl()?.querySelectorAll('.ctx-item') || []).map((b) => ({
+    label: b.querySelector('.ctx-label').textContent,
+    checked: b.getAttribute('aria-checked'),
+    disabled: b.getAttribute('aria-disabled') === 'true',
+    command: b.dataset.command || '',
+  }));
   const isOpen = () => !h.ctx.classList.contains('hidden');
-  return { ...h, bar, terminal, title, titles, items, isOpen, runs, blockedRuns: () => blockedRuns };
+  const isSubOpen = () => !!subEl() && !subEl().classList.contains('hidden');
+  return { ...h, bar, terminal, trigger, rootItems, rootParent, subEl, subItems, isOpen, isSubOpen, runs, blockedRuns: () => blockedRuns };
 }
 
-test('menu bar renders the Windows/Linux titles only, and each menu lists registered commands with state', async () => {
+test('E4 logo menu renders a single Windows/Linux trigger with six cascading submenus and live command states', async () => {
   const h = await menubarSetup();
-  assert.deepEqual(h.titles().map((t) => t.textContent), ['文件', '编辑', '视图', '主机', '会话', '帮助']);
+  assert.equal(h.trigger().id, 'btn-app-menu');
   assert.equal(h.menubar.buildMenubar(), false, 'building twice is a no-op');
-  h.title('视图').click();
+  h.trigger().click();
   assert.equal(h.isOpen(), true);
-  assert.equal(h.title('视图').getAttribute('aria-expanded'), 'true');
-  const view = h.items();
-  // 未注册的命令(本测试只注册了少数几个)不出现;勾选态来自注册表
+  assert.equal(h.trigger().getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(
+    h.rootItems().filter((b) => b.classList.contains('ctx-parent')).map((b) => b.querySelector('.ctx-label').textContent),
+    ['文件', '编辑', '视图', '主机', '会话', '帮助'],
+  );
+  // 展开「视图」二级菜单:只列已注册命令并带勾选态
+  h.rootParent('视图').dispatchEvent(new DomEvent('mouseenter'));
+  assert.equal(h.isSubOpen(), true);
+  assert.equal(h.rootParent('视图').getAttribute('aria-expanded'), 'true');
+  const view = h.subItems();
   assert.deepEqual(view.map((i) => i.command), ['palette.open', 'panel.sidebar']);
   assert.equal(view.find((i) => i.command === 'panel.sidebar').checked, 'true');
-  h.title('编辑').click();
-  assert.deepEqual(h.items().map((i) => [i.label, i.disabled]), [['在终端中查找', true]], 'disabled items stay listed with their reason');
-  h.ctx.querySelector('.ctx-item').click();
+  // 悬停切到「编辑」:前一个父项 aria-expanded 复位,禁用项保留并不可执行
+  h.rootParent('编辑').dispatchEvent(new DomEvent('mouseenter'));
+  assert.equal(h.rootParent('视图').getAttribute('aria-expanded'), 'false');
+  assert.equal(h.rootParent('编辑').getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(h.subItems().map((i) => [i.label, i.disabled]), [['在终端中查找', true]], 'disabled items stay listed with their reason');
+  h.subEl().querySelector('.ctx-item').click();
   assert.equal(h.blockedRuns(), 0, 'an unavailable item cannot run');
-  // 帮助菜单:命令面板与注册表同名(菜单面按 asks 追加「…」),并带「关于」
-  h.title('帮助').click();
-  assert.deepEqual(h.items().map((i) => i.label), ['命令面板…', '关于 NebulaShell']);
+  // 展开「帮助」:命令面板按 asks 追加「…」,并带「关于」
+  h.rootParent('帮助').dispatchEvent(new DomEvent('mouseenter'));
+  assert.deepEqual(h.subItems().map((i) => i.label), ['命令面板…', '关于 NebulaShell']);
+  assert.equal(h.menubar.menubarSnapshot().mode, 'logo-dropdown');
   assert.deepEqual(plain(h.menubar.menubarSnapshot().titles.map((t) => t.text)), ['文件', '编辑', '视图', '主机', '会话', '帮助']);
 });
 
-test('menu bar: ←/→ and hover switch menus, Esc closes and returns focus to where the user was', async () => {
+test('E4 logo menu: →/←/Esc navigate cascading submenus and restore focus to terminal', async () => {
   const h = await menubarSetup();
   h.terminal.focus();
-  h.title('文件').dispatchEvent(new DomEvent('mousedown', { bubbles: true }));
-  h.title('文件').click();
+  h.trigger().dispatchEvent(new DomEvent('mousedown', { bubbles: true }));
+  h.trigger().click();
   assert.equal(h.isOpen(), true);
-  assert.equal(h.ctx._trigger, h.title('文件'));
+  assert.equal(h.ctx._trigger, h.trigger());
+  // 首项聚焦「文件」,→ 展开二级菜单,← 收回二级并焦点回「文件」
+  assert.equal(h.document.activeElement, h.rootParent('文件'));
   key(h.document.activeElement, 'ArrowRight');
-  assert.equal(h.ctx._trigger, h.title('编辑'), 'ArrowRight moves to the next menu');
-  key(h.document.activeElement, 'ArrowLeft'); key(h.document.activeElement, 'ArrowLeft');
-  assert.equal(h.ctx._trigger, h.title('帮助'), 'ArrowLeft wraps around');
-  h.title('视图').dispatchEvent(new DomEvent('mouseenter'));
-  assert.equal(h.ctx._trigger, h.title('视图'), 'hovering another title while open switches');
+  assert.equal(h.isSubOpen(), true);
+  assert.equal(h.rootParent('文件').getAttribute('aria-expanded'), 'true');
+  key(h.document.activeElement, 'ArrowLeft');
+  assert.equal(h.isSubOpen(), false);
+  assert.equal(h.document.activeElement, h.rootParent('文件'));
+  // Esc 关闭主菜单,焦点回到打开前的终端
   key(h.document.activeElement, 'Escape');
   assert.equal(h.isOpen(), false);
-  assert.equal(h.document.activeElement, h.terminal, 'focus goes back to the terminal, not to the title');
-  assert.equal(h.title('视图').getAttribute('aria-expanded'), 'false');
-  // 未打开时悬停不弹出
-  h.title('主机').dispatchEvent(new DomEvent('mouseenter'));
-  assert.equal(h.isOpen(), false);
+  assert.equal(h.document.activeElement, h.terminal, 'focus goes back to the terminal, not to the trigger');
+  assert.equal(h.trigger().getAttribute('aria-expanded'), 'false');
 });
 
-test('menu bar: clicking the open title closes it; an item restores focus before running; dialogs disable the titles', async () => {
+test('E4 logo menu: clicking open trigger closes it; submenu item restores focus before running; dialogs disable trigger', async () => {
   const h = await menubarSetup();
   let focusAtRun = null;
   h.commands.registerCommand('panel.tools', { label: '右侧工具栏', run: () => { focusAtRun = h.document.activeElement; } });
   h.terminal.focus();
-  h.title('视图').click();
+  h.trigger().click();
   assert.equal(h.isOpen(), true);
-  h.title('视图').click();
-  assert.equal(h.isOpen(), false, 'second click on the open title closes the menu (keyboard activation path)');
+  h.trigger().click();
+  assert.equal(h.isOpen(), false, 'second click on the open trigger closes the menu (keyboard activation path)');
   assert.equal(h.document.activeElement, h.terminal);
-  h.title('视图').click();
+  h.trigger().click();
   assert.equal(h.isOpen(), true, 'a keyboard re-activation right after closing reopens');
-  // 真实点击:全局 mousedown 先收起菜单,紧接着落在同一标题上的 click 不能把它再打开(300ms 窗口)
+  // 真实点击:全局 mousedown 先收起菜单,紧接着落在同一按钮上的 click 不能把它再打开(300ms 窗口)
   h.core.bindCtxMenuDismiss();
   const press = (el) => {
     h.window.dispatchEvent(new DomEvent('mousedown', { bubbles: true, target: el }));
     el.dispatchEvent(new DomEvent('mousedown', { bubbles: true }));
     el.click();
   };
-  press(h.title('视图'));
-  assert.equal(h.isOpen(), false, 'pressing the open title closes it');
-  press(h.title('视图'));
+  press(h.trigger());
+  assert.equal(h.isOpen(), false, 'pressing the open trigger closes it');
+  press(h.trigger());
   assert.equal(h.isOpen(), false, 'a click right after the closing press does not reopen');
   await new Promise((resolve) => setTimeout(resolve, 320));
-  h.title('视图').click();
-  h.ctx.querySelectorAll('.ctx-item').find((b) => b.dataset.command === 'panel.tools').click();
+  h.trigger().click();
+  h.rootParent('视图').dispatchEvent(new DomEvent('mouseenter'));
+  h.subEl().querySelectorAll('.ctx-item').find((b) => b.dataset.command === 'panel.tools').click();
   await flush();
-  assert.equal(focusAtRun, h.terminal, 'focus returns to the terminal before the command runs');
+  assert.equal(focusAtRun, h.terminal, 'focus returns to the terminal before the submenu command runs');
   h.core.openModal(h.confirm);
-  assert.equal(h.titles().every((t) => t.disabled), true, 'titles are disabled while a dialog is open');
+  assert.equal(h.trigger().disabled, true, 'logo menu trigger is disabled while a dialog is open');
   h.core.closeModal(h.confirm);
-  assert.equal(h.titles().some((t) => t.disabled), false);
+  assert.equal(h.trigger().disabled, false);
+});
+
+test('E4 logo menu: macOS skips DOM menubar (keeps native menu bar) and hover expands submenu without stealing keyboard focus', async () => {
+  const mac = await setup({ platform: 'darwin', width: 1000, height: 700 });
+  mac.document.body.classList.add('platform-darwin');
+  mac.add(mac.document.body, 'nav', 'menubar');
+  assert.equal(mac.menubar.buildMenubar(), false, 'macOS must not build DOM menubar');
+  assert.equal(mac.menubar.menubarSnapshot().built, false);
+
+  const h = await menubarSetup();
+  h.trigger().click();
+  h.rootParent('视图').dispatchEvent(new DomEvent('mouseenter'));
+  assert.equal(h.isSubOpen(), true);
+  assert.equal(h.subEl().contains(h.document.activeElement), false, 'pointer hover does not jump focus ring onto submenu first item');
+  h.rootParent('视图').focus();
+  key(h.document.activeElement, 'ArrowRight');
+  assert.equal(h.subEl().contains(h.document.activeElement), true, 'keyboard ArrowRight moves focus into submenu');
 });
 
 test('toast action button runs once and closes its toast; plain toasts have no button', async () => {
