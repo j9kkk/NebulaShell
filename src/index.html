@@ -37,15 +37,16 @@
     </div>
   </header>
   <div id="app">
-    <!-- 侧边栏：主机列表。收起态窄条 + 侧栏本体(展开态=常驻侧栏,收起后悬停=停靠卡片),
-         两态共用 .side-panel 同一份 DOM -->
+    <!-- 侧边栏：主机列表。展开态=常驻侧栏，收起态=左侧 44px 图标窄条。
+         两态共用 .side-panel 同一份 DOM；窄条上的「主机」图标是侧栏开关（与标题栏
+         开关、⌘B、把手双击同一条路径），不再另浮停靠卡。 -->
     <aside id="sidebar">
       <!-- E1 常驻 44px 全局图标轨：展开与收起态均常驻左缘。
            顶部模块入口（主机 / 常用命令 / 批量执行 / 命令历史 / 端口转发 → 活动会话），
            底部固定工具区（传输任务 / AI 助手 / 设置）。滑块指示器由 .side-rail::before 驱动。 -->
       <div class="side-rail" role="toolbar" aria-label="主导航">
         <span id="rail-hosts-tip" class="rail-tip rail-tip-host" data-tip="主机列表" role="presentation">
-          <button id="rail-hosts" class="btn icon rail-host-btn rail-on" type="button" aria-label="主机列表" aria-haspopup="dialog" aria-expanded="true"><span class="mi" data-icon="server"></span></button>
+          <button id="rail-hosts" class="btn icon rail-host-btn rail-on" type="button" aria-label="主机列表" aria-controls="sidebar" aria-expanded="true"><span class="mi" data-icon="server"></span></button>
         </span>
         <span class="rail-tip" data-tip="常用命令" role="presentation">
           <button id="rail-commands" class="btn icon" type="button" data-command="tools.snippets" aria-label="常用命令"><span class="mi" data-icon="zap"></span></button>
@@ -100,7 +101,8 @@
           <nav id="host-list"></nav>
         </div>
       </div>
-      <!-- 收起态的工具/会话浮层：与停靠卡片同一套位置与壳，同屏只存在一个 -->
+      <!-- 左轨「活动会话」轻量浮层：贴窄条定位，点会话切换、Esc/点外关闭；
+           左轨里唯一的浮层类入口（其余走 #rail-pop 之外的全功能弹窗/右侧面板） -->
       <div id="rail-pop" class="rail-pop" role="dialog" aria-modal="false" hidden></div>
     </aside>
     <div id="sidebar-resizer" class="resizer" title="拖动调整侧边栏宽度"></div>

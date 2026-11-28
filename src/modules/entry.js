@@ -9,7 +9,6 @@ import { addHostTag, clearHostPrivateKey, onHostSecretInput, openFingerprints, o
 import { bindHostLibrary, openHostLibrary } from './host-library.js';
 import { activeRdpPane, bindRdpEvents, disconnectRdpPane, reconnectRdpPane } from './rdp.js';
 import { openExportDialog, openImportDialog, setupTransfer } from './transfer.js';
-import { bindSidebarPeek, resetPeekOnToggle } from './sidebar-peek.js';
 import { bindRailCards, closeRailCard, refreshRailState } from './rail-cards.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
 import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, updateAiContextIndicator, updateModelEffortBadge } from './ai.js';
@@ -211,16 +210,13 @@ function toggleSidebar() {
   const collapsed = !sb.classList.contains('collapsed');
   if (collapsed) {
     expandedSidebarWidth = sb.getBoundingClientRect().width;
-    // 停靠卡片宽度取收起前的展开面板宽度（扣除常驻 44px 轨，夹在 240–360px）
-    sb.style.setProperty('--side-dock-w', Math.round(Math.min(360, Math.max(240, expandedSidebarWidth - 44))) + 'px');
     sb.style.width = '';
   } else if (expandedSidebarWidth) {
     sb.style.width = Math.min(Math.max(224, expandedSidebarWidth), window.innerWidth * 0.5) + 'px';
   }
   sb.classList.toggle('collapsed', collapsed);
   sb.classList.remove('hidden');
-  // 切换时清掉浮出态:否则展开态会带着 peek-open,收起后再悬停的判断也会错乱
-  resetPeekOnToggle();
+  // 侧栏收起/展开时活动会话浮层必须落掉:它贴在侧栏内部定位,留在屏上会悬空
   closeRailCard();
   refreshRailState();
   $('#sidebar-resizer').classList.toggle('hidden', collapsed);
@@ -546,7 +542,6 @@ export function bindEvents() {
     renderHosts();
     inp.focus();
   });
-  bindSidebarPeek();
   bindRailCards();
   $('#host-auth').addEventListener('change', toggleAuthRows);
 

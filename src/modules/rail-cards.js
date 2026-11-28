@@ -1,5 +1,7 @@
-// 左轨 44px 交互收口（M3 统一直达模型）：
-//   主机           → sidebar-peek.js（展开态切侧栏，收起态停靠卡）
+// 左轨 44px 交互收口（两个语义，互不越界）：
+//   主机           → 侧栏开关。与标题栏 #btn-sidebar-toggle / ⌘B / 把手双击走同一条
+//                   toggleSidebar 路径：展开态点=收起，收起态点=展开。左轨不再有自己的
+//                   第二语义（旧版收起态会浮一张 264px 停靠卡，同一图标两种壳）。
 //   常用命令/批量/历史/转发 → index.html data-command 直达对应全功能 Modal（消除双套实现）
 //   活动会话       → 本模块仅保留轻量 Popover（#rail-pop，点击切换已连接会话）
 // 同时维护左轨激活态滑块指示器（.side-rail::before）。
@@ -61,8 +63,7 @@ function setRailActive(onSession) {
   }
   const hostsBtn = document.getElementById('rail-hosts');
   if (hostsBtn) {
-    const sb = sidebar();
-    const hostsOn = !onSession && (!isCollapsed() || !!sb?.classList.contains('peek-open'));
+    const hostsOn = !onSession && !isCollapsed();
     hostsBtn.classList.toggle('rail-on', hostsOn);
     hostsBtn.setAttribute('aria-expanded', String(hostsOn));
   }
@@ -177,13 +178,14 @@ export function bindRailCards() {
   const sb = sidebar();
   if (!sb) return;
   bound = true;
+  // 主机按钮 = 侧栏开关，转发到标题栏那一个入口(#btn-sidebar-toggle → panel.sidebar
+  // → entry.js 的 toggleSidebar)。收起/展开的全部副作用只在 toggleSidebar 一处，
+  // 这里不复制任何显隐逻辑 —— 同一个图标永远只做"切换侧栏"这一件事。
+  document.getElementById('rail-hosts')?.addEventListener('click', () => {
+    document.getElementById('btn-sidebar-toggle')?.click();
+  });
   document.getElementById('rail-session-status')?.addEventListener('click', toggleSessionPop);
 
-  document.addEventListener('nebula:peek-open', () => {
-    if (sessionOpen) closeSessionPop();
-    const hb = document.getElementById('rail-hosts');
-    hb?.setAttribute('aria-expanded', 'true');
-  });
   document.addEventListener('nebula:state-change', () => {
     if (sessionOpen) {
       if (!connectedHostIds().size) { closeSessionPop(); return; }

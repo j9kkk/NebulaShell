@@ -4300,14 +4300,12 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 18px), transparent 100%);
 }
 
-/* ===== P1 批次新增 ===== */
-/* 收起态：40px 窄条。
-   内容自下而上只有两段：主机 / 常用命令 / 批量执行 → 分隔线 → 会话状态胶囊。
-   窄条里没有固定、展开与管理入口 —— 展开走标题栏开关或 ⌘B，点「主机」出停靠卡，
-   管理在展开态标题行的 ⋯ 里；空白处点按不做任何事。
-   卡片 = 展开态 .side-panel 同一份 DOM，从 tabbar 下方开始、止于状态栏上方，
-   height:auto；主机多时封顶后列表内部滚动。
-   约束：#sidebar 宽度 ≤44（e2e T63f），卡片 absolute 不参与文档流，静止时不渲染（T64）。 */
+/* 收起态：44px 窄条。
+   内容自下而上只有两段：主机 / 常用命令 / 批量执行 / 命令历史 / 端口转发 → 分隔线 → 会话状态胶囊。
+   窄条里不放固定与管理入口 —— 管理在展开态标题行的 ⋯ 里；空白处点按不做任何事。
+   点「主机」= 侧栏开关（展开态收起 / 收起态展开），与标题栏开关、⌘B、把手双击同一条
+   toggleSidebar 路径，不另浮停靠卡：同一个图标只有一种结果，永远不改变别的表面。
+   约束：#sidebar 宽度 ≤44（e2e T63f）。 */
 #sidebar.collapsed { width: 44px; min-width: 44px; max-width: 44px; overflow: visible; z-index: var(--z-drawer-overlay); }
 #sidebar.collapsed .side-rail {
   border-right-color: transparent;
@@ -4350,23 +4348,6 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 
 /* 未悬停时整个面板不渲染：零 rect，不参与布局与命中 */
 #sidebar.collapsed .side-panel { display: none; }
-/* 停靠卡片：贴窄条 8px（对齐浮岛缝隙），从内容区开始；高度随内容，max 为止于状态栏上方 */
-#sidebar.collapsed.peek-open .side-panel {
-  display: flex; position: absolute; left: calc(100% + 8px);
-  top: calc(var(--tabbar-h) + 8px);
-  width: var(--side-dock-w, 264px); max-width: calc(100vw - 64px);
-  height: auto; max-height: calc(100% - var(--tabbar-h) - 16px);
-  flex: 0 1 auto; min-height: 0;
-  background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-panel);
-  overflow: hidden;
-  animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;
-}
-@keyframes side-dock-in { from { opacity: 0; transform: translateX(-6px); } }
-/* 8px 缝隙的透明桥：属于 #sidebar 的伪元素，横向滑入卡片不会触发 pointerleave */
-#sidebar.collapsed.peek-open::after {
-  content: ''; position: absolute; left: 100%; top: 0; bottom: 0; width: 10px;
-}
 
 /* 左轨活动会话轻量浮层（常用命令与批量执行已统一为直达全功能弹窗，不再重复实现卡片） */
 #sidebar .rail-pop {
@@ -4376,8 +4357,9 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   max-height: calc(100% - var(--tabbar-h) - 16px);
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
-  overflow: hidden; animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;
+  overflow: hidden; animation: rail-pop-in var(--dur-2) var(--ease-out-expo) both;
 }
+@keyframes rail-pop-in { from { opacity: 0; transform: translateX(-6px); } }
 #sidebar .rail-pop[hidden] { display: none; }
 
 .rp-head { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border-subtle); }
