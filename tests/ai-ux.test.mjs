@@ -313,11 +313,20 @@ async function setup(handler, { confirm = async () => true, submit = null } = {}
       return thread.scope.map((id) => pool.get(id)).filter(Boolean);
     });
   }, { context });
+  const overlayPosMod = await load('../src/shared/overlay-position.js');
+  await overlayPosMod.link(() => {});
+  await overlayPosMod.evaluate();
+  const overlayMgrMod = await load('../src/modules/overlay-manager.js');
+  await overlayMgrMod.link(() => {});
+  await overlayMgrMod.evaluate();
+  const popoverMod = await load('../src/modules/popover.js');
+  await popoverMod.link((specifier) => ({ '../shared/overlay-position.js': overlayPosMod, './overlay-manager.js': overlayMgrMod }[specifier]));
+  await popoverMod.evaluate();
   const composerMod = await load('../src/modules/ai-composer.js');
-  await composerMod.link((specifier) => ({ './core.js': core }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
+  await composerMod.link((specifier) => ({ './core.js': core, './overlay-manager.js': overlayMgrMod }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
   await composerMod.evaluate();
   const module = await load('../src/modules/ai.js');
-  await module.link((specifier) => ({ './core.js': core, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-composer.js': composerMod, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning, '../shared/ai-compact.js': compact }[specifier]));
+  await module.link((specifier) => ({ './core.js': core, './overlay-manager.js': overlayMgrMod, './popover.js': popoverMod, './hosts.js': hosts, './terminal.js': terminal, './interaction.js': interaction, './ai-composer.js': composerMod, './ai-agent-run.js': agentRun, './ai-links.js': aiLinks, '../shared/icons.js': icons, '../shared/markdown.js': markdown, '../shared/ai-command-blocks.js': classification, '../shared/ai-presets.js': presets, '../shared/term-text.js': termText, '../shared/ai-target-state.js': targetState, '../shared/ai-context-reasoning.js': contextReasoning, '../shared/ai-compact.js': compact }[specifier]));
   await module.evaluate();
   const ai = module.namespace;
   ai.syncSelectedModelsFromSettings();
@@ -459,17 +468,17 @@ test('configured model restores trigger title and clears unset state', async () 
   assert.equal(trigger.disabled, false);
 });
 
-test('openModelMenu and openThreadMenu enforce mutual exclusivity by hiding peer menus', async () => {
+test('openModelMenu and openAiDrawer enforce mutual exclusivity via overlay-manager', async () => {
   const { ai, $ } = await setup();
   ai.syncSelectedModelsFromSettings();
 
   const modelMenu = $('#ai-model-menu');
   const modeMenu = $('#ai-mode-menu');
-  const threadMenu = $('#ai-thread-menu');
+  const drawer = $('#ai-drawer');
 
   modelMenu.classList.add('hidden');
   modeMenu.classList.add('hidden');
-  threadMenu.classList.add('hidden');
+  drawer.classList.add('hidden');
 
   // Mode menu is open, then openModelMenu is called
   modeMenu.classList.remove('hidden');
@@ -478,13 +487,11 @@ test('openModelMenu and openThreadMenu enforce mutual exclusivity by hiding peer
   ai.openModelMenu();
   assert.equal(modelMenu.classList.contains('hidden'), false, 'model menu opened');
   assert.equal(modeMenu.classList.contains('hidden'), true, 'mode menu hidden when model menu opens');
-  assert.equal(threadMenu.classList.contains('hidden'), true);
 
-  // Now thread menu is opened
-  ai.openThreadMenu();
-  assert.equal(threadMenu.classList.contains('hidden'), false, 'thread menu opened');
-  assert.equal(modelMenu.classList.contains('hidden'), true, 'model menu hidden when thread menu opens');
-  assert.equal(modeMenu.classList.contains('hidden'), true);
+  // Opening AI drawer automatically closes open model menu (same floating group)
+  ai.openAiDrawer();
+  assert.equal(drawer.classList.contains('hidden'), false, 'ai drawer opened');
+  assert.equal(modelMenu.classList.contains('hidden'), true, 'model menu hidden when drawer opens');
 });
 
 test('endpoint change save without new key emits clearApiKey; freshly typed key replaces it', async () => {
@@ -1009,11 +1016,11 @@ test('multi-thread lifecycle: create, derive title, switch, clear and delete', a
   t1.history.push({ role: 'user', content: 'first question' });
   t1.title = '排查 Nginx';
   ai.renderAiThreadBar();
-  assert.equal($('#ai-thread-title').textContent, '排查 Nginx');
+  assert.ok($('#ai-drawer-toggle').title.includes('排查 Nginx'));
 
   const t2 = ai.createAiThread({ title: 'MySQL 慢查询', hostId: 'h2', hostName: 'db-prod' });
   assert.equal(state.activeThreadId, t2.id);
-  assert.equal($('#ai-thread-title').textContent, 'MySQL 慢查询');
+  assert.ok($('#ai-drawer-toggle').title.includes('MySQL 慢查询'));
   assert.equal(t2.history.length, 0);
 
   ai.switchAiThread(t1.id);
@@ -1578,9 +1585,9 @@ test('unread status: background completion sets unread, switching back clears un
   const thB = ai.createAiThread({ title: 'Thread B' });
   assert.equal(state.activeThreadId, thB.id);
 
-  // Trigger should have .has-busy while A is running in background
+  // Drawer toggle should have .has-busy while A is running in background
   ai.refreshThreadUi();
-  assert.equal($('#ai-thread-trigger').classList.contains('has-busy'), true);
+  assert.equal($('#ai-drawer-toggle').classList.contains('has-busy'), true);
 
   // Thread A finishes in background
   reqA.acc = 'A done';
@@ -1588,15 +1595,15 @@ test('unread status: background completion sets unread, switching back clears un
   ai.aiFinishHolder({ requestId: reqA.id, finishReason: 'stop' });
   await pA;
 
-  // thA should be marked unread, trigger should have .has-unread and lose .has-busy
+  // thA should be marked unread, drawer toggle should have .has-unread and lose .has-busy
   assert.equal(thA.unread, true);
-  assert.equal($('#ai-thread-trigger').classList.contains('has-unread'), true);
-  assert.equal($('#ai-thread-trigger').classList.contains('has-busy'), false);
+  assert.equal($('#ai-drawer-toggle').classList.contains('has-unread'), true);
+  assert.equal($('#ai-drawer-toggle').classList.contains('has-busy'), false);
 
   // Switching back to thA clears unread
   ai.switchAiThread(thA.id);
   assert.equal(thA.unread, false);
-  assert.equal($('#ai-thread-trigger').classList.contains('has-unread'), false);
+  assert.equal($('#ai-drawer-toggle').classList.contains('has-unread'), false);
 });
 
 test('requestDeleteAiThread and requestClearAiThread prompt confirmation only for non-empty threads', async () => {
@@ -1642,103 +1649,6 @@ test('requestDeleteAiThread and requestClearAiThread prompt confirmation only fo
   await ai.requestClearAiThread();
   assert.equal(confirmations.length, 4);
   assert.equal(th1.history.length, 0);
-});
-
-test('renderThreadMenu retains focus or falls back to same position when focused thread was deleted', async () => {
-  const { ai, state, $ } = await setup();
-  const menu = $('#ai-thread-menu');
-  const list = $('#ai-thread-menu-list');
-  menu.appendChild(list);
-
-  // Setup DOM generation for list.innerHTML in this test
-  Object.defineProperty(list, 'innerHTML', {
-    set(html) {
-      this._html = html;
-      const ths = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      this.children = ths.map((th) => {
-        const row = new Element();
-        row.ownerDocument = menu.ownerDocument;
-        row.parentNode = this;
-        row.className = 'ai-thread-menu-row';
-        row.dataset.threadId = th.id;
-        const btn = new Element();
-        btn.ownerDocument = menu.ownerDocument;
-        btn.parentNode = row;
-        btn.className = 'ai-thread-menu-item';
-        btn.dataset.threadId = th.id;
-        row.appendChild(btn);
-        return row;
-      });
-    },
-    get() { return this._html; }
-  });
-
-  const t1 = ai.createAiThread({ title: 'T1' });
-  const t2 = ai.createAiThread({ title: 'T2' });
-  const t3 = ai.createAiThread({ title: 'T3' });
-
-  // 1. Initial render: 3 threads (t1, t2, t3)
-  ai.renderThreadMenu();
-  assert.equal(list.children.length, 3);
-
-  // 2. Focus on index 1 row's button
-  const targetBtn = list.children[1].children[0];
-  targetBtn.focus();
-  assert.equal(menu.ownerDocument.activeElement, targetBtn);
-
-  // 3. Delete that thread and re-render -> focus should stay on index 1 (new item at same position)
-  ai.deleteAiThread(targetBtn.dataset.threadId);
-  ai.renderThreadMenu();
-  assert.equal(menu.ownerDocument.activeElement, list.children[1].children[0]);
-});
-
-test('requestDeleteAiThread focuses trigger before askConfirm when menu is open', async () => {
-  let focusedBeforeConfirm = null;
-  const focusCalls = [];
-  const { ai, state, $ } = await setup(null, {
-    confirm: async () => {
-      focusedBeforeConfirm = $('#ai-thread-trigger').ownerDocument.activeElement;
-      return true;
-    },
-  });
-
-  const menu = $('#ai-thread-menu');
-  const trigger = $('#ai-thread-trigger');
-  const origTriggerFocus = trigger.focus.bind(trigger);
-  trigger.focus = () => {
-    focusCalls.push('trigger');
-    origTriggerFocus();
-  };
-
-  const th1 = ai.ensureDefaultAiThread();
-  const th2 = ai.createAiThread({ title: 'Non-empty' });
-  th2.history.push({ role: 'user', content: 'test message' });
-
-  // 1. Menu is open: deleting non-empty thread should focus trigger before confirm
-  menu.classList.remove('hidden');
-  const otherEl = new Element();
-  otherEl.ownerDocument = trigger.ownerDocument;
-  otherEl.focus();
-  assert.equal(trigger.ownerDocument.activeElement, otherEl);
-
-  await ai.requestDeleteAiThread(th2.id);
-
-  assert.equal(focusedBeforeConfirm, trigger);
-  assert.equal(focusCalls.includes('trigger'), true);
-  assert.equal(menu.classList.contains('hidden'), true);
-
-  // 2. Menu is closed: deleting another non-empty thread should not move focus to trigger
-  const th3 = ai.createAiThread({ title: 'Another non-empty' });
-  th3.history.push({ role: 'user', content: 'msg' });
-  menu.classList.add('hidden');
-  focusCalls.length = 0;
-  focusedBeforeConfirm = null;
-  otherEl.focus();
-
-  await ai.requestDeleteAiThread(th3.id);
-
-  assert.equal(focusedBeforeConfirm, otherEl);
-  assert.equal(focusCalls.length, 0);
 });
 
 test('ai drawer: open, close, toggle, keyword search, count badge and rename', async () => {
@@ -1798,11 +1708,11 @@ test('ai drawer: open, close, toggle, keyword search, count badge and rename', a
   assert.equal(th2.title, 'Nginx Reverse Proxy');
   assert.equal(th2.autoTitle, false);
 
-  // Active thread rename updates trigger title
+  // Active thread rename updates drawer toggle title tooltip
   ai.switchAiThread(th2.id);
-  assert.equal($('#ai-thread-title').textContent, 'Nginx Reverse Proxy');
+  assert.ok($('#ai-drawer-toggle').title.includes('Nginx Reverse Proxy'));
   await ai.renameAiThread(th2.id, 'Production Nginx');
-  assert.equal($('#ai-thread-title').textContent, 'Production Nginx');
+  assert.ok($('#ai-drawer-toggle').title.includes('Production Nginx'));
 
   // Close drawer
   ai.closeAiDrawer();

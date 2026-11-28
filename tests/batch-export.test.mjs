@@ -44,6 +44,7 @@ async function setup(invoke) {
       askConfirm() {}, closeModal() {}, copyText() {}, makeDraggable() {}, openModal() {},
     },
     './hosts.js': { escapeHtml: String },
+    './overlay-manager.js': { openOverlay() {}, closeOverlay() {} },
     './terminal.js': { feedTrusted: async () => ({ ok: true }) },
     // tools.js 引 monitor.js 的收藏助手(renderHistory 的 ★);导出链路用不到,给最小桩
     './monitor.js': { addSnippetFromCmd: async () => false, isSnippetCmd: () => false },

@@ -36,9 +36,9 @@
   --modal-backdrop: rgba(4, 8, 16, 0.65);
   --modal-backdrop-stack: rgba(4, 8, 16, 0.5);
   --modal-backdrop-palette: rgba(4, 8, 16, 0.45);
-  --card-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
-  --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  --floating-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --card-shadow: var(--shadow-panel);
+  --menu-shadow: var(--shadow-pop);
+  --floating-shadow: var(--shadow-sm);
   --scrollbar-thumb-hover: #2e3a52;
   --table-divider:  rgba(58, 70, 90, 0.72);
   --progress-track: rgba(128, 140, 160, 0.2);
@@ -77,13 +77,14 @@
   --cap-vision: #60a5fa;
   --cap-kind: #a78bfa;
   --cap-reasoning: #c084fc;
-  /* 阴影:按层级四档 + 内凹 + 状态光晕。层级别按数值近似分,否则下次又会冒出第五档 */
+  /* 阴影:全站浮层与卡片收敛为三档语义阶梯（--shadow-xs/-sm 供微控件，--shadow-pop 供浮层/菜单，--shadow-panel 供大抽屉/弹卡）；
+     历史别名 --menu-shadow / --shadow-popover / --shadow-overlay 全部指向统一阶梯，消除 6 档阴影混用。 */
   --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.25);        /* 控件内小件:开关滑块、滑杆拇指 */
-  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);        /* 悬浮小件:分段滑块 */
-  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);      /* 抽屉、提示浮层 */
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);        /* 悬浮小件:分段滑块、返回底部钮 */
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.48), 0 1px 2px rgba(0, 0, 0, 0.32); /* 菜单、锚定浮层、Tooltip */
   --shadow-island: 0 6px 24px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.045); /* 三栏浮岛外影 + 顶缘高光 + 发丝轮廓 */
-  --shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);  /* 侧面板/导航浮层 */
-  --shadow-popover: 0 10px 30px rgba(0, 0, 0, 0.55), 0 0 1px rgba(255, 255, 255, 0.1);  /* 监控小浮层 */
+  --shadow-panel: 0 20px 56px rgba(0, 0, 0, 0.52), 0 2px 10px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.04);  /* 模态卡片 / 浮动大抽屉 / 停靠浮层 */
+  --shadow-popover: var(--shadow-pop);
   --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.18);  /* 内凹轨道 */
   --ring-ok: 0 0 0 3px color-mix(in srgb, var(--accent2) 10%, transparent);
   --ring-danger: 0 0 0 3px color-mix(in srgb, var(--danger) 10%, transparent);
@@ -147,6 +148,32 @@
      (两列分属不同 flex 容器,只能靠同一把尺子对齐,不能用内容自然高度)。 */
   --tabbar-h: 36px;
 
+  /* ── 全局层叠阶梯（M2：单调递增，禁止组件写裸数字 z-index）────────────────
+     局部层(1..20) < 停靠面板(30) < 抽屉浮层(200) < 锚定浮层(300/310)
+     < 模态弹窗(400..480) < 顶栏(500) < 菜单(600/601)
+     < 提示(700) < 拖拽幽灵(800) < Toast(900) */
+  --z-base: 1;
+  --z-raised: 2;
+  --z-indicator: 3;
+  --z-local: 5;
+  --z-pane-mid: 6;
+  --z-pane-banner: 7;
+  --z-pane-top: 8;
+  --z-pane-overlay: 10;
+  --z-panel-drawer: 20;
+  --z-docked: 30;
+  --z-drawer-overlay: 200;
+  --z-popover: 300;
+  --z-popover-sub: 310;
+  --z-modal: 400;
+  --z-modal-stack: 420;
+  --z-titlebar: 500;
+  --z-menu: 600;
+  --z-menu-sub: 601;
+  --z-tooltip: 700;
+  --z-drag: 800;
+  --z-toast: 900;
+
   /* ── 动效语言(D0):四档时长 + 两曲线 + 一条只用于出现的弹簧 ───────────────
      组件层禁止写裸时长/裸缓动(由 lint:css 的 token-motion 守门)。
      --dur-fast / --dur / --ease 保留为语义别名指向新刻度,保证存量规则无缝继承。 */
@@ -199,9 +226,9 @@
   --modal-backdrop: rgba(31, 35, 40, 0.45);
   --modal-backdrop-stack: rgba(31, 35, 40, 0.35);
   --modal-backdrop-palette: rgba(31, 35, 40, 0.3);
-  --card-shadow: 0 18px 50px rgba(0, 0, 0, 0.15);
-  --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
-  --floating-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --card-shadow: var(--shadow-panel);
+  --menu-shadow: var(--shadow-pop);
+  --floating-shadow: var(--shadow-sm);
   --scrollbar-thumb-hover: #afb8c1;
   --table-divider:  rgba(31, 35, 40, 0.16);
   --progress-track: rgba(140, 150, 165, 0.25);
@@ -222,13 +249,13 @@
   --cap-vision: #60a5fa;
   --cap-kind: #a78bfa;
   --cap-reasoning: #c084fc;
-  --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.25);
-  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);
-  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-xs: 0 1px 3px rgba(31, 35, 40, 0.12);
+  --shadow-sm: 0 2px 8px rgba(31, 35, 40, 0.1);
+  --shadow-pop: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
   --shadow-island: 0 3px 12px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(15, 23, 42, 0.08);
-  --shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --shadow-popover: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
-  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+  --shadow-panel: 0 18px 48px rgba(31, 35, 40, 0.16), 0 2px 8px rgba(31, 35, 40, 0.08);
+  --shadow-popover: var(--shadow-pop);
+  --shadow-inset: inset 0 1px 2px rgba(31, 35, 40, 0.1);
   --ring-ok: 0 0 0 3px color-mix(in srgb, var(--accent2) 10%, transparent);
   --ring-danger: 0 0 0 3px color-mix(in srgb, var(--danger) 10%, transparent);
   --surface-inset: rgba(0, 0, 0, 0.08);
@@ -244,7 +271,7 @@
   /* B4 亮色差异层:这些值原先散落在组件段的 [data-theme="light"] 覆盖里 */
   --surface-hover-weak: rgba(0, 0, 0, 0.05);
   --ring-track: rgba(0, 0, 0, 0.08);
-  --shadow-overlay: 0 10px 30px rgba(31, 35, 40, 0.12), 0 1px 3px rgba(31, 35, 40, 0.08);
+  --shadow-overlay: var(--shadow-pop);
   --shadow-hairline: 0 1px 2px rgba(31, 35, 40, 0.04);
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(31, 35, 40, 0.25);
   --glow-accent: 0 0 4px rgba(9, 105, 218, 0.35);
@@ -272,15 +299,10 @@
 [data-theme="light"] .ai-context-popover { background: var(--bg2); }
 [data-theme="light"] .mon-deck { background: var(--bg2); border-color: var(--border); }
 [data-theme="light"] .mon-lat-item .mon-item { background: var(--bg2); border-color: var(--border); }
-[data-theme="light"] .mon-cpu-popover { background: var(--bg2); border-color: var(--border); }
 /* AI 上下文环的底槽:同一个 .mon-ring-bg 在监控里要跟 --progress-track 走,
    在触发钮里要跟 --ring-track 走,两条规则同特异性、后者位置更靠后 —— 
    所以亮色下必须显式压一次(暗色两值相同,压不压都一样)。 */
 [data-theme="light"] .ai-context-ring .mon-ring-bg { stroke: var(--ring-track); }
-[data-theme="light"] .mon-pop-chart { background: var(--panel); }
-[data-theme="light"] #mon-pop-point { stroke: var(--bg2); }
-[data-theme="light"] #mon-net-pop-rx-point,
-[data-theme="light"] #mon-net-pop-tx-point { stroke: var(--bg2); }
 
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -370,15 +392,16 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 body { display: flex; flex-direction: column; }
 #app {
   display: flex; flex: 1 1 auto; min-height: 0;
-  position: relative; z-index: 1;
+  position: relative;
   background: var(--canvas);
   padding: 4px 8px 8px;
+  gap: 8px;
 }
 
 /* 面板边界拖拽把手:落在两块浮岛之间的 8px 缝隙中央。
    热区覆盖整条 8px 缝隙,悬停/拖动时亮起一根 2px 居中强调竖条,不占布局宽度。 */
 .resizer {
-  flex: 0 0 auto; width: 0; position: relative; z-index: 5;
+  flex: 0 0 auto; width: 0; position: relative; z-index: var(--z-local);
   cursor: col-resize; touch-action: none; user-select: none;
 }
 .resizer::after {
@@ -414,10 +437,10 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   /* 允许常驻图标轨的 tooltip 与浮层向外溢出，内部 .side-panel 独立裁圆角 */
   overflow: visible;
   position: relative;
-  z-index: 30;
+  z-index: var(--z-docked);
   transition: width var(--dur-3) var(--ease-out-expo), min-width var(--dur-3) var(--ease-out-expo), max-width var(--dur-3) var(--ease-out-expo);
 }
-#sidebar.rail-pop-open { z-index: 66; }
+#sidebar.rail-pop-open { z-index: var(--z-drawer-overlay); }
 /* 侧栏头部：标题 26px 动作 + 28px 搜索；低频操作收进「⠇」，去掉与分组条之间冗余的双重横线。 */
 .side-header { flex: none; padding: 12px 12px 6px; }
 .side-title { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; height: 26px; min-width: 0; }
@@ -601,7 +624,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   opacity: var(--ind-o, 0);
   transform: translateY(var(--ind-y, 0px));
   pointer-events: none;
-  z-index: 3;
+  z-index: var(--z-indicator);
 }
 #host-list[data-ind="ready"]::before {
   transition: transform var(--dur-3) var(--ease-out-expo), height var(--dur-3) var(--ease-out-expo), opacity var(--dur-2) var(--ease-out-expo);
@@ -660,7 +683,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
 /* 行尾操作：24px 热区；渐隐只在悬停时出现，且与行底色同源（浅色主题不再黑带） */
 .host-actions {
   position: absolute; right: 4px; top: 4px; bottom: 4px;
-  display: flex; align-items: center; gap: 2px; padding-left: 20px; z-index: 2;
+  display: flex; align-items: center; gap: 2px; padding-left: 20px; z-index: var(--z-raised);
   opacity: 0; transform: translateX(4px);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   transition: opacity var(--dur-2) var(--ease-in-out), transform var(--dur-2) var(--ease-in-out);
@@ -738,7 +761,7 @@ body.resizing iframe, body.resizing xterm { pointer-events: none; }
   padding: 0 8px;
   gap: 8px;
   position: relative;
-  z-index: 64;
+  z-index: var(--z-docked);
   /* 标签是拖拽把手,标题文字不参与选区 */
   user-select: none; -webkit-user-select: none;
 }
@@ -769,7 +792,7 @@ body.tab-dragging #tabs::before {
 }
 .tab {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   display: flex; align-items: center; gap: 6px;
   padding: 4px 10px;
   background: transparent;
@@ -832,7 +855,7 @@ body.tab-dragging #tabs::before {
 .tab-ghost {
   position: fixed;
   pointer-events: none;
-  z-index: 10000;
+  z-index: var(--z-drag);
   color: var(--text) !important;
   background: linear-gradient(var(--drag-accent), var(--drag-accent)), var(--tab-active-bg) !important;
   border: 1px solid var(--accent);
@@ -890,7 +913,7 @@ body.tab-dragging #tabs::before {
    Windows/Linux(E4):Logo 下拉主菜单 → 侧栏开关 → 拖拽区 → 右侧栏开关 │ 窗口按钮。
    macOS:红绿灯占位 → 侧栏开关 → logo → 拖拽区 → 右侧栏开关(一级菜单在系统菜单栏)。 */
 #titlebar {
-  flex: none; position: relative; z-index: 500;
+  flex: none; position: relative; z-index: var(--z-titlebar);
   height: var(--titlebar-h);
   display: flex; align-items: center; gap: 2px;
   padding-left: 8px;
@@ -1296,7 +1319,7 @@ body.is-fullscreen #win-controls { display: none; }
    抽屉改为浮层滑入,不占用 flex 文档流,保护主终端可视宽度。 */
 body.rp-overlay #ai-resizer { display: none !important; }
 body.rp-overlay #ai-panel {
-  position: absolute; top: 4px; right: 8px; bottom: 8px; z-index: 65;
+  position: absolute; top: 4px; right: 8px; bottom: 8px; z-index: var(--z-drawer-overlay);
   width: 340px; min-width: 280px; max-width: calc(100vw - 56px);
   margin-left: 0;
   border: 1px solid var(--border);
@@ -1329,6 +1352,12 @@ body.rp-overlay #ai-panel.hidden > .rp-pages { transform: none; opacity: 1; }
 .rp-close-btn:hover { color: var(--text); }
 .ai-drawer-toggle { position: relative; }
 .ai-drawer-toggle.active { background: var(--active-bg); color: var(--accent); }
+.ai-drawer-toggle .ai-thread-dot {
+  display: none; position: absolute; top: 2px; left: 2px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); pointer-events: none;
+}
+.ai-drawer-toggle.has-busy .ai-thread-dot { display: block; animation: pulse 1s infinite; }
+.ai-drawer-toggle.has-unread .ai-thread-dot { display: block; }
 .ai-thread-count-badge {
   display: none; position: absolute; top: 0; right: 0;
   font-size: var(--fs-2xs); font-weight: 600; line-height: 12px;
@@ -1340,7 +1369,7 @@ body.rp-overlay #ai-panel.hidden > .rp-pages { transform: none; opacity: 1; }
 
 /* 会话管理抽屉(相对 #rp-ai 定位,覆盖 AI 页主体但不遮挡顶部页签栏) */
 .ai-drawer {
-  position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 20;
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: var(--z-panel-drawer);
   background: var(--panel); display: flex; flex-direction: column; overflow: hidden;
   box-shadow: var(--floating-shadow);
 }
@@ -1664,34 +1693,7 @@ body.rp-monitor-open #statusbar.session-bar .mon-deck {
 }
 body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-90deg); }
 /* (.ai-quick 快捷按钮区已移除:入口迁移至终端选区悬浮按钮与右键菜单,2026-10-08) */
-/* 会话控制栏:与 .rp-toolbar 同 26px 档位,在 AI 页内承载会话切换下拉 */
-.ai-thread-bar {
-  --ctl-h: 26px; flex: none;
-  display: flex; align-items: center; gap: 6px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.ai-thread-bar .spacer { flex: 1 1 0; min-width: 0; }
-.ai-thread-trigger {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 26px; padding: 0 8px;
-  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  color: var(--text); font-size: var(--fs-sm); font-family: inherit;
-  cursor: pointer; white-space: nowrap; min-width: 0; max-width: 100%;
-}
-.ai-thread-trigger:hover { border-color: var(--accent); }
-.ai-thread-dot {
-  display: none; width: 7px; height: 7px; border-radius: 50%; flex: none;
-}
-.ai-thread-trigger.has-busy .ai-thread-dot {
-  display: inline-block; background: var(--accent); animation: pulse 1s infinite;
-}
-.ai-thread-trigger.has-unread .ai-thread-dot {
-  display: inline-block; background: var(--accent);
-}
-.ai-thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-thread-caret { flex: none; display: inline-flex; color: var(--muted); }
-.ai-thread-caret svg { width: 12px; height: 12px; }
+/* (.ai-thread-bar / .ai-thread-menu 已在 M3 与 #ai-drawer 抽屉合并为单一对话管理入口) */
 .ai-thread-view { display: none; flex-direction: column; gap: 10px; }
 .ai-thread-view.active { display: flex; }
 .ai-thread-view.active:empty::before {
@@ -1699,21 +1701,6 @@ body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-9
   display: block; padding: 32px 16px 16px; text-align: center;
   font-size: var(--fs-sm); color: var(--muted); user-select: none;
 }
-.ai-thread-menu {
-  min-width: 240px; max-width: min(360px, calc(100vw - 16px));
-}
-.ai-thread-menu-row {
-  display: flex; align-items: center; gap: 4px; border-radius: var(--radius-sm);
-}
-.ai-thread-menu-row:is(:hover, :focus-within) { background: var(--surface-hover); }
-.ai-thread-menu-item {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
-  padding: 7px 8px; cursor: pointer; background: none; border: none;
-  font: inherit; font-size: var(--fs-sm); text-align: left; color: var(--text);
-  border-radius: var(--radius-sm);
-}
-.ai-thread-menu-row.active .ai-thread-menu-item,
-.ai-thread-menu-item[aria-checked="true"] { color: var(--accent); }
 
 /* 会话主机范围触发钮:位于输入框工具行(.ai-composer-tools)最左侧(F1)。
    文案 = 未选主机 / 主机名 / N 台;与终端标签窗口完全解耦。
@@ -1931,30 +1918,6 @@ body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-9
 .ai-drawer-badge.host .dot { flex: none; width: 6px; height: 6px; }
 .ai-drawer-badge.host .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ai-drawer-badge.chat { background: var(--surface-hover); color: var(--muted); }
-.ai-thread-menu-check {
-  flex: none; width: 14px; text-align: center; visibility: hidden;
-}
-.ai-thread-menu-row.active .ai-thread-menu-check,
-.ai-thread-menu-item[aria-checked="true"] .ai-thread-menu-check { visibility: visible; }
-.ai-thread-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-thread-menu-badge {
-  flex: none; font-size: var(--fs-xs); line-height: 1.2; color: var(--muted);
-  padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--radius-xs); white-space: nowrap;
-}
-.ai-thread-menu-row.busy .ai-thread-menu-badge,
-.ai-thread-menu-row.unread .ai-thread-menu-badge {
-  color: var(--accent); border-color: var(--accent);
-}
-.ai-thread-del {
-  flex: none; width: 24px; height: 24px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: none; border: none; border-radius: var(--radius-xs);
-  color: var(--muted); cursor: pointer;
-  opacity: 0; transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-.ai-thread-menu-row:is(:hover, :focus-within) .ai-thread-del,
-.ai-thread-del:focus-visible { opacity: 1; }
-.ai-thread-del:hover { background: var(--danger-hover-bg); color: var(--danger); }
 /* 消息区外壳:承载"回到底部"浮动按钮的定位上下文;flex:1/min-height:0 的
    尺寸职责从 #ai-messages 上移到这一层,滚动容器本身规则不变。 */
 .ai-messages-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -1966,7 +1929,7 @@ body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-9
 /* 选中内容悬浮「解释」按钮:终端出现选区时浮现在选区末字符后方(terminal.js 定位)。
    挂 body、fixed 定位;z-index 与模型菜单同档(局部浮层,远低于弹窗)。 */
 .ai-explain-bubble {
-  position: fixed; z-index: 70;
+  position: fixed; z-index: var(--z-popover);
   width: 26px; height: 26px; padding: 0;
   display: none; align-items: center; justify-content: center;
   font-size: var(--fs-md); line-height: 1;
@@ -1981,7 +1944,7 @@ body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-9
    局部浮层,z-index 与 .ai-code-menu-items 同档,远低于弹窗(50+)。
    定位相对 .ai-messages-wrap:其底边就是 composer 顶边,与 composer 高度解耦。 */
 .ai-scroll-bottom {
-  position: absolute; right: 14px; bottom: 14px; z-index: 10;
+  position: absolute; right: 14px; bottom: 14px; z-index: var(--z-pane-overlay);
   width: 28px; height: 28px; padding: 0;
   font-family: inherit; font-size: var(--fs-lg); line-height: 1;
   color: var(--text); background: var(--panel);
@@ -2160,7 +2123,7 @@ body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-9
 .ai-code-menu { position: relative; }
 .ai-code-menu summary { list-style: none; }
 .ai-code-menu summary::-webkit-details-marker { display: none; }
-.ai-code-menu-items { position: absolute; top: calc(100% + 4px); right: 0; z-index: 10; padding: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--floating-shadow); }
+.ai-code-menu-items { position: absolute; top: calc(100% + 4px); right: 0; z-index: var(--z-pane-overlay); padding: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--floating-shadow); }
 .ai-code-menu-items button { display: block; width: 100%; padding: 3px 8px; }
 .ai-body .ai-code-block pre { margin: 0; border: none; border-radius: 0 0 var(--radius-sm) var(--radius-sm); white-space: pre; word-break: normal; }
 .ai-body a { color: var(--accent); }
@@ -2249,7 +2212,7 @@ body.rp-monitor-open #statusbar.session-bar .mon-cpu-hint { transform: rotate(-9
 .ai-chip-warn-act:hover { background: var(--hover-bg); }
 /* @ 候选浮层(F9/A2/A3):紧贴 .ai-composer 顶部向上展开 */
 .ai-mention-pop {
-  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 40;
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: var(--z-panel-drawer);
   background: var(--bg2); border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--menu-shadow); padding: 4px;
@@ -2726,7 +2689,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 
 /* 上下文窗口详情卡片 (挂在 body, fixed 定位在触发钮上方) */
 .ai-context-popover {
-  position: fixed; z-index: 70;
+  position: fixed; z-index: var(--z-popover);
   width: 270px;
   background: var(--panel);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -2847,7 +2810,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .ai-model-caret svg { width: 12px; height: 12px; }
 /* 模型菜单浮层:锚定在触发钮上方,z 与 .ai-code-menu-items 同档(局部浮层) */
 .ai-model-menu {
-  position: fixed; z-index: 70;
+  position: fixed; z-index: var(--z-popover);
   min-width: 220px; max-height: 300px; overflow-y: auto;
   padding: 4px; background: var(--panel);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -2895,7 +2858,7 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .ai-mode-help:hover, .ai-mode-help:focus-visible { background: var(--surface-hover); color: var(--text); }
 /* 帮助浮层:与菜单同底座,z 高于菜单(70);图标 + 标题/说明两级字号表达层级 */
 .ai-mode-help-pop {
-  position: fixed; z-index: 75; width: 300px; max-width: calc(100vw - 16px);
+  position: fixed; z-index: var(--z-popover-sub); width: 300px; max-width: calc(100vw - 16px);
   padding: 12px 14px; background: var(--panel); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--menu-shadow);
   font-size: var(--fs-sm); line-height: 1.5;
@@ -3035,17 +2998,17 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .btn.primary, .model-chip.active { --focus-ring: color-mix(in srgb, var(--accent) 40%, #fff); }
 .btn.danger { --focus-ring: color-mix(in srgb, var(--danger) 40%, #fff); }
 
-/* 弹窗 */
+/* 弹窗: 顶部留出标题栏高度，确保即使弹窗触顶也不会紧贴或被顶栏压住顶部圆角 */
 .modal {
   position: fixed; inset: 0;
+  padding: calc(var(--titlebar-h) + 12px) 20px 20px;
   background: var(--modal-backdrop);
   display: flex; align-items: center; justify-content: center;
-  z-index: 50;
+  z-index: var(--z-modal);
 }
 .modal-card {
-  width: 520px; max-width: calc(100vw - 40px);
-  max-height: calc(100vh - 60px);
-  max-height: calc(100dvh - 60px);
+  width: 520px; max-width: 100%;
+  max-height: 100%;
   min-width: 0; min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -3057,8 +3020,10 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 }
 .modal-card.wide { width: 780px; }
 .modal-card h3 { margin-bottom: 14px; }
-.modal-head { display: flex; align-items: center; margin-bottom: 12px; }
+.modal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
 .modal-head h3 { margin-bottom: 0; }
+.modal-head .spacer { flex: 1; }
+.about-card .about-head { margin-bottom: -6px; }
 .modal-toolbar { --ctl-h: 28px; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .modal-toolbar .inp { flex: 1; min-width: 0; height: var(--ctl-h); box-sizing: border-box; }
 .modal-toolbar .btn { height: var(--ctl-h); box-sizing: border-box; }
@@ -3350,30 +3315,16 @@ textarea.ai-confirm-cmd:hover { border-color: var(--border); }
 .dir-field .dir-pick:hover { color: var(--text); background: var(--hover-bg); }
 .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 18px; align-items: center; }
 .modal-actions > .btn { flex: none; }
-/* 原生 <dialog> 冲突框(上传与跨主机复制共用 .upload-conflict):
-   全局 reset 抹掉了 UA 的 margin:auto,必须自己居中;canvas 底色也要
-   显式覆盖成主题色。卡片观感对齐 .modal-foot 的行对齐 .modal-actions。 */
-dialog.upload-conflict {
-  position: fixed; inset: 0; margin: auto;
-  width: 520px; max-width: calc(100vw - 40px);
-  max-height: calc(100dvh - 60px);
-  overflow: auto;
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-  box-shadow: var(--card-shadow);
+/* 文件冲突弹窗(上传与跨主机复制共用 askConflict，走标准 .modal 队列，绝不进 Top Layer 挡住 Toast) */
+.modal-card.conflict-card .conflict-msg {
+  margin-bottom: 12px; line-height: 1.6; overflow-wrap: anywhere; color: var(--text);
 }
-dialog.upload-conflict::backdrop { background: var(--modal-backdrop); }
-dialog.upload-conflict h3 { margin-bottom: 14px; }
-dialog.upload-conflict p { margin-bottom: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-dialog.upload-conflict .switch { margin: 12px 0 6px; }
-dialog.upload-conflict .modal-foot {
+.modal-card.conflict-card .conflict-apply-all { margin: 12px 0 6px; }
+.modal-card.conflict-card .modal-foot {
   display: flex; flex-wrap: wrap; justify-content: flex-end;
   gap: 10px; margin-top: 18px;
 }
-dialog.upload-conflict .modal-foot > .btn { flex: none; }
+.modal-card.conflict-card .modal-foot > .btn { flex: none; }
 /* "模型"一栏:chip 列表 + 拉取按钮。chips 换行平铺、高度随内容自适应,
    便于一眼看全已启用模型;极多时 max-height 封顶转内部纵向滚动,避免撑爆弹窗。 */
 .model-row { display: flex; gap: 8px; align-items: center; }
@@ -3496,7 +3447,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 
 /* 跳板机下拉选择浮层 */
 .jump-menu {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50;
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: var(--z-pane-overlay);
   max-height: 180px; overflow-y: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: var(--menu-shadow); padding: 4px;
@@ -3544,7 +3495,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .segmented-item {
   flex: 1;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3614,7 +3565,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 
 /* 标签下拉选择浮层 */
 .tag-menu {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50;
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: var(--z-pane-overlay);
   max-height: 180px; overflow-y: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: var(--menu-shadow); padding: 4px;
@@ -3642,7 +3593,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .small-note { margin-top: 12px; font-size: var(--fs-sm); line-height: 1.6; color: var(--muted); }
 
 /* 模型选择弹框:叠在 AI 设置之上,所以抬高 z-index(普通弹窗是 50) */
-.modal.modal-stack { z-index: 60; background: var(--modal-backdrop-stack); }
+.modal.modal-stack { z-index: var(--z-modal-stack); background: var(--modal-backdrop-stack); }
 .picker-card { width: 500px; display: flex; flex-direction: column; }
 .picker-sub { margin: -6px 0 4px; }
 .picker-count { margin-top: 0; }
@@ -3756,7 +3707,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 .about-name { margin-bottom: 4px; }
 .about-tag { font-size: var(--fs-sm); margin-bottom: 14px; }
 .about-grid {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; align-items: center;
   text-align: left; font-size: var(--fs-md);
   padding: 12px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
@@ -4049,123 +4000,9 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #monitor-bar.mon-unsupported .mon-lat-item { display: inline-flex; }
 #monitor-bar.mon-unsupported .mon-spark { display: none; }
 #mon-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-
-/* 方案 C：CPU 历史走势卡片(浮动在状态栏上方) */
-.mon-cpu-popover {
-  position: fixed;
-  width: 270px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px 10px;
-  box-shadow: var(--shadow-popover);
-  z-index: 9500;
-  font-size: var(--fs-xs);
-  color: var(--text);
-  pointer-events: auto;
-  backdrop-filter: blur(8px);
-}
-.mon-cpu-popover.hidden { display: none; }
-.mon-pop-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
-}
-.mon-pop-title {
-  font-size: var(--fs-xs); font-weight: 600; color: var(--text);
-  display: flex; align-items: center; gap: 6px;
-}
-.mon-pop-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--accent);
-  box-shadow: var(--glow-accent);
-}
-.mon-pop-cur {
-  font-size: var(--fs-md); font-weight: 700; font-variant-numeric: tabular-nums;
-  color: var(--accent);
-}
-.mon-pop-chart {
-  width: 100%; height: 60px;
-  background: var(--surface-sunken-deep);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 2px 4px;
-  overflow: hidden;
-}
-.mon-pop-chart svg { width: 100%; height: 100%; display: block; }
-.mon-pop-grid {
-  stroke: var(--chart-grid); stroke-width: 1; stroke-dasharray: 2 3;
-}
-.mon-pop-axis {
-  display: flex; justify-content: space-between;
-  font-size: var(--fs-2xs); color: var(--muted);
-  margin-top: 4px; margin-bottom: 8px;
-}
-.mon-pop-stats {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--table-divider);
-}
-.mon-pop-stat { display: flex; flex-direction: column; gap: 2px; }
-.mon-pop-stat-k { font-size: var(--fs-2xs); color: var(--muted); }
-.mon-pop-stat-v {
-  font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-.mon-pop-stat-v.warn { color: var(--warn); }
-
-#mon-pop-line { stroke: var(--accent); }
-#mon-pop-point { fill: var(--accent); stroke: var(--bg2); }
+/* (.mon-cpu-popover 已在 M3 移除，点击延迟/CPU 胶囊直达右侧监控抽屉) */
 #mon-cpu-grad stop:first-child { stop-color: var(--accent); }
 #mon-cpu-grad stop:last-child { stop-color: var(--accent); }
-
-/* 内存走势卡片样式 */
-.mon-mem-dot {
-  background: var(--mem-color) !important;
-  box-shadow: var(--glow-mem) !important;
-}
-.mon-mem-cur {
-  color: var(--mem-color) !important;
-}
-#mon-mem-pop-line { stroke: var(--mem-color); }
-#mon-mem-pop-point { fill: var(--mem-color); stroke: var(--bg2); }
-#mon-mem-grad stop:first-child { stop-color: var(--mem-color); }
-#mon-mem-grad stop:last-child { stop-color: var(--mem-color); }
-
-/* 网络吞吐双向走势卡片样式（色值定义见 :root 的网络段） */
-.mon-net-dot {
-  background: var(--net-tx-color) !important;
-  box-shadow: var(--glow-net) !important;
-}
-.net-legends {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: var(--fs-2xs);
-}
-.net-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted);
-}
-.net-leg-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-.net-leg-rx { background: var(--net-rx-color); }
-.net-leg-tx { background: var(--net-tx-color); }
-
-#mon-net-pop-rx-line { stroke: var(--net-rx-color); }
-#mon-net-pop-rx-point { fill: var(--net-rx-color); stroke: var(--bg2); }
-#mon-rx-grad stop:first-child { stop-color: var(--net-rx-color); }
-#mon-rx-grad stop:last-child { stop-color: var(--net-rx-color); }
-
-#mon-net-pop-tx-line { stroke: var(--net-tx-color); }
-#mon-net-pop-tx-point { fill: var(--net-tx-color); stroke: var(--bg2); }
-
-.rx-val { color: var(--net-rx-color) !important; }
-.tx-val { color: var(--net-tx-color) !important; }
 
 
 /* 常用命令 / 命令历史:右侧工具栏的页签页(布局见 .rp-page)。
@@ -4290,7 +4127,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 @container (max-width: 330px) {
   .file-toolbar .fp-forward { display: none; }
 }
-.term-pane.file-pane .file-drop-hint { z-index: 10; }
+.term-pane.file-pane .file-drop-hint { z-index: var(--z-pane-overlay); }
 
 /* 任务中心(状态栏入口 + 向上浮层,见 file-transfer.js)。
    浮层挂在 body 上 position:fixed,left/top 由 JS 按 #btn-file-tasks-status
@@ -4301,7 +4138,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
   position: fixed;
   width: 420px; max-width: calc(100vw - 24px);
   background: var(--panel, var(--bg2)); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  box-shadow: var(--menu-shadow); z-index: 500;
+  box-shadow: var(--menu-shadow); z-index: var(--z-popover);
 }
 .task-popover.hidden { display: none; }
 .file-task-list { max-height: 320px; overflow: auto; padding: 4px 6px; }
@@ -4378,7 +4215,7 @@ dialog.upload-conflict .modal-foot > .btn { flex: none; }
 #btn-file-tasks-status.attention { color: var(--warn); }
 /* 内部拖拽:ghost 跟随指针,合法落点高亮 */
 .file-drag-ghost {
-  position: fixed; z-index: 9998; pointer-events: none;
+  position: fixed; z-index: var(--z-drag); pointer-events: none;
   padding: 3px 10px; font-size: var(--fs-sm); color: var(--text);
   background: var(--bg2); border: 1px solid var(--accent); border-radius: var(--radius-sm);
   box-shadow: var(--menu-shadow);
@@ -4389,7 +4226,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 
 /* 终端搜索条 */
 #term-search {
-  position: absolute; right: 18px; bottom: 40px; z-index: 70;
+  position: absolute; right: 18px; bottom: 40px; z-index: var(--z-popover);
   display: flex; align-items: center; gap: 6px; padding: 6px 8px;
   background: var(--panel, var(--bg2)); border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: var(--menu-shadow);
@@ -4419,7 +4256,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 /* z-index 必须始终高于一切操作层:弹窗打开时 syncModalScope 会内联设
    z-index 200+ 且随打开次数递增(core.js),菜单也是 modal+1 ——
    通知曾停在 99,云主机"测试连接"失败的提示被弹窗整个盖住。 */
-#toasts { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+#toasts { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: var(--z-toast); display: flex; flex-direction: column; gap: 8px; }
 .toast {
   background: var(--bg2); border: 1px solid var(--border); color: var(--text);
   padding: 9px 14px; border-radius: var(--radius); font-size: var(--fs-md);
@@ -4471,7 +4308,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
    卡片 = 展开态 .side-panel 同一份 DOM，从 tabbar 下方开始、止于状态栏上方，
    height:auto；主机多时封顶后列表内部滚动。
    约束：#sidebar 宽度 ≤44（e2e T63f），卡片 absolute 不参与文档流，静止时不渲染（T64）。 */
-#sidebar.collapsed { width: 44px; min-width: 44px; max-width: 44px; overflow: visible; z-index: 66; }
+#sidebar.collapsed { width: 44px; min-width: 44px; max-width: 44px; overflow: visible; z-index: var(--z-drawer-overlay); }
 #sidebar.collapsed .side-rail {
   border-right-color: transparent;
   border-radius: var(--radius);
@@ -4505,7 +4342,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   transform: translateY(-50%) translateX(-3px);
   background: var(--titlebar-bg); border: 1px solid var(--border-hover); color: var(--text);
   font: var(--fs-xs)/1 var(--font-ui); letter-spacing: .1px; padding: 5px 8px; border-radius: var(--radius-xs);
-  white-space: nowrap; opacity: 0; pointer-events: none; z-index: 80;
+  white-space: nowrap; opacity: 0; pointer-events: none; z-index: var(--z-tooltip);
   box-shadow: var(--shadow-pop);
   transition: opacity var(--dur-1) var(--ease-out-expo), transform var(--dur-1) var(--ease-out-expo);
 }
@@ -4531,10 +4368,10 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   content: ''; position: absolute; left: 100%; top: 0; bottom: 0; width: 10px;
 }
 
-/* 常驻轨道工具/会话浮层：展开态与收起态均贴住 44px 轨右缘 8px（left: 52px） */
+/* 左轨活动会话轻量浮层（常用命令与批量执行已统一为直达全功能弹窗，不再重复实现卡片） */
 #sidebar .rail-pop {
   position: absolute; left: 52px; top: calc(var(--tabbar-h) + 8px);
-  z-index: 67; display: flex; flex-direction: column; width: 300px;
+  z-index: var(--z-popover); display: flex; flex-direction: column; width: 240px;
   max-width: calc(100vw - 68px);
   max-height: calc(100% - var(--tabbar-h) - 16px);
   background: var(--panel); border: 1px solid var(--border-hover); border-radius: var(--radius-lg);
@@ -4542,15 +4379,8 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   overflow: hidden; animation: side-dock-in var(--dur-2) var(--ease-out-expo) both;
 }
 #sidebar .rail-pop[hidden] { display: none; }
-#sidebar .rail-pop[data-kind="batch"] { width: 340px; }
-#sidebar .rail-pop[data-kind="session"] { width: 240px; }
 
 .rp-head { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border-subtle); }
-.rp-ic {
-  width: 24px; height: 24px; flex: none; border-radius: var(--radius-sm); display: grid; place-items: center;
-  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
-}
-.rp-ic svg { width: 14px; height: 14px; }
 .rp-title { font-size: var(--fs-sm); font-weight: 600; letter-spacing: .1px; }
 .rp-count { font-size: var(--fs-2xs); color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 1px; }
 .rp-sp { flex: 1; }
@@ -4558,82 +4388,8 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .rp-head .btn svg { width: 13px; height: 13px; }
 .rp-body { padding: 10px 10px 10px 12px; min-height: 0; flex: 1 1 auto; overflow: auto; display: flex; flex-direction: column; }
 .rp-body::-webkit-scrollbar { width: 6px; }
-.rp-foot { height: 36px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-top: 1px solid var(--border-subtle); font-size: var(--fs-2xs); color: var(--muted); }
-.rp-link { border: 0; background: transparent; color: var(--accent); font: var(--fs-2xs)/1 var(--font-ui); cursor: pointer; padding: 2px 0; white-space: nowrap; }
-.rp-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .rp-empty { padding: 26px 8px; text-align: center; color: var(--muted); font-size: var(--fs-xs); line-height: 1.7; }
-
-/* 常用命令卡片 */
-.rp-search {
-  height: 28px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 8px;
-  background: var(--field); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-}
-.rp-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--focus-halo); }
-.rp-search svg { width: 13px; height: 13px; color: var(--muted); flex: none; }
-.rp-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: var(--fs-sm)/1 var(--font-ui); padding: 0; }
-.rp-search input::placeholder { color: var(--muted); }
-.rp-snip-list { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; min-height: 0; }
-.rp-snip {
-  height: 42px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 5px 0 7px;
-  border-radius: var(--radius-sm); cursor: pointer;
-}
-.rp-snip:hover { background: var(--row-hover); }
-.rp-snip-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.rp-snip-name { font-size: var(--fs-sm); font-weight: 560; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-snip-cmd { font: var(--fs-2xs)/1.4 var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-play {
-  width: 22px; height: 22px; flex: none; border: 0; border-radius: var(--radius-sm); background: transparent;
-  color: var(--muted); display: grid; place-items: center; cursor: pointer; opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.rp-play svg { width: 11px; height: 11px; }
-.rp-snip:hover .rp-play { opacity: 1; }
-.rp-play:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
-
-/* 批量执行卡片 */
-.rp-seg {
-  height: 26px; flex: none; display: flex; align-items: center; gap: 2px; padding: 2px;
-  background: var(--field); border: 1px solid var(--border); border-radius: var(--radius-sm);
-}
-.rp-seg button {
-  flex: 1; height: 20px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--muted);
-  font: var(--fs-2xs)/1 var(--font-ui); cursor: pointer; padding: 0 4px; white-space: nowrap;
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-}
-.rp-seg button:hover { color: var(--text); }
-.rp-seg button.on { background: var(--row-active); color: var(--text); }
-.rp-seg button b { font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
-.rp-seg button.on b { color: var(--accent); }
-.rp-hosts { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; max-height: 136px; overflow: auto; }
-.rp-host {
-  height: 34px; flex: none; display: flex; align-items: center; gap: 7px; padding: 0 6px;
-  border-radius: var(--radius-sm); cursor: pointer;
-}
-.rp-host:hover { background: var(--row-hover); }
-.rp-cb {
-  width: 13px; height: 13px; flex: none; border-radius: var(--radius-xs); border: 1px solid var(--border-hover);
-  background: var(--field); display: grid; place-items: center; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
-}
-.rp-host.on .rp-cb { background: var(--accent); border-color: var(--accent); }
-.rp-host.on .rp-cb::after {
-  content: ''; width: 6px; height: 3px; border-left: 1.5px solid var(--text-on-accent); border-bottom: 1.5px solid var(--text-on-accent);
-  transform: rotate(-45deg) translateY(-1px); display: block;
-}
 .rp-nm { font-size: var(--fs-xs); color: var(--text); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-rg { font-size: var(--fs-2xs); color: var(--muted); flex: none; }
-.rp-bst { font: var(--fs-2xs)/1 var(--font-mono); flex: none; font-variant-numeric: tabular-nums; }
-.rp-bst.ok { color: var(--accent2); }
-.rp-bst.err { color: var(--danger); }
-.rp-cmd {
-  width: 100%; height: 54px; flex: none; margin-top: 8px; padding: 6px 8px; resize: none;
-  background: var(--field); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  color: var(--text); font: var(--fs-xs)/1.6 var(--font-mono); outline: 0;
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-}
-.rp-cmd:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--focus-halo); }
-.rp-meta { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: var(--fs-2xs); color: var(--muted); }
-.rp-meta .rp-sp { flex: 1; }
 
 /* 会话卡片 */
 .rp-body-session { padding: 4px; }
@@ -4656,7 +4412,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .split-root, .split-node { display: flex; width: 100%; height: 100%; min-height: 0; }
 .split-node { position: relative; }
 .split-node > .term-pane { flex: 1 1 0; } /* 只作用于窗格;分隔条保持 0 0 5px,不得被拉伸 */
-.split-divider { flex: 0 0 5px; background: var(--border); cursor: col-resize; z-index: 5; touch-action: none; user-select: none; }
+.split-divider { flex: 0 0 5px; background: var(--border); cursor: col-resize; z-index: var(--z-local); touch-action: none; user-select: none; }
 .split-node.v { flex-direction: column; }
 .split-node.v > .split-divider { cursor: row-resize; flex: 0 0 5px; width: 100%; }
 .term-pane {
@@ -4672,7 +4428,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
   position: absolute; inset: 0;
   background: var(--pane-dim);
   pointer-events: none;
-  z-index: 2;
+  z-index: var(--z-raised);
   opacity: 1;
   transition: opacity var(--dur-3) var(--ease-out-expo);
 }
@@ -4689,7 +4445,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
    面板自身高度有上限(见 .pp-sheet),主机会多时滚动发生在 .pp-list 内部,
    这样头部搜索与底部快速连接恒在视野里,不随主机数量增长。 */
 .pane-picker {
-  position: absolute; inset: 0; z-index: 6;
+  position: absolute; inset: 0; z-index: var(--z-pane-mid);
   display: flex; padding: 52px 20px 24px; overflow: auto; min-width: 0;
 }
 .pp-sheet {
@@ -4727,7 +4483,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 .pp-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .pp-group + .pp-group { margin-top: 4px; }
 .pp-group-title {
-  position: sticky; top: -2px; z-index: 1;
+  position: sticky; top: -2px; z-index: var(--z-base);
   padding: 4px 2px 2px; background: var(--panel);
   font-size: var(--fs-xs); color: var(--muted); letter-spacing: 0.4px;
 }
@@ -4791,7 +4547,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
    模型选择改为无边框触发钮 + 自定义浮层菜单(.ai-model-trigger / .ai-model-menu)。 */
 
 /* 文件面板扩展 */
-.file-drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--drag-accent); border: 2px dashed var(--accent); z-index: 10; font-size: var(--fs-lg); color: var(--text); }
+.file-drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--drag-accent); border: 2px dashed var(--accent); z-index: var(--z-pane-overlay); font-size: var(--fs-lg); color: var(--text); }
 .term-pane.file-pane { position: relative; }
 
 /* 批量执行顶部区:左右两列共享行轨道 —— 标签行/输入行/辅助行/主体行,
@@ -4869,7 +4625,7 @@ body.file-dragging { user-select: none; cursor: grabbing; }
 #batch-empty { padding: 14px 10px; font-size: var(--fs-sm); }
 #batch-results { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--fs-sm); }
 #batch-results th, #batch-results td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; overflow-wrap: anywhere; vertical-align: top; }
-#batch-results thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+#batch-results thead th { position: sticky; top: 0; z-index: var(--z-base); background: var(--panel); }
 /* 容器自带边框,末行下边框会叠出双线 */
 #batch-results tbody tr:last-child td { border-bottom: none; }
 #batch-results th:nth-child(1) { width: 26%; }
@@ -4942,7 +4698,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .workspace-tile-content { flex: 1 1 0; min-width: 0; min-height: 0; position: relative; display: flex; overflow: auto; }
 /* Global overflow notice is a sibling of layout-root, never part of tile geometry.
    The renderer reserves this strip above the root when the notice is visible. */
-.workspace-layout-hint { position: absolute; top: 0; left: 0; right: 0; z-index: 6; height: 28px; box-sizing: border-box; display: flex; align-items: center; padding: 0 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--fs-xs); color: var(--warn); background: var(--bg2); pointer-events: none; }
+.workspace-layout-hint { position: absolute; top: 0; left: 0; right: 0; z-index: var(--z-pane-mid); height: 28px; box-sizing: border-box; display: flex; align-items: center; padding: 0 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--fs-xs); color: var(--warn); background: var(--bg2); pointer-events: none; }
 .workspace-layout-hint.hidden { display: none; }
 
 /* ===== tab 栏优化:tab 第一要素 ===== */
@@ -4991,7 +4747,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
    (.split-group.fp-bookmark-group)。标签行的分屏组已于 2026-11 下线,这里保留
    规则本身 —— 删掉它会让书签组失去圆角缝合与负 margin,整行被撑到下一行。 */
 .split-group { display: inline-flex; flex: 0 0 auto; }
-.split-group > .btn:is(:hover, :focus-visible) { position: relative; z-index: 1; }
+.split-group > .btn:is(:hover, :focus-visible) { position: relative; z-index: var(--z-base); }
 .split-group > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .split-group > .btn.split-caret { width: 16px; min-width: 16px; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; color: var(--muted); }
 .split-group > .btn.split-caret .mi { display: inline-flex; width: 12px; }
@@ -4999,7 +4755,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .icon-tb .mi { display: inline-flex; align-items: center; justify-content: center; }
 /* 终端右键菜单(替代 WebView 原生菜单) */
 :is(#ctx-menu, #ctx-sub) {
-  position: fixed; z-index: 80; min-width: min(168px, calc(100vw - 16px));
+  position: fixed; z-index: var(--z-menu); min-width: min(168px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px);
   overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
@@ -5032,7 +4788,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 :is(#ctx-menu, #ctx-sub) .ctx-sep { flex: none; height: 1px; margin: 4px 6px; background: var(--border); }
 /* 二级菜单(标签右键 →「分屏与布局 ▸」):与一级同一套面板语言,窄一档;
    z-index 略高,保证压在一级菜单之上。 */
-#ctx-sub { z-index: 81; min-width: 168px; }
+#ctx-sub { z-index: var(--z-menu-sub); min-width: 168px; }
 #ctx-sub .ctx-item[aria-expanded="true"] { background: var(--hover-bg); }
 :is(#ctx-menu, #ctx-sub) .ctx-parent .ctx-sub-arrow {
   flex: none; margin-left: auto; padding-left: 10px;
@@ -5050,7 +4806,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
    两个按钮在这里只会和标签行、标题栏的按钮连成"第三排"。
    会话级动作(广播/日志/重连)在状态栏,布局类在标签行的 ▾,不在这里重复。 */
 .pane-toolbar {
-  position: absolute; top: 4px; right: 8px; z-index: 8;
+  position: absolute; top: 4px; right: 8px; z-index: var(--z-pane-top);
   display: flex; align-items: center; gap: 6px; pointer-events: none;
 }
 .pane-toolbar[data-solo="1"] { display: none; }
@@ -5090,12 +4846,12 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 .term-pane.pane-rec::after {
   /* inset 2px:焦点环是贴边 1px 的 outline,红框退到里面 2px 才不会被它压住 ——
      录制中的窗格通常就是焦点窗格,两条线必须能同时看见。 */
-  content: ''; position: absolute; inset: 2px; z-index: 6; pointer-events: none;
+  content: ''; position: absolute; inset: 2px; z-index: var(--z-pane-mid); pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--danger), inset 0 0 16px color-mix(in srgb, var(--danger) 24%, transparent);
   animation: rec-breath 2.4s ease-in-out infinite;
 }
 .pane-rec-badge {
-  position: absolute; right: 8px; bottom: 7px; z-index: 8;
+  position: absolute; right: 8px; bottom: 7px; z-index: var(--z-pane-top);
   width: 20px; height: 20px; display: none; align-items: center; justify-content: center;
   border-radius: var(--radius-sm); color: var(--danger); background: var(--bg2);
   border: 1px solid currentColor; pointer-events: none;
@@ -5107,7 +4863,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
 /* 窗格状态横幅:分屏后状态栏只反映活动会话,断开的窗格在这里就地说明原因与
    重连方式。悬浮于底部避开右上角的常驻窗格按钮,也不遮盖中上部的最后输出。 */
 .pane-status-banner {
-  position: absolute; left: 8px; right: 8px; bottom: 4px; z-index: 7;
+  position: absolute; left: 8px; right: 8px; bottom: 4px; z-index: var(--z-pane-banner);
   display: flex; align-items: center; gap: 8px; min-width: 0;
   padding: 5px 10px; font-size: var(--fs-sm); line-height: 1.4;
   background: var(--bg2); border: 1px solid var(--danger); border-radius: var(--radius-sm);
@@ -5161,11 +4917,23 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
   from { opacity: 0; transform: scale(0.92) translateY(2px); }
   to { opacity: 1; transform: none; }
 }
+@keyframes pop-in-up {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pop-in-right {
+  from { opacity: 0; transform: translateX(-6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
 @keyframes drawer-in-right {
   from { opacity: 0; transform: translateX(16px); }
   to { opacity: 1; transform: none; }
 }
 #ctx-menu:not(.hidden) { animation: pop-in var(--dur-2) var(--ease-out-expo) both; }
+#ctx-sub:not(.hidden) { animation: pop-in-right var(--dur-2) var(--ease-out-expo) both; }
+:is(.ai-model-menu, .ai-context-popover, .ai-mode-help-pop, .task-popover, .ai-mention-pop):not(.hidden) {
+  animation: pop-in-up var(--dur-2) var(--ease-out-expo) both;
+}
 
 /* ===== 模型配置与思考强度 (阶段 2/3) ===== */
 .model-config-section {
@@ -5401,7 +5169,7 @@ body.tab-dragging #tabs .tab { pointer-events: none; }
    必须显式重置 border/padding/border-radius:不重置会继承全局 input 规则
    (style.css 顶部),在渐变轨道外渲染出一圈 8px 圆角的输入框描边。 */
 .ai-reasoning-slider {
-  position: relative; z-index: 1;
+  position: relative; z-index: var(--z-base);
   width: 100%; height: 26px; margin: 0;
   -webkit-appearance: none; appearance: none;
   background: transparent; cursor: pointer;
@@ -5599,7 +5367,7 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
 .hl-table-wrap > .hl-table { flex: 0 0 auto; }
 .hl-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-sm); table-layout: fixed; }
 .hl-table thead th {
-  position: sticky; top: 0; z-index: 1; background: var(--panel);
+  position: sticky; top: 0; z-index: var(--z-base); background: var(--panel);
   text-align: left; font-weight: 600; font-size: var(--fs-xs); color: var(--muted);
   padding: 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
@@ -5732,7 +5500,7 @@ input, select, textarea { transition: border-color var(--dur-fast) var(--ease), 
    自己下方元素的 hit-test(悬停高亮、放置位判断全失效)。z-index 须压过弹窗
    (运行时内联 z-index 200+N,见 core.js syncModalScope),但低于 toast(#toasts = 9999)。 */
 .hl-dragon {
-  position: fixed; z-index: 9000; pointer-events: none;
+  position: fixed; z-index: var(--z-drag); pointer-events: none;
   padding: 4px 9px; border-radius: var(--radius-sm); font-size: var(--fs-xs); font-weight: 600;
   color: var(--accent); background: var(--panel);
   border: 1px solid var(--accent); box-shadow: var(--menu-shadow); white-space: nowrap;

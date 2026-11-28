@@ -12,11 +12,13 @@ const imports = {
     PROVIDER_LABEL: { tencent: '腾讯云', aliyun: '阿里云' },
     api: async () => ({}),
     askConfirm: async () => true,
+    bindMenuButton() {},
     closeModal() {}, copyText() {}, openModal() {}, showCtxMenu() {},
     state,
     toast() {},
   },
   '../shared/icons.js': { icon: () => '' },
+  './overlay-manager.js': { openOverlay() {}, closeOverlay() {} },
   './terminal.js': { connectHost: async () => {}, rankPickerHosts: (x) => x, refreshPickers() {} },
 };
 

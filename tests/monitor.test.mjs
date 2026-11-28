@@ -212,11 +212,8 @@ test('renderMonitorBar 正常采样下生成多维历史队列与 SVG 图表', a
   assert.deepEqual([...hist.rx], [204800]);
   assert.deepEqual([...hist.tx], [51200]);
 
-  // 三张卡片的 SVG 图表路径已生成
-  assert.ok(getEl('mon-pop-line').getAttribute('d').startsWith('M '));
-  assert.ok(getEl('mon-mem-pop-line').getAttribute('d').startsWith('M '));
-  assert.ok(getEl('mon-net-pop-rx-line').getAttribute('d').startsWith('M '));
-  assert.ok(getEl('mon-net-pop-tx-line').getAttribute('d').startsWith('M '));
+  // 监控抽屉 CPU 走势图路径已生成（顶部悬停浮卡已随 M3 移除，点击胶囊直达右侧监控抽屉）
+  assert.ok(getEl('rp-mon-cpu-line').getAttribute('d').startsWith('M '));
 });
 
 test('renderMonitorBar 兼容旧 Array 格式并安全转换', async () => {

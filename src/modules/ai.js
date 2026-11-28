@@ -1,5 +1,7 @@
 // AI 助手:流式对话、模型切换、设置弹窗、诊断
 import { $, api, askConfirm, askPrompt, closeModal, copyText, openModal, state, toast } from './core.js';
+import { closeOverlay, openOverlay } from './overlay-manager.js';
+import { closeAnchoredPopover, openAnchoredPopover } from './popover.js';
 import { icon } from '../shared/icons.js';
 import { escapeHtml } from './hosts.js';
 
@@ -614,8 +616,6 @@ export function switchAiThread(threadId) {
   }
 
   setAiBusy(threadBusy(target));
-  renderAiThreadBar();
-  closeThreadMenu();
   refreshThreadUi();
   refreshAiCodeActions();
 }
@@ -648,7 +648,6 @@ export function clearCurrentAiThread() {
   thread.scroll = { top: 0, pinned: true };
   restoreThreadScroll(thread);
   thread.updatedAt = Date.now();
-  renderAiThreadBar();
   refreshThreadUi();
 }
 
@@ -657,7 +656,6 @@ export function deleteAiThread(threadId) {
   if (!thread) return;
   if (state.aiThreads.size <= 1) {
     clearCurrentAiThread();
-    closeThreadMenu();
     return;
   }
   if (thread.req) {
@@ -692,12 +690,6 @@ export async function requestDeleteAiThread(threadId) {
   const isBusy = !!thread.req;
 
   if (hasContent || isBusy) {
-    const menu = $('#ai-thread-menu');
-    if (menu && !menu.classList.contains('hidden')) {
-      closeThreadMenu({ focusTrigger: true });
-    } else {
-      closeThreadMenu();
-    }
     const title = thread.title || '此对话';
     let msg = `确定要删除对话「${title}」吗？此操作不可撤销。`;
     if (isBusy) {
@@ -722,12 +714,6 @@ export async function requestClearAiThread() {
   const isBusy = !!thread.req;
 
   if (hasContent || isBusy) {
-    const menu = $('#ai-thread-menu');
-    if (menu && !menu.classList.contains('hidden')) {
-      closeThreadMenu({ focusTrigger: true });
-    } else {
-      closeThreadMenu();
-    }
     let msg = '确定要清空当前对话的消息记录吗？此操作不可撤销。';
     if (isBusy) {
       msg += '\n\n当前对话正在生成回复，清空将中止生成。';
@@ -743,55 +729,45 @@ export async function requestClearAiThread() {
   clearCurrentAiThread();
 }
 
+/// 同步顶栏「全部历史对话」抽屉开关按钮的标题提示、数量徽标与后台生成/未读圆点。
+/// 原 .ai-thread-bar 下拉条已在 M3 与会话抽屉合并为单一入口。
 export function renderAiThreadBar() {
   const thread = activeAiThread();
-  const titleEl = $('#ai-thread-title');
-  const trigger = $('#ai-thread-trigger');
-  if (!titleEl || !trigger) return;
+  const toggleBtn = $('#ai-drawer-toggle');
+  const countBadge = $('#ai-thread-count-badge');
   if (!thread) {
-    titleEl.textContent = '新对话';
-    trigger.title = '切换对话';
-    trigger.classList.remove('has-busy', 'has-unread');
-    trigger.setAttribute('aria-expanded', 'false');
-    const countBadge = $('#ai-thread-count-badge');
+    if (toggleBtn) {
+      toggleBtn.title = '全部历史对话';
+      toggleBtn.classList.remove('has-busy', 'has-unread');
+    }
     if (countBadge) countBadge.classList.remove('visible');
     return;
   }
   const baseTitle = thread.title || '新对话';
-  titleEl.textContent = baseTitle;
-
   const nonActiveBusy = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!threadBusy(th));
   const nonActiveUnread = [...state.aiThreads.values()].some((th) => th.id !== state.activeThreadId && !!th.unread);
-  trigger.classList.toggle('has-busy', nonActiveBusy);
-  trigger.classList.toggle('has-unread', nonActiveUnread);
+  if (toggleBtn) {
+    toggleBtn.classList.toggle('has-busy', nonActiveBusy);
+    toggleBtn.classList.toggle('has-unread', nonActiveUnread);
+    const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!threadBusy(th)).length;
+    const unreadCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.unread).length;
+    let tip = `当前对话：${baseTitle}（点击管理全部历史对话）`;
+    const extras = [];
+    if (busyCount > 0) extras.push(`另有 ${busyCount} 个对话正在生成`);
+    if (unreadCount > 0) extras.push(`另有 ${unreadCount} 个对话有新回复`);
+    if (extras.length) tip += `\n（${extras.join('，')}）`;
+    toggleBtn.title = tip;
+  }
 
-  const busyCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!threadBusy(th)).length;
-  const unreadCount = [...state.aiThreads.values()].filter((th) => th.id !== state.activeThreadId && !!th.unread).length;
-  let tip = `当前对话：${baseTitle}（点击切换或管理历史会话）`;
-  const extras = [];
-  if (busyCount > 0) extras.push(`另有 ${busyCount} 个对话正在生成`);
-  if (unreadCount > 0) extras.push(`另有 ${unreadCount} 个对话有新回复`);
-  if (extras.length) tip += `\n（${extras.join('，')}）`;
-  trigger.title = tip;
-
-  const countBadge = $('#ai-thread-count-badge');
   if (countBadge) {
     const totalCount = state.aiThreads.size;
     countBadge.textContent = totalCount > 1 ? String(totalCount) : '';
     countBadge.classList.toggle('visible', totalCount > 1);
   }
-
-  const menu = $('#ai-thread-menu');
-  const isOpen = menu && !menu.classList.contains('hidden');
-  trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
 }
 
 export function refreshThreadUi() {
   renderAiThreadBar();
-  const menu = $('#ai-thread-menu');
-  if (menu && !menu.classList.contains('hidden')) {
-    renderThreadMenu();
-  }
   if (isAiDrawerOpen()) {
     renderAiDrawer($('#ai-drawer-search')?.value || '');
   }
@@ -827,7 +803,6 @@ export function isAiDrawerOpen() {
 }
 
 export function openAiDrawer() {
-  closeThreadMenu();
   const drawer = $('#ai-drawer');
   const toggleBtn = $('#ai-drawer-toggle');
   if (!drawer) return;
@@ -836,6 +811,22 @@ export function openAiDrawer() {
     toggleBtn.setAttribute('aria-expanded', 'true');
     toggleBtn.classList.add('active');
   }
+  openOverlay({
+    id: 'ai-drawer',
+    kind: 'popover',
+    group: 'floating',
+    el: drawer,
+    triggers: toggleBtn ? [toggleBtn] : [],
+    closeOnResize: false,
+    close: ({ focusTrigger } = {}) => {
+      drawer.classList.add('hidden');
+      if (toggleBtn) {
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        toggleBtn.classList.remove('active');
+        if (focusTrigger && typeof toggleBtn.focus === 'function') toggleBtn.focus();
+      }
+    },
+  });
   const searchInp = $('#ai-drawer-search');
   renderAiDrawer(searchInp ? searchInp.value : '');
   if (searchInp) {
@@ -845,13 +836,16 @@ export function openAiDrawer() {
 }
 
 export function closeAiDrawer({ focusToggle = false } = {}) {
-  const drawer = $('#ai-drawer');
-  const toggleBtn = $('#ai-drawer-toggle');
-  if (drawer) drawer.classList.add('hidden');
-  if (toggleBtn) {
-    toggleBtn.setAttribute('aria-expanded', 'false');
-    toggleBtn.classList.remove('active');
-    if (focusToggle && typeof toggleBtn.focus === 'function') toggleBtn.focus();
+  const closed = closeOverlay('ai-drawer', { focusTrigger: focusToggle });
+  if (!closed) {
+    const drawer = $('#ai-drawer');
+    const toggleBtn = $('#ai-drawer-toggle');
+    if (drawer) drawer.classList.add('hidden');
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-expanded', 'false');
+      toggleBtn.classList.remove('active');
+      if (focusToggle && typeof toggleBtn.focus === 'function') toggleBtn.focus();
+    }
   }
 }
 
@@ -969,165 +963,6 @@ export function renderAiDrawer(kw = '') {
 
     list.appendChild(card);
   }
-}
-
-export function renderThreadMenu() {
-  const menu = $('#ai-thread-menu');
-  if (!menu) return;
-  const list = $('#ai-thread-menu-list') || menu;
-  ensureDefaultAiThread();
-  const threads = [...state.aiThreads.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  const activeId = state.activeThreadId;
-
-  let focusedIndex = -1;
-  let hadFocusInMenu = false;
-  if (document.activeElement && menu.contains(document.activeElement)) {
-    hadFocusInMenu = true;
-    const oldRows = Array.from(list.querySelectorAll('.ai-thread-menu-row'));
-    const oldRow = document.activeElement.closest?.('.ai-thread-menu-row');
-    focusedIndex = oldRow ? oldRows.indexOf(oldRow) : -1;
-  }
-  const focusedId = hadFocusInMenu
-    ? (document.activeElement.dataset?.threadId || document.activeElement.closest?.('[data-thread-id]')?.dataset?.threadId)
-    : null;
-
-  list.innerHTML = threads.map((th) => {
-    const isActive = th.id === activeId;
-    const isBusy = !!threadBusy(th);
-    const isUnread = !!th.unread;
-    const safeTitle = escapeHtml(th.title || '新对话');
-    const fullTitle = th.hostName ? `${th.title || '新对话'} · ${th.hostName}` : (th.title || '新对话');
-
-    let badgeHtml = '';
-    if (isBusy) {
-      badgeHtml = '<span class="ai-thread-menu-badge">生成中…</span>';
-    } else if (isUnread) {
-      badgeHtml = '<span class="ai-thread-menu-badge">新回复</span>';
-    } else if (th.hostName) {
-      badgeHtml = `<span class="ai-thread-menu-badge">${escapeHtml(th.hostName)}</span>`;
-    }
-
-    const rowClasses = ['ai-thread-menu-row'];
-    if (isActive) rowClasses.push('active');
-    if (isBusy) rowClasses.push('busy');
-    if (isUnread) rowClasses.push('unread');
-
-    return `<div class="${rowClasses.join(' ')}" role="none" data-thread-id="${escapeHtml(th.id)}">` +
-      `<button type="button" class="ai-thread-menu-item" role="menuitemradio" aria-checked="${isActive ? 'true' : 'false'}" data-thread-id="${escapeHtml(th.id)}" title="${escapeHtml(fullTitle)}">` +
-        `<span class="ai-thread-menu-check" aria-hidden="true">✓</span>` +
-        `<span class="ai-thread-menu-name">${safeTitle}</span>` +
-        badgeHtml +
-      `</button>` +
-      `<button type="button" class="ai-thread-del" data-del-thread="${escapeHtml(th.id)}" tabindex="-1" aria-label="删除对话「${safeTitle}」" title="删除此对话">${icon('x', { size: 12 })}</button>` +
-    `</div>`;
-  }).join('');
-
-  if (hadFocusInMenu) {
-    const newItems = Array.from(list.querySelectorAll('.ai-thread-menu-item'));
-    if (newItems.length > 0) {
-      let toFocus = focusedId ? list.querySelector(`.ai-thread-menu-item[data-thread-id="${focusedId}"]`) : null;
-      if (!toFocus) {
-        const idx = Math.min(Math.max(0, focusedIndex), newItems.length - 1);
-        toFocus = newItems[idx];
-      }
-      if (toFocus && typeof toFocus.focus === 'function') toFocus.focus();
-    }
-  }
-}
-
-export function onThreadMenuKeydown(e) {
-  if (!e) return;
-  const menu = $('#ai-thread-menu');
-  if (!menu || menu.classList.contains('hidden')) return;
-
-  const key = e.key;
-  if (key === 'Escape') {
-    e.preventDefault();
-    e.stopPropagation();
-    closeThreadMenu({ focusTrigger: true });
-    return;
-  }
-  if (key === 'Tab') {
-    closeThreadMenu();
-    return;
-  }
-
-  const items = Array.from(menu.querySelectorAll('.ai-thread-menu-item'));
-  if (!items.length) return;
-
-  const activeEl = document.activeElement;
-  const currentIndex = items.indexOf(activeEl);
-
-  if (key === 'ArrowDown' || key === 'Down') {
-    e.preventDefault();
-    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
-    items[nextIndex]?.focus();
-    return;
-  }
-  if (key === 'ArrowUp' || key === 'Up') {
-    e.preventDefault();
-    const prevIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
-    items[prevIndex]?.focus();
-    return;
-  }
-  if (key === 'Home') {
-    e.preventDefault();
-    items[0]?.focus();
-    return;
-  }
-  if (key === 'End') {
-    e.preventDefault();
-    items[items.length - 1]?.focus();
-    return;
-  }
-  if (key === 'Delete' || key === 'Backspace') {
-    e.preventDefault();
-    const targetItem = activeEl?.closest?.('.ai-thread-menu-row');
-    const threadId = targetItem?.dataset?.threadId;
-    if (threadId) {
-      requestDeleteAiThread(threadId);
-    }
-    return;
-  }
-}
-
-export function openThreadMenu() {
-  const menu = $('#ai-thread-menu');
-  const trigger = $('#ai-thread-trigger');
-  if (!menu || !trigger) return;
-  $('#ai-model-menu')?.classList.add('hidden');
-  $('#ai-mode-menu')?.classList.add('hidden');
-  renderThreadMenu();
-  menu.classList.remove('hidden');
-  trigger.setAttribute('aria-expanded', 'true');
-  const tr = trigger.getBoundingClientRect();
-  const size = { width: menu.offsetWidth || 240, height: menu.offsetHeight || 200 };
-  const left = Math.max(8, Math.min(tr.left, window.innerWidth - size.width - 8));
-  menu.style.left = left + 'px';
-  menu.style.top = Math.min(window.innerHeight - size.height - 8, Math.max(8, tr.bottom + 4)) + 'px';
-
-  const activeId = state.activeThreadId;
-  const targetBtn = menu.querySelector(`.ai-thread-menu-item[data-thread-id="${activeId}"]`) || menu.querySelector('.ai-thread-menu-item');
-  if (targetBtn && typeof targetBtn.focus === 'function') {
-    targetBtn.focus();
-  }
-}
-
-export function closeThreadMenu({ focusTrigger = false } = {}) {
-  const menu = $('#ai-thread-menu');
-  const trigger = $('#ai-thread-trigger');
-  if (menu) menu.classList.add('hidden');
-  if (trigger) {
-    trigger.setAttribute('aria-expanded', 'false');
-    if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
-  }
-}
-
-export function toggleThreadMenu() {
-  const menu = $('#ai-thread-menu');
-  if (!menu) return;
-  if (menu.classList.contains('hidden')) openThreadMenu();
-  else closeThreadMenu();
 }
 
 /// 会话与终端命令窗口解耦:终端触发 AI 操作(选区解释/报错诊断)只发往当前活动 AI 会话,
@@ -2228,7 +2063,6 @@ export async function aiSend(rawText, mode, opts) {
       thread.title = deriveThreadTitle(text);
       thread.autoTitle = false;
     }
-    renderAiThreadBar();
     refreshThreadUi();
   }
   if (thread) thread.updatedAt = Date.now();
@@ -3138,29 +2972,33 @@ export function cycleAiReasoningEffort() {
 export function openModelMenu() {
   const menu = $('#ai-model-menu');
   const trigger = $('#ai-model-trigger');
-  if (trigger.disabled) return;
+  if (!menu || !trigger || trigger.disabled) return;
   $('#ai-mode-menu')?.classList.add('hidden');
-  $('#ai-thread-menu')?.classList.add('hidden');
   // 首次渲染标记:让 renderModelReasoning 直接落位,thumb 不从旧位置滑过来
   renderModelReasoning._initial = true;
   renderModelMenu();
-  menu.classList.remove('hidden');
+  openAnchoredPopover({
+    id: 'ai-model-menu',
+    el: menu,
+    trigger,
+    placement: 'top',
+    align: 'end',
+    gap: 6,
+    width: 220,
+    height: 200,
+    reparent: false,
+  });
   // 菜单可见后 wrap 才有真实宽度:hidden 期间 renderModelReasoning 测不出
   // travel(见 syncReasoningThumb),这里补一次落位,把 --travel 修正到位。
   syncReasoningThumb($('#ai-reasoning-slider')?.value ?? 0, { animate: false });
-  // 菜单展开在触发钮上方(输入区在面板底部,向下没有空间),右缘对齐触发钮
-  const tr = trigger.getBoundingClientRect();
-  const size = { width: menu.offsetWidth || 220, height: menu.offsetHeight || 200 };
-  const pos = popupPosition(
-    { top: tr.top, bottom: tr.top, left: tr.left, right: tr.right },
-    size, { width: window.innerWidth, height: window.innerHeight },
-  );
-  menu.style.left = pos.left + 'px';
-  menu.style.top = Math.max(8, tr.top - size.height - 6) + 'px';
 }
 
-export function closeModelMenu() {
-  $('#ai-model-menu').classList.add('hidden');
+export function closeModelMenu({ focusTrigger = false } = {}) {
+  const closed = closeAnchoredPopover('ai-model-menu', { focusTrigger });
+  if (!closed) {
+    $('#ai-model-menu')?.classList.add('hidden');
+    $('#ai-model-trigger')?.setAttribute?.('aria-expanded', 'false');
+  }
 }
 
 let contextPopoverTimer = null;
@@ -3292,25 +3130,31 @@ export function openContextPopover() {
   const trigger = $('#ai-context-trigger');
   if (!pop || !trigger) return;
   updateAiContextIndicator();
-  pop.classList.remove('hidden');
-  trigger.setAttribute('aria-expanded', 'true');
-  const tr = trigger.getBoundingClientRect();
-  const size = { width: pop.offsetWidth || 270, height: pop.offsetHeight || 190 };
-  const pos = popupPosition(
-    { top: tr.top, bottom: tr.top, left: tr.left, right: tr.right },
-    size,
-    { width: window.innerWidth || 1280, height: window.innerHeight || 800 },
-  );
-  pop.style.left = Math.max(8, pos.left) + 'px';
-  pop.style.top = Math.max(8, tr.top - size.height - 6) + 'px';
+  openAnchoredPopover({
+    id: 'ai-context-popover',
+    el: pop,
+    trigger,
+    placement: 'top',
+    align: 'center',
+    gap: 6,
+    width: 270,
+    height: 190,
+    reparent: false,
+    onClose: () => {
+      if (contextPopoverTimer) { clearTimeout(contextPopoverTimer); contextPopoverTimer = null; }
+    },
+  });
 }
 
 export function closeContextPopover() {
   if (contextPopoverTimer) { clearTimeout(contextPopoverTimer); contextPopoverTimer = null; }
-  const pop = $('#ai-context-popover');
-  const trigger = $('#ai-context-trigger');
-  if (pop) pop.classList.add('hidden');
-  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  const closed = closeAnchoredPopover('ai-context-popover');
+  if (!closed) {
+    const pop = $('#ai-context-popover');
+    const trigger = $('#ai-context-trigger');
+    if (pop) pop.classList.add('hidden');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
 }
 
 export function delayCloseContextPopover(delayMs = 200) {

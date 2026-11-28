@@ -142,10 +142,14 @@ async function setupComposer() {
   const core = new vm.SyntheticModule(['$'], function () {
     this.setExport('$', (sel) => doc.querySelector(sel));
   }, { context });
+  const overlayMgr = new vm.SyntheticModule(['openOverlay', 'closeOverlay'], function () {
+    this.setExport('openOverlay', () => {});
+    this.setExport('closeOverlay', () => false);
+  }, { context });
 
   const code = await readFile(new URL('../src/modules/ai-composer.js', import.meta.url), 'utf8');
   const mod = new vm.SourceTextModule(code, { context });
-  await mod.link((spec) => ({ './core.js': core }[spec]));
+  await mod.link((spec) => ({ './core.js': core, './overlay-manager.js': overlayMgr }[spec]));
   await mod.evaluate();
   return { composer: mod.namespace, input, pop, doc };
 }

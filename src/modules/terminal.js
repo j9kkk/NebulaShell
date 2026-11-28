@@ -1,5 +1,5 @@
 // 终端会话:连接、标签与窗格、分屏、搜索、广播输入、只读、日志
-import { $, activeTab, api, askConfirm, askPrompt, bindMenuButton, closeCtxMenu, copyText, hasOpenModal, openExternalLink, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
+import { $, activeTab, api, askConfirm, askPrompt, bindMenuButton, closeCtxMenu, closeModal, copyText, hasOpenModal, openExternalLink, openModal, parseFpError, showCtxMenu, state, stripFpMark, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { accelOf, appShortcutOf, matchAction } from './keymap.js';
 import { bindCommandButton, commandMenuItem, refreshCommandStates } from './commands.js';
@@ -3187,11 +3187,14 @@ export function openBroadcastPicker(opts = {}) {
   if (connected.length < 1) return toast('没有已连接的会话', 'error');
   const currentId = opts.sessionId || state.activeId;
   const anchor = state.sessions.get(currentId) || null;
+  document.getElementById('modal-broadcast')?.remove();
   const overlay = document.createElement('div');
-  overlay.className = 'modal';
+  overlay.className = 'modal hidden';
   overlay.id = 'modal-broadcast';
+  overlay.dataset.removeOnClose = '1';
   const scopes = BROADCAST_SCOPES.map((o) => `<label><input type="radio" name="bc-scope" value="${o.value}"${o.value === 'all' ? ' checked' : ''} /> ${o.label}</label>`).join('');
-  overlay.innerHTML = `<div class="modal-card"><h3>广播输入</h3>
+  overlay.innerHTML = `<div class="modal-card">
+    <div class="modal-head"><h3>广播输入</h3><span class="spacer"></span><button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭">${icon('x')}</button></div>
     <div class="bc-scope" role="radiogroup" aria-label="广播范围">${scopes}</div>
     <div class="batch-hosts" id="bc-list"></div>
     <div class="modal-actions"><button class="btn" id="bc-cancel">取消</button><button class="btn primary" id="bc-ok">开始广播</button></div></div>`;
@@ -3219,15 +3222,16 @@ export function openBroadcastPicker(opts = {}) {
     }) || 'custom';
     overlay.querySelector(`input[name="bc-scope"][value="${match}"]`).checked = true;
   });
-  overlay.querySelector('#bc-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#bc-cancel').addEventListener('click', () => closeModal(overlay));
   overlay.querySelector('#bc-ok').addEventListener('click', () => {
     const ids = [...list.querySelectorAll('input:checked')].map((i) => i.value);
-    overlay.remove();
+    closeModal(overlay);
     if (!ids.length) return toast('请至少选择一个会话', 'error');
     setBroadcast(new Set(ids));
     toast(`广播已开启:${ids.length} 个会话`, 'success');
   });
   document.body.appendChild(overlay);
+  openModal(overlay);
 }
 
 /* ---------------- 批量执行(F6) ---------------- */

@@ -1058,7 +1058,7 @@ export function openRdpKeyMenu(x, y, pane) {
   if (!target) return;
   showCtxMenu(x, y, RDP_COMBOS.map((item) => ({
     label: item.label,
-    hint: item.hint,
+    key: item.hint,
     disabled: !target.sessionId,
     run: () => sendRdpCombo(target, item.combo),
   })));

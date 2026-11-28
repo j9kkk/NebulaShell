@@ -205,6 +205,29 @@ const rules = [
     },
   },
   {
+    // M2:全站 z-index 必须走 :root 的 --z-* 单调阶梯(仅允许 0/auto/inherit/unset/initial 或 var(--z-*))
+    id: 'token-z-index',
+    level: 'warn',
+    check: ({ prop, value }) => {
+      if (prop !== 'z-index') return null;
+      const v = value.trim();
+      if (/^(?:0|auto|inherit|initial|unset)$/.test(v)) return null;
+      if (/^var\(--z-[a-z0-9-]+\)$/.test(v)) return null;
+      return `裸数字 z-index: ${value} —— 改用 :root 的 var(--z-*) 阶梯`;
+    },
+  },
+  {
+    // M2:backdrop-filter 仅允许用于命令面板(.palette-modal)遮罩背板，禁止在常驻面板/终端/悬浮卡使用
+    id: 'no-rogue-backdrop',
+    level: 'warn',
+    check: ({ prop, value, selector }) => {
+      if (prop !== 'backdrop-filter' && prop !== '-webkit-backdrop-filter') return null;
+      if (/^(?:none|inherit|initial|unset)$/.test(value.trim())) return null;
+      if (/\.palette-modal\b/.test(selector)) return null;
+      return `${selector} 违规使用 ${prop}: ${value} —— 全站仅允许 .palette-modal 使用 backdrop-filter`;
+    },
+  },
+  {
     // R5:平台特值只允许出现在 platform-* 作用域
     id: 'platform-scope',
     level: 'warn',

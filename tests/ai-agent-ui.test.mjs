@@ -157,12 +157,18 @@ async function setup(extra = {}) {
   const ai = new vm.SyntheticModule(['threadBusy'], function () {
     this.setExport('threadBusy', () => false);
   }, { context });
+  const popover = new vm.SyntheticModule(['openAnchoredPopover', 'closeAnchoredPopover', 'positionAnchoredElement'], function () {
+    this.setExport('openAnchoredPopover', ({ el, trigger }) => { el?.classList?.remove('hidden'); trigger?.setAttribute?.('aria-expanded', 'true'); });
+    this.setExport('closeAnchoredPopover', () => false);
+    this.setExport('positionAnchoredElement', () => null);
+  }, { context });
   const ui = await load('../src/modules/ai-agent-ui.js');
   await ui.link((specifier) => ({
     '../shared/icons.js': icons,
     './core.js': core,
     './hosts.js': hosts,
     './ai.js': ai,
+    './popover.js': popover,
   }[specifier] ?? (() => { throw new Error('unexpected import: ' + specifier); })()));
   await ui.evaluate();
   const adapter = ui.namespace.createAgentAdapter({ mount: (node) => container.append(node), ...extra });

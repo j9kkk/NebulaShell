@@ -204,11 +204,18 @@ test('renderTargetMenu 渲染会话主机范围勾选列表、支持整行点击
     this.setExport('api', async () => ({}));
   }, { context });
 
+  const popover = new vm.SyntheticModule(['openAnchoredPopover', 'closeAnchoredPopover', 'positionAnchoredElement'], function () {
+    this.setExport('openAnchoredPopover', ({ el, trigger }) => { el?.classList?.remove('hidden'); trigger?.setAttribute?.('aria-expanded', 'true'); });
+    this.setExport('closeAnchoredPopover', () => false);
+    this.setExport('positionAnchoredElement', () => null);
+  }, { context });
+
   const uiMod = await load('../src/modules/ai-agent-ui.js');
   await uiMod.link((specifier) => {
     if (specifier === '../shared/icons.js') return icons;
     if (specifier === './interaction.js') return interaction;
     if (specifier === './core.js') return core;
+    if (specifier === './popover.js') return popover;
     throw new Error('Unknown import: ' + specifier);
   });
   await uiMod.evaluate();

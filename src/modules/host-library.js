@@ -200,8 +200,8 @@ function bindGroupActions(el, name) {
     // 别让窗口级 contextmenu 处理器把刚弹出的菜单立刻关掉
     e.stopPropagation();
     showCtxMenu(e.clientX, e.clientY, [
-      { label: '重命名分组…', icon: 'pencil', run: () => startRename(name) },
-      { label: '删除分组', icon: 'trash', danger: true, run: () => deleteGroup(name) },
+      { label: '重命名分组…', run: () => startRename(name) },
+      { label: '删除分组', danger: true, run: () => deleteGroup(name) },
     ], { trigger: el, label: '分组' });
   });
   el.addEventListener('dblclick', () => startRename(name));

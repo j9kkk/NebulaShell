@@ -8,7 +8,8 @@
 //   源/目标在拖动开始与放下时分别快照,提交后由后端再校验代次。
 // - 上传/下载以 taskId 注册进任务中心:进度按任务归属,可取消在途传输。
 
-import { $, api, askConfirm, hasOpenModal, state, toast } from './core.js';
+import { $, api, askConfirm, askConflict, hasOpenModal, state, toast } from './core.js';
+import { closeOverlay, openOverlay } from './overlay-manager.js';
 import { refreshCommandStates } from './commands.js';
 import { icon } from '../shared/icons.js';
 import { fmtClock, fmtDuration, fmtSize, fmtSpeed, pushSample, rateOf, remainingMs } from '../shared/format.js';
@@ -399,50 +400,50 @@ function showNextConflict() {
   openConflictDialog(next.task, next.conflict);
 }
 
-function openConflictDialog(task, conflict) {
+async function openConflictDialog(task, conflict) {
   conflictOpen = true;
   const kindScope = conflict.kindScope || (conflict.srcKind === 'dir' ? 'dirs' : 'files');
   const mismatch = conflict.srcKind !== conflict.dstKind;
-  const sheet = document.createElement('dialog');
-  sheet.className = 'upload-conflict';
-  sheet.innerHTML = '<h3>复制冲突</h3><p></p><label class="switch"><input type="checkbox" checked><span class="switch-slider"></span><span class="switch-label">对此任务的后续同类冲突使用相同策略</span></label><div class="modal-foot"></div>';
-  sheet.querySelector('p').textContent =
+  const message =
     `目标 ${conflict.dstLabel || task.dstLabel} 的 ${task.dstDir} 中已存在「${conflict.name}」` +
     (mismatch ? `(类型不一致:源${conflict.srcKind === 'dir' ? '目录' : '文件'}/目标${conflict.dstKind === 'dir' ? '目录' : '文件'})` : '') +
     '。';
-  let settled = false;
-  const finish = (policy) => {
-    if (settled) return;
-    settled = true;
-    const applyToAll = sheet.querySelector('input').checked;
-    sheet.close();
-    sheet.remove();
-    conflictOpen = false;
-    task.conflict = null;
-    const idx = pendingConflicts.findIndex((c) => c.conflict.conflictId === conflict.conflictId);
-    if (idx >= 0) pendingConflicts.splice(idx, 1);
-    api('transfer:resolve', { taskId: task.taskId, conflictId: conflict.conflictId, decision: { policy, applyToAll } })
-      .catch((e) => toast('冲突决策失败:' + e.message, 'error'));
-    renderTaskCenter();
-    setTimeout(showNextConflict, 0);
-  };
   const buttons = mismatch
-    ? [['skip', '跳过(默认)'], ['rename', '重命名'], ['cancelRest', '取消剩余']]
+    ? [
+      { policy: 'skip', label: '跳过(默认)' },
+      { policy: 'rename', label: '重命名' },
+      { policy: 'cancelRest', label: '取消剩余' },
+    ]
     : kindScope === 'dirs'
-      ? [['merge', '合并'], ['skip', '跳过整个目录'], ['rename', '整体重命名'], ['cancelRest', '取消剩余']]
-      : [['skip', '跳过(默认)'], ['overwrite', '覆盖'], ['rename', '自动重命名'], ['cancelRest', '取消剩余队列']];
-  for (const [policy, label] of buttons) {
-    const button = document.createElement('button');
-    button.className = 'btn' + (policy === 'overwrite' ? ' danger' : '');
-    button.textContent = label;
-    button.addEventListener('click', () => finish(policy));
-    sheet.querySelector('.modal-foot').appendChild(button);
-  }
-  sheet.addEventListener('cancel', (e) => { e.preventDefault(); finish('cancelRest'); });
-  sheet.addEventListener('close', () => finish('cancelRest'));
-  document.body.appendChild(sheet);
-  sheet.showModal();
-  sheet.querySelector('button').focus();
+      ? [
+        { policy: 'merge', label: '合并' },
+        { policy: 'skip', label: '跳过整个目录' },
+        { policy: 'rename', label: '整体重命名' },
+        { policy: 'cancelRest', label: '取消剩余' },
+      ]
+      : [
+        { policy: 'skip', label: '跳过(默认)' },
+        { policy: 'overwrite', label: '覆盖', danger: true },
+        { policy: 'rename', label: '自动重命名' },
+        { policy: 'cancelRest', label: '取消剩余队列' },
+      ];
+  const { policy, applyToAll } = await askConflict({
+    id: 'copy-conflict-dialog',
+    title: '复制冲突',
+    message,
+    checkboxLabel: '对此任务的后续同类冲突使用相同策略',
+    checkboxChecked: true,
+    cancelPolicy: 'cancelRest',
+    buttons,
+  });
+  conflictOpen = false;
+  task.conflict = null;
+  const idx = pendingConflicts.findIndex((c) => c.conflict.conflictId === conflict.conflictId);
+  if (idx >= 0) pendingConflicts.splice(idx, 1);
+  api('transfer:resolve', { taskId: task.taskId, conflictId: conflict.conflictId, decision: { policy, applyToAll } })
+    .catch((e) => toast('冲突决策失败:' + e.message, 'error'));
+  renderTaskCenter();
+  setTimeout(showNextConflict, 0);
 }
 
 /* ---------------- 任务中心 UI ---------------- */
@@ -784,8 +785,29 @@ function renderTaskCenter() {
 }
 
 export function toggleTaskPopover(force) {
-  taskPopoverOpen = force === undefined ? !taskPopoverOpen : !!force;
+  const next = force === undefined ? !taskPopoverOpen : !!force;
+  taskPopoverOpen = next;
   renderTaskCenter();
+  const pop = $('#file-task-popover');
+  if (taskPopoverOpen && tasks.length && pop) {
+    openOverlay({
+      id: 'file-task-popover',
+      kind: 'popover',
+      group: 'floating',
+      el: pop,
+      triggers: () => [$('#btn-file-tasks-status'), $('#rail-transfers')].filter(Boolean),
+      closeOnResize: false,
+      onResize: positionTaskPopover,
+      close: ({ focusTrigger } = {}) => {
+        if (!taskPopoverOpen) return;
+        taskPopoverOpen = false;
+        renderTaskCenter();
+        if (focusTrigger) (taskAnchorEl || $('#rail-transfers') || $('#btn-file-tasks-status'))?.focus?.();
+      },
+    });
+  } else {
+    closeOverlay('file-task-popover');
+  }
 }
 
 /* ---------------- 关闭连接前的确认 ---------------- */
@@ -958,7 +980,6 @@ export function bindTransferUi() {
   const pop = $('#file-task-popover');
   // fixed 定位的浮层必须挂在 body:留在 #statusbar 里会被它的 overflow-y:hidden 裁掉
   if (pop && pop.parentElement !== document.body) document.body.appendChild(pop);
-  window.addEventListener('resize', positionTaskPopover);
   const sbBtn = $('#btn-file-tasks-status');
   if (sbBtn) sbBtn.addEventListener('click', () => { taskAnchorEl = sbBtn; toggleTaskPopover(); });
   const railBtn = $('#rail-transfers');
@@ -970,14 +991,9 @@ export function bindTransferUi() {
       // 需要中断在途任务时逐条点 ⏹。
       tasks.length = 0;
       pendingConflicts.length = 0;
+      closeOverlay('file-task-popover');
       renderTaskCenter();
     });
   }
-  // 浮层外点击收起(状态栏/左轨按钮自身由上面的 toggle 处理)
-  document.addEventListener('pointerdown', (e) => {
-    if (!taskPopoverOpen) return;
-    if (e.target.closest?.('#file-task-popover, #btn-file-tasks-status, #rail-transfers')) return;
-    toggleTaskPopover(false);
-  }, true);
   renderTaskCenter();
 }

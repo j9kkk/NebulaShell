@@ -25,6 +25,7 @@ export const CONVENTIONS = {
   'workspace.close': ['关闭窗格或标签', false],
   'panel.sidebar': ['主机侧栏', false],
   'panel.tools': ['AI 助手', false],
+  'panel.monitor': ['主机监控', false],
   'ai.newThread': ['新建 AI 对话', false],
   'ai.cycleEffort': ['切换思考强度', false],
   'session.history': ['命令历史', true],

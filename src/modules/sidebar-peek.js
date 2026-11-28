@@ -6,6 +6,7 @@
 // 不复制一份主机列表。
 
 import { closeRailCard, refreshRailState } from './rail-cards.js';
+import { closeAllOverlays, closeOverlay, openOverlay } from './overlay-manager.js';
 
 let bound = false;
 
@@ -35,11 +36,15 @@ function syncHostButton(on) {
 
 export function closePeek({ focusBack = false } = {}) {
   const sb = sidebar();
-  if (!sb || !sb.classList.contains('peek-open')) return;
+  if (!sb || !sb.classList.contains('peek-open')) {
+    closeOverlay('sidebar-peek');
+    return;
+  }
   const panel = hostDock();
   const ae = document.activeElement;
   const wasInside = !!(panel && ae && panel.contains(ae));
   sb.classList.remove('peek-open');
+  closeOverlay('sidebar-peek');
   syncHostButton(false);
   // 卡片里还有焦点时不能让它悬空：Esc 回触发按钮；点外面交给点击目标。
   if (wasInside) {
@@ -56,10 +61,21 @@ function openPeek() {
   const sb = sidebar();
   if (!sb || sb.classList.contains('peek-open') || !sb.classList.contains('collapsed')) return;
   if (document.body.classList.contains('modal-open')) return;
-  // 工具卡 / 会话卡让位：同屏只允许一个浮层
+  // 工具卡 / 窄屏右抽屉让位：同屏只允许一个抽屉浮层
+  closeAllOverlays({ kinds: ['popover'], reason: 'peek' });
   document.dispatchEvent(new CustomEvent('nebula:peek-open'));
   sb.classList.add('peek-open');
   syncHostButton(true);
+  openOverlay({
+    id: 'sidebar-peek',
+    kind: 'drawer-overlay',
+    group: 'drawer-overlay',
+    el: sb,
+    triggers: () => [hostButton()].filter(Boolean),
+    allowOutside: () => ['#ctx-menu', '#ctx-sub'],
+    closeOnResize: false,
+    close: ({ focusTrigger } = {}) => closePeek({ focusBack: !!focusTrigger }),
+  });
 }
 
 export function togglePeek() {
@@ -90,21 +106,6 @@ export function bindSidebarPeek() {
     togglePeek();
   });
 
-  // 点卡片外立即收回（捕获阶段，抢在任何 click 处理之前）；点 #ctx-menu 不算外
-  document.addEventListener('pointerdown', (e) => {
-    if (!isPeekOpen() || sb.contains(e.target)) return;
-    const menu = document.getElementById('ctx-menu');
-    if (menu && menu.contains(e.target)) return;
-    closePeek();
-  }, true);
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !isPeekOpen()) return;
-    if (document.body.classList.contains('modal-open')) return;
-    e.stopPropagation();
-    closePeek({ focusBack: true });
-  });
-
   // 点/中键卡片里的主机：连接由 host-item 自己的处理器完成，这里只负责收回。
   const hostClose = (e) => {
     if (!isPeekOpen()) return;
@@ -114,14 +115,6 @@ export function bindSidebarPeek() {
   document.addEventListener('click', hostClose);
   document.addEventListener('auxclick', (e) => {
     if (e.button === 1) hostClose(e);
-  });
-
-  // 弹窗 / 工具卡打开时让位
-  document.addEventListener('nebula:modal-scope', () => {
-    if (isPeekOpen() && document.body.classList.contains('modal-open')) closePeek();
-  });
-  document.addEventListener('nebula:rail-card-open', () => {
-    if (isPeekOpen()) closePeek();
   });
 }
 

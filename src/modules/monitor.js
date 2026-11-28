@@ -1,6 +1,5 @@
 // 资源监控:指标采集与监控条
 import { $, api, askPrompt, closeModal, openModal, state, toast } from './core.js';
-import { popupPosition } from './interaction.js';
 import { feedTrusted } from './terminal.js';
 import { icon } from '../shared/icons.js';
 
@@ -257,114 +256,6 @@ function buildSplinePath(coords, W, H) {
   return { dLine, dArea };
 }
 
-function renderCpuPopoverChart(hist, curPct) {
-  const pop = $('#mon-cpu-popover');
-  if (!pop) return;
-  const curEl = $('#mon-pop-cur');
-  const statCur = $('#mon-pop-stat-cur');
-  const statMax = $('#mon-pop-stat-max');
-  const statAvg = $('#mon-pop-stat-avg');
-  const areaEl = $('#mon-pop-area');
-  const lineEl = $('#mon-pop-line');
-  const ptEl = $('#mon-pop-point');
-
-  const vals = (hist || []).slice(-16);
-  const curTxt = curPct == null ? '–' : fmtPct(curPct);
-  if (curEl) curEl.textContent = curTxt;
-  if (statCur) statCur.textContent = curTxt;
-
-  if (!vals.length || curPct == null) {
-    if (statMax) statMax.textContent = '–';
-    if (statAvg) statAvg.textContent = '–';
-    if (areaEl) areaEl.setAttribute('d', '');
-    if (lineEl) lineEl.setAttribute('d', '');
-    return;
-  }
-
-  const maxV = Math.max(...vals);
-  const avgV = vals.reduce((a, b) => a + b, 0) / vals.length;
-  if (statMax) statMax.textContent = fmtPct(maxV);
-  if (statAvg) statAvg.textContent = fmtPct(avgV);
-
-  const pts = vals.length === 1 ? [vals[0], vals[0]] : vals;
-  const W = 236;
-  const H = 60;
-  const padY = 6;
-  const plotH = H - padY * 2;
-  const coords = pts.map((v, i) => {
-    const x = (i / (pts.length - 1)) * W;
-    const clamped = Math.min(100, Math.max(0, v));
-    const y = H - padY - (clamped / 100) * plotH;
-    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
-  });
-
-  const { dLine, dArea } = buildSplinePath(coords, W, H);
-  if (lineEl) lineEl.setAttribute('d', dLine);
-  if (areaEl) areaEl.setAttribute('d', dArea);
-  if (ptEl) {
-    const last = coords[coords.length - 1];
-    ptEl.setAttribute('cx', String(last[0]));
-    ptEl.setAttribute('cy', String(last[1]));
-  }
-}
-
-function renderMemPopoverChart(hist, curPct, curUsedMB, curTotalMB) {
-  const pop = $('#mon-mem-popover');
-  if (!pop) return;
-  const curEl = $('#mon-mem-pop-cur');
-  const statCur = $('#mon-mem-pop-stat-cur');
-  const statMax = $('#mon-mem-pop-stat-max');
-  const statAvail = $('#mon-mem-pop-stat-avail');
-  const areaEl = $('#mon-mem-pop-area');
-  const lineEl = $('#mon-mem-pop-line');
-  const ptEl = $('#mon-mem-pop-point');
-
-  const vals = (hist || []).slice(-16);
-  const curTxt = curPct == null ? '–' : (fmtPct(curPct) + (curUsedMB != null && curTotalMB != null ? ' ' + fmtMemPair(curUsedMB, curTotalMB) : ''));
-  if (curEl) curEl.textContent = curTxt;
-  if (statCur) statCur.textContent = curPct == null ? '–' : fmtPct(curPct);
-
-  if (!vals.length || curPct == null) {
-    if (statMax) statMax.textContent = '–';
-    if (statAvail) statAvail.textContent = '–';
-    if (areaEl) areaEl.setAttribute('d', '');
-    if (lineEl) lineEl.setAttribute('d', '');
-    return;
-  }
-
-  const maxV = Math.max(...vals);
-  if (statMax) statMax.textContent = fmtPct(maxV);
-  if (statAvail) {
-    if (curUsedMB != null && curTotalMB != null) {
-      const availMB = Math.max(0, curTotalMB - curUsedMB);
-      statAvail.textContent = curTotalMB >= 1024 ? `${trim1(availMB / 1024)} GB` : `${Math.round(availMB)} MB`;
-    } else {
-      statAvail.textContent = fmtPct(100 - curPct);
-    }
-  }
-
-  const pts = vals.length === 1 ? [vals[0], vals[0]] : vals;
-  const W = 236;
-  const H = 60;
-  const padY = 6;
-  const plotH = H - padY * 2;
-  const coords = pts.map((v, i) => {
-    const x = (i / (pts.length - 1)) * W;
-    const clamped = Math.min(100, Math.max(0, v));
-    const y = H - padY - (clamped / 100) * plotH;
-    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
-  });
-
-  const { dLine, dArea } = buildSplinePath(coords, W, H);
-  if (lineEl) lineEl.setAttribute('d', dLine);
-  if (areaEl) areaEl.setAttribute('d', dArea);
-  if (ptEl) {
-    const last = coords[coords.length - 1];
-    ptEl.setAttribute('cx', String(last[0]));
-    ptEl.setAttribute('cy', String(last[1]));
-  }
-}
-
 export function calcNetCeiling(maxBps) {
   if (!maxBps || maxBps <= 10240) return 10240; // 10 KB/s
   let unit = 1024;
@@ -380,170 +271,6 @@ export function calcNetCeiling(maxBps) {
   else if (norm <= 5) factor = 5;
   else factor = 10;
   return Math.max(10240, factor * mag * unit);
-}
-
-function renderNetPopoverChart(rxHist, txHist, curRxBps, curTxBps) {
-  const pop = $('#mon-net-popover');
-  if (!pop) return;
-  const statRx = $('#mon-net-pop-stat-rx');
-  const statTx = $('#mon-net-pop-stat-tx');
-  const statCur = $('#mon-net-pop-stat-cur');
-  const scaleEl = $('#mon-net-pop-scale');
-  const rxAreaEl = $('#mon-net-pop-rx-area');
-  const rxLineEl = $('#mon-net-pop-rx-line');
-  const rxPtEl = $('#mon-net-pop-rx-point');
-  const txLineEl = $('#mon-net-pop-tx-line');
-  const txPtEl = $('#mon-net-pop-tx-point');
-
-  const rxVals = (rxHist || []).slice(-16);
-  const txVals = (txHist || []).slice(-16);
-  const curTxt = curRxBps == null ? '–' : fmtBytes(curRxBps);
-  if (statCur) statCur.textContent = curTxt;
-
-  if ((!rxVals.length && !txVals.length) || (curRxBps == null && curTxBps == null)) {
-    if (statRx) statRx.textContent = '–';
-    if (statTx) statTx.textContent = '–';
-    if (scaleEl) scaleEl.textContent = '标尺: –';
-    if (rxAreaEl) rxAreaEl.setAttribute('d', '');
-    if (rxLineEl) rxLineEl.setAttribute('d', '');
-    if (txLineEl) txLineEl.setAttribute('d', '');
-    return;
-  }
-
-  const maxRx = rxVals.length ? Math.max(...rxVals) : (curRxBps || 0);
-  const maxTx = txVals.length ? Math.max(...txVals) : (curTxBps || 0);
-  if (statRx) statRx.textContent = fmtBytes(maxRx);
-  if (statTx) statTx.textContent = fmtBytes(maxTx);
-
-  const ceiling = calcNetCeiling(Math.max(maxRx, maxTx, curRxBps || 0, curTxBps || 0));
-  if (scaleEl) scaleEl.textContent = `标尺顶格: ${fmtBytes(ceiling)}`;
-
-  const W = 236;
-  const H = 60;
-  const padY = 6;
-  const plotH = H - padY * 2;
-
-  // RX 曲线 (下行，实线 + 面积)
-  const ptsRx = rxVals.length <= 1 ? [(rxVals[0] || 0), (rxVals[0] || 0)] : rxVals;
-  const coordsRx = ptsRx.map((v, i) => {
-    const x = (i / (ptsRx.length - 1)) * W;
-    const clamped = Math.min(ceiling, Math.max(0, v));
-    const y = H - padY - (clamped / ceiling) * plotH;
-    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
-  });
-  const { dLine: dRxLine, dArea: dRxArea } = buildSplinePath(coordsRx, W, H);
-  if (rxLineEl) rxLineEl.setAttribute('d', dRxLine);
-  if (rxAreaEl) rxAreaEl.setAttribute('d', dRxArea);
-  if (rxPtEl) {
-    const last = coordsRx[coordsRx.length - 1];
-    rxPtEl.setAttribute('cx', String(last[0]));
-    rxPtEl.setAttribute('cy', String(last[1]));
-  }
-
-  // TX 曲线 (上行，虚线)
-  const ptsTx = txVals.length <= 1 ? [(txVals[0] || 0), (txVals[0] || 0)] : txVals;
-  const coordsTx = ptsTx.map((v, i) => {
-    const x = (i / (ptsTx.length - 1)) * W;
-    const clamped = Math.min(ceiling, Math.max(0, v));
-    const y = H - padY - (clamped / ceiling) * plotH;
-    return [Number(x.toFixed(1)), Number(y.toFixed(1))];
-  });
-  const { dLine: dTxLine } = buildSplinePath(coordsTx, W, H);
-  if (txLineEl) txLineEl.setAttribute('d', dTxLine);
-  if (txPtEl) {
-    const last = coordsTx[coordsTx.length - 1];
-    txPtEl.setAttribute('cx', String(last[0]));
-    txPtEl.setAttribute('cy', String(last[1]));
-  }
-}
-
-const POPOVER_ENTRIES = [
-  { id: 'cpu', triggerId: '#mon-cpu-trigger', popoverId: '#mon-cpu-popover' },
-  { id: 'mem', triggerId: '#mon-mem-trigger', popoverId: '#mon-mem-popover' },
-  { id: 'net', triggerId: '#mon-net-trigger', popoverId: '#mon-net-popover' },
-];
-
-let activePopoverId = null;
-let popoversBound = false;
-let popoverHideTimer = null;
-
-function hideAllPopovers() {
-  if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
-  activePopoverId = null;
-  for (const entry of POPOVER_ENTRIES) {
-    const pop = $(entry.popoverId);
-    if (pop) pop.classList.add('hidden');
-  }
-}
-
-function positionPopover(entry) {
-  const pop = $(entry.popoverId);
-  const trigger = $(entry.triggerId);
-  if (!pop || !trigger || pop.classList.contains('hidden')) return;
-  const anchor = trigger.getBoundingClientRect?.();
-  if (!anchor) return;
-  const size = { width: pop.offsetWidth || 270, height: pop.offsetHeight || 156 };
-  const pos = popupPosition(anchor, size, { width: window.innerWidth || 1280, height: window.innerHeight || 800 }, 8);
-  pop.style.left = `${pos.left}px`;
-  pop.style.top = `${pos.top}px`;
-}
-
-function positionActivePopover() {
-  if (!activePopoverId) return;
-  const entry = POPOVER_ENTRIES.find((e) => e.id === activePopoverId);
-  if (entry) positionPopover(entry);
-}
-
-export function positionCpuPopover() {
-  positionActivePopover();
-}
-
-function bindMonitorPopoversOnce() {
-  if (popoversBound) return;
-  const triggersExist = POPOVER_ENTRIES.some((e) => $(e.triggerId));
-  if (!triggersExist) return;
-  popoversBound = true;
-
-  for (const entry of POPOVER_ENTRIES) {
-    const trigger = $(entry.triggerId);
-    const pop = $(entry.popoverId);
-    if (!trigger || !pop || !trigger.addEventListener) continue;
-
-    if (typeof document !== 'undefined' && document.body && pop.parentElement && pop.parentElement !== document.body) {
-      document.body.appendChild(pop);
-    }
-
-    const showThis = () => {
-      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
-      const bar = $('#monitor-bar');
-      if (!bar || bar.classList.contains('hidden') || bar.classList.contains('mon-unsupported')) return;
-      for (const other of POPOVER_ENTRIES) {
-        if (other.id !== entry.id) {
-          const otherPop = $(other.popoverId);
-          if (otherPop) otherPop.classList.add('hidden');
-        }
-      }
-      activePopoverId = entry.id;
-      pop.classList.remove('hidden');
-      positionPopover(entry);
-    };
-
-    const scheduleHide = () => {
-      if (popoverHideTimer) clearTimeout(popoverHideTimer);
-      popoverHideTimer = setTimeout(() => {
-        hideAllPopovers();
-      }, 120);
-    };
-
-    trigger.addEventListener('mouseenter', showThis);
-    trigger.addEventListener('mouseleave', scheduleHide);
-    pop.addEventListener('mouseenter', () => {
-      if (popoverHideTimer) { clearTimeout(popoverHideTimer); popoverHideTimer = null; }
-    });
-    pop.addEventListener('mouseleave', scheduleHide);
-  }
-
-  window.addEventListener?.('resize', positionActivePopover);
 }
 
 function fmtDrawerPct(v) {
@@ -762,7 +489,6 @@ export function renderMonitorDrawer() {
 }
 
 export function renderMonitorBar() {
-  bindMonitorPopoversOnce();
   const bar = $('#monitor-bar');
   // 监控固定显示在状态栏,不再有开关(旧 #btn-monitor 已移除)。
   // 无活动会话时隐藏:此时状态栏显示"就绪 — 尚未建立连接",监控块没有意义。
@@ -772,7 +498,6 @@ export function renderMonitorBar() {
   // 断开态状态栏最该说清"为什么断、怎么连回来",这几个空仪表没有任何信息。
   if (!active || active.status !== 'connected') {
     bar.classList.add('hidden');
-    hideAllPopovers();
     renderMonitorDrawer();
     return;
   }
@@ -800,9 +525,6 @@ export function renderMonitorBar() {
     setLat(null);
     set('#mon-note', ''); set('#mon-spark-cpu', '');
     setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
-    renderCpuPopoverChart([], null);
-    renderMemPopoverChart([], null, null, null);
-    renderNetPopoverChart([], [], null, null);
     renderMonitorDrawer();
     return;
   }
@@ -810,16 +532,12 @@ export function renderMonitorBar() {
     // 整条切到"不支持"布局:数值槽位隐藏,避免终态文案把长条撑成两行。
     // 延迟例外:echo 往返不依赖 /proc,非 Linux 主机照样有实时延迟可看。
     bar.classList.add('mon-unsupported');
-    hideAllPopovers();
     set('#mon-cpu', '–'); set('#mon-mem', '–'); set('#mon-disk', '–'); set('#mon-rx', '–'); set('#mon-tx', '–');
     setV('#mon-mem-det', ''); setV('#mon-disk-det', '');
     setLat(m.latencyMs);
     set('#mon-note', '该主机暂不支持资源监控(仅支持 Linux / macOS)');
     set('#mon-spark-cpu', '');
     setRing('#mon-cpu-bar', null); setRing('#mon-mem-bar', null); setRing('#mon-disk-bar', null);
-    renderCpuPopoverChart([], null);
-    renderMemPopoverChart([], null, null, null);
-    renderNetPopoverChart([], [], null, null);
     renderMonitorDrawer();
     return;
   }
@@ -848,9 +566,6 @@ export function renderMonitorBar() {
   setRing('#mon-cpu-bar', m.cpuPct);
   setRing('#mon-mem-bar', m.memPct);
   setRing('#mon-disk-bar', m.diskPct);
-  renderCpuPopoverChart(cpuHist, m.cpuPct);
-  renderMemPopoverChart(memHist, m.memPct, m.memUsedMB, m.memTotalMB);
-  renderNetPopoverChart(rxHist, txHist, m.rxBps, m.txBps);
   renderMonitorDrawer();
 }
 

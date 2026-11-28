@@ -48,13 +48,13 @@
           <button id="rail-hosts" class="btn icon rail-host-btn rail-on" type="button" aria-label="主机列表" aria-haspopup="dialog" aria-expanded="true"><span class="mi" data-icon="server"></span></button>
         </span>
         <span class="rail-tip" data-tip="常用命令" role="presentation">
-          <button id="rail-commands" class="btn icon" type="button" aria-label="常用命令" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="zap"></span></button>
+          <button id="rail-commands" class="btn icon" type="button" data-command="tools.snippets" aria-label="常用命令"><span class="mi" data-icon="zap"></span></button>
         </span>
         <span class="rail-tip" data-tip="批量执行" role="presentation">
-          <button id="rail-batch" class="btn icon" type="button" aria-label="批量执行" aria-haspopup="dialog" aria-expanded="false"><span class="mi" data-icon="listChecks"></span></button>
+          <button id="rail-batch" class="btn icon" type="button" data-command="tools.batch" aria-label="批量执行"><span class="mi" data-icon="listChecks"></span></button>
         </span>
         <span class="rail-tip" data-tip="命令历史" role="presentation">
-          <button id="rail-history" class="btn icon" type="button" data-command="tools.history" aria-label="命令历史"><span class="mi" data-icon="clock"></span></button>
+          <button id="rail-history" class="btn icon" type="button" data-command="session.history" aria-label="命令历史"><span class="mi" data-icon="clock"></span></button>
         </span>
         <span class="rail-tip" data-tip="端口转发" role="presentation">
           <button id="rail-forwards" class="btn icon" type="button" data-command="tools.forwards" aria-label="端口转发"><span class="mi" data-icon="plug"></span></button>
@@ -72,7 +72,7 @@
             <button id="rail-ai" class="btn icon" type="button" data-command="panel.ai" aria-label="AI 助手"><span class="mi" data-icon="sparkles"></span></button>
           </span>
           <span class="rail-tip" data-tip="设置" role="presentation">
-            <button id="rail-settings" class="btn icon" type="button" data-command="app.settings" aria-label="设置"><span class="mi" data-icon="settings"></span></button>
+            <button id="rail-settings" class="btn icon" type="button" data-command="settings.open" aria-label="设置"><span class="mi" data-icon="settings"></span></button>
           </span>
         </div>
       </div>
@@ -85,7 +85,7 @@
             <span id="host-count" class="side-count">0</span>
             <span class="side-spacer"></span>
             <button id="btn-add-host" class="btn small" title="新建主机"><span class="mi" data-icon="plus"></span><span class="lbl">新建</span></button>
-            <button id="btn-host-manage" class="btn icon ghost" title="主机管理:主机库、云导入、导入导出、指纹、端口转发" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
+            <button id="btn-host-manage" class="btn icon ghost" title="主机管理:云导入、主机库、导入导出、指纹、列表密度" aria-label="主机管理" aria-haspopup="menu" aria-expanded="false"><span class="mi" data-icon="dots"></span></button>
           </div>
           <!-- 第二行:检索。清空钮复用 .search-field(命令历史/常用命令同款) -->
           <div class="search-field">
@@ -141,16 +141,16 @@
         <!-- 紧凑内联监控(E2):仅显示延迟 + CPU 胶囊,内存/磁盘/网络/趋势由右侧监控抽屉(E3)承接;
              DOM 槽位保留以确保 monitor.js 与单测零回归。 -->
         <span id="monitor-bar" class="hidden">
-          <span class="mon-group mon-lat-item"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
+          <span class="mon-group mon-lat-item" title="点击展开右侧监控抽屉"><span class="mon-item">延迟 <b id="mon-lat" class="mon-val">–</b></span></span>
           <span class="mon-deck">
-            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger" title="悬停查看 CPU 负载历史趋势">
+            <span class="mon-group mon-cpu-item" id="mon-cpu-trigger" title="点击展开右侧监控抽屉">
               <span id="mon-cpu-bar" class="mon-ring" aria-hidden="true">
                 <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
               </span>
               <span class="mon-item">CPU <b id="mon-cpu" class="mon-val">–</b></span>
               <span class="mon-cpu-hint" aria-hidden="true">▾</span>
             </span>
-            <span class="mon-group mon-mem-item" id="mon-mem-trigger" title="悬停查看内存使用历史趋势">
+            <span class="mon-group mon-mem-item" id="mon-mem-trigger">
               <span id="mon-mem-bar" class="mon-ring" aria-hidden="true">
                 <svg viewBox="0 0 20 20"><circle class="mon-ring-bg" cx="10" cy="10" r="7.5"/><circle class="mon-ring-fg" cx="10" cy="10" r="7.5"/></svg>
               </span>
@@ -162,7 +162,7 @@
               </span>
               <span class="mon-item">磁盘 <b id="mon-disk" class="mon-val">–</b><i id="mon-disk-det" class="mon-det"></i></span>
             </span>
-            <span class="mon-group mon-net-item" id="mon-net-trigger" title="悬停查看网络吞吐历史趋势">
+            <span class="mon-group mon-net-item" id="mon-net-trigger">
               <span class="mon-item">网络 <i class="mon-dir mon-up">↑</i><b id="mon-rx" class="mon-val">–</b><i class="mon-dir mon-down">↓</i><b id="mon-tx" class="mon-val">–</b></span>
             </span>
             <span id="mon-note" class="muted"></span>
@@ -263,7 +263,7 @@
         <span class="spacer"></span>
         <div class="rp-head-acts" data-for="ai">
           <button id="ai-thread-new" class="btn small icon-tb" type="button" title="新建 AI 对话" data-title="新建 AI 对话(%1)" data-accel="ai.newThread"><span class="mi" data-icon="plus"></span></button>
-          <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span></button>
+          <button id="ai-drawer-toggle" class="btn small icon-tb ai-drawer-toggle" type="button" title="全部历史对话" aria-label="全部历史对话" aria-expanded="false"><span class="mi" data-icon="messageSquare"></span><span id="ai-thread-count-badge" class="ai-thread-count-badge"></span><span class="ai-thread-dot" aria-hidden="true"></span></button>
           <button id="ai-thread-clear" class="btn small icon-tb" type="button" title="清空当前对话"><span class="mi" data-icon="trash"></span></button>
           <span class="rp-head-sep" aria-hidden="true"></span>
         </div>
@@ -273,16 +273,7 @@
       <div class="rp-pages">
         <!-- 页签 1:AI 助手 -->
         <div id="rp-ai" class="rp-page active" data-page="ai" role="tabpanel" aria-labelledby="rp-tab-ai">
-          <div class="ai-thread-bar">
-            <button id="ai-thread-trigger" class="ai-thread-trigger" type="button" title="切换对话" aria-haspopup="menu" aria-expanded="false" aria-controls="ai-thread-menu-list">
-              <span class="mi" data-icon="messageSquare" aria-hidden="true"></span>
-              <span id="ai-thread-title" class="ai-thread-title">新对话</span>
-              <span class="ai-thread-dot" aria-hidden="true"></span>
-              <span class="ai-thread-caret mi" data-icon="chevronDown" aria-hidden="true"></span>
-            </button>
-          </div>
-
-          <!-- 会话管理抽屉:在 AI 页内切出全量会话管理与搜索 -->
+          <!-- 会话管理抽屉:唯一的对话切换与管理入口（已合并原顶部独立下拉条，释放消息阅读高度） -->
           <div id="ai-drawer" class="ai-drawer hidden" aria-label="会话管理抽屉">
             <div class="ai-drawer-head">
               <span class="ai-drawer-title">全部对话</span>
@@ -532,7 +523,11 @@
   <!-- 主机编辑弹窗 -->
   <div id="modal-host" class="modal hidden">
     <div class="modal-card">
-      <h3 id="host-modal-title">新建主机</h3>
+      <div class="modal-head">
+        <h3 id="host-modal-title">新建主机</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <input id="host-id" type="hidden" />
       <div class="form-grid">
         <label for="host-protocol-slider">协议</label>
@@ -683,7 +678,7 @@
           <select id="host-jump" multiple class="hidden"></select>
         </div>
         <div id="row-initcmd" class="form-row">
-          <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令(可选)" />
+          <label>连接后执行</label><input id="host-initcmd" type="text" placeholder="初始化命令（可选）" />
         </div>
         <div id="row-sessionlog" class="form-row">
           <label for="host-sessionlog">会话日志</label>
@@ -725,7 +720,11 @@
   <!-- 云主机导入弹窗 -->
   <div id="modal-cloud" class="modal hidden">
     <div class="modal-card wide">
-      <h3>从云端导入服务器</h3>
+      <div class="modal-head">
+        <h3>从云端导入服务器</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <!-- 账号状态横条:展示当前生效的云账号,支持一键跳转配置中心 -->
       <div id="cloud-import-account-strip" class="cloud-import-account-strip">
         <span class="strip-lead-icon"><span class="mi" data-icon="cloud"></span></span>
@@ -758,8 +757,8 @@
       <div class="modal-actions">
         <span id="cloud-count" class="muted"></span>
         <span class="spacer"></span>
-        <button id="btn-cloud-import-selected" class="btn primary hidden">导入选中</button>
         <button id="btn-cloud-close" class="btn">关闭</button>
+        <button id="btn-cloud-import-selected" class="btn primary hidden">导入选中</button>
       </div>
     </div>
   </div>
@@ -769,7 +768,11 @@
        内容取自 keymap(settings.js renderKeymapTable)。 -->
   <div id="modal-settings" class="modal hidden">
     <div class="modal-card settings-card">
-      <h3>设置</h3>
+      <div class="modal-head">
+        <h3>设置</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <div class="settings-body">
         <nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分区">
           <button id="settings-tab-terminal" class="settings-tab" type="button" role="tab" data-section="terminal" aria-controls="settings-sec-terminal"><span class="mi" data-icon="terminal"></span><span>终端</span></button>
@@ -946,7 +949,8 @@
           <p class="muted small-note">点「快捷键」一列开始录制，按下新组合即绑定；<kbd>Esc</kbd> 取消本次录制，<kbd>Backspace</kbd> 恢复该项默认。冲突的键位不会被保存。</p>
           <div class="modal-actions">
             <button id="btn-keys-reset-all" class="btn ghost" type="button">恢复全部默认</button>
-            <button id="btn-keys-close" class="btn">关闭</button>
+            <span class="spacer"></span>
+            <button id="btn-keys-close" class="btn" type="button">取消</button>
             <button id="btn-keys-save" class="btn primary" type="button" disabled>保存</button>
           </div>
         </section>
@@ -958,7 +962,11 @@
        以 modal-stack 叠在 AI 设置弹窗之上,取消不影响表单已填内容。 -->
   <div id="modal-model-picker" class="modal modal-stack hidden">
     <div class="modal-card picker-card">
-      <h3>选择模型</h3>
+      <div class="modal-head">
+        <h3>选择模型</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <p id="model-picker-sub" class="muted small-note picker-sub">勾选要启用的模型,仅勾选中的模型可在对话里切换使用。</p>
       <div class="picker-toolbar">
         <input id="model-picker-search" class="inp" type="text" placeholder="搜索模型…" autocomplete="off" />
@@ -980,6 +988,8 @@
     <div class="modal-card model-config-card">
       <div class="modal-head">
         <h3 id="model-config-title">编辑模型配置</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
       </div>
       <div class="model-config-body form-grid">
         <label for="cfg-auto">智能配置</label>
@@ -1033,7 +1043,11 @@
        结果操作按钮为静态节点,由 tools.js bindBatchUi() 统一绑定与启停。 -->
   <div id="modal-batch" class="modal hidden">
     <div class="modal-card wide batch-card">
-      <h3>批量执行</h3>
+      <div class="modal-head">
+        <h3>批量执行</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <div class="batch-body">
         <div class="batch-grid">
           <label class="batch-field-label" for="batch-search">目标主机</label>
@@ -1090,9 +1104,9 @@
       <div class="batch-foot">
         <span id="batch-status" class="muted" role="status"></span>
         <span class="batch-foot-btns">
-          <button id="btn-batch-run" class="btn primary">▶ 执行</button>
-          <button id="btn-batch-cancel" class="btn" disabled>取消执行</button>
           <button id="btn-batch-close" class="btn">关闭</button>
+          <button id="btn-batch-cancel" class="btn" disabled>取消执行</button>
+          <button id="btn-batch-run" class="btn primary">▶ 执行</button>
         </span>
       </div>
     </div>
@@ -1170,7 +1184,11 @@
   <!-- 指纹管理弹窗(B6) -->
   <div id="modal-fp" class="modal hidden">
     <div class="modal-card">
-      <h3>已知主机指纹</h3>
+      <div class="modal-head">
+        <h3>已知主机指纹</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <table id="fp-table" class="hidden">
         <thead><tr><th>主机</th><th>指纹(SHA256)</th><th>操作</th></tr></thead>
         <tbody id="fp-tbody"></tbody>
@@ -1188,7 +1206,11 @@
   <!-- 文件分屏书签管理(sftp.js openBookmarkManager):本主机的书签,改别名、调顺序、删除 -->
   <div id="modal-bookmarks" class="modal hidden">
     <div class="modal-card bm-card">
-      <h3>管理书签</h3>
+      <div class="modal-head">
+        <h3>管理书签</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <p id="bm-host" class="muted small-note"></p>
       <input id="bm-filter" class="inp" type="text" placeholder="过滤书签(路径或别名)…" aria-label="过滤书签" autocomplete="off" spellcheck="false" />
       <div id="bm-list" class="bm-list"></div>
@@ -1210,6 +1232,10 @@
 
   <div id="modal-about" class="modal hidden">
     <div class="modal-card about-card">
+      <div class="modal-head about-head">
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <div class="about-logo">✦</div>
       <h3 class="about-name">NebulaShell 星云终端</h3>
       <p class="about-tag muted">跨平台 SSH 客户端 · 内置 AI 助手 · 云主机自动发现</p>
@@ -1218,10 +1244,10 @@
         <span class="muted">运行平台</span><span id="about-platform" class="mono">–</span>
         <span class="muted">技术栈</span><span class="mono">Tauri 2 · Rust · xterm.js</span>
       </div>
-      <p class="muted small-note">主机凭据仅加密保存在本机,不会上传到任何第三方服务器。</p>
+      <p class="muted small-note">主机凭据仅加密保存在本机，不会上传到任何第三方服务器。</p>
       <div class="modal-actions">
         <span class="spacer"></span>
-        <button id="btn-about-close" class="btn primary">关闭</button>
+        <button id="btn-about-close" class="btn">关闭</button>
       </div>
     </div>
   </div>
@@ -1229,7 +1255,11 @@
   <!-- 端口转发弹窗(I1/I2) -->
   <div id="modal-forward" class="modal hidden">
     <div class="modal-card wide">
-      <h3>端口转发</h3>
+      <div class="modal-head">
+        <h3>端口转发</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <table id="fw-table" class="hidden">
         <thead><tr><th>名称</th><th>类型</th><th>绑定</th><th>目标</th><th>状态</th><th>操作</th></tr></thead>
         <tbody id="fw-tbody"></tbody>
@@ -1255,8 +1285,8 @@
       <div class="modal-actions">
         <span id="fw-status" class="muted"></span>
         <span class="spacer"></span>
-        <button id="btn-fw-save" class="btn primary">保存规则</button>
         <button id="btn-fw-close" class="btn">关闭</button>
+        <button id="btn-fw-save" class="btn primary">保存规则</button>
       </div>
     </div>
   </div>
@@ -1324,7 +1354,11 @@
        Chromium 可用但行为不一致 —— 统一走应用内实现,两栈一致且可被 e2e 驱动) -->
   <div id="modal-confirm" class="modal hidden">
     <div class="modal-card confirm-card">
-      <h3 id="confirm-title">确认操作</h3>
+      <div class="modal-head">
+        <h3 id="confirm-title">确认操作</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <p id="confirm-message" class="confirm-message"></p>
       <div class="modal-actions">
         <button id="btn-confirm-cancel" class="btn">取消</button>
@@ -1336,7 +1370,11 @@
   <!-- 应用内输入对话框(替代原生 prompt:与 confirm 同因,WKWebView 下不返回) -->
   <div id="modal-prompt" class="modal hidden">
     <div class="modal-card confirm-card">
-      <h3 id="prompt-title">请输入</h3>
+      <div class="modal-head">
+        <h3 id="prompt-title">请输入</h3>
+        <span class="spacer"></span>
+        <button class="btn icon ghost" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭"><span class="mi" data-icon="x"></span></button>
+      </div>
       <p id="prompt-message" class="confirm-message"></p>
       <input id="prompt-input" class="inp" type="text" autocomplete="off" />
       <label id="prompt-hint" class="muted small-note"></label>
@@ -1599,10 +1637,6 @@
     <div class="ai-model-menu-sep"></div>
     <button id="ai-model-manage" class="ai-model-menu-item" type="button" role="menuitem">管理模型…</button>
   </div>
-  <!-- 会话菜单浮层 -->
-  <div id="ai-thread-menu" class="ai-model-menu ai-thread-menu hidden" aria-label="切换对话">
-    <div id="ai-thread-menu-list" role="menu"></div>
-  </div>
   <!-- 主机范围选择器浮层:挂 body + fixed 锚定在输入框左下角 #ai-scope-trigger 上方 -->
   <div id="ai-scope-menu" class="ai-model-menu ai-target-menu hidden" aria-label="选择会话可操作主机范围">
     <div id="ai-scope-menu-list" role="menu"></div>
@@ -1672,110 +1706,6 @@
     <div id="file-task-list" class="file-task-list hidden"></div>
     <div class="task-popover-foot">
       <button id="btn-file-tasks-clear-all" class="task-clear-all hidden" type="button">清除所有任务</button>
-    </div>
-  </div>
-  <!-- CPU 历史趋势悬停详情卡片(方案 C):挂在 body + fixed 定位,悬停 #mon-cpu-trigger 时向上弹出 -->
-  <div id="mon-cpu-popover" class="mon-cpu-popover hidden" role="tooltip" aria-hidden="true">
-    <div class="mon-pop-head">
-      <span class="mon-pop-title"><span class="mon-pop-dot"></span>CPU 负载历史趋势 (最近 ~48s)</span>
-      <b id="mon-pop-cur" class="mon-pop-cur">–</b>
-    </div>
-    <div class="mon-pop-chart">
-      <svg id="mon-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="mon-cpu-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--accent, #38bdf8)" stop-opacity="0.38"/>
-            <stop offset="100%" stop-color="var(--accent, #38bdf8)" stop-opacity="0.0"/>
-          </linearGradient>
-        </defs>
-        <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
-        <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
-        <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
-        <path id="mon-pop-area" d="" fill="url(#mon-cpu-grad)"/>
-        <path id="mon-pop-line" d="" fill="none" stroke="var(--accent, #38bdf8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle id="mon-pop-point" cx="236" cy="60" r="3" fill="var(--accent, #38bdf8)" stroke="var(--bg2, #0d131f)" stroke-width="1.5"/>
-      </svg>
-    </div>
-    <div class="mon-pop-axis">
-      <span>-48s</span>
-      <span>-24s</span>
-      <span>现在 (每 3s 采样)</span>
-    </div>
-    <div class="mon-pop-stats">
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前负载</span><b id="mon-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间峰值</span><b id="mon-pop-stat-max" class="mon-pop-stat-v warn">–</b></div>
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间均值</span><b id="mon-pop-stat-avg" class="mon-pop-stat-v">–</b></div>
-    </div>
-  </div>
-  <!-- 内存使用历史趋势悬停详情卡片:挂在 body + fixed 定位,悬停 #mon-mem-trigger 时向上弹出 -->
-  <div id="mon-mem-popover" class="mon-cpu-popover mon-mem-popover hidden" role="tooltip" aria-hidden="true">
-    <div class="mon-pop-head">
-      <span class="mon-pop-title"><span class="mon-pop-dot mon-mem-dot"></span>内存使用历史趋势 (最近 ~48s)</span>
-      <b id="mon-mem-pop-cur" class="mon-pop-cur mon-mem-cur">–</b>
-    </div>
-    <div class="mon-pop-chart">
-      <svg id="mon-mem-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="mon-mem-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--accent2, #34d399)" stop-opacity="0.32"/>
-            <stop offset="100%" stop-color="var(--accent2, #34d399)" stop-opacity="0.0"/>
-          </linearGradient>
-        </defs>
-        <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
-        <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
-        <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
-        <path id="mon-mem-pop-area" d="" fill="url(#mon-mem-grad)"/>
-        <path id="mon-mem-pop-line" d="" fill="none" stroke="var(--accent2, #34d399)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle id="mon-mem-pop-point" cx="236" cy="60" r="3" fill="var(--accent2, #34d399)" stroke="var(--bg2, #0d131f)" stroke-width="1.5"/>
-      </svg>
-    </div>
-    <div class="mon-pop-axis">
-      <span>-48s</span>
-      <span>平稳占用</span>
-      <span>现在 (0~100%)</span>
-    </div>
-    <div class="mon-pop-stats">
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前占用</span><b id="mon-mem-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">区间峰值</span><b id="mon-mem-pop-stat-max" class="mon-pop-stat-v warn">–</b></div>
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">可用预估</span><b id="mon-mem-pop-stat-avail" class="mon-pop-stat-v">–</b></div>
-    </div>
-  </div>
-  <!-- 网络吞吐历史趋势悬停详情卡片:挂在 body + fixed 定位,悬停 #mon-net-trigger 时向上弹出 -->
-  <div id="mon-net-popover" class="mon-cpu-popover mon-net-popover hidden" role="tooltip" aria-hidden="true">
-    <div class="mon-pop-head">
-      <span class="mon-pop-title"><span class="mon-pop-dot mon-net-dot"></span>网络吞吐历史趋势 (最近 ~48s)</span>
-      <div class="net-legends">
-        <span class="net-legend-item"><span class="net-leg-dot net-leg-tx"></span>↑ 上行</span>
-        <span class="net-legend-item"><span class="net-leg-dot net-leg-rx"></span>↓ 下行</span>
-      </div>
-    </div>
-    <div class="mon-pop-chart">
-      <svg id="mon-net-pop-svg" viewBox="0 0 236 60" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="mon-rx-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--net-rx-color, #38bdf8)" stop-opacity="0.28"/>
-            <stop offset="100%" stop-color="var(--net-rx-color, #38bdf8)" stop-opacity="0.0"/>
-          </linearGradient>
-        </defs>
-        <line class="mon-pop-grid" x1="0" y1="15" x2="236" y2="15"/>
-        <line class="mon-pop-grid" x1="0" y1="30" x2="236" y2="30"/>
-        <line class="mon-pop-grid" x1="0" y1="45" x2="236" y2="45"/>
-        <path id="mon-net-pop-rx-area" d="" fill="url(#mon-rx-grad)"/>
-        <path id="mon-net-pop-rx-line" d="" fill="none" stroke="var(--net-rx-color, #38bdf8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle id="mon-net-pop-rx-point" cx="236" cy="60" r="3" fill="var(--net-rx-color, #38bdf8)" stroke="var(--bg2, #0d131f)" stroke-width="1.5"/>
-        <path id="mon-net-pop-tx-line" d="" fill="none" stroke="var(--net-tx-color, #a78bfa)" stroke-width="1.8" stroke-dasharray="3 2" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle id="mon-net-pop-tx-point" cx="236" cy="60" r="2.5" fill="var(--net-tx-color, #a78bfa)" stroke="var(--bg2, #0d131f)" stroke-width="1"/>
-      </svg>
-    </div>
-    <div class="mon-pop-axis">
-      <span>-48s</span>
-      <span id="mon-net-pop-scale">标尺: 1.0 MB/s</span>
-      <span>现在</span>
-    </div>
-    <div class="mon-pop-stats">
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">峰值下载 (↓)</span><b id="mon-net-pop-stat-rx" class="mon-pop-stat-v rx-val">–</b></div>
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">峰值上传 (↑)</span><b id="mon-net-pop-stat-tx" class="mon-pop-stat-v tx-val">–</b></div>
-      <div class="mon-pop-stat"><span class="mon-pop-stat-k">当前下载</span><b id="mon-net-pop-stat-cur" class="mon-pop-stat-v">–</b></div>
     </div>
   </div>
   <script src="./nebula-shim.js"></script>

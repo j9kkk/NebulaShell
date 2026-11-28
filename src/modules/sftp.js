@@ -11,7 +11,7 @@
 // - 所有远端操作以提交时的快照(paneId+sessionId+cwd)为准,确认框期间
 //   切换目录不改投目标;后端再做 epoch 校验。
 
-import { $, api, applyAccelTitles, askConfirm, askPrompt, bindMenuButton, closeModal, copyText, openModal, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { $, api, applyAccelTitles, askConfirm, askConflict, askPrompt, bindMenuButton, closeModal, copyText, openModal, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
 import { icon } from '../shared/icons.js';
 import { fmtDateTime, fmtMtime, fmtSize } from '../shared/format.js';
 import { accelOf } from './keymap.js';
@@ -1054,38 +1054,23 @@ function renderBookmarkManager() {
 let uploadQueue = Promise.resolve();
 
 export function chooseUploadConflict(name, target) {
-  return new Promise((resolve) => {
-    const sheet = document.createElement('dialog');
-    sheet.id = 'upload-conflict-dialog';
-    sheet.className = 'upload-conflict';
-    sheet.innerHTML = '<h3>上传同名文件</h3><p></p><label class="switch"><input type="checkbox" id="upload-conflict-all"><span class="switch-slider"></span><span class="switch-label">对此队列的后续冲突使用相同策略</span></label><div class="modal-foot"></div>';
-    const session = state.sessions.get(target.sessionId);
-    const host = session?.host;
-    const label = host ? `${host.username}@${host.host}:${host.port}` : target.sessionId;
-    sheet.querySelector('p').textContent = `目标 ${label} 的 ${target.cwd} 中已存在「${name}」。默认不覆盖。`;
-    let finished = false;
-    const finish = (policy) => {
-      if (finished) return;
-      finished = true;
-      const applyToAll = sheet.querySelector('input').checked;
-      sheet.close();
-      sheet.remove();
-      resolve({ policy, applyToAll });
-    };
-    for (const [policy, label] of [['skip', '跳过(默认)'], ['overwrite', '覆盖'], ['rename', '自动重命名'], ['cancel', '取消剩余队列']]) {
-      const button = document.createElement('button');
-      button.className = 'btn' + (policy === 'overwrite' ? ' danger' : '');
-      button.textContent = label;
-      button.dataset.policy = policy;
-      button.addEventListener('click', () => finish(policy));
-      sheet.querySelector('.modal-foot').appendChild(button);
-    }
-    sheet.addEventListener('cancel', (e) => { e.preventDefault(); finish('cancel'); });
-    sheet.addEventListener('close', () => finish('cancel'));
-    setModalDismissHandler(sheet, () => finish('cancel'));
-    document.body.appendChild(sheet);
-    sheet.showModal();
-    sheet.querySelector('button').focus();
+  const session = state.sessions.get(target.sessionId);
+  const host = session?.host;
+  const label = host ? `${host.username}@${host.host}:${host.port}` : target.sessionId;
+  return askConflict({
+    id: 'upload-conflict-dialog',
+    title: '上传同名文件',
+    message: `目标 ${label} 的 ${target.cwd} 中已存在「${name}」。默认不覆盖。`,
+    checkboxLabel: '对此队列的后续冲突使用相同策略',
+    checkboxChecked: false,
+    checkboxId: 'upload-conflict-all',
+    cancelPolicy: 'cancel',
+    buttons: [
+      { policy: 'skip', label: '跳过(默认)' },
+      { policy: 'overwrite', label: '覆盖', danger: true },
+      { policy: 'rename', label: '自动重命名' },
+      { policy: 'cancel', label: '取消剩余队列' },
+    ],
   });
 }
 

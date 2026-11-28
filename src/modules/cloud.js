@@ -1,5 +1,6 @@
 // 云主机导入:多账号凭据 + 全区域一键拉取
 import { $, PROVIDER_LABEL, api, askConfirm, closeModal, state, toast } from './core.js';
+import { closeOverlay, openOverlay } from './overlay-manager.js';
 import { connectHost } from './terminal.js';
 import { escapeHtml, refreshHosts, secretMask } from './hosts.js';
 import { icon } from '../shared/icons.js';
@@ -220,6 +221,18 @@ export function editCloudAccount(existing) {
   form.classList.remove('hidden');
   markEditingRow();
   attachCloudForm(form);
+  openOverlay({
+    id: 'cloud-account-form',
+    kind: 'modal-sub',
+    group: 'modal-sub',
+    el: form,
+    closeOnOutside: false,
+    closeOnResize: false,
+    closeOnEsc: true,
+    close: () => {
+      if (!form.classList.contains('hidden')) closeCloudForm();
+    },
+  });
   // 不抢焦点:展开即聚焦会把键盘输入/输入法从用户当前操作中夺走
   const sec = $('#settings-sec-cloud');
   if (sec) {
@@ -330,6 +343,7 @@ export function closeCloudForm() {
   const form = $('#cloud-account-form');
   form.classList.add('hidden');
   form.classList.remove('inline');
+  closeOverlay('cloud-account-form');
   // 收起时把编辑器挪回账号列表之后的常驻位置,列表刷新不会误伤它
   const list = $('#cloud-accounts');
   if (list && form) list.after(form);

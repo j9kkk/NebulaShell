@@ -3,6 +3,7 @@
 // 模态层级、「模态打开时终端拒写」的规则互相干扰。
 import { icon } from '../shared/icons.js';
 import { $, api } from './core.js';
+import { closeAnchoredPopover, openAnchoredPopover, positionAnchoredElement } from './popover.js';
 
 const TOOL_ICONS = {
   exec: 'terminal', read_terminal: 'terminal', read_file: 'file', tail_file: 'file', search_file: 'zoom',
@@ -657,32 +658,30 @@ export function showModeHelp() {
   if (!pop || !menu || menu.classList.contains('hidden')) return;
   clearTimeout(helpHideTimer);
   if (!pop.childElementCount) renderModeHelp(pop);
-  pop.classList.remove('hidden');
-  const mr = menu.getBoundingClientRect();
-  const w = pop.offsetWidth;
-  const h = pop.offsetHeight;
-  const gap = 8;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const fitsLeft = mr.left - w - gap >= gap;
-  const fitsRight = mr.right + gap + w <= vw - gap;
-  let left;
-  let top;
-  if (fitsLeft || fitsRight) {
-    left = fitsLeft ? mr.left - w - gap : mr.right + gap;
-    top = Math.min(mr.top, vh - h - gap);
-  } else {
-    left = Math.min(mr.left, vw - w - gap);
-    top = mr.top - h - gap >= gap ? mr.top - h - gap : Math.min(mr.bottom + gap, vh - h - gap);
-  }
-  pop.style.left = Math.max(gap, left) + 'px';
-  pop.style.top = Math.max(gap, top) + 'px';
+  openAnchoredPopover({
+    id: 'ai-mode-help-pop',
+    el: pop,
+    trigger: menu,
+    triggers: () => [$('#ai-mode-help'), menu].filter(Boolean),
+    group: null,
+    parentId: 'ai-mode-menu',
+    placement: 'left',
+    align: 'start',
+    gap: 8,
+    width: 300,
+    height: 280,
+    reparent: false,
+    onClose: () => clearTimeout(helpHideTimer),
+  });
 }
 
 /// 移开指针时稍等再收起，留出从「?」移进浮层的时间。
 export function hideModeHelp({ delay = 0 } = {}) {
   clearTimeout(helpHideTimer);
-  const hide = () => $('#ai-mode-help-pop')?.classList.add('hidden');
+  const hide = () => {
+    const closed = closeAnchoredPopover('ai-mode-help-pop');
+    if (!closed) $('#ai-mode-help-pop')?.classList.add('hidden');
+  };
   if (delay) helpHideTimer = setTimeout(hide, delay);
   else hide();
 }
@@ -817,21 +816,6 @@ export function renderModeMenu(info) {
   renderGrants(info);
 }
 
-function anchorMenu(menu, trigger, { placement = 'bottom', width = 260, height = 240, gap = 4 } = {}) {
-  if (!menu || !trigger) return;
-  const tr = trigger.getBoundingClientRect();
-  const w = menu.offsetWidth || width;
-  const h = menu.offsetHeight || height;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const left = Math.max(8, Math.min(tr.left, vw - w - 8));
-  let top = placement === 'top'
-    ? Math.max(8, tr.top - h - gap)
-    : Math.min(vh - h - 8, tr.bottom + gap);
-  menu.style.left = left + 'px';
-  menu.style.top = top + 'px';
-}
-
 function menuKeydown(e, menu, itemSelector, { onClose } = {}) {
   if (!e || !menu || menu.classList.contains('hidden')) return;
   const key = e.key;
@@ -865,26 +849,35 @@ export function openModeMenu(info = lastPickerInfo) {
   const menu = $('#ai-mode-menu');
   const trigger = $('#ai-mode-trigger');
   if (!menu || !trigger || trigger.disabled) return;
-  $('#ai-model-menu')?.classList.add('hidden');
-  $('#ai-thread-menu')?.classList.add('hidden');
-  $('#ai-scope-menu')?.classList.add('hidden');
   if (info) lastPickerInfo = info;
   renderModeMenu(lastPickerInfo);
-  menu.classList.remove('hidden');
-  trigger.setAttribute('aria-expanded', 'true');
-  anchorMenu(menu, trigger, { placement: 'top', width: 240, height: 220 });
+  openAnchoredPopover({
+    id: 'ai-mode-menu',
+    el: menu,
+    trigger,
+    placement: 'top',
+    align: 'start',
+    gap: 4,
+    width: 240,
+    height: 220,
+    reparent: false,
+    onClose: () => hideModeHelp(),
+  });
   const active = menu.querySelector('.ai-mode-menu-item.active');
   if (active) active.focus();
 }
 
 export function closeModeMenu({ focusTrigger = false } = {}) {
-  const menu = $('#ai-mode-menu');
-  const trigger = $('#ai-mode-trigger');
   hideModeHelp();
-  if (menu) menu.classList.add('hidden');
-  if (trigger) {
-    trigger.setAttribute('aria-expanded', 'false');
-    if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+  const closed = closeAnchoredPopover('ai-mode-menu', { focusTrigger });
+  if (!closed) {
+    const menu = $('#ai-mode-menu');
+    const trigger = $('#ai-mode-trigger');
+    if (menu) menu.classList.add('hidden');
+    if (trigger) {
+      trigger.setAttribute('aria-expanded', 'false');
+      if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+    }
   }
 }
 
@@ -1222,7 +1215,7 @@ export function renderTargetMenu(menuData, handlers = {}, { focusHostId } = {}) 
   const menu = $('#ai-scope-menu');
   const trigger = $('#ai-scope-trigger');
   if (menu && trigger && !menu.classList.contains('hidden') && typeof trigger.getBoundingClientRect === 'function') {
-    anchorMenu(menu, trigger, { placement: 'top', width: 344, height: 340 });
+    positionAnchoredElement(menu, trigger, { placement: 'top', align: 'start', gap: 4, width: 344, height: 340, reparent: false });
   }
 
   if (focusHostId) {
@@ -1235,26 +1228,34 @@ export function openTargetMenu(menuData, handlers) {
   const menu = $('#ai-scope-menu');
   const trigger = $('#ai-scope-trigger');
   if (!menu || !trigger || trigger.disabled) return;
-  $('#ai-model-menu')?.classList.add('hidden');
-  $('#ai-thread-menu')?.classList.add('hidden');
-  $('#ai-mode-menu')?.classList.add('hidden');
 
   if (menuData) renderTargetMenu(menuData, handlers);
-  menu.classList.remove('hidden');
-  trigger.setAttribute('aria-expanded', 'true');
-  anchorMenu(menu, trigger, { placement: 'top', width: 344, height: 340 });
+  openAnchoredPopover({
+    id: 'ai-scope-menu',
+    el: menu,
+    trigger,
+    placement: 'top',
+    align: 'start',
+    gap: 4,
+    width: 344,
+    height: 340,
+    reparent: false,
+  });
 
   const searchInp = menu.querySelector('.ai-pick-search-inp');
   if (searchInp) searchInp.focus?.();
 }
 
 export function closeTargetMenu({ focusTrigger = false } = {}) {
-  const menu = $('#ai-scope-menu');
-  const trigger = $('#ai-scope-trigger');
-  if (menu) menu.classList.add('hidden');
-  if (trigger) {
-    trigger.setAttribute('aria-expanded', 'false');
-    if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+  const closed = closeAnchoredPopover('ai-scope-menu', { focusTrigger });
+  if (!closed) {
+    const menu = $('#ai-scope-menu');
+    const trigger = $('#ai-scope-trigger');
+    if (menu) menu.classList.add('hidden');
+    if (trigger) {
+      trigger.setAttribute('aria-expanded', 'false');
+      if (focusTrigger && typeof trigger.focus === 'function') trigger.focus();
+    }
   }
 }
 

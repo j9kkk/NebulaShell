@@ -1,6 +1,7 @@
 // 共享底座:DOM 查询、IPC 封装、全局状态、通用弹窗/toast、标签与窗格访问器
 
 import { isAppModifier as matchAppModifier } from './interaction.js';
+import { closeAllOverlays, handleOverlayEscape } from './overlay-manager.js';
 import { icon } from '../shared/icons.js';
 import { activeThreadOf, installAiThreadState } from '../shared/ai-thread-state.js';
 
@@ -263,11 +264,15 @@ export function hasOpenModal() { return !!topModal(); }
 
 function syncModalScope() {
   const top = topModal();
+  if (!top) modalOrder = 0;
   const app = $('#app');
   if (app) app.inert = !!top;
   for (const modal of document.querySelectorAll('.modal, dialog')) {
     modal.inert = modal !== top;
-    if (!modal.classList.contains('hidden')) modal.style.zIndex = String(200 + Number(modal.dataset.modalOrder || 0));
+    if (!modal.classList.contains('hidden')) {
+      const order = Number(modal.dataset.modalOrder || 0);
+      modal.style.zIndex = String(Math.min(480, 400 + order * 2));
+    }
   }
   if (document.body.classList.contains('modal-open') !== !!top) document.body.classList.toggle('modal-open', !!top);
   if (scopedModal !== top) {
@@ -290,6 +295,7 @@ export function openModal(id) {
   const modal = typeof id === 'string' ? $(id) : id;
   if (!modal) return;
   closeCtxMenu();
+  closeAllOverlays({ kinds: ['popover', 'drawer-overlay'], reason: 'modal' });
   document.dispatchEvent(new Event('nebula:close-menus'));
   if (!activeModals.has(modal)) {
     modalReturns.set(modal, document.activeElement);
@@ -307,8 +313,15 @@ export function openModal(id) {
     modal.setAttribute('aria-labelledby', heading.id);
   }
   syncModalScope();
-  const control = [...modal.querySelectorAll('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)')]
-    .find((element) => element.getClientRects().length && !element.closest('.hidden'));
+  const controls = [...modal.querySelectorAll('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)')]
+    .filter((element) => element.getClientRects().length && !element.closest('.hidden'));
+  // 跳过头部关闭钮 ✕ 作为默认首焦点：
+  // 优先聚焦输入控件（输入框/下拉框/文本域）；若弹窗没有输入控件且属于确认/询问之外的纯展示窗（如关于窗），
+  // 焦点落在弹窗容器（tabindex="-1"，无突兀亮蓝框）而非任意按钮，键盘按 Tab 仍可立即进入按钮并触发 :focus-visible。
+  const isTextInput = (el) => /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName || '');
+  const bodyControls = controls.filter((el) => el.dataset?.modalClose === undefined && !el.hasAttribute?.('data-modal-close') && !el.closest?.('.modal-head, .io-head'));
+  const firstInput = bodyControls.find(isTextInput);
+  const control = firstInput || (modal.id === 'modal-about' ? null : bodyControls[0]) || null;
   (control || modal).focus();
 }
 
@@ -342,6 +355,7 @@ export function closeModal(id) {
   // tile. Restoring its old terminal would activate that tile and steal focus.
   if (target?.isConnected && (!top || top.contains(target)) && (top || sameOwner)) target.focus();
   else if (top) top.focus();
+  if (modal.dataset.removeOnClose === '1' && modal.isConnected) modal.remove();
 }
 
 /// 给表单里的「裸标签」补 for:标签自己不带控件、也没有 for 时,指向同一行的控件。
@@ -363,6 +377,12 @@ export function bindModalInteractions() {
   if (bindModalInteractions._bound) return;
   bindModalInteractions._bound = true;
   linkFormGridLabels(document);
+  document.addEventListener('click', (event) => {
+    const closeBtn = event.target.closest?.('[data-modal-close]');
+    if (!closeBtn) return;
+    const modal = closeBtn.closest('.modal');
+    if (modal) closeModal(modal);
+  });
   document.addEventListener('mousedown', (event) => {
     const top = topModal();
     if (top && event.target === top) closeModal(top);
@@ -373,7 +393,9 @@ export function bindModalInteractions() {
     const context = $('#ctx-menu');
     if (context && !context.classList.contains('hidden') && context.contains(event.target)) return;
     if (event.key === 'Escape') {
-      // 弹窗内组件先接管(取消编辑/清空选择),吃掉事件后才轮到关闭弹窗
+      // 1) 弹窗内子浮层（标签/跳板下拉、云账号内联表单、批量结果详情）最先接管 Esc
+      if (handleOverlayEscape(event, { modalOpen: true })) return;
+      // 2) 弹窗内组件自管钩子(多选/原地编辑)次之
       const intercept = modalEscape.get(top);
       if (intercept && intercept(event) === true) {
         event.preventDefault();
@@ -535,6 +557,105 @@ function runConfirm(message, { title = '确认操作', okText = '确定', cancel
   });
 }
 
+/// 通用文件冲突决策弹窗（替代各处手写原生 <dialog>.showModal()，统一走 .modal 队列，
+/// 避免浏览器 Top Layer 遮挡 #toasts，并保证 Esc / 遮罩 / ✕ 均稳定回传 cancelPolicy）。
+export function askConflict(opts = {}) {
+  return queueDialog('conflict', () => runConflict(opts));
+}
+
+function runConflict({
+  id = 'modal-conflict',
+  title = '文件冲突',
+  message = '',
+  checkboxLabel = '对此任务的后续同类冲突使用相同策略',
+  checkboxChecked = false,
+  checkboxId = '',
+  buttons = [],
+  cancelPolicy = 'cancel',
+} = {}) {
+  return new Promise((resolve) => {
+    document.getElementById(id)?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = id;
+    overlay.className = 'modal hidden';
+    overlay.dataset.removeOnClose = '1';
+
+    const card = document.createElement('div');
+    card.className = 'modal-card conflict-card';
+
+    const head = document.createElement('div');
+    head.className = 'modal-head';
+    const h3 = document.createElement('h3');
+    h3.textContent = title;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn icon ghost modal-close';
+    closeBtn.setAttribute('aria-label', '关闭');
+    closeBtn.title = '关闭';
+    closeBtn.innerHTML = icon('x');
+    head.appendChild(h3);
+    head.appendChild(closeBtn);
+    card.appendChild(head);
+
+    const p = document.createElement('p');
+    p.className = 'conflict-msg';
+    p.textContent = message;
+    card.appendChild(p);
+
+    let checkbox = null;
+    if (checkboxLabel) {
+      const label = document.createElement('label');
+      label.className = 'switch conflict-apply-all';
+      checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      if (checkboxId) checkbox.id = checkboxId;
+      checkbox.checked = !!checkboxChecked;
+      const slider = document.createElement('span');
+      slider.className = 'switch-slider';
+      const text = document.createElement('span');
+      text.className = 'switch-label';
+      text.textContent = checkboxLabel;
+      label.appendChild(checkbox);
+      label.appendChild(slider);
+      label.appendChild(text);
+      card.appendChild(label);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'modal-foot';
+    card.appendChild(foot);
+    overlay.appendChild(card);
+
+    let settled = false;
+    const finish = (policy) => {
+      if (settled) return;
+      settled = true;
+      const applyToAll = !!checkbox?.checked;
+      modalDismiss.delete(overlay);
+      closeModal(overlay);
+      resolve({ policy, applyToAll });
+    };
+
+    closeBtn.addEventListener('click', () => finish(cancelPolicy));
+    let firstBtn = null;
+    for (const item of buttons) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn' + (item.danger ? ' danger' : item.primary ? ' primary' : '');
+      button.textContent = item.label;
+      button.dataset.policy = item.policy;
+      button.addEventListener('click', () => finish(item.policy));
+      foot.appendChild(button);
+      if (!firstBtn) firstBtn = button;
+    }
+
+    setModalDismissHandler(overlay, () => finish(cancelPolicy));
+    document.body.appendChild(overlay);
+    openModal(overlay);
+    firstBtn?.focus();
+  });
+}
+
 /* ---------------- 外链:确认后交给系统浏览器 ----------------
    终端里的链接(xterm 的 WebLinksAddon / OSC 8)与 AI 回复里的 Markdown 链接
    都走这里。不能依赖 addon 自带的处理器:它 window.open() 一个新窗口再改
@@ -674,7 +795,7 @@ function openCtxSubmenu(parent, items, { focus = true } = {}) {
   if (sub._parent && sub._parent !== parent) sub._parent.setAttribute('aria-expanded', 'false');
   sub._parent = parent;
   parent.setAttribute('aria-expanded', 'true');
-  sub.style.zIndex = String((Number($('#ctx-menu')?.style.zIndex) || 520) + 1);
+  sub.style.zIndex = String((Number($('#ctx-menu')?.style.zIndex) || 600) + 1);
   sub.innerHTML = '';
   // 开关项(标签平铺之类的 ✓)与一级同一套:只要有一项带 checked,所有项都留这一列,
   // 文字起点才对齐。
@@ -793,13 +914,14 @@ export function showCtxMenu(x, y, items, opts = {}) {
   const modal = topModal();
   // 对话框打开时只允许它里面的菜单:按钮下拉看按钮本身(背景按钮被程序点击也不弹),右键菜单看焦点
   if (modal && !modal.contains(opts.trigger || document.activeElement)) return;
+  closeAllOverlays({ kinds: ['popover'], reason: 'menu' });
   document.dispatchEvent(new Event('nebula:close-menus'));
   closeCtxMenu(false);
   menu._returnFocus = opts.returnFocus || opts.trigger || document.activeElement;
   menu._trigger = opts.trigger || null;
   menu.setAttribute('aria-label', opts.label || '上下文菜单');
   if (opts.trigger) opts.trigger.setAttribute('aria-expanded', 'true');
-  menu.style.zIndex = modal ? String(Math.max(520, Number(modal.style.zIndex) + 1)) : '520';
+  menu.style.zIndex = modal ? String(Math.max(600, Number(modal.style.zIndex) + 10)) : '600';
   if (!menu._keyboardBound) { bindMenuKeyboard(menu, closeCtxMenu); menu._keyboardBound = true; }
   menu.innerHTML = '';
   const hasChecks = items.some((it) => it && it !== '-' && it.checked !== undefined);
@@ -892,20 +1014,42 @@ export function bindMenuButton(button, items, opts = {}) {
   button.setAttribute('aria-haspopup', 'menu');
   button.setAttribute('aria-expanded', 'false');
   let opener = null;
-  button.addEventListener('mousedown', () => { opener = document.activeElement; });
+  const captureOpener = () => {
+    const active = document.activeElement;
+    if (active && active !== button && active !== document.body && active.isConnected
+      && (!opts.ignoreFocusClosest || !active.closest?.(opts.ignoreFocusClosest))) return active;
+    return document.querySelector('.term-pane.focused .xterm-helper-textarea');
+  };
+  button.addEventListener('mousedown', (event) => {
+    if (opts.stopPropagation) event.stopPropagation();
+    const menu = $('#ctx-menu');
+    const isOpen = !!menu && !menu.classList.contains('hidden') && menu._trigger === button;
+    const justClosed = !!menu && menu._closedTrigger === button && performance.now() - (menu._closedAt || 0) < 300;
+    if (!isOpen && !justClosed) opener = captureOpener() ?? null;
+  });
   const returnTarget = () => {
+    if (opts.preferTerminalFocus) {
+      const prior = opener;
+      if (prior && prior !== button && prior !== document.body && prior.isConnected) return prior;
+      return document.querySelector('.term-pane.focused .xterm-helper-textarea') || button;
+    }
     const prior = opener;
     opener = null;
     if (prior === null) return button;
     if (prior && prior !== button && prior !== document.body && prior.isConnected) return prior;
     return document.querySelector('.term-pane.focused .xterm-helper-textarea') || button;
   };
-  const open = () => {
-    const back = returnTarget();
+  const open = (event) => {
+    if (opts.stopPropagation && event) event.stopPropagation();
     const menu = $('#ctx-menu');
     // 刚被同一个按钮的 mousedown 关掉:这次点击是"收起",不再打开
-    if (menu?._closedTrigger === button && performance.now() - (menu._closedAt || 0) < 300) return;
+    if (menu?._closedTrigger === button && performance.now() - (menu._closedAt || 0) < 300) {
+      if (opts.preferTerminalFocus) opener?.focus?.();
+      return;
+    }
     if (menu && !menu.classList.contains('hidden') && menu._trigger === button) { closeCtxMenu(); return; }
+    if (opts.preferTerminalFocus && (!opener || !opener.isConnected)) opener = captureOpener();
+    const back = returnTarget();
     const r = button.getBoundingClientRect();
     showCtxMenu(opts.alignRight ? r.right : r.left, r.bottom + 4, items(), { trigger: button, label: opts.label, returnFocus: back });
     if (opts.alignRight && menu) {
@@ -917,6 +1061,10 @@ export function bindMenuButton(button, items, opts = {}) {
   button.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowDown') return;
     event.preventDefault();
+    if (opts.preferTerminalFocus) {
+      const menu = $('#ctx-menu');
+      if (!menu || menu.classList.contains('hidden') || menu._trigger !== button) opener = captureOpener();
+    }
     open();
   });
 }

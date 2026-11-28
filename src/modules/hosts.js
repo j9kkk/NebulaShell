@@ -1,5 +1,6 @@
 // 主机列表、主机编辑弹窗、指纹管理
-import { $, PROVIDER_LABEL, api, askConfirm, closeModal, copyText, openModal, showCtxMenu, state, toast } from './core.js';
+import { $, PROVIDER_LABEL, api, askConfirm, bindMenuButton, closeModal, copyText, openModal, showCtxMenu, state, toast } from './core.js';
+import { closeOverlay, openOverlay } from './overlay-manager.js';
 import { icon } from '../shared/icons.js';
 import { connectHost, rankPickerHosts, refreshPickers } from './terminal.js';
 
@@ -398,11 +399,7 @@ export function renderHosts() {
         { label: '删除主机', danger: true, run: () => delThis() },
       ];
     };
-    item.querySelector('.hi-menu').addEventListener('click', (e) => {
-      e.stopPropagation();
-      const r = e.currentTarget.getBoundingClientRect();
-      showCtxMenu(r.left, r.bottom + 4, menuFor());
-    });
+    bindMenuButton(item.querySelector('.hi-menu'), menuFor, { label: '主机操作', stopPropagation: true });
     item.querySelector('.host-star').addEventListener('click', starThis);
     item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -591,9 +588,11 @@ export function toggleProtocolRows() {
   const protocol = $('#host-protocol')?.value || 'ssh';
   const isRdp = protocol === 'rdp';
   // RDP 没有 shell:认证方式(私钥)、连接后执行、会话日志、AI 访问全部不成立
-  for (const id of ['row-auth', 'row-password', 'row-key', 'row-initcmd', 'row-sessionlog', 'row-aiaccess']) {
+  for (const id of ['row-auth', 'row-initcmd', 'row-sessionlog', 'row-aiaccess']) {
     $('#' + id)?.classList.toggle('hidden', isRdp);
   }
+  // 密码/私钥两行仍按认证方式分流，不能在 SSH 下把两行同时放开
+  toggleAuthRows();
   // 域、帧率、显示与体验只对 RDP 有意义
   $('#row-domain')?.classList.toggle('hidden', !isRdp);
   $('#row-frame-rate')?.classList.toggle('hidden', !isRdp);
@@ -776,11 +775,24 @@ export function toggleTagMenu(open) {
   const shouldOpen = open !== undefined ? open : menu.classList.contains('hidden');
   if (!shouldOpen) {
     menu.classList.add('hidden');
+    closeOverlay('host-tags-menu');
     return;
   }
   const currentQuery = $('#host-tag-input')?.value || '';
   renderTagMenu(currentQuery);
   menu.classList.remove('hidden');
+  openOverlay({
+    id: 'host-tags-menu',
+    kind: 'modal-sub',
+    group: 'modal-sub',
+    el: menu,
+    triggers: () => [$('#host-tags-box')].filter(Boolean),
+    closeOnResize: false,
+    close: ({ focusTrigger } = {}) => {
+      menu.classList.add('hidden');
+      if (focusTrigger) $('#host-tag-input')?.focus?.();
+    },
+  });
 }
 
 export function updateSessionLogHint() {
@@ -924,6 +936,7 @@ export function toggleJumpMenu(open) {
   const shouldOpen = open !== undefined ? open : menu.classList.contains('hidden');
   if (!shouldOpen) {
     menu.classList.add('hidden');
+    closeOverlay('host-jump-menu');
     return;
   }
   const hostId = $('#host-id').value;
@@ -948,6 +961,18 @@ export function toggleJumpMenu(open) {
     }
   }
   menu.classList.remove('hidden');
+  openOverlay({
+    id: 'host-jump-menu',
+    kind: 'modal-sub',
+    group: 'modal-sub',
+    el: menu,
+    triggers: () => [$('#host-jump-box')].filter(Boolean),
+    closeOnResize: false,
+    close: ({ focusTrigger } = {}) => {
+      menu.classList.add('hidden');
+      if (focusTrigger) $('#btn-host-add-jump')?.focus?.();
+    },
+  });
 }
 
 export function openHostModal(host) {

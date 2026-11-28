@@ -185,7 +185,7 @@ function eventOf(spec) {
 
 // ---------------------------------------------------------------- 1. 改名表
 
-test('canonical 文案与规范 §6.1 改名表逐字一致,且 46 条命令全部注册', async () => {
+test('canonical 文案与规范 §6.1 改名表逐字一致,且全部命令已注册', async () => {
   const { commands } = await loadRegistry();
   const listed = commands.listCommands();
   const actual = [...listed].map((c) => c.id).sort();
@@ -431,4 +431,23 @@ test('HTML 里的菜单项与分组标题:文案无三个点,分组标题不带�
     assert.equal(m[1].includes('…'), false, `分组标题「${m[1]}」不带省略号(E6)`);
   }
   assert.match(html, /id="ai-model-manage"[^>]*>管理模型…</, '「管理模型」点开进设置改配置,必须带「…」(E2-c)');
+});
+
+test('HTML 与 JS 中所有 data-command 均命中已注册命令(防死按钮回归)', async () => {
+  const { commands } = await loadRegistry();
+  const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
+  const refs = [];
+  for (const m of html.matchAll(/data-command="([^"]+)"/g)) refs.push(['src/index.html', m[1]]);
+  const files = (await import('node:fs/promises')).readdir;
+  const dir = new URL('../src/modules/', import.meta.url);
+  for (const name of await files(dir)) {
+    if (!name.endsWith('.js')) continue;
+    const src = await readFile(new URL(name, dir), 'utf8');
+    for (const m of src.matchAll(/dataset\.command\s*=\s*['"]([^'"]+)['"]/g)) refs.push([`src/modules/${name}`, m[1]]);
+    for (const m of src.matchAll(/data-command="([^"]+)"/g)) refs.push([`src/modules/${name}`, m[1]]);
+  }
+  assert.ok(refs.length >= 10, `只扫描到 ${refs.length} 处 data-command,规则可能失效`);
+  for (const [file, id] of refs) {
+    assert.ok(commands.commandState(id), `${file} 引用了未注册的命令 data-command="${id}"`);
+  }
 });

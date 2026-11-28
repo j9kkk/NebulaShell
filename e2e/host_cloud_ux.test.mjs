@@ -81,7 +81,7 @@ async function fixture() {
       return {};
     },
     askConfirm: async () => true,
-    closeModal() {}, openModal() {}, showCtxMenu() {}, toast() {},
+    bindMenuButton() {}, closeModal() {}, openModal() {}, showCtxMenu() {}, toast() {},
     copyText: async (text) => { copies.push(text); return true; },
   };
   const synthetic = (exports) => new vm.SyntheticModule(Object.keys(exports), function () {
@@ -89,6 +89,7 @@ async function fixture() {
   }, { context });
   const modules = new Map([
     ['./core.js', synthetic(core)],
+    ['./overlay-manager.js', synthetic({ openOverlay() {}, closeOverlay() {} })],
     ['./terminal.js', synthetic({ connectHost: (id) => connections.push(id), rankPickerHosts: (q, list) => ({ hosts: list || [], filtered: false }), refreshPickers: () => {} })],
     ['../shared/icons.js', synthetic({ icon: (name) => `<svg data-icon="${name}"></svg>` })],
   ]);

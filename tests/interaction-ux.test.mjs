@@ -866,6 +866,8 @@ test('E4 logo menu renders a single Windows/Linux trigger with six cascading sub
     h.rootItems().filter((b) => b.classList.contains('ctx-parent')).map((b) => b.querySelector('.ctx-label').textContent),
     ['文件', '编辑', '视图', '主机', '会话', '帮助'],
   );
+  // 根层不再重复堆叠「命令面板 / 设置」（已在子菜单中，底部仅保留退出或分类）
+  assert.equal(h.rootItems().some((b) => b.dataset.command === 'palette.open' || b.dataset.command === 'settings.open'), false);
   // 展开「视图」二级菜单:只列已注册命令并带勾选态
   h.rootParent('视图').dispatchEvent(new DomEvent('mouseenter'));
   assert.equal(h.isSubOpen(), true);
@@ -1002,4 +1004,21 @@ test('dropdown: Esc then ↓ reopens at once; Esc after focus fell to body retur
   button.click();
   assert.equal(ctx.classList.contains('hidden'), true, 'a button behind the dialog cannot open its menu even when clicked programmatically');
   core.closeModal(confirm);
+});
+
+test('ephemeral modal with dataset.removeOnClose removes itself from DOM on Esc or backdrop close', async () => {
+  const { core, document, add, app } = await setup();
+  core.bindModalInteractions();
+  const trigger = add(app, 'button', 'bc-trigger');
+  trigger.focus();
+  const modal = add(document.body, 'div', 'modal-broadcast', 'modal hidden');
+  modal.dataset.removeOnClose = '1';
+  const card = add(modal, 'div', '', 'modal-card');
+  add(card, 'button', 'bc-cancel');
+  core.openModal(modal);
+  assert.equal(document.querySelectorAll('#modal-broadcast').length, 1);
+  assert.equal(modal.classList.contains('hidden'), false);
+  key(modal, 'Escape');
+  assert.equal(document.querySelectorAll('#modal-broadcast').length, 0, 'Escape removes ephemeral modal from DOM');
+  assert.equal(document.activeElement, trigger, 'focus restores to trigger');
 });

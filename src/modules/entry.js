@@ -1,5 +1,6 @@
 // 应用入口:右键菜单、事件绑定、启动(被 app.js 引入)
 import { $, activeTab, api, applyAccelTitles, askConfirm, askPrompt, bindCtxMenuDismiss, bindExternalLinks, bindMenuButton, bindModalInteractions, closeCtxMenu, closeModal, copyText, hasOpenModal, openModal, PLATFORM, setModalDismissHandler, showCtxMenu, state, toast } from './core.js';
+import { bindOverlayManager, closeAllOverlays } from './overlay-manager.js';
 import { isDocumentSelectAll, isEditableTarget } from './interaction.js';
 import { createSequenceFilter } from '../shared/term-text.js';
 import { bindCommandButtons, commandMenuItem, commandState, executeCommand, listCommands, refreshCommandStates, registerCommand } from './commands.js';
@@ -11,7 +12,7 @@ import { openExportDialog, openImportDialog, setupTransfer } from './transfer.js
 import { bindSidebarPeek, resetPeekOnToggle } from './sidebar-peek.js';
 import { bindRailCards, closeRailCard, refreshRailState } from './rail-cards.js';
 import { closeCloudForm, cloudFetchAll, cloudImportSelected, editCloudAccount, onCloudSecretInput, refreshCloudAccounts, saveCloudAccountFromForm, syncCloudFormLabels, toggleCloudSecretVisibility } from './cloud.js';
-import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, closeThreadMenu, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, onThreadMenuKeydown, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, toggleThreadMenu, updateAiContextIndicator, updateModelEffortBadge } from './ai.js';
+import { addManualAiModel, aiDiagnose, aiFinishHolder, aiSend, aiSealThinking, aiShowThinking, aiStickScroll, aiTestConnection, aiTouchRequest, bindAiCodeActions, bindAiScroll, clearBubbleState, closeAiDrawer, closeContextPopover, closeModelConfigModal, closeModelMenu, closeModelPicker, confirmModelPicker, cycleAiReasoningEffort, delayCloseContextPopover, ensureDefaultAiThread, fetchAiModels, fillPreset, filterModelPicker, findRequestHolder, isAiDrawerOpen, markBubbleStreaming, movePickerSelection, newAiThread, onAiApiKeyInput, onAiEndpointChange, openContextPopover, openModelMenu, pickerSelectAll, reasoningLevelLabel, refreshAiModels, renderAiDrawer, renderAiMessage, renderModelReasoning, renderModelSwitch, requestClearAiThread, requestDeleteAiThread, resetModelConfigModal, savedAiModelId, saveAiSettings, saveModelConfigModal, addEditingReasoningLevel, setAiBody, setAiBusy, stopAiGeneration, switchAiThread, switchModel, syncReasoningThumb, threadBusy, activeAiThread, toggleAiApiKeyVisibility, toggleAiDrawer, toggleContextPopover, togglePickerFocus, updateAiContextIndicator, updateModelEffortBadge } from './ai.js';
 import {
   clickFromMenu, closeModeMenu, closeTargetMenu, hideModeHelp, onModeMenuKeydown, onTargetMenuKeydown,
   revokeGrant, routeToolOutput, selectMode, showModeHelp, toggleModeMenu, toggleTargetMenu,
@@ -77,23 +78,19 @@ export function openTermCtxMenu(e, session) {
   ], { label: '终端菜单' });
 }
 
-/// 侧栏「⠇」:主机库层面的操作 + 视图开关。
-/// 「视图」分组把密度这类**频繁切换**的状态放在被控对象旁边 —— 塞进设置中心
-/// 意味着每次切换都要多点三层,而密度是"看集群想紧凑、逐台操作用舒适"的东西。
-/// 「批量执行」原先占着侧栏一个常驻按钮,频率远低于新建主机,一并下沉到这里。
+/// 侧栏「⠇」:主机域管理操作 + 列表密度视图开关。
+/// 非主机域工具（批量执行、端口转发）已收口至左侧常驻导航轨，不再在此重复堆叠。
 /// 项文案一律由注册表给(含渲染层按 asks 追加的「…」),这里不再存第二份名字。
 function hostManageItems() {
   return [
     commandMenuItem('cloud.import'),
     '-',
     commandMenuItem('hosts.library'),
-    commandMenuItem('tools.batch'),
     '-',
     commandMenuItem('hosts.import'),
     commandMenuItem('hosts.export'),
     '-',
     commandMenuItem('settings.fingerprints'),
-    commandMenuItem('tools.forwards'),
     '-',
     commandMenuItem('view.hostDensity'),
   ];
@@ -420,8 +417,9 @@ function setupWorkspaceCommands() {
 
   // 面板
   registerCommand('panel.sidebar', { label: '主机侧栏', category: 'panel', keywords: ['sidebar', 'hosts', 'zjcl', 'cebianlan'], checked: () => !$('#sidebar').classList.contains('collapsed'), run: toggleSidebar });
-  // AI 助手面板:panel.tools 开关面板
+  // AI 助手面板:panel.tools 开关面板;panel.monitor 直达右侧监控/故障诊断页签
   registerCommand('panel.tools', { label: 'AI 助手', category: 'panel', keywords: ['ai', 'assistant', 'chat', 'tools', 'right panel', 'toolbar', 'ycgjl', 'gongjulan', 'youce', 'zhushou'], checked: () => rightPanelOpen(), run: toggleRightPanel });
+  registerCommand('panel.monitor', { label: '主机监控', category: 'panel', keywords: ['monitor', 'metrics', 'cpu', 'memory', 'disk', 'network', 'diagnose', 'jk', 'jiankong', 'zjjk', 'xinneng'], checked: () => rightTabShown('monitor'), run: () => toggleRightTab('monitor') });
   registerCommand('ai.newThread', { label: '新建 AI 对话', category: 'panel', keywords: ['new chat', 'ai', 'xjdh', 'xinjianduihua'], run: () => { setRightPanel(true, 'ai'); newAiThread({ focus: true }); } });
   registerCommand('ai.cycleEffort', { label: '切换思考强度', category: 'panel', keywords: ['reasoning', 'thinking', 'effort', 'qiehuan', 'sikaoqiangdu'], run: () => cycleAiReasoningEffort() });
 
@@ -608,13 +606,6 @@ export function bindEvents() {
         const lastTag = chips[chips.length - 1].dataset.tag;
         if (lastTag) removeHostTag(lastTag);
       }
-    } else if (e.key === 'Escape') {
-      toggleTagMenu(false);
-    }
-  });
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('#host-tags-box')) {
-      toggleTagMenu(false);
     }
   });
 
@@ -635,9 +626,6 @@ export function bindEvents() {
       e.stopPropagation();
       toggleJumpMenu();
     }
-  });
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('#host-jump-box')) toggleJumpMenu(false);
   });
 
   $('#host-sessionlog')?.addEventListener('change', updateSessionLogHint);
@@ -712,19 +700,13 @@ export function bindEvents() {
     // 0 模型:无可切换项,点击语义变为"去配置"——直达 AI 设置分区
     // (分支放这里:openSettings 在 settings.js,ai.js 反向导入会成环)
     if (!savedAiModelId() && $('#ai-model-menu').classList.contains('hidden')) {
-      closeModeMenu();
-      closeThreadMenu();
+      closeAllOverlays({ kinds: ['popover'], reason: 'open-settings' });
       openSettings('ai');
       return;
     }
     const menu = $('#ai-model-menu');
-    if (menu.classList.contains('hidden')) {
-      closeModeMenu();
-      closeThreadMenu();
-      openModelMenu();
-    } else {
-      closeModelMenu();
-    }
+    if (menu.classList.contains('hidden')) openModelMenu();
+    else closeModelMenu();
   });
   $('#ai-model-menu-list').addEventListener('click', (e) => {
     const item = e.target.closest('.ai-model-menu-item');
@@ -771,32 +753,11 @@ export function bindEvents() {
     e.stopPropagation();
   });
   $('#ai-model-manage').addEventListener('click', () => { closeModelMenu(); openSettings('ai'); });
-  document.addEventListener('click', (e) => {
-    // 用 composedPath 判定"点击来自菜单内部":菜单内原地重绘会把被点中的行摘出文档,
-    // 此时 e.target.closest() 已失效,会误判成点在外面而收起菜单。
-    if (!clickFromMenu(e, ['ai-model-menu', 'ai-model-trigger'])) closeModelMenu();
-    if (!clickFromMenu(e, ['ai-mode-menu', 'ai-mode-trigger', 'ai-mode-help-pop'])) closeModeMenu();
-    if (!clickFromMenu(e, ['ai-scope-menu', 'ai-scope-trigger'])) closeTargetMenu();
-    if (!clickFromMenu(e, ['ai-mention-pop', 'ai-input'])) closeMentionPop();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeModelMenu(); closeModeMenu(); closeTargetMenu(); closeMentionPop(); }
-  });
-  window.addEventListener('resize', () => {
-    closeModelMenu();
-    closeModeMenu();
-    closeThreadMenu();
-    closeTargetMenu();
-    closeMentionPop();
-  });
 
   // 会话主机范围选择器: 输入框左下角触发钮开合菜单
   $('#ai-scope-trigger')?.addEventListener('click', () => {
     const menu = $('#ai-scope-menu');
     if (menu?.classList.contains('hidden')) {
-      closeModelMenu();
-      closeThreadMenu();
-      closeModeMenu();
       resetExpandedFoldersForMenu();
     }
     const data = getTargetMenuData();
@@ -812,11 +773,6 @@ export function bindEvents() {
   $('#ai-mode-trigger').addEventListener('click', () => {
     // 打开前按当前绑定重算一次，头部「主机 · 名称」不依赖上一次状态事件是否到达。
     refreshAgentHostBar();
-    const menu = $('#ai-mode-menu');
-    if (menu?.classList.contains('hidden')) {
-      closeModelMenu();
-      closeThreadMenu();
-    }
     toggleModeMenu();
   });
   $('#ai-mode-menu-list').addEventListener('click', (e) => {
@@ -865,17 +821,8 @@ export function bindEvents() {
 
   // 「解释选中内容」按钮已移除:入口迁移为终端选区末尾的悬浮 🔍 按钮
   // (terminal.js bindSelectionExplain)。
-  // AI 会话管理工具栏与下拉菜单
-  $('#ai-thread-trigger').addEventListener('click', () => {
-    const menu = $('#ai-thread-menu');
-    if (menu?.classList.contains('hidden')) {
-      closeModelMenu();
-      closeModeMenu();
-    }
-    toggleThreadMenu();
-  });
+  // AI 会话管理（统一走顶栏抽屉开关，已移除冗余的顶部下拉栏）
   $('#ai-thread-new').addEventListener('click', () => {
-    closeThreadMenu();
     closeAiDrawer();
     newAiThread({ focus: true });
   });
@@ -903,39 +850,9 @@ export function bindEvents() {
     }
   });
   $('#ai-thread-clear').addEventListener('click', async () => {
-    closeThreadMenu();
     closeAiDrawer();
     await requestClearAiThread();
     $('#ai-input')?.focus();
-  });
-  $('#ai-thread-menu').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const delBtn = e.target.closest?.('.ai-thread-del');
-    if (delBtn) {
-      const id = delBtn.dataset.delThread;
-      if (id) requestDeleteAiThread(id);
-      return;
-    }
-    const itemBtn = e.target.closest?.('.ai-thread-menu-item');
-    const row = e.target.closest?.('.ai-thread-menu-row');
-    const id = itemBtn?.dataset?.threadId || row?.dataset?.threadId;
-    if (id) {
-      switchAiThread(id);
-      $('#ai-input')?.focus();
-    }
-  });
-  $('#ai-thread-menu').addEventListener('keydown', onThreadMenuKeydown);
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest?.('#ai-thread-menu, #ai-thread-trigger')) closeThreadMenu();
-    if (!e.target.closest?.('#ai-drawer, #ai-drawer-toggle')) closeAiDrawer();
-    if (!e.target.closest?.('#ai-context-popover, #ai-context-trigger')) closeContextPopover();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      closeThreadMenu();
-      if (isAiDrawerOpen()) closeAiDrawer();
-      closeContextPopover();
-    }
   });
 
   // 上下文窗口指示器交互
@@ -1008,9 +925,8 @@ export function bindEvents() {
     if (action === 'palette.open') { executeCommand(action); return; }
     if (!$('#ctx-menu').classList.contains('hidden')) return;
     // 在 AI 面板内按快捷键新建会话
-    if (matchAction('ai.newThread', e) && rightTabShown('ai') && document.activeElement?.closest?.('#ai-panel, #ai-thread-menu, #ai-drawer, #rp-ai')) {
+    if (matchAction('ai.newThread', e) && rightTabShown('ai') && document.activeElement?.closest?.('#ai-panel, #ai-drawer, #rp-ai')) {
       e.preventDefault();
-      closeThreadMenu();
       closeAiDrawer();
       newAiThread({ focus: true });
       return;
@@ -1270,9 +1186,7 @@ function setupResizers() {
     grip.addEventListener('pointerdown', (ev) => {
       const panel = el();
       if (!panel || panel.classList.contains('hidden') || panel.classList.contains('collapsed') || hasOpenModal()) return;
-      closeModelMenu();
-      closeModeMenu();
-      closeThreadMenu();
+      closeAllOverlays({ kinds: ['popover'], reason: 'resize-drag' });
       ev.preventDefault();
       grip.setPointerCapture(ev.pointerId);
       grip.classList.add('dragging');
@@ -1316,9 +1230,7 @@ function setupResizers() {
     // 双击把手:sidebar 收起(拖到最窄的直觉延伸);其余面板恢复默认宽度。
     // 收起走 toggleSidebar,让工具栏按钮的 active 态同步。
     grip.addEventListener('dblclick', () => {
-      closeModelMenu();
-      closeModeMenu();
-      closeThreadMenu();
+      closeAllOverlays({ kinds: ['popover'], reason: 'resize-dblclick' });
       if (id === 'sidebar-resizer') { toggleSidebar(); return; }
       el().style.width = '';
       fitAllVisible();
@@ -1341,6 +1253,7 @@ export async function boot() {
   applyAccelTitles();
   // 静态 HTML 里的 data-icon 占位符统一注入 SVG(见 shared/icons.js)
   hydrateIcons(document);
+  bindOverlayManager();
   bindModalInteractions();
   bindExternalLinks();
   bindAiCodeActions();

@@ -107,10 +107,36 @@ async function harness(moduleName, { invoke = async () => [], write = async () =
   });
   const imports = {
     './core.js': { $, api, state, askConfirm: confirm, askPrompt: async (_msg, opts) => opts?.value ?? null, copyText: async () => true, toast: (...args) => toasts.push(args),
+      askConflict: ({ id = 'modal-conflict', title = '', message = '', checkboxChecked = false, buttons = [], cancelPolicy = 'cancel' }) => new Promise((resolve) => {
+        const sheet = document.createElement('div');
+        sheet.id = id;
+        sheet.className = 'modal';
+        sheet.querySelector('h3').textContent = title;
+        sheet.querySelector('p').textContent = message;
+        sheet.querySelector('input').checked = !!checkboxChecked;
+        let done = false;
+        const finish = (policy) => {
+          if (done) return;
+          done = true;
+          const applyToAll = !!sheet.querySelector('input').checked;
+          sheet.remove();
+          resolve({ policy, applyToAll });
+        };
+        for (const item of buttons) {
+          const btn = document.createElement('button');
+          btn.textContent = item.label;
+          btn.dataset.policy = item.policy;
+          btn.addEventListener('click', () => finish(item.policy));
+          sheet.querySelector('.modal-foot').appendChild(btn);
+        }
+        sheet.dismiss = () => finish(cancelPolicy);
+        document.body.appendChild(sheet);
+      }),
       showCtxMenu: () => {}, bindMenuButton: () => {}, makeDraggable: () => {}, openModal: () => {}, closeModal: () => {},
       setModalDismissHandler: (element, handler) => { element.dismiss = handler; },
       hasOpenModal: () => false, stripFpMark: (s) => String(s || '').replace(/\[NB-FP [^\]]+\]/, '').trim(),
       applyAccelTitles: () => {} },
+    './overlay-manager.js': { openOverlay: () => {}, closeOverlay: () => {}, closeAllOverlays: () => {}, closeOverlayGroup: () => {} },
     './hosts.js': { escapeHtml: (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;') },
     // SVG 图标注册表:vm 桩给最小实现(占位 svg 串),测试只断言结构不断言图形
     '../shared/icons.js': { icon: (name) => `<svg data-icon="${name}"></svg>`, ICON_NAMES: ['stub'] },

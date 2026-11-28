@@ -4,6 +4,7 @@
 // P4：在此之上扩展内联 @主机 chip（.ai-chip）与 @ 候选浮层（#ai-mention-pop）。
 
 import { $ } from './core.js';
+import { closeOverlay, openOverlay } from './overlay-manager.js';
 
 let isComposing = false;
 
@@ -461,6 +462,21 @@ export function closeMentionPop() {
   if (pop) {
     pop.classList.add('hidden');
   }
+  closeOverlay('ai-mention-pop');
+}
+
+function showMentionPop(pop) {
+  pop.classList.remove('hidden');
+  openOverlay({
+    id: 'ai-mention-pop',
+    kind: 'popover',
+    group: 'floating',
+    el: pop,
+    triggers: () => [$('#ai-input')].filter(Boolean),
+    close: () => {
+      if (mentionState.open) closeMentionPop();
+    },
+  });
 }
 
 /// 当前 `@` 候选浮层是否打开。
@@ -519,7 +535,7 @@ export function renderMentionPop({ scopeHosts = [], query = '', onSelect, onOpen
     });
     empty.appendChild(btn);
     pop.appendChild(empty);
-    pop.classList.remove('hidden');
+    showMentionPop(pop);
     return;
   }
 
@@ -528,7 +544,7 @@ export function renderMentionPop({ scopeHosts = [], query = '', onSelect, onOpen
     empty.className = 'ai-mention-empty';
     empty.textContent = `范围内无匹配「@${query}」的主机`;
     pop.appendChild(empty);
-    pop.classList.remove('hidden');
+    showMentionPop(pop);
     return;
   }
 
@@ -564,7 +580,7 @@ export function renderMentionPop({ scopeHosts = [], query = '', onSelect, onOpen
     pop.appendChild(row);
   });
 
-  pop.classList.remove('hidden');
+  showMentionPop(pop);
 }
 
 /// 处理 `#ai-mention-pop` 打开时的键盘导航（↑ / ↓ / Enter / Tab / Escape）及 Backspace 整颗删除 chip。
